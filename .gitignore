@@ -1,0 +1,26 @@
+#############################
+# generic
+#############################
+
+*.bak
+
+#############################
+# spirv/sass
+#############################
+
+*.spv
+*.spva
+*.sass
+*.sassbin
+
+#############################
+#specific to the project
+#############################
+
+zbsgfxpack.lua
+cmake_built
+cmake_build
+build
+_install
+bin_x64
+external/downloaded_resources/
