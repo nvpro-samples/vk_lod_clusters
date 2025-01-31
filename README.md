@@ -351,7 +351,7 @@ You can use the commandline to change some defaults:
 
 ## Building and Running
 
-The new `VK_NV_cluster_acceleration_structure` extension requires new drivers, earliest release on 1/30/2025.
+The new `VK_NV_cluster_acceleration_structure` extension requires new drivers, earliest release version is `572.16` from 1/30/2025.
 The sample should run on older drivers with just rasterization available.
 
 Point cmake to the `vk_lod_clusters` directory and for example set the output directory to `/build`.
@@ -389,3 +389,7 @@ We prepared two more scenes to play with. They are based on models from [https:/
   - 280 MB zip
 
 These models can take minutes to load, due to the processing into the cluster lod system, even on systems with many CPU cores.
+
+## Third Party
+
+[meshoptimizer](https://github.com/zeux/meshoptimizer) is used during the mesh simplification process when the triangles within a cluster are re-ordered to improve triangle strips.
