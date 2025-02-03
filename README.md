@@ -392,4 +392,4 @@ These models can take minutes to load, due to the processing into the cluster lo
 
 ## Third Party
 
-[meshoptimizer](https://github.com/zeux/meshoptimizer) is used during the mesh simplification process when the triangles within a cluster are re-ordered to improve triangle strips.
+[meshoptimizer](https://github.com/zeux/meshoptimizer) is used during the mesh simplification process and when the triangles within a cluster are re-ordered to improve triangle strips.
