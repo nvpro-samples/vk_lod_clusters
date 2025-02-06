@@ -372,7 +372,7 @@ Other Vulkan samples using the new extensions are:
 - https://github.com/nvpro-samples/vk_lod_clusters - provides a sample implementation of a basic cluster-LoD based rendering and streaming system.
 - https://github.com/nvpro-samples/vk_partitioned_tlas - New extension to manage incremental TLAS updates.
 
-We also recommend having a look at [NVIDIA GameWorks RTX Mega Geometry (coming soon)](https://github.com/NVIDIAGameWorks/RTX-Megageometry), which demonstrates tessellation of subdivision surfaces in DirectX 12.
+We also recommend having a look at [RTX Mega Geometry](https://github.com/NVIDIA-RTX/RTXMG), which demonstrates tessellation of subdivision surfaces in DirectX 12.
 
 ## Additional Scenes
 

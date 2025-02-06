@@ -302,7 +302,7 @@ void LodClusters::processUI(double time, nvh::Profiler& profiler, const CallBack
     PE::Checkbox("Freeze Cull / LoD", &m_frameConfig.freezeCulling);
     PE::InputFloat("LoD pixel error", &m_frameConfig.lodPixelError, 0.25f, 0.25f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
     PE::end();
-    m_frameConfig.lodPixelError = std::max(0.0f, m_frameConfig.lodPixelError);
+    m_frameConfig.lodPixelError = std::max(0.001f, m_frameConfig.lodPixelError);
 
     if(ImGui::BeginTable("##Render stats", 3, ImGuiTableFlags_BordersOuter))
     {
