@@ -72,6 +72,12 @@ bool Scene::init(const char* filename, const SceneConfig& config)
     m_hiClustersCount += geom.hiClustersCount;
     m_totalClustersCount += geom.totalClustersCount;
   }
+  for(size_t i = 0; i < m_instances.size(); i++)
+  {
+    const Geometry& geom = m_geometries[m_instances[i].geometryID];
+    m_hiTrianglesCountInstanced += geom.hiTriangleCount;
+    m_hiClustersCountInstanced += geom.hiClustersCount;
+  }
 
 
   m_originalInstanceCount = m_instances.size();
@@ -360,7 +366,7 @@ void Scene::buildClusters()
   nvh::FileReadMapping    readMapping;
   nvclusterlod::CacheView cacheView;
 
-  if(readMapping.open((m_filename + ".nvcllod").c_str()))
+  if(readMapping.open((m_filename + ".nvcllod").c_str()) && false)
   {
     cacheView.init(readMapping.size(), readMapping.data());
     if(cacheView.isValid() && cacheView.getGeometryCount() != m_geometries.size())
@@ -386,38 +392,43 @@ void Scene::buildClusters()
   uint64_t numTotalTriangles = 0;
   uint64_t numTotalStrips    = 0;
 
-  for(size_t g = 0; g < m_geometries.size(); g++)
-  {
-    Geometry&                     geom = m_geometries[g];
-    nvclusterlod::LodGeometryView view = {};
+  bool     preferInnerParallelism = m_geometries.size() < nvh::get_thread_pool().get_thread_count() * 2;
+  uint32_t numOuterThreads        = preferInnerParallelism ? 1 : nvh::get_thread_pool().get_thread_count();
 
-    if(cacheView.isValid())
-    {
-      cacheView.getLodGeometryView(view, g);
-    }
+  nvh::parallel_batches_indexed<1>(
+      m_geometries.size(),
+      [&](uint64_t idx, uint32_t threadIdx) {
+        Geometry&                     geom = m_geometries[idx];
+        nvclusterlod::LodGeometryView view = {};
 
-    buildGeometryClusters(lodContext, geom, view);
+        if(cacheView.isValid())
+        {
+          cacheView.getLodGeometryView(view, idx);
+        }
 
-    // no longer need original triangles
-    geom.globalTriangles = {};
+        buildGeometryClusters(lodContext, geom, view, preferInnerParallelism);
 
-    if(geom.lodMesh.clusterTriangleRanges.empty())
-      continue;
+        // no longer need original triangles
+        geom.globalTriangles = {};
 
-    if(m_config.clusterStripify)
-    {
-      buildGeometryClusterStrips(geom, numTotalTriangles, numTotalStrips);
-    }
+        if(geom.lodMesh.clusterTriangleRanges.empty())
+          return;
 
-    buildGeometryClusterVertices(geom);
+        if(m_config.clusterStripify)
+        {
+          buildGeometryClusterStrips(geom, numTotalTriangles, numTotalStrips, preferInnerParallelism);
+        }
 
-    // no longer need vertex indirection
-    geom.localVertices = {};
+        buildGeometryClusterVertices(geom, preferInnerParallelism);
 
-    buildGeometryBboxes(geom);
+        // no longer need vertex indirection
+        geom.localVertices = {};
 
-    m_clusterMaxVerticesCount = std::max(m_clusterMaxVerticesCount, geom.clusterMaxVerticesCount);
-  }
+        buildGeometryBboxes(geom, preferInnerParallelism);
+
+        m_clusterMaxVerticesCount = std::max(m_clusterMaxVerticesCount, geom.clusterMaxVerticesCount);
+      },
+      numOuterThreads);
 
   // reset settings in case we had a valid cache file
   if(cacheView.isValid())
@@ -452,7 +463,7 @@ void Scene::buildClusters()
   computeHistograms();
 }
 
-void Scene::buildGeometryClusters(nvclusterlod::Context lodcontext, Geometry& geom, const nvclusterlod::LodGeometryView& view)
+void Scene::buildGeometryClusters(nvclusterlod::Context lodcontext, Geometry& geom, const nvclusterlod::LodGeometryView& view, bool doParallel)
 {
   nvclusterlod::Result result;
 
@@ -551,7 +562,7 @@ void Scene::buildGeometryClusters(nvclusterlod::Context lodcontext, Geometry& ge
   geom.localVertices.resize(geom.lodMesh.triangleVertices.size());
   geom.clusterVertexRanges.resize(geom.lodMesh.clusterTriangleRanges.size());
 
-  uint32_t              numThreads = nvh::get_thread_pool().get_thread_count();
+  uint32_t              numThreads = doParallel ? nvh::get_thread_pool().get_thread_count() : 1;
   std::vector<uint32_t> threadClusterMaxVertices(numThreads, 0);
   std::vector<uint32_t> threadClusterMaxTriangles(numThreads, 0);
 
@@ -685,9 +696,9 @@ void Scene::computeLodBboxes_recursive(Geometry& geom, size_t i)
   }
 }
 
-void Scene::buildGeometryBboxes(Geometry& geom)
+void Scene::buildGeometryBboxes(Geometry& geom, bool doParallel)
 {
-  uint32_t numThreads = nvh::get_thread_pool().get_thread_count();
+  uint32_t numThreads = doParallel ? nvh::get_thread_pool().get_thread_count() : 1;
 
   geom.clusterBboxes.resize(geom.lodMesh.clusterTriangleRanges.size());
 
@@ -805,9 +816,9 @@ void Scene::computeHistograms()
   }
 }
 
-void Scene::buildGeometryClusterStrips(Geometry& geom, uint64_t& totalTriangles, uint64_t& totalStrips)
+void Scene::buildGeometryClusterStrips(Geometry& geom, uint64_t& totalTriangles, uint64_t& totalStrips, bool doParallel)
 {
-  uint32_t numThreads = nvh::get_thread_pool().get_thread_count();
+  uint32_t numThreads = doParallel ? nvh::get_thread_pool().get_thread_count() : 1;
 
   std::vector<std::vector<uint32_t>> threadIndices(numThreads);
 
@@ -866,8 +877,10 @@ void Scene::buildGeometryClusterStrips(Geometry& geom, uint64_t& totalTriangles,
   totalStrips += numStrips;
 }
 
-void Scene::buildGeometryClusterVertices(Geometry& geom)
+void Scene::buildGeometryClusterVertices(Geometry& geom, bool doParallel)
 {
+  uint32_t numThreads = doParallel ? nvh::get_thread_pool().get_thread_count() : 1;
+
   // build per-cluster vertices
 
   std::vector<glm::vec3> oldPositionsData = std::move(geom.positions);
@@ -884,18 +897,20 @@ void Scene::buildGeometryClusterVertices(Geometry& geom)
   glm::vec3*       newPositions = geom.positions.data();
   glm::vec3*       newNormals   = geom.normals.data();
 
-  for(size_t c = 0; c < geom.clusterVertexRanges.size(); c++)
-  {
-    nvcluster::Range& vertexRange = geom.clusterVertexRanges[c];
+  nvh::parallel_batches_indexed(
+      geom.clusterVertexRanges.size(),
+      [&](uint64_t c, uint32_t threadIdx) {
+        nvcluster::Range& vertexRange = geom.clusterVertexRanges[c];
 
-    for(uint32_t v = 0; v < vertexRange.count; v++)
-    {
-      uint32_t oldIdx                       = localVertices[v + vertexRange.offset];
-      localVertices[v + vertexRange.offset] = v + vertexRange.offset;
-      newPositions[v + vertexRange.offset]  = oldPositions[oldIdx];
-      newNormals[v + vertexRange.offset]    = oldNormals[oldIdx];
-    }
-  }
+        for(uint32_t v = 0; v < vertexRange.count; v++)
+        {
+          uint32_t oldIdx                       = localVertices[v + vertexRange.offset];
+          localVertices[v + vertexRange.offset] = v + vertexRange.offset;
+          newPositions[v + vertexRange.offset]  = oldPositions[oldIdx];
+          newNormals[v + vertexRange.offset]    = oldNormals[oldIdx];
+        }
+      },
+      numThreads);
 }
 
 

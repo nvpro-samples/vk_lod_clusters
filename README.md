@@ -397,6 +397,7 @@ We prepared two more scenes to play with. They are based on models from [https:/
   - 280 MB zip
 
 These models can take minutes to load, due to the processing into the cluster lod system, even on systems with many CPU cores.
+We recommend making use of _"File > Save Cache"_ menu entry to store the results of the initial processing next to the original files.
 
 ## Third Party
 

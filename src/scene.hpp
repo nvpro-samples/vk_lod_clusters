@@ -133,17 +133,19 @@ public:
   const Geometry& getActiveGeometry(size_t idx) const { return m_geometries[idx % m_originalGeometryCount]; }
   size_t          getActiveGeometryCount() const { return m_activeGeometryCount; }
 
-  uint32_t              m_maxPerGeometryClusters   = 0;
-  uint32_t              m_maxPerGeometryTriangles  = 0;
-  uint32_t              m_maxPerGeometryVertices   = 0;
-  uint32_t              m_hiPerGeometryClusters    = 0;
-  uint32_t              m_hiPerGeometryTriangles   = 0;
-  uint32_t              m_hiPerGeometryVertices    = 0;
-  uint64_t              m_hiClustersCount          = 0;
-  uint64_t              m_hiTrianglesCount         = 0;
-  uint64_t              m_totalClustersCount       = 0;
-  uint32_t              m_clusterMaxVerticesCount  = 0;
-  uint32_t              m_clusterMaxTrianglesCount = 0;
+  uint32_t              m_maxPerGeometryClusters    = 0;
+  uint32_t              m_maxPerGeometryTriangles   = 0;
+  uint32_t              m_maxPerGeometryVertices    = 0;
+  uint32_t              m_hiPerGeometryClusters     = 0;
+  uint32_t              m_hiPerGeometryTriangles    = 0;
+  uint32_t              m_hiPerGeometryVertices     = 0;
+  uint64_t              m_hiClustersCount           = 0;
+  uint64_t              m_hiTrianglesCount          = 0;
+  uint64_t              m_hiClustersCountInstanced  = 0;
+  uint64_t              m_hiTrianglesCountInstanced = 0;
+  uint64_t              m_totalClustersCount        = 0;
+  uint32_t              m_clusterMaxVerticesCount   = 0;
+  uint32_t              m_clusterMaxTrianglesCount  = 0;
   std::vector<uint32_t> m_clusterTriangleHistogram;
   std::vector<uint32_t> m_clusterVertexHistogram;
   std::vector<uint32_t> m_groupClusterHistogram;
@@ -168,11 +170,11 @@ private:
 
   bool loadGLTF(const char* filename);
 
-  void buildGeometryClusters(nvclusterlod::Context lodcontext, Geometry& geometry, const nvclusterlod::LodGeometryView& view);
+  void buildGeometryClusters(nvclusterlod::Context lodcontext, Geometry& geometry, const nvclusterlod::LodGeometryView& view, bool doParallel);
   void computeLodBboxes_recursive(Geometry& geom, size_t nodeIdx);
-  void buildGeometryBboxes(Geometry& geometry);
-  void buildGeometryClusterStrips(Geometry& geom, uint64_t& totalTriangles, uint64_t& totalStrips);
-  void buildGeometryClusterVertices(Geometry& geometry);
+  void buildGeometryBboxes(Geometry& geometry, bool doParallel);
+  void buildGeometryClusterStrips(Geometry& geom, uint64_t& totalTriangles, uint64_t& totalStrips, bool doParallel);
+  void buildGeometryClusterVertices(Geometry& geometry, bool doParallel);
   void buildClusters();
   void computeHistograms();
   void computeInstanceBBoxes();

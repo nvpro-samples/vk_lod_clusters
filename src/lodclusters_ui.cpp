@@ -629,14 +629,14 @@ void LodClusters::processUI(double time, nvh::Profiler& profiler, const CallBack
       ImGui::TableNextColumn();
       ImGui::Text("Triangles");
       ImGui::TableNextColumn();
-      ImGui::Text("%s", formatMetric(m_scene->m_hiTrianglesCount * m_sceneGridConfig.numCopies).c_str());
+      ImGui::Text("%s", formatMetric(m_scene->m_hiTrianglesCountInstanced * m_sceneGridConfig.numCopies).c_str());
       ImGui::TableNextColumn();
       ImGui::Text("%s", formatMetric(m_scene->m_hiTrianglesCount).c_str());
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
       ImGui::Text("Clusters");
       ImGui::TableNextColumn();
-      ImGui::Text("%s", formatMetric(m_scene->m_hiClustersCount * m_sceneGridConfig.numCopies).c_str());
+      ImGui::Text("%s", formatMetric(m_scene->m_hiClustersCountInstanced * m_sceneGridConfig.numCopies).c_str());
       ImGui::TableNextColumn();
       ImGui::Text("%s", formatMetric(m_scene->m_hiClustersCount).c_str());
       ImGui::EndTable();
