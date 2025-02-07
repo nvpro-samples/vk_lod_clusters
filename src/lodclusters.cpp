@@ -81,9 +81,7 @@ bool LodClusters::initScene(const char* filename)
     else
     {
       // a scene may come with loaded config, that can differ from what user asked for
-      auto old          = m_sceneConfig.clusterBuilderType;
-      m_lastSceneConfig = m_sceneConfig    = m_scene->m_config;
-      m_lastSceneConfig.clusterBuilderType = m_sceneConfig.clusterBuilderType = old;
+      m_lastSceneConfig = m_sceneConfig = m_scene->m_config;
 
       if(m_sceneConfig.clusterTriangles == 64 && m_sceneConfig.clusterVertices == 64)
         m_tweak.clusterConfig = m_lastTweak.clusterConfig = CLUSTER_64T_64V;
@@ -417,6 +415,14 @@ void LodClusters::deinit(nvvk::Context& context)
   deinitRenderer();
   deinitScene();
   m_resources.deinit();
+}
+
+void LodClusters::saveCacheFile()
+{
+  if(m_scene)
+  {
+    m_scene->saveCache();
+  }
 }
 
 void LodClusters::loadFile(const std::string& filename)
@@ -823,6 +829,7 @@ void LodClusters::setupConfigParameters(nvh::ParameterList& parameterList)
   parameterList.add("clusterconfig", (int*)&m_tweak.clusterConfig);
   parameterList.add("loderror", &m_frameConfig.lodPixelError);
   parameterList.add("culling", &m_tweak.useCulling);
+  parameterList.add("autosavecache", &m_sceneConfig.autoSaveCache);
 
   parameterList.addFilename(".gltf", &m_modelFilename);
   parameterList.addFilename(".glb", &m_modelFilename);

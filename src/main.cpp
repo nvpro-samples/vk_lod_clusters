@@ -257,6 +257,10 @@ public:
                                                       "|All|*.*");
         m_core.loadFile(fileNameLo);
       }
+      if(ImGui::MenuItem("Save Cache"))
+      {
+        m_core.saveCacheFile();
+      }
       ImGui::Separator();
       ImGui::EndMenu();
     }

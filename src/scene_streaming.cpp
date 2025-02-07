@@ -216,7 +216,6 @@ bool SceneStreaming::init(Resources* resources, const Scene* scene, const Stream
   m_stats.maxGroups        = m_config.maxGroups;
   m_stats.maxClusters      = m_config.maxClusters;
   m_stats.maxTransferBytes = m_config.maxTransferMegaBytes * 1024 * 1024;
-  m_stats.maxDataBytes     = m_config.maxGeometryMegaBytes * 1024 * 1024;
 
   // setup descriptor set container
   {
@@ -255,6 +254,9 @@ bool SceneStreaming::init(Resources* resources, const Scene* scene, const Stream
   m_resident.init(res, m_config, groupCountAlignment, clusterCountAlignment);
   m_updates.init(res, m_config, groupCountAlignment, clusterCountAlignment);
   m_storage.init(res, m_config);
+
+  // storage uses block allocator, max may be less than what we asked for
+  m_stats.maxDataBytes = m_storage.getMaxDataSize();
 
   m_operationsSize += m_requests.getOperationsSize();
   m_operationsSize += m_resident.getOperationsSize();

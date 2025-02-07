@@ -1,7 +1,7 @@
 # vk_lod_clusters
 
-This sample is part of the **NVIDIA RTX Mega Geometry** technology and showcases a continuous level of detail (LoD) technique using mesh clusters that 
-leverages `VK_NV_cluster_acceleration_structure` for ray tracing. It can also rasterize the content 
+This sample is demonstrating the **NVIDIA RTX Mega Geometry** technology with a continuous level of detail (LoD) technique using mesh clusters that 
+leverages [`VK_NV_cluster_acceleration_structure`](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_NV_cluster_acceleration_structure.html) for ray tracing. It can also rasterize the content 
 using `VK_NV_mesh_shader`. Furthermore, the sample implements an on-demand streaming system from RAM to VRAM for the geometry.
 
 In rasterization continuous LoD techniques can help performance as they reduce the impact of sub-pixel triangles.
@@ -59,6 +59,14 @@ In the UI you can influence the size of clusters and the LoD grouping of them in
 
 At the time of writing the library does not support respecting the cluster vertex limit, so after processing this value might be increased over what
 was selected in the ui. And if the upper limit of 256 is exceeded, the application will fail to load the scene for now.
+
+> :warning: The processing of larger scenes can take minutes, even on CPUs with many cores. You may want to use _"File > Save Cache"_ after
+> the processing is completed. It will try to store the result of the cluster lod building in a simple uncompressed binary file next to the original input file.
+> You can check the log/console output if errors occurred. Through the `-autosavecache 1` command-line option you can enable auto-saving. 
+>
+> When a cached result file is found next to the input model, its results are taken, and the cluster and lod settings are immutable in the UI.
+> 
+> Be aware, there are currently not a lot of compatibility checks for these cache files, therefore we recommend deleting if changes were made to the original input mesh.
 
 ### Runtime Rendering Operations
 

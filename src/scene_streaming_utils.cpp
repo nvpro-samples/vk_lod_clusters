@@ -795,6 +795,7 @@ void StreamingStorage::init(Resources& res, const StreamingConfig& config)
 {
   m_maxSceneBytes    = config.maxGeometryMegaBytes * 1024 * 1024;
   m_maxTransferBytes = config.maxTransferMegaBytes * 1024 * 1024;
+  m_blockBytes       = std::min(size_t(128) * 1024 * 1024, m_maxSceneBytes);
 
   std::vector<uint32_t> sharingQueueFamilies;
   if(config.useAsyncTransfer)
@@ -808,7 +809,7 @@ void StreamingStorage::init(Resources& res, const StreamingConfig& config)
 
   m_transferHostBuffer = res.createBuffer(m_maxTransferBytes * STREAMING_MAX_ACTIVE_TASKS, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-  m_dataAllocator.init(res.m_allocator.getMemoryAllocator(), 128 * 1024 * 1024,
+  m_dataAllocator.init(res.m_allocator.getMemoryAllocator(), m_blockBytes,
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false, sharingQueueFamilies);
 
@@ -832,6 +833,11 @@ size_t StreamingStorage::getOperationsSize() const
 {
   // the geometry storage is not tracked as fixed operations
   return 0;
+}
+
+size_t StreamingStorage::getMaxDataSize() const
+{
+  return (m_maxSceneBytes / m_blockBytes) * m_blockBytes;
 }
 
 lodclusters::StreamingStorage::TaskInfo& StreamingStorage::getNewTask(uint32_t taskIndex)
@@ -916,7 +922,7 @@ bool StreamingStorage::canAllocate(size_t sz) const
   VkDeviceSize usedSize;
   m_dataAllocator.getUtilization(allocatedSize, usedSize);
 
-  return m_dataAllocator.fitsInAllocated(sz) || allocatedSize < m_maxSceneBytes;
+  return m_dataAllocator.fitsInAllocated(sz) || (allocatedSize + m_blockBytes) <= m_maxSceneBytes;
 }
 
 void StreamingStorage::reset()

@@ -472,6 +472,7 @@ public:
 
   void   getStats(StreamingStats& stats) const;
   size_t getOperationsSize() const;
+  size_t getMaxDataSize() const;
 
   // for transfer task:
   // first get operation
@@ -499,6 +500,7 @@ private:
 
   size_t m_maxSceneBytes;
   size_t m_maxTransferBytes;
+  size_t m_blockBytes;
 
   RBuffer                  m_transferHostBuffer;
   nvvk::BufferSubAllocator m_dataAllocator;

@@ -297,6 +297,7 @@ public:
   void deinit(nvvk::Context& context);
 
   void loadFile(const std::string& filename);
+  void saveCacheFile();
   bool initScene(const char* filename);
   void deinitScene();
   void postInitNewScene();

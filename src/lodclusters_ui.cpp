@@ -89,8 +89,11 @@ static uint32_t getUsagePct(uint32_t requested, uint32_t reserved)
 
 struct UsagePercentages
 {
-  uint32_t pctRender;
-  uint32_t pctTraversal;
+  uint32_t pctRender    = 0;
+  uint32_t pctTraversal = 0;
+  uint32_t pctResident  = 0;
+  uint32_t pctClasLeft  = 100;
+  uint32_t pctGeoMemory = 0;
 
   void setupPercentages(shaderio::Readback& readback, const RendererConfig& rendererConfig)
   {
@@ -98,12 +101,25 @@ struct UsagePercentages
     pctTraversal = getUsagePct(readback.numTraversalInfos, 1 << rendererConfig.numTraversalTaskBits);
   }
 
+  void setupPercentages(StreamingStats& stats, const StreamingConfig& streamingConfig)
+  {
+    pctResident = uint32_t(double(stats.residentGroups) * 100.0 / double(stats.maxGroups));
+    pctClasLeft = stats.reservedClasBytes ? uint32_t(double(stats.maxSizedLeft) * 100.0 / double(stats.maxSizedReserved)) : 100;
+    pctGeoMemory = uint32_t(double(stats.usedDataBytes) * 100.0 / double(stats.maxDataBytes));
+  }
+
   const char* getWarning()
   {
     if(pctRender > 100)
       return "WARNING: Scene: Render clusters limit exceeded";
-    if(pctRender > 100)
+    if(pctTraversal > 100)
       return "WARNING: Scene: Traversal task limit exceeded";
+    if(pctResident == 100)
+      return "WARNING: Streaming: No resident groups left";
+    if(pctClasLeft <= 1)
+      return "WARNING: Streaming: Few CLAS groups left";
+    if(pctGeoMemory >= 99)
+      return "WARNING: Streaming: Little geometry memory left";
     return nullptr;
   }
 };
@@ -128,10 +144,18 @@ void LodClusters::viewportUI(ImVec2 corner)
   if(m_renderer)
   {
     shaderio::Readback readback;
-    m_resources.getReadbackData(readback);
 
+    m_resources.getReadbackData(readback);
     UsagePercentages pct;
     pct.setupPercentages(readback, m_rendererConfig);
+
+    if(m_renderScene->useStreaming)
+    {
+      StreamingStats streamingStats;
+      m_renderScene->sceneStreaming.getStats(streamingStats);
+      pct.setupPercentages(streamingStats, m_streamingConfig);
+    }
+
 
     const char* warning = pct.getWarning();
 
@@ -352,22 +376,24 @@ void LodClusters::processUI(double time, nvh::Profiler& profiler, const CallBack
   if(ImGui::CollapsingHeader("Clusters & LoDs generation", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
   {
     PE::begin("##Clusters");
-    if(m_scene && m_scene->m_config.clusterBuilderType == CLUSTER_BUILDER_FILE)
+    if(m_scene && m_scene->m_prebuildLodClusters)
     {
-      PE::Text("Cluster size from file", "%dT_%dV", m_lastSceneConfig.clusterTriangles, m_lastSceneConfig.clusterVertices);
+      PE::Text("Cluster size from cache", "%dT_%dV", m_scene->m_config.clusterTriangles, m_scene->m_config.clusterVertices);
+      PE::Text("LoD group size", "%d", m_scene->m_config.clusterGroupSize);
     }
     else
     {
       PE::entry("Cluster/meshlet size",
                 [&]() { return m_ui.enumCombobox(GUI_MESHLET, "##cluster", &m_tweak.clusterConfig); });
+      PE::InputIntClamped("LoD group size", (int*)&m_sceneConfig.clusterGroupSize, 8, 256, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
+                          "number of clusters that make lod group. Their triangles are decimated together and they share a common error property");
     }
+
     PE::InputIntClamped("CLAS Mantissa drop bits", (int*)&m_streamingConfig.clasPositionTruncateBits, 0, 22, 1, 1,
                         ImGuiInputTextFlags_EnterReturnsTrue,
                         "number of mantissa bits to drop (zeroed) to reduce memory consumption");
     PE::entry("CLAS build mode",
               [&]() { return m_ui.enumCombobox(GUI_BUILDMODE, "##clasbuild", &m_streamingConfig.clasBuildFlags); });
-    PE::InputIntClamped("LoD group size", (int*)&m_sceneConfig.clusterGroupSize, 8, 256, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
-                        "number of clusters that make lod group. Their triangles are decimated together and they share a common error property");
     PE::end();
   }
 

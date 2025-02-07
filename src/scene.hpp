@@ -20,30 +20,25 @@
 #pragma once
 
 #include <vector>
+#include <string>
 
 #include <glm/glm.hpp>
 #include <nvclusterlod/nvclusterlod_hierarchy_storage.hpp>
 #include <nvclusterlod/nvclusterlod_mesh_storage.hpp>
+#include <nvclusterlod/nvclusterlod_cache.hpp>
 
 #include "shaders/shaderio_scene.h"
 
-
 namespace lodclusters {
-
-enum ClusterBuilderType
-{
-  CLUSTER_BUILDER_NVCLUSTER,
-  CLUSTER_BUILDER_FILE,
-};
 
 struct SceneConfig
 {
-  ClusterBuilderType clusterBuilderType       = CLUSTER_BUILDER_NVCLUSTER;
-  uint32_t           clusterVertices          = 64;
-  uint32_t           clusterTriangles         = 64;
-  uint32_t           clusterGroupSize         = 32;
-  bool               clusterStripify          = true;
-  float              lodLevelDecimationFactor = 0.5f;
+  uint32_t clusterVertices          = 64;
+  uint32_t clusterTriangles         = 64;
+  uint32_t clusterGroupSize         = 32;
+  bool     clusterStripify          = true;
+  float    lodLevelDecimationFactor = 0.5f;
+  bool     autoSaveCache            = false;
 };
 
 struct SceneGridConfig
@@ -106,6 +101,9 @@ public:
 
     // for streaming
     nvclusterlod::GroupGeneratingGroups groupGeneratingGroups;
+
+    // for serialization
+    nvclusterlod::LodGeometryInfo lodInfo;
   };
 
   struct Camera
@@ -118,6 +116,7 @@ public:
   };
 
   bool init(const char* filename, const SceneConfig& config);
+  bool saveCache();
   void deinit();
 
   void updateSceneGrid(const SceneGridConfig& gridConfig);
@@ -155,6 +154,8 @@ public:
   uint32_t m_groupClusterHistogramMax;
   uint32_t m_nodeChildrenHistogramMax;
 
+  bool m_prebuildLodClusters = false;
+
 private:
   size_t m_originalInstanceCount = 0;
   size_t m_originalGeometryCount = 0;
@@ -163,9 +164,11 @@ private:
 
   std::vector<Geometry> m_geometries;
 
+  std::string m_filename;
+
   bool loadGLTF(const char* filename);
 
-  void buildGeometryClusters(nvclusterlod::Context lodcontext, Geometry& geometry);
+  void buildGeometryClusters(nvclusterlod::Context lodcontext, Geometry& geometry, const nvclusterlod::LodGeometryView& view);
   void computeLodBboxes_recursive(Geometry& geom, size_t nodeIdx);
   void buildGeometryBboxes(Geometry& geometry);
   void buildGeometryClusterStrips(Geometry& geom, uint64_t& totalTriangles, uint64_t& totalStrips);
