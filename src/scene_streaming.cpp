@@ -553,6 +553,8 @@ void SceneStreaming::cmdBeginFrame(VkCommandBuffer   cmd,
     // `handleCompletedRequest` function.
 
     uint32_t pushRequestIndex = m_requestsTaskQueue.acquireTaskIndex();
+    // the acquisition must be guaranteed by design, as we always handle requests.
+    assert(pushRequestIndex != INVALID_TASK_INDEX);
 
     // get space for request storage
     // and setup this frame's m_shaderData, so that the streaming
@@ -625,8 +627,24 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer cmd, QueueState&
   if(m_debugFrameLimit > 0)
     m_debugFrameLimit--;
 
-  uint32_t pushUpdateIndex  = m_updatesTaskQueue.acquireTaskIndex();
   uint32_t pushStorageIndex = m_storageTaskQueue.acquireTaskIndex();
+  uint32_t pushUpdateIndex  = m_updatesTaskQueue.acquireTaskIndex();
+
+  // early out if we are not able to acquire both tasks to serve the request
+  if(pushStorageIndex == INVALID_TASK_INDEX || pushUpdateIndex == INVALID_TASK_INDEX)
+  {
+    // give back acquisitions we don't make use of
+    if(pushStorageIndex != INVALID_TASK_INDEX)
+    {
+      m_storageTaskQueue.releaseTaskIndex(pushStorageIndex);
+    }
+    if(pushUpdateIndex != INVALID_TASK_INDEX)
+    {
+      m_updatesTaskQueue.releaseTaskIndex(pushUpdateIndex);
+    }
+    m_requestsTaskQueue.releaseTaskIndex(popRequestIndex);
+    return INVALID_TASK_INDEX;
+  }
 
   StreamingStorage::TaskInfo& storageTask = m_storage.getNewTask(pushStorageIndex);
   StreamingUpdates::TaskInfo& updateTask  = m_updates.getNewTask(pushUpdateIndex);

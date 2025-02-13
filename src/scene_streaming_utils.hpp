@@ -570,7 +570,6 @@ public:
       }
     }
 
-    assert(0 && "no available task bit");
     return INVALID_TASK_INDEX;
   }
 
