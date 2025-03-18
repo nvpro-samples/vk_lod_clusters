@@ -827,7 +827,7 @@ void RendererRayTraceClustersLod::updateRayTracingTlas(VkCommandBuffer cmd, Reso
   vkCmdBuildAccelerationStructuresKHR(cmd, 1, &m_tlasBuildInfo, &pBuildOffsetInfo);
 }
 
-std::unique_ptr<Renderer> makeRendererRayTraceClustersTess()
+std::unique_ptr<Renderer> makeRendererRayTraceClustersLod()
 {
   return std::make_unique<RendererRayTraceClustersLod>();
 }

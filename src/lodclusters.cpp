@@ -216,10 +216,10 @@ void LodClusters::initRenderer(RendererType rtype)
   switch(rtype)
   {
     case RENDERER_RASTER_CLUSTERS_LOD:
-      m_renderer = makeRendererRasterClustersTess();
+      m_renderer = makeRendererRasterClustersLod();
       break;
     case RENDERER_RAYTRACE_CLUSTERS_LOD:
-      m_renderer = makeRendererRayTraceClustersTess();
+      m_renderer = makeRendererRayTraceClustersLod();
       break;
   }
 

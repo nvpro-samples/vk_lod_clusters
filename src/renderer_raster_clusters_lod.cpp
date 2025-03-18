@@ -25,7 +25,7 @@
 
 namespace lodclusters {
 
-class RendererRasterClustersTess : public Renderer
+class RendererRasterClustersLod : public Renderer
 {
 public:
   virtual bool init(Resources& res, RenderScene& rscene, const RendererConfig& config) override;
@@ -68,7 +68,7 @@ private:
   shaderio::SceneBuilding m_sceneBuildShaderio;
 };
 
-bool RendererRasterClustersTess::initShaders(Resources& res, const RenderScene& rscene, const RendererConfig& config)
+bool RendererRasterClustersLod::initShaders(Resources& res, const RenderScene& rscene, const RendererConfig& config)
 {
   std::string prepend;
   prepend += nvh::stringFormat("#define CLUSTER_VERTEX_COUNT %d\n",
@@ -98,7 +98,7 @@ bool RendererRasterClustersTess::initShaders(Resources& res, const RenderScene& 
   return initBasicShaders(res);
 }
 
-bool RendererRasterClustersTess::init(Resources& res, RenderScene& rscene, const RendererConfig& config)
+bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const RendererConfig& config)
 {
   m_config = config;
 
@@ -220,7 +220,7 @@ static uint32_t getWorkGroupCount(uint32_t numThreads, uint32_t workGroupSize)
   return (numThreads + workGroupSize - 1) / workGroupSize;
 }
 
-void RendererRasterClustersTess::render(VkCommandBuffer cmd, Resources& res, RenderScene& rscene, const FrameConfig& frame, nvvk::ProfilerVK& profiler)
+void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, RenderScene& rscene, const FrameConfig& frame, nvvk::ProfilerVK& profiler)
 {
   VkMemoryBarrier memBarrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
 
@@ -346,7 +346,7 @@ void RendererRasterClustersTess::render(VkCommandBuffer cmd, Resources& res, Ren
   m_resourceActualUsage.geometryMemBytes   = rscene.getGeometrySize(false);
 }
 
-void RendererRasterClustersTess::updatedFrameBuffer(Resources& res)
+void RendererRasterClustersLod::updatedFrameBuffer(Resources& res)
 {
   vkDeviceWaitIdle(res.m_device);
   std::array<VkWriteDescriptorSet, 1> writeSets;
@@ -356,7 +356,7 @@ void RendererRasterClustersTess::updatedFrameBuffer(Resources& res)
   Renderer::updatedFrameBuffer(res);
 }
 
-void RendererRasterClustersTess::deinit(Resources& res)
+void RendererRasterClustersLod::deinit(Resources& res)
 {
   vkDestroyPipeline(res.m_device, m_pipelines.graphicsMesh, nullptr);
   vkDestroyPipeline(res.m_device, m_pipelines.computeTraversalInit, nullptr);
@@ -374,8 +374,8 @@ void RendererRasterClustersTess::deinit(Resources& res)
   deinitBasics(res);
 }
 
-std::unique_ptr<Renderer> makeRendererRasterClustersTess()
+std::unique_ptr<Renderer> makeRendererRasterClustersLod()
 {
-  return std::make_unique<RendererRasterClustersTess>();
+  return std::make_unique<RendererRasterClustersLod>();
 }
 }  // namespace lodclusters

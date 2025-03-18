@@ -132,7 +132,7 @@ protected:
 
 //////////////////////////////////////////////////////////////////////////
 
-std::unique_ptr<Renderer> makeRendererRasterClustersTess();
-std::unique_ptr<Renderer> makeRendererRayTraceClustersTess();
+std::unique_ptr<Renderer> makeRendererRasterClustersLod();
+std::unique_ptr<Renderer> makeRendererRayTraceClustersLod();
 
 }  // namespace lodclusters
