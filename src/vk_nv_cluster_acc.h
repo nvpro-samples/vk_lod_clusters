@@ -189,7 +189,7 @@ typedef struct VkRayTracingPipelineClusterAccelerationStructureCreateInfoNV
 {
   VkStructureType sType;
   void*           pNext;
-  VkBool32        allowClusterAccelerationStructures;
+  VkBool32        allowClusterAccelerationStructure;
 } VkRayTracingPipelineClusterAccelerationStructureCreateInfoNV;
 
 typedef struct VkClusterAccelerationStructureMoveObjectsInfoNV

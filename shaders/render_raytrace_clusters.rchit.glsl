@@ -52,7 +52,7 @@
 // GL_EXT_spirv_intrinsics to hook up the new builtin.
 #extension GL_EXT_spirv_intrinsics : require
 
-// Note that `VkRayTracingPipelineClusterAccelerationStructureCreateInfoNV::allowClusterAccelerationStructures` must
+// Note that `VkRayTracingPipelineClusterAccelerationStructureCreateInfoNV::allowClusterAccelerationStructure` must
 // be set to `VK_TRUE` to make this valid.
 spirv_decorate(extensions = ["SPV_NV_cluster_acceleration_structure"], capabilities = [5437], 11, 5436) in int gl_ClusterIDNV_;
 
