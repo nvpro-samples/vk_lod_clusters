@@ -187,7 +187,7 @@ void addInstancesFromNode(std::vector<lodclusters::Scene::Instance>& instances,
 
 
 namespace lodclusters {
-bool Scene::loadGLTF(const char* filename)
+bool Scene::loadGLTF(const char* filename, const CacheFileView& cacheFileView)
 {
   // Parse the glTF file using cgltf
   cgltf_options options = {};
@@ -284,6 +284,15 @@ bool Scene::loadGLTF(const char* filename)
       }
 
       triangleCount += (uint32_t)gltfPrim->indices->count / 3;
+    }
+
+    geom.lodInfo                    = {};
+    geom.lodInfo.inputTriangleCount = triangleCount;
+    geom.lodInfo.inputVertexCount   = verticesCount;
+
+    if(checkCache(geom.lodInfo, cacheFileView, meshIdx))
+    {
+      continue;
     }
 
     geom.normals.resize(verticesCount);

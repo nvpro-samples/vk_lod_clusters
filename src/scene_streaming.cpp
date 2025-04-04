@@ -129,11 +129,11 @@ static void fillGroupData(const Scene::GeometryView& sceneGeometry,
   group.clusterResidentID               = clusterResidentID;
   group.lodLevel                        = lodLevel;
   group.clusterCount                    = clusterRange.count;
-  group.traversalMetric.boundingSphereX = sceneGeometry.lodHierachy.groupCumulativeBoundingSpheres[groupIndex].x;
-  group.traversalMetric.boundingSphereY = sceneGeometry.lodHierachy.groupCumulativeBoundingSpheres[groupIndex].y;
-  group.traversalMetric.boundingSphereZ = sceneGeometry.lodHierachy.groupCumulativeBoundingSpheres[groupIndex].z;
-  group.traversalMetric.boundingSphereRadius = sceneGeometry.lodHierachy.groupCumulativeBoundingSpheres[groupIndex].radius;
-  group.traversalMetric.maxQuadricError = sceneGeometry.lodHierachy.groupCumulativeQuadricError[groupIndex];
+  group.traversalMetric.boundingSphereX = sceneGeometry.lodHierarchy.groupCumulativeBoundingSpheres[groupIndex].x;
+  group.traversalMetric.boundingSphereY = sceneGeometry.lodHierarchy.groupCumulativeBoundingSpheres[groupIndex].y;
+  group.traversalMetric.boundingSphereZ = sceneGeometry.lodHierarchy.groupCumulativeBoundingSpheres[groupIndex].z;
+  group.traversalMetric.boundingSphereRadius = sceneGeometry.lodHierarchy.groupCumulativeBoundingSpheres[groupIndex].radius;
+  group.traversalMetric.maxQuadricError = sceneGeometry.lodHierarchy.groupCumulativeQuadricError[groupIndex];
   group.streamingNewBuildOffset         = streamingNewBuildOffset;
   group.clusterBboxes                   = addresses.clusterBboxes.offset;
   group.clusterGeneratingGroups         = addresses.clusterGeneratingGroups.offset;
@@ -329,7 +329,7 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
     size_t numGroups = sceneGeometry.lodMesh.groupClusterRanges.size();
     res.createBufferTyped(persistentGeometry.groupAddresses, numGroups, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
-    size_t numNodes = sceneGeometry.lodHierachy.nodes.size();
+    size_t numNodes = sceneGeometry.lodHierarchy.nodes.size();
     res.createBufferTyped(persistentGeometry.nodes, numNodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     res.createBufferTyped(persistentGeometry.nodeBboxes, numNodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
@@ -349,7 +349,7 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
 
     // basic uploads
 
-    uploader.uploadBuffer(persistentGeometry.nodes, sceneGeometry.lodHierachy.nodes.data());
+    uploader.uploadBuffer(persistentGeometry.nodes, sceneGeometry.lodHierarchy.nodes.data());
     uploader.uploadBuffer(persistentGeometry.nodeBboxes, sceneGeometry.nodeBboxes.data());
 
     // seed lowest detail group

@@ -61,7 +61,7 @@ At the time of writing the library does not support respecting the cluster verte
 was selected in the ui. And if the upper limit of 256 is exceeded, the application will fail to load the scene for now.
 
 > :warning: The processing of larger scenes can take minutes, even on CPUs with many cores. You may want to use _"File > Save Cache"_ after
-> the processing is completed. It will try to store the result of the cluster lod building in a simple uncompressed binary file next to the original input file.
+> the processing is completed. It will try to store the result of the cluster and lod building in a simple uncompressed binary file next to the original input file.
 > You can check the log/console output if errors occurred. Through the `-autosavecache 1` command-line option you can enable auto-saving. 
 >
 > When a cached result file is found next to the input model, its results are taken, and the cluster and lod settings are immutable in the UI.

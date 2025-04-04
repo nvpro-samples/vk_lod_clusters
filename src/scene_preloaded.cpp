@@ -57,7 +57,7 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
     size_t numGroups = sceneGeometry.lodMesh.groupClusterRanges.size();
     res->createBufferTyped(preloadGeometry.groups, numGroups, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
-    size_t numNodes = sceneGeometry.lodHierachy.nodes.size();
+    size_t numNodes = sceneGeometry.lodHierarchy.nodes.size();
     res->createBufferTyped(preloadGeometry.nodes, numNodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     res->createBufferTyped(preloadGeometry.nodeBboxes, numNodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
@@ -97,7 +97,7 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
 
     // basic uploads
 
-    uploader.uploadBuffer(preloadGeometry.nodes, sceneGeometry.lodHierachy.nodes.data());
+    uploader.uploadBuffer(preloadGeometry.nodes, sceneGeometry.lodHierarchy.nodes.data());
     uploader.uploadBuffer(preloadGeometry.nodeBboxes, sceneGeometry.nodeBboxes.data());
 
     uploader.uploadBuffer(preloadGeometry.localTriangles, sceneGeometry.localTriangles.data());
@@ -140,11 +140,11 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
       group.groupID                              = uint32_t(g);
       group.lodLevel                             = lodLevel;
       group.clusterCount                         = clusterRange.count;
-      group.traversalMetric.boundingSphereX      = sceneGeometry.lodHierachy.groupCumulativeBoundingSpheres[g].x;
-      group.traversalMetric.boundingSphereY      = sceneGeometry.lodHierachy.groupCumulativeBoundingSpheres[g].y;
-      group.traversalMetric.boundingSphereZ      = sceneGeometry.lodHierachy.groupCumulativeBoundingSpheres[g].z;
-      group.traversalMetric.boundingSphereRadius = sceneGeometry.lodHierachy.groupCumulativeBoundingSpheres[g].radius;
-      group.traversalMetric.maxQuadricError      = sceneGeometry.lodHierachy.groupCumulativeQuadricError[g];
+      group.traversalMetric.boundingSphereX      = sceneGeometry.lodHierarchy.groupCumulativeBoundingSpheres[g].x;
+      group.traversalMetric.boundingSphereY      = sceneGeometry.lodHierarchy.groupCumulativeBoundingSpheres[g].y;
+      group.traversalMetric.boundingSphereZ      = sceneGeometry.lodHierarchy.groupCumulativeBoundingSpheres[g].z;
+      group.traversalMetric.boundingSphereRadius = sceneGeometry.lodHierarchy.groupCumulativeBoundingSpheres[g].radius;
+      group.traversalMetric.maxQuadricError      = sceneGeometry.lodHierarchy.groupCumulativeQuadricError[g];
 
       // setup pointers to where relevant data is stored
       group.clusterGeneratingGroups =
