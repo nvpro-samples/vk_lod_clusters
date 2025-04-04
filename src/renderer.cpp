@@ -128,9 +128,9 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
 
   for(size_t i = 0; i < m_renderInstances.size(); i++)
   {
-    shaderio::RenderInstance& renderInstance = m_renderInstances[i];
-    const uint32_t            geometryID     = scene.m_instances[i].geometryID;
-    const Scene::Geometry&    geometry       = scene.getActiveGeometry(geometryID);
+    shaderio::RenderInstance&  renderInstance = m_renderInstances[i];
+    const uint32_t             geometryID     = scene.m_instances[i].geometryID;
+    const Scene::GeometryView& geometry       = scene.getActiveGeometry(geometryID);
 
     renderInstance                = {};
     renderInstance.worldMatrix    = scene.m_instances[i].matrix;

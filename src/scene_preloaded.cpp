@@ -39,9 +39,9 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
 
   for(size_t geometryIndex = 0; geometryIndex < scene->getActiveGeometryCount(); geometryIndex++)
   {
-    shaderio::Geometry&       shaderGeometry  = m_shaderGeometries[geometryIndex];
-    ScenePreloaded::Geometry& preloadGeometry = m_geometries[geometryIndex];
-    const Scene::Geometry&    sceneGeometry   = scene->getActiveGeometry(geometryIndex);
+    shaderio::Geometry&        shaderGeometry  = m_shaderGeometries[geometryIndex];
+    ScenePreloaded::Geometry&  preloadGeometry = m_geometries[geometryIndex];
+    const Scene::GeometryView& sceneGeometry   = scene->getActiveGeometry(geometryIndex);
 
     // normally we would recommend using less buffers, and just aggregate this information in a single buffer per geometry.
 
@@ -273,9 +273,9 @@ bool ScenePreloaded::initClas()
 
   for(size_t g = 0; g < m_scene->getActiveGeometryCount(); g++)
   {
-    ScenePreloaded::Geometry& preloadGeometry = m_geometries[g];
-    shaderio::Geometry&       shaderGeometry  = m_shaderGeometries[g];
-    const Scene::Geometry&    sceneGeometry   = m_scene->getActiveGeometry(g);
+    ScenePreloaded::Geometry&  preloadGeometry = m_geometries[g];
+    shaderio::Geometry&        shaderGeometry  = m_shaderGeometries[g];
+    const Scene::GeometryView& sceneGeometry   = m_scene->getActiveGeometry(g);
 
     VkClusterAccelerationStructureBuildTriangleClusterInfoNV* buildInfos = clasBuildInfosHost.data();
     for(uint32_t c = 0; c < sceneGeometry.totalClustersCount; c++)

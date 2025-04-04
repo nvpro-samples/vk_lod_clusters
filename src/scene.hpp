@@ -39,6 +39,10 @@ struct SceneConfig
   bool     clusterStripify          = true;
   float    lodLevelDecimationFactor = 0.5f;
   bool     autoSaveCache            = false;
+  bool     autoLoadCache            = true;
+
+  // TODO avoid GeometryStorage completely when using mapping cache file
+  //bool usePersistentMapping     = false;
 };
 
 struct SceneGridConfig
@@ -63,7 +67,7 @@ public:
     uint32_t       geometryID = ~0U;
   };
 
-  struct Geometry
+  struct GeometryBase
   {
     uint32_t clusterMaxVerticesCount;
     uint32_t clusterMaxTrianglesCount;
@@ -82,28 +86,26 @@ public:
 
     shaderio::BBox bbox;
 
-    std::vector<glm::vec3> positions;
-    std::vector<glm::vec3> normals;
-
-    std::vector<glm::uvec3> globalTriangles;
-
-    // local to a cluster: indices of triangle vertices and global vertices
-    std::vector<uint8_t>  localTriangles;
-    std::vector<uint32_t> localVertices;
-
-    std::vector<nvcluster::Range> clusterVertexRanges;
-    std::vector<shaderio::BBox>   clusterBboxes;
-    std::vector<uint8_t>          groupLodLevels;
-
-    nvclusterlod::LodMesh       lodMesh;
-    nvclusterlod::LodHierarchy  lodHierachy;
-    std::vector<shaderio::BBox> nodeBboxes;
-
-    // for streaming
-    nvclusterlod::GroupGeneratingGroups groupGeneratingGroups;
-
-    // for serialization
     nvclusterlod::LodGeometryInfo lodInfo;
+  };
+
+  // not fully leveraged yet, but preparation to have a readonly view on
+  // data accessed from persistently memory mapped files
+  struct GeometryView : GeometryBase
+  {
+    std::span<glm::vec3> positions;
+    std::span<glm::vec3> normals;
+
+    std::span<uint8_t>  localTriangles;
+    std::span<uint32_t> localVertices;
+
+    std::span<nvcluster::Range> clusterVertexRanges;
+    std::span<shaderio::BBox>   clusterBboxes;
+    std::span<uint8_t>          groupLodLevels;
+
+    nvclusterlod::LodMeshView      lodMesh;
+    nvclusterlod::LodHierarchyView lodHierachy;
+    std::span<shaderio::BBox>      nodeBboxes;
   };
 
   struct Camera
@@ -130,8 +132,8 @@ public:
 
   // we virtually instance geometries to avoid cpu memory consumption
   // happens when the grid config is larger
-  const Geometry& getActiveGeometry(size_t idx) const { return m_geometries[idx % m_originalGeometryCount]; }
-  size_t          getActiveGeometryCount() const { return m_activeGeometryCount; }
+  const GeometryView& getActiveGeometry(size_t idx) const { return m_geometryViews[idx % m_originalGeometryCount]; }
+  size_t              getActiveGeometryCount() const { return m_activeGeometryCount; }
 
   uint32_t              m_maxPerGeometryClusters    = 0;
   uint32_t              m_maxPerGeometryTriangles   = 0;
@@ -159,22 +161,44 @@ public:
   bool m_prebuildLodClusters = false;
 
 private:
+  // GeometryStorage allows building and modifying the data in RAM
+  struct GeometryStorage : GeometryBase
+  {
+    std::vector<glm::vec3> positions;
+    std::vector<glm::vec3> normals;
+
+    std::vector<glm::uvec3> globalTriangles;
+
+    // local to a cluster: indices of triangle vertices and global vertices
+    std::vector<uint8_t>  localTriangles;
+    std::vector<uint32_t> localVertices;
+
+    std::vector<nvcluster::Range> clusterVertexRanges;
+    std::vector<shaderio::BBox>   clusterBboxes;
+    std::vector<uint8_t>          groupLodLevels;
+
+    nvclusterlod::LodMesh       lodMesh;
+    nvclusterlod::LodHierarchy  lodHierachy;
+    std::vector<shaderio::BBox> nodeBboxes;
+  };
+
   size_t m_originalInstanceCount = 0;
   size_t m_originalGeometryCount = 0;
 
   size_t m_activeGeometryCount = 0;
 
-  std::vector<Geometry> m_geometries;
+  std::vector<GeometryStorage> m_geometryStorages;
+  std::vector<GeometryView>    m_geometryViews;
 
   std::string m_filename;
 
   bool loadGLTF(const char* filename);
 
-  void buildGeometryClusters(nvclusterlod::Context lodcontext, Geometry& geometry, const nvclusterlod::LodGeometryView& view, bool doParallel);
-  void computeLodBboxes_recursive(Geometry& geom, size_t nodeIdx);
-  void buildGeometryBboxes(Geometry& geometry, bool doParallel);
-  void buildGeometryClusterStrips(Geometry& geom, uint64_t& totalTriangles, uint64_t& totalStrips, bool doParallel);
-  void buildGeometryClusterVertices(Geometry& geometry, bool doParallel);
+  void buildGeometryClusters(nvclusterlod::Context lodcontext, GeometryStorage& geometry, const nvclusterlod::LodGeometryView& view, bool doParallel);
+  void computeLodBboxes_recursive(GeometryStorage& geom, size_t nodeIdx);
+  void buildGeometryBboxes(GeometryStorage& geometry, bool doParallel);
+  void buildGeometryClusterStrips(GeometryStorage& geom, uint64_t& totalTriangles, uint64_t& totalStrips, bool doParallel);
+  void buildGeometryClusterVertices(GeometryStorage& geometry, bool doParallel);
   void buildClusters();
   void computeHistograms();
   void computeInstanceBBoxes();

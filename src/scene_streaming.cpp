@@ -60,7 +60,7 @@ struct GroupDataOffsets
 };
 
 // returns number of group clusters
-static uint32_t getGroupDataOffsets(const Scene::Geometry& geometry, GeometryGroup geometryGroup, GroupDataOffsets& dataOffsets)
+static uint32_t getGroupDataOffsets(const Scene::GeometryView& geometry, GeometryGroup geometryGroup, GroupDataOffsets& dataOffsets)
 {
   uint32_t numTriangles = 0;
   uint32_t numVertices  = 0;
@@ -92,15 +92,15 @@ static uint32_t getGroupDataOffsets(const Scene::Geometry& geometry, GeometryGro
   return numClusters;
 }
 
-static void fillGroupData(const Scene::Geometry&  sceneGeometry,
-                          GeometryGroup           geometryGroup,
-                          const GroupDataOffsets& dataOffsets,
-                          uint32_t                groupResidentID,
-                          uint32_t                clusterResidentID,
-                          uint32_t                streamingNewBuildOffset,
-                          uint64_t                dstVA,
-                          void*                   dst,
-                          size_t                  dstSize)
+static void fillGroupData(const Scene::GeometryView& sceneGeometry,
+                          GeometryGroup              geometryGroup,
+                          const GroupDataOffsets&    dataOffsets,
+                          uint32_t                   groupResidentID,
+                          uint32_t                   clusterResidentID,
+                          uint32_t                   streamingNewBuildOffset,
+                          uint64_t                   dstVA,
+                          void*                      dst,
+                          size_t                     dstSize)
 {
   assert(dstSize >= dataOffsets.finalSize);
 
@@ -292,7 +292,7 @@ void SceneStreaming::resetGeometryGroupAddresses(Resources::BatchedUploader& upl
   for(size_t geometryIndex = 0; geometryIndex < m_scene->getActiveGeometryCount(); geometryIndex++)
   {
     SceneStreaming::PersistentGeometry& persistentGeometry = m_persistentGeometries[geometryIndex];
-    const Scene::Geometry&              sceneGeometry      = m_scene->getActiveGeometry(geometryIndex);
+    const Scene::GeometryView&          sceneGeometry      = m_scene->getActiveGeometry(geometryIndex);
 
     nvcluster::Range lastGroupRange = sceneGeometry.lodMesh.lodLevelGroupRanges.back();
 
@@ -324,7 +324,7 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
   {
     shaderio::Geometry&                 shaderGeometry     = m_shaderGeometries[geometryIndex];
     SceneStreaming::PersistentGeometry& persistentGeometry = m_persistentGeometries[geometryIndex];
-    const Scene::Geometry&              sceneGeometry      = m_scene->getActiveGeometry(geometryIndex);
+    const Scene::GeometryView&          sceneGeometry      = m_scene->getActiveGeometry(geometryIndex);
 
     size_t numGroups = sceneGeometry.lodMesh.groupClusterRanges.size();
     res.createBufferTyped(persistentGeometry.groupAddresses, numGroups, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -731,7 +731,7 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer cmd, QueueState&
       continue;
     }
 
-    const Scene::Geometry& sceneGeometry = m_scene->getActiveGeometry(geometryGroup.geometryID);
+    const Scene::GeometryView& sceneGeometry = m_scene->getActiveGeometry(geometryGroup.geometryID);
 
     // figure out size of this geometry group.
     // This includes all relevant cluster data, including vertices, triangle indices...
@@ -1672,7 +1672,7 @@ bool SceneStreaming::initClas()
     for(uint32_t g = 0; g < loGroupsCount; g++)
     {
       const StreamingResident::Group& residentGroup = groups[g];
-      const Scene::Geometry& sceneGeometry = m_scene->getActiveGeometry(residentGroup.geometryGroup.geometryID);
+      const Scene::GeometryView& sceneGeometry = m_scene->getActiveGeometry(residentGroup.geometryGroup.geometryID);
 
       GroupDataOffsets dataOffsets;
       getGroupDataOffsets(sceneGeometry, residentGroup.geometryGroup, dataOffsets);

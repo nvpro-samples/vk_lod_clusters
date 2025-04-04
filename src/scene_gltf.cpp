@@ -243,12 +243,12 @@ bool Scene::loadGLTF(const char* filename)
     return false;
   }
 
-  m_geometries.resize(data->meshes_count);
+  m_geometryStorages.resize(data->meshes_count);
 
   for(size_t meshIdx = 0; meshIdx < data->meshes_count; meshIdx++)
   {
     const cgltf_mesh gltfMesh = data->meshes[meshIdx];
-    Geometry&        geom     = m_geometries[meshIdx];
+    GeometryStorage& geom     = m_geometryStorages[meshIdx];
     geom.bbox                 = {{FLT_MAX, FLT_MAX, FLT_MAX}, {-FLT_MAX, -FLT_MAX, -FLT_MAX}, 0, 0};
 
 
