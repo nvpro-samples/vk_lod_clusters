@@ -467,7 +467,7 @@ void Scene::buildClusters()
     GeometryStorage& storage = m_geometryStorages[i];
     GeometryView&    view    = m_geometryViews[i];
 
-    (GeometryBase) view = storage;
+    (GeometryBase&) view = storage;
 
     view.positions           = storage.positions;
     view.normals             = storage.normals;
