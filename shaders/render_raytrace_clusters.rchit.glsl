@@ -61,6 +61,7 @@ spirv_decorate(extensions = ["SPV_NV_cluster_acceleration_structure"], capabilit
 
 
 #include "shaderio.h"
+#include "octant_encoding.h"
 
 /////////////////////////////////
 
@@ -134,8 +135,7 @@ void main()
   Cluster cluster = geometry.preloadedClusters.d[clusterID];
 #endif
 
-  vec3s_in oPositions      = vec3s_in(cluster.positions);
-  vec3s_in oNormals        = vec3s_in(cluster.normals);
+  vec4s_in  oVertices      = vec4s_in(cluster.vertices);
   uint8s_in localTriangles = uint8s_in(cluster.localTriangles);
   
   uvec3 triangleIndices    = uvec3(localTriangles.d[triangleID * 3 + 0],
@@ -162,9 +162,9 @@ void main()
 #if ALLOW_VERTEX_NORMALS
   else
   {
-    oNormal = baryWeight.x * oNormals.d[triangleIndices.x] + 
-              baryWeight.y * oNormals.d[triangleIndices.y] + 
-              baryWeight.z * oNormals.d[triangleIndices.z];
+    oNormal = baryWeight.x * oct32_to_vec(floatBitsToUint(oVertices.d[triangleIndices.x].w)) + 
+              baryWeight.y * oct32_to_vec(floatBitsToUint(oVertices.d[triangleIndices.y].w)) + 
+              baryWeight.z * oct32_to_vec(floatBitsToUint(oVertices.d[triangleIndices.z].w));
   }
 #endif
 

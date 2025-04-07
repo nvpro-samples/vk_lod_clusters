@@ -29,6 +29,8 @@
 
 #include "scene.hpp"
 
+#include <shaders/octant_encoding.h>
+
 namespace {
 struct FileMappingList
 {
@@ -187,7 +189,7 @@ void addInstancesFromNode(std::vector<lodclusters::Scene::Instance>& instances,
 
 
 namespace lodclusters {
-bool Scene::loadGLTF(const char* filename, const CacheFileView& cacheFileView)
+bool Scene::loadGLTF(const char* filename)
 {
   // Parse the glTF file using cgltf
   cgltf_options options = {};
@@ -286,17 +288,17 @@ bool Scene::loadGLTF(const char* filename, const CacheFileView& cacheFileView)
       triangleCount += (uint32_t)gltfPrim->indices->count / 3;
     }
 
-    geom.lodInfo                    = {};
+    // use memset 0 to avoid issues with padding within struct
+    memset(&geom.lodInfo, 0, sizeof(geom.lodInfo));
     geom.lodInfo.inputTriangleCount = triangleCount;
     geom.lodInfo.inputVertexCount   = verticesCount;
 
-    if(checkCache(geom.lodInfo, cacheFileView, meshIdx))
+    if(checkCache(geom.lodInfo, meshIdx))
     {
       continue;
     }
 
-    geom.normals.resize(verticesCount);
-    geom.positions.resize(verticesCount);
+    geom.vertices.resize(verticesCount);
     geom.globalTriangles.resize(triangleCount);
 
     // fill pass
@@ -329,7 +331,7 @@ bool Scene::loadGLTF(const char* filename, const CacheFileView& cacheFileView)
         // TODO: Can we assume alignment in order to make these a single read_float call?
         if(strcmp(gltfAttrib.name, "POSITION") == 0)
         {
-          glm::vec3* writePositions = geom.positions.data() + offsetVertices;
+          glm::vec4* writeVertices = geom.vertices.data() + offsetVertices;
 
           if(accessor->component_type == cgltf_component_type_r_32f && accessor->type == cgltf_type_vec3
              && accessor->stride == sizeof(glm::vec3))
@@ -337,10 +339,12 @@ bool Scene::loadGLTF(const char* filename, const CacheFileView& cacheFileView)
             const glm::vec3* readPositions = (const glm::vec3*)(cgltf_buffer_view_data(accessor->buffer_view) + accessor->offset);
             for(size_t i = 0; i < accessor->count; i++)
             {
-              glm::vec3 tmp     = readPositions[i];
-              writePositions[i] = tmp;
-              geom.bbox.lo      = glm::min(geom.bbox.lo, tmp);
-              geom.bbox.hi      = glm::max(geom.bbox.hi, tmp);
+              glm::vec3 tmp      = readPositions[i];
+              writeVertices[i].x = tmp.x;
+              writeVertices[i].y = tmp.y;
+              writeVertices[i].z = tmp.z;
+              geom.bbox.lo       = glm::min(geom.bbox.lo, tmp);
+              geom.bbox.hi       = glm::max(geom.bbox.hi, tmp);
             }
           }
           else
@@ -349,16 +353,18 @@ bool Scene::loadGLTF(const char* filename, const CacheFileView& cacheFileView)
             {
               glm::vec3 tmp;
               cgltf_accessor_read_float(accessor, i, &tmp.x, 3);
-              writePositions[i] = tmp;
-              geom.bbox.lo      = glm::min(geom.bbox.lo, tmp);
-              geom.bbox.hi      = glm::max(geom.bbox.hi, tmp);
+              writeVertices[i].x = tmp.x;
+              writeVertices[i].y = tmp.y;
+              writeVertices[i].z = tmp.z;
+              geom.bbox.lo       = glm::min(geom.bbox.lo, tmp);
+              geom.bbox.hi       = glm::max(geom.bbox.hi, tmp);
             }
           }
           numVertices = (uint32_t)accessor->count;
         }
         else if(strcmp(gltfAttrib.name, "NORMAL") == 0)
         {
-          glm::vec3* writeNormals = geom.normals.data() + offsetVertices;
+          glm::vec4* writeVertices = geom.vertices.data() + offsetVertices;
 
           if(accessor->component_type == cgltf_component_type_r_32f && accessor->type == cgltf_type_vec3
              && accessor->stride == sizeof(glm::vec3))
@@ -366,8 +372,8 @@ bool Scene::loadGLTF(const char* filename, const CacheFileView& cacheFileView)
             const glm::vec3* readPositions = (const glm::vec3*)(cgltf_buffer_view_data(accessor->buffer_view) + accessor->offset);
             for(size_t i = 0; i < accessor->count; i++)
             {
-              glm::vec3 tmp   = readPositions[i];
-              writeNormals[i] = tmp;
+              glm::vec3 tmp                   = readPositions[i];
+              *(uint32_t*)&writeVertices[i].w = shaderio::vec_to_oct32(tmp);
             }
           }
           else
@@ -376,7 +382,7 @@ bool Scene::loadGLTF(const char* filename, const CacheFileView& cacheFileView)
             {
               glm::vec3 tmp;
               cgltf_accessor_read_float(accessor, i, &tmp.x, 3);
-              writeNormals[i] = tmp;
+              *(uint32_t*)&writeVertices[i].w = shaderio::vec_to_oct32(tmp);
             }
           }
           numVertices = (uint32_t)accessor->count;

@@ -42,8 +42,7 @@ struct GroupDataOffsets
   OffsetOrPointer<shaderio::Cluster>  clusters;
   OffsetOrPointer<shaderio::uint32_t> clusterGeneratingGroups;
   OffsetOrPointer<shaderio::BBox>     clusterBboxes;
-  OffsetOrPointer<glm::vec3>          positions;
-  OffsetOrPointer<glm::vec3>          normals;
+  OffsetOrPointer<glm::vec4>          vertices;
   OffsetOrPointer<uint8_t>            localTriangles;
 
   // special values, must stay 64 bit
@@ -81,8 +80,7 @@ static uint32_t getGroupDataOffsets(const Scene::GeometryView& geometry, Geometr
   dataOffsets.clusters.offset                = ranges.append(sizeof(shaderio::Cluster) * numClusters, 16);
   dataOffsets.clusterGeneratingGroups.offset = ranges.append(sizeof(uint32_t) * numClusters, 8);
   dataOffsets.clusterBboxes.offset           = ranges.append(sizeof(shaderio::BBox) * numClusters, 16);
-  dataOffsets.positions.offset               = ranges.append(sizeof(glm::vec3) * numVertices, 4);
-  dataOffsets.normals.offset                 = ranges.append(sizeof(glm::vec3) * numVertices, 4);
+  dataOffsets.vertices.offset                = ranges.append(sizeof(glm::vec4) * numVertices, 16);
   dataOffsets.localTriangles.offset          = ranges.append(sizeof(uint8_t) * numTriangles * 3, 4);
   dataOffsets.finalSize                      = ranges.getSize(16);
 
@@ -157,14 +155,11 @@ static void fillGroupData(const Scene::GeometryView& sceneGeometry,
     cluster.groupChildIndex       = uint8_t(c);
     cluster.lodLevel              = lodLevel;
 
-    cluster.positions      = addresses.positions.offset + sizeof(glm::vec3) * offsetVertices;
-    cluster.normals        = addresses.normals.offset + sizeof(glm::vec3) * offsetVertices;
+    cluster.vertices       = addresses.vertices.offset + sizeof(glm::vec4) * offsetVertices;
     cluster.localTriangles = addresses.localTriangles.offset + sizeof(uint8_t) * offsetTriangles * 3;
 
-    memcpy(pointers.positions.pointer + (offsetVertices), &sceneGeometry.positions[vertexRange.offset],
-           vertexRange.count * sizeof(glm::vec3));
-    memcpy(pointers.normals.pointer + (offsetVertices), &sceneGeometry.normals[vertexRange.offset],
-           vertexRange.count * sizeof(glm::vec3));
+    memcpy(pointers.vertices.pointer + (offsetVertices), &sceneGeometry.vertices[vertexRange.offset],
+           vertexRange.count * sizeof(glm::vec4));
     memcpy(pointers.localTriangles.pointer + (offsetTriangles * 3),
            &sceneGeometry.localTriangles[triangleRange.offset * 3], triangleRange.count * 3);
 
@@ -1696,13 +1691,12 @@ bool SceneStreaming::initClas()
         buildInfo.indexBufferStride        = 1;
         buildInfo.indexBuffer              = dataOffsets.localTriangles.offset + residentGroup.deviceAddress;
         buildInfo.vertexCount              = vertexRange.count;
-        buildInfo.vertexBufferStride       = uint16_t(sizeof(glm::vec3));
-        buildInfo.vertexBuffer             = dataOffsets.positions.offset + residentGroup.deviceAddress;
+        buildInfo.vertexBufferStride       = uint16_t(sizeof(glm::vec4));
+        buildInfo.vertexBuffer             = dataOffsets.vertices.offset + residentGroup.deviceAddress;
         buildInfo.positionTruncateBitCount = m_config.clasPositionTruncateBits;
 
         dataOffsets.localTriangles.offset += sizeof(uint8_t) * triangleRange.count * 3;
-        dataOffsets.normals.offset += sizeof(glm::vec3) * vertexRange.count;
-        dataOffsets.positions.offset += sizeof(glm::vec3) * vertexRange.count;
+        dataOffsets.vertices.offset += sizeof(glm::vec4) * vertexRange.count;
 
         clusterOffset++;
       }

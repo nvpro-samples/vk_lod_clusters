@@ -63,8 +63,7 @@ private:
     RBufferTyped<shaderio::Group> groups;
 
     RBufferTyped<uint8_t>   localTriangles;
-    RBufferTyped<glm::vec3> positions;
-    RBufferTyped<glm::vec3> normals;
+    RBufferTyped<glm::vec4> vertices;
 
     RBufferTyped<shaderio::Cluster> clusters;
     RBufferTyped<uint32_t>          clusterGeneratingGroups;

@@ -41,6 +41,7 @@
 #extension GL_EXT_control_flow_attributes : require
 
 #include "shaderio.h"
+#include "octant_encoding.h"
 
 layout(push_constant) uniform pushData
 {
@@ -144,8 +145,7 @@ void main()
     atomicAdd(readback.numRenderedTriangles, uint(triMax + 1));
   }
 
-  vec3s_in oPositions      = vec3s_in(cluster.positions);
-  vec3s_in oNormals        = vec3s_in(cluster.normals);
+  vec4s_in  oVertices      = vec4s_in(cluster.vertices);
   uint8s_in localTriangles = uint8s_in(cluster.localTriangles);
 
   mat4 worldMatrix   = instance.worldMatrix;
@@ -156,11 +156,13 @@ void main()
   {
     uint vert        = gl_LocalInvocationID.x + i * MESHSHADER_WORKGROUP_SIZE;
     uint vertLoad    = min(vert, vertMax);
+    
+    vec4 oVertex = oVertices.d[vertLoad];
 
-    vec3 oPos = oPositions.d[vertLoad];    
+    vec3 oPos = oVertex.xyz;    
     vec4 wPos = worldMatrix * vec4(oPos, 1.0f);
   #if ALLOW_VERTEX_NORMALS
-    vec3 oNormal = oNormals.d[vertLoad];
+    vec3 oNormal = oct32_to_vec(floatBitsToUint(oVertex.w));
   #endif
 
     if(vert <= vertMax)

@@ -60,9 +60,10 @@ struct Cluster
 
   uint32_t groupID;
 
-  BUFFER_REF(vec3s_in) positions;
-  BUFFER_REF(vec3s_in) normals;
+  BUFFER_REF(vec4s_in) vertices;
   BUFFER_REF(uint8s_in) localTriangles;
+
+  uint64_t _pad;
 };
 BUFFER_REF_DECLARE(Cluster_in, Cluster, , 16);
 BUFFER_REF_DECLARE_ARRAY(Clusters_inout, Cluster, , 16);

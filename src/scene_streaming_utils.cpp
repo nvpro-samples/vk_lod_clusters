@@ -492,6 +492,8 @@ void StreamingAllocator::init(Resources&                    res,
                               uint32_t                      sectorSizeShift,
                               shaderio::StreamingAllocator& shaderData)
 {
+  granularityByteSize = std::max(1u, granularityByteSize);
+
   // at least 2 warps
   assert(sectorSizeShift > 5 && granularityByteSize <= 0xFFFF);
 

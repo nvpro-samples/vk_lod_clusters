@@ -167,11 +167,11 @@ void main()
         buildInfo.baseGeometryIndexAndFlags = ClasGeometryFlag_OPAQUE_BIT_NV;
         
         buildInfo.indexBufferStride                 = uint16_t(1);
-        buildInfo.vertexBufferStride                = uint16_t(4 * 3);
+        buildInfo.vertexBufferStride                = uint16_t(4 * 4);
         buildInfo.geometryIndexAndFlagsBufferStride = uint16_t(0);
         buildInfo.opacityMicromapIndexBufferStride  = uint16_t(0);
     
-        buildInfo.vertexBuffer = uint64_t(cluster.positions);
+        buildInfo.vertexBuffer = uint64_t(cluster.vertices);
         buildInfo.indexBuffer  = uint64_t(cluster.localTriangles);
         
         buildInfo.geometryIndexAndFlagsBuffer = 0;

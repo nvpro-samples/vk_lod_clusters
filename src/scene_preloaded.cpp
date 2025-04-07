@@ -46,8 +46,7 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
     // normally we would recommend using less buffers, and just aggregate this information in a single buffer per geometry.
 
     res->createBufferTyped(preloadGeometry.localTriangles, sceneGeometry.localTriangles.size(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    res->createBufferTyped(preloadGeometry.positions, sceneGeometry.positions.size(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    res->createBufferTyped(preloadGeometry.normals, sceneGeometry.normals.size(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    res->createBufferTyped(preloadGeometry.vertices, sceneGeometry.vertices.size(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
     size_t numClusters = sceneGeometry.lodMesh.clusterTriangleRanges.size();
     res->createBufferTyped(preloadGeometry.clusters, numClusters, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -62,8 +61,7 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
     res->createBufferTyped(preloadGeometry.nodeBboxes, numNodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
     m_geometrySize += preloadGeometry.localTriangles.info.range;
-    m_geometrySize += preloadGeometry.positions.info.range;
-    m_geometrySize += preloadGeometry.normals.info.range;
+    m_geometrySize += preloadGeometry.vertices.info.range;
     m_geometrySize += preloadGeometry.clusters.info.range;
     m_geometrySize += preloadGeometry.clusterBboxes.info.range;
     m_geometrySize += preloadGeometry.clusterGeneratingGroups.info.range;
@@ -72,7 +70,7 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
     m_geometrySize += preloadGeometry.nodeBboxes.info.range;
 
     clusterGeometrySize += preloadGeometry.localTriangles.info.range;
-    clusterGeometrySize += preloadGeometry.positions.info.range;
+    clusterGeometrySize += preloadGeometry.vertices.info.range;
     clusterGeometrySize += preloadGeometry.clusters.info.range;
 
     // simple estimate extra clas size as raw copy
@@ -101,8 +99,7 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
     uploader.uploadBuffer(preloadGeometry.nodeBboxes, sceneGeometry.nodeBboxes.data());
 
     uploader.uploadBuffer(preloadGeometry.localTriangles, sceneGeometry.localTriangles.data());
-    uploader.uploadBuffer(preloadGeometry.positions, sceneGeometry.positions.data());
-    uploader.uploadBuffer(preloadGeometry.normals, sceneGeometry.normals.data());
+    uploader.uploadBuffer(preloadGeometry.vertices, sceneGeometry.vertices.data());
 
     uploader.uploadBuffer(preloadGeometry.clusterBboxes, sceneGeometry.clusterBboxes.data());
     uploader.uploadBuffer(preloadGeometry.clusterGeneratingGroups, sceneGeometry.lodMesh.clusterGeneratingGroups.data());
@@ -122,8 +119,7 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
       cluster.vertexCountMinusOne   = uint8_t(vertexRange.count - 1);
 
       // setup pointers to where relevant data is stored
-      cluster.normals   = preloadGeometry.normals.addressRange(vertexRange.offset, vertexRange.count);
-      cluster.positions = preloadGeometry.positions.addressRange(vertexRange.offset, vertexRange.count);
+      cluster.vertices = preloadGeometry.vertices.addressRange(vertexRange.offset, vertexRange.count);
       cluster.localTriangles = preloadGeometry.localTriangles.addressRange(triangleRange.offset * 3, triangleRange.count * 3);
     }
 
@@ -201,8 +197,7 @@ void ScenePreloaded::deinit()
   for(auto& it : m_geometries)
   {
     m_resources->destroy(it.localTriangles);
-    m_resources->destroy(it.positions);
-    m_resources->destroy(it.normals);
+    m_resources->destroy(it.vertices);
     m_resources->destroy(it.clusters);
     m_resources->destroy(it.clusterGeneratingGroups);
     m_resources->destroy(it.clusterBboxes);
@@ -292,9 +287,9 @@ bool ScenePreloaded::initClas()
       buildInfo.indexType         = VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_8BIT_NV;
       buildInfo.indexBufferStride = 1;
       buildInfo.indexBuffer = preloadGeometry.localTriangles.addressRange(triangleRange.offset * 3, triangleRange.count * 3);
-      buildInfo.vertexCount        = vertexRange.count;
-      buildInfo.vertexBufferStride = uint16_t(sizeof(glm::vec3));
-      buildInfo.vertexBuffer       = preloadGeometry.positions.addressRange(vertexRange.offset, vertexRange.count);
+      buildInfo.vertexCount              = vertexRange.count;
+      buildInfo.vertexBufferStride       = uint16_t(sizeof(glm::vec4));
+      buildInfo.vertexBuffer             = preloadGeometry.vertices.addressRange(vertexRange.offset, vertexRange.count);
       buildInfo.positionTruncateBitCount = m_config.clasPositionTruncateBits;
     }
 

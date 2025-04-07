@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2023, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2018-2025, NVIDIA CORPORATION.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * SPDX-FileCopyrightText: Copyright (c) 2018-2023 NVIDIA CORPORATION
+ * SPDX-FileCopyrightText: Copyright (c) 2018-2025 NVIDIA CORPORATION
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -361,7 +361,7 @@ void HbaoPass::updateUbo(VkCommandBuffer cmd, const Frame& frame, const Settings
 
   for(int i = 0; i < RANDOM_ELEMENTS; i++)
   {
-    hbaoData.float2Offsets[i] = glm::vec4(float(i % 4) + 0.5f, float(i / 4) + 0.5f, 0.0f, 0.0f);
+    hbaoData.float2Offsets[i] = glm::vec4(float(int(i % 4)) + 0.5f, float(int(i / 4)) + 0.5f, 0.0f, 0.0f);
     hbaoData.jitters[i]       = m_hbaoRandom[i];
   }
 

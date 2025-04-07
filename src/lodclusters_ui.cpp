@@ -376,7 +376,7 @@ void LodClusters::processUI(double time, nvh::Profiler& profiler, const CallBack
   if(ImGui::CollapsingHeader("Clusters & LoDs generation", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
   {
     PE::begin("##Clusters");
-    if(m_scene && m_scene->m_loadedCache)
+    if(m_scene && m_scene->m_loadedFromCache)
     {
       PE::Text("Cluster size from cache", "%dT_%dV", m_scene->m_config.clusterTriangles, m_scene->m_config.clusterVertices);
       PE::Text("LoD group size", "%d", m_scene->m_config.clusterGroupSize);

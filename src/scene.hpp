@@ -23,6 +23,7 @@
 #include <string>
 
 #include <glm/glm.hpp>
+#include <nvh/filemapping.hpp>
 #include <nvclusterlod/nvclusterlod_hierarchy_storage.hpp>
 #include <nvclusterlod/nvclusterlod_mesh_storage.hpp>
 #include <nvclusterlod/nvclusterlod_cache.hpp>
@@ -40,9 +41,7 @@ struct SceneConfig
   float    lodLevelDecimationFactor = 0.5f;
   bool     autoSaveCache            = false;
   bool     autoLoadCache            = true;
-
-  // TODO avoid GeometryStorage completely when using mapping cache file
-  //bool usePersistentMapping     = false;
+  bool     memoryMappedCache        = true;
 };
 
 struct SceneGridConfig
@@ -93,8 +92,7 @@ public:
   // data accessed from persistently memory mapped files
   struct GeometryView : GeometryBase
   {
-    std::span<const glm::vec3> positions;
-    std::span<const glm::vec3> normals;
+    std::span<const glm::vec4> vertices;
 
     std::span<const uint8_t> localTriangles;
 
@@ -112,8 +110,7 @@ public:
       uint64_t cachedSize = 0;
 
       cachedSize += (sizeof(GeometryBase) + nvclusterlod::detail::ALIGN_MASK) & ~nvclusterlod::detail::ALIGN_MASK;
-      cachedSize += nvclusterlod::detail::getCachedSize(positions);
-      cachedSize += nvclusterlod::detail::getCachedSize(normals);
+      cachedSize += nvclusterlod::detail::getCachedSize(vertices);
       cachedSize += nvclusterlod::detail::getCachedSize(localTriangles);
       cachedSize += nvclusterlod::detail::getCachedSize(clusterVertexRanges);
       cachedSize += nvclusterlod::detail::getCachedSize(clusterBboxes);
@@ -148,7 +145,7 @@ public:
   std::vector<Instance> m_instances;
   std::vector<Camera>   m_cameras;
 
-  // we virtually instance geometries to avoid cpu memory consumption
+  // we virtually instance geometries to avoid higher cpu memory consumption
   // happens when the grid config is larger
   const GeometryView& getActiveGeometry(size_t idx) const { return m_geometryViews[idx % m_originalGeometryCount]; }
   size_t              getActiveGeometryCount() const { return m_activeGeometryCount; }
@@ -176,17 +173,16 @@ public:
   uint32_t m_groupClusterHistogramMax;
   uint32_t m_nodeChildrenHistogramMax;
 
-  bool m_loadedCache = false;
+  bool m_loadedFromCache = false;
 
 private:
   static bool loadCached(GeometryView& view, uint64_t dataSize, const void* data);
   static bool storeCached(const GeometryView& view, uint64_t dataSize, void* data);
 
-  // GeometryStorage allows building and modifying the data in RAM
+  // GeometryStorage allows building and modifying the data in system RAM
   struct GeometryStorage : GeometryBase
   {
-    std::vector<glm::vec3> positions;
-    std::vector<glm::vec3> normals;
+    std::vector<glm::vec4> vertices;
 
     // temporary, removed after processing
     std::vector<glm::uvec3> globalTriangles;
@@ -214,18 +210,33 @@ private:
       header = {};
       if(sizeof(CacheHeader) - sizeof(Header))
       {
-        memset((&header) + 1, 0, sizeof(CacheHeader) - sizeof(Header));
+        memset(&data[sizeof(Header)], 0, sizeof(CacheHeader) - sizeof(Header));
       }
+    }
+
+    bool isValid() const
+    {
+      Header reference = {};
+
+      return header.magic == reference.magic && header.geoVersion == reference.geoVersion
+             && header.structSize == reference.structSize && header.lodVersion == reference.lodVersion
+             && header.clusterVersion == reference.clusterVersion && header.alignment == reference.alignment;
     }
 
   private:
     struct Header
     {
       uint64_t magic          = 0x006f65676e73766eULL;  // nvsngeo
-      uint32_t geoVersion     = 1;
+      uint32_t geoVersion     = 3;
       uint32_t structSize     = uint32_t(sizeof(GeometryView));
       uint32_t lodVersion     = NVCLUSTERLOD_VERSION;
       uint32_t clusterVersion = NVCLUSTER_VERSION;
+      uint64_t alignment      = nvclusterlod::detail::ALIGNMENT;
+
+      // geoVersion history:
+      // 1 initial
+      // 2 bugfix wrong storage of `lodInfo`
+      // 3 octant vertices
     };
 
     union
@@ -294,7 +305,17 @@ private:
 
   std::string m_filename;
 
-  bool loadGLTF(const char* filename, const CacheFileView& cacheFileView);
+  // When loading a scene from a cache file, we can actually
+  // directly load all data from the memory mapped file, rather than
+  // copying it into system memory.
+  // This view and mapping are kept alive after init when
+  // `SceneConfig::memoryMappedCache` is true, otherwise they are closed
+  // within `Scene::init`.
+
+  nvh::FileReadMapping m_cacheFileMapping;
+  CacheFileView        m_cacheFileView;
+
+  bool loadGLTF(const char* filename);
 
   nvcluster::Config getClusterConfig() const
   {
@@ -311,16 +332,16 @@ private:
     return groupConfig;
   }
 
-  bool checkCache(const nvclusterlod::LodGeometryInfo& info, const CacheFileView& cacheFileView, size_t geometryIndex);
+  bool checkCache(const nvclusterlod::LodGeometryInfo& info, size_t geometryIndex);
 
-  void loadCachedGeometry(GeometryStorage& geom, const CacheFileView& cacheFileView, size_t geometryIndex);
+  void loadCachedGeometry(GeometryStorage& geom, size_t geometryIndex);
 
   void buildGeometryClusters(nvclusterlod::Context lodcontext, GeometryStorage& geometry, uint32_t numThreads);
   void computeLodBboxes_recursive(GeometryStorage& geom, size_t nodeIdx);
   void buildGeometryBboxes(GeometryStorage& geometry, uint32_t numThreads);
   void buildGeometryClusterStrips(GeometryStorage& geom, uint64_t& totalTriangles, uint64_t& totalStrips, uint32_t numThreads);
   void buildGeometryClusterVertices(GeometryStorage& geometry, uint32_t numThreads);
-  void buildClusters(const CacheFileView& cacheFileView);
+  void buildClusters();
 
   void computeHistograms();
   void computeInstanceBBoxes();

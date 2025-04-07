@@ -42,8 +42,7 @@ bool Scene::storeCached(const GeometryView& view, uint64_t dataSize, void* data)
 
   if(isValid)
   {
-    nvclusterlod::detail::storeAndAdvance(isValid, dataAddress, dataEnd, view.positions);
-    nvclusterlod::detail::storeAndAdvance(isValid, dataAddress, dataEnd, view.normals);
+    nvclusterlod::detail::storeAndAdvance(isValid, dataAddress, dataEnd, view.vertices);
     nvclusterlod::detail::storeAndAdvance(isValid, dataAddress, dataEnd, view.localTriangles);
     nvclusterlod::detail::storeAndAdvance(isValid, dataAddress, dataEnd, view.clusterVertexRanges);
     nvclusterlod::detail::storeAndAdvance(isValid, dataAddress, dataEnd, view.clusterBboxes);
@@ -80,8 +79,7 @@ bool Scene::loadCached(GeometryView& view, uint64_t dataSize, const void* data)
 
   if(isValid)
   {
-    nvclusterlod::detail::loadAndAdvance(isValid, dataAddress, dataEnd, view.positions);
-    nvclusterlod::detail::loadAndAdvance(isValid, dataAddress, dataEnd, view.normals);
+    nvclusterlod::detail::loadAndAdvance(isValid, dataAddress, dataEnd, view.vertices);
     nvclusterlod::detail::loadAndAdvance(isValid, dataAddress, dataEnd, view.localTriangles);
     nvclusterlod::detail::loadAndAdvance(isValid, dataAddress, dataEnd, view.clusterVertexRanges);
     nvclusterlod::detail::loadAndAdvance(isValid, dataAddress, dataEnd, view.clusterBboxes);
@@ -108,9 +106,9 @@ bool Scene::CacheFileView::init(uint64_t dataSize, const void* data)
     return false;
   }
 
-  CacheHeader defaultHeader;
+  const CacheHeader* fileHeader = (const CacheHeader*)data;
 
-  if(memcmp(data, &defaultHeader, sizeof(CacheHeader) != 0))
+  if(!fileHeader->isValid())
   {
     m_dataSize = 0;
     return false;
@@ -157,12 +155,12 @@ bool Scene::CacheFileView::getGeometryView(GeometryView& view, uint64_t geometry
   return Scene::loadCached(view, geometryTotalSize, geoData);
 }
 
-bool Scene::checkCache(const nvclusterlod::LodGeometryInfo& info, const CacheFileView& cacheFileView, size_t geometryIndex)
+bool Scene::checkCache(const nvclusterlod::LodGeometryInfo& info, size_t geometryIndex)
 {
-  if(cacheFileView.isValid() && geometryIndex < cacheFileView.getGeometryCount())
+  if(m_cacheFileView.isValid() && geometryIndex < m_cacheFileView.getGeometryCount())
   {
     GeometryView cacheView = {};
-    if(!cacheFileView.getGeometryView(cacheView, geometryIndex))
+    if(!m_cacheFileView.getGeometryView(cacheView, geometryIndex))
     {
       return false;
     }
@@ -172,7 +170,7 @@ bool Scene::checkCache(const nvclusterlod::LodGeometryInfo& info, const CacheFil
     cacheView.lodInfo.groupConfig      = info.groupConfig;
     cacheView.lodInfo.clusterConfig    = info.clusterConfig;
 
-    return memcmp(&info, &cacheView.lodInfo, sizeof(cacheView.lodInfo)) == 0;
+    return memcmp(&info, &cacheView.lodInfo, sizeof(nvclusterlod::LodGeometryInfo)) == 0;
   }
   return false;
 }
@@ -184,14 +182,13 @@ static inline void fillVector(std::vector<T>& storageVec, const std::span<const 
   memcpy(storageVec.data(), viewSpan.data(), viewSpan.size_bytes());
 }
 
-void Scene::loadCachedGeometry(GeometryStorage& storage, const CacheFileView& cacheFileView, size_t geometryIndex)
+void Scene::loadCachedGeometry(GeometryStorage& storage, size_t geometryIndex)
 {
   GeometryView view = {};
-  cacheFileView.getGeometryView(view, geometryIndex);
+  m_cacheFileView.getGeometryView(view, geometryIndex);
   (GeometryBase&)storage = view;
 
-  fillVector(storage.positions, view.positions);
-  fillVector(storage.normals, view.normals);
+  fillVector(storage.vertices, view.vertices);
   fillVector(storage.localTriangles, view.localTriangles);
   fillVector(storage.clusterVertexRanges, view.clusterVertexRanges);
   fillVector(storage.clusterBboxes, view.clusterBboxes);
@@ -204,7 +201,7 @@ void Scene::loadCachedGeometry(GeometryStorage& storage, const CacheFileView& ca
 
 bool Scene::saveCache() const
 {
-  uint64_t dataSize = sizeof(nvclusterlod::CacheHeader);
+  uint64_t dataSize = sizeof(Scene::CacheHeader);
 
   std::vector<uint64_t> geometryOffsets;
   geometryOffsets.reserve(m_geometryViews.size() + 2);

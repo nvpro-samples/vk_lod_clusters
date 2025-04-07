@@ -831,6 +831,7 @@ void LodClusters::setupConfigParameters(nvh::ParameterList& parameterList)
   parameterList.add("culling", &m_tweak.useCulling);
   parameterList.add("autosavecache|default false", &m_sceneConfig.autoSaveCache);
   parameterList.add("autoloadcache|default true", &m_sceneConfig.autoLoadCache);
+  parameterList.add("mappedcache|default true", &m_sceneConfig.memoryMappedCache);
 
   parameterList.addFilename(".gltf", &m_modelFilename);
   parameterList.addFilename(".glb", &m_modelFilename);
