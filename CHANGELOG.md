@@ -1,5 +1,10 @@
 # Changelog for vk_lod_clusters
-
+* 2026-4-23:
+  * Add `-processingthreadpct <float 0-1.0>` to control the percentage of threads doing the geometry processing (number of geometries in parallel). Percentage of what the system supports for concurrency. Default is `0.5`.
+  * Add `-processingonly 0/1` to reduce peak memory consumption during processing and saving the cache file. This always saves a cache file (unless the old one was valid) and terminates the application afterwards.
+* 2026-4-11:
+  * Interleave geometry processing with loading to reduce peak memory consumption.
+  * Add visualization of instance bounding boxes
 * 2026-4-7:
   * Bugfix to file cache header detection.
   * The file cache can be used via memory mapping, avoiding a copy into system memory. `-mappedcache 0/1` defaults to true.

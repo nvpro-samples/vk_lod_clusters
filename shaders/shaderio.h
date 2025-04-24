@@ -39,6 +39,8 @@
 #define VISUALIZE_LOD 3
 #define VISUALIZE_TRIANGLE 4
 
+#define BBOXES_PER_MESHLET 8
+
 /////////////////////////////////////////
 
 #define BINDINGS_FRAME_UBO 0

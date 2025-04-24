@@ -558,6 +558,10 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     res.cmdBeginRendering(cmd, false, VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_LOAD_OP_DONT_CARE);
     res.cmdDynamicState(cmd);
     writeRayTracingDepthBuffer(cmd);
+    if(frame.showInstanceBboxes)
+    {
+      renderInstanceBboxes(cmd);
+    }
     vkCmdEndRendering(cmd);
   }
 

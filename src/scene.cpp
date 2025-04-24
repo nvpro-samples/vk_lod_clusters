@@ -23,7 +23,6 @@
 #include <meshoptimizer.h>
 #include <nvh/nvprint.hpp>
 #include <nvh/parallel_work.hpp>
-#include <nvh/profiler.hpp>
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/ext/scalar_constants.hpp>
@@ -48,7 +47,9 @@ bool Scene::init(const char* filename, const SceneConfig& config)
   m_config          = config;
   m_loadedFromCache = false;
 
-  if(m_config.autoLoadCache && m_cacheFileMapping.open((m_filename + ".nvsngeo").c_str()))
+  std::string cacheFileName = (m_filename + ".nvsngeo");
+
+  if(m_config.autoLoadCache && m_cacheFileMapping.open(cacheFileName.c_str()))
   {
     m_cacheFileView.init(m_cacheFileMapping.size(), m_cacheFileMapping.data());
     if(m_cacheFileView.isValid())
@@ -56,6 +57,7 @@ bool Scene::init(const char* filename, const SceneConfig& config)
       // when loading results from the cache, we cannot change the cluster or lod settings of a scene,
       // it's considered read only.
       m_loadedFromCache = true;
+      LOGI("Scene::init using cache file %s\n", cacheFileName.c_str());
     }
     else
     {
@@ -64,13 +66,49 @@ bool Scene::init(const char* filename, const SceneConfig& config)
     }
   }
 
-  if(!loadGLTF(filename))
+  ProcessingInfo processingInfo;
+
+  uint32_t originalThreadCount = nvh::get_thread_pool().get_thread_count();
+
+  processingInfo.numThreads = originalThreadCount;
+  if(m_config.processingThreadsPct > 0.0f && m_config.processingThreadsPct < 1.0f)
   {
+    processingInfo.numThreads =
+        std::min(processingInfo.numThreads,
+                 std::max(1u, uint32_t(ceilf(float(processingInfo.numThreads) * m_config.processingThreadsPct))));
+
+    if(processingInfo.numThreads != originalThreadCount)
+    {
+      nvh::get_thread_pool().reset(processingInfo.numThreads);
+    }
+  }
+
+  nvcluster::ContextCreateInfo clusterContextInfo;
+  nvclusterCreateContext(&clusterContextInfo, &processingInfo.clusterContext);
+
+  nvclusterlod::ContextCreateInfo lodContextInfo;
+  lodContextInfo.clusterContext = processingInfo.clusterContext;
+  nvclusterlodCreateContext(&lodContextInfo, &processingInfo.lodContext);
+
+  bool loadSuccess = loadGLTF(processingInfo, filename);
+
+  nvclusterlodDestroyContext(processingInfo.lodContext);
+  nvclusterDestroyContext(processingInfo.clusterContext);
+
+  nvh::get_thread_pool().reset(originalThreadCount);
+
+  if(!loadSuccess)
+  {
+    if(m_cacheFileView.isValid())
+    {
+      m_cacheFileView.deinit();
+      m_cacheFileMapping.close();
+    }
+
     return false;
   }
 
-  buildClusters();
-
+  computeClusterStats();
   computeInstanceBBoxes();
 
   for(auto& geom : m_geometryViews)
@@ -97,6 +135,13 @@ bool Scene::init(const char* filename, const SceneConfig& config)
   m_originalInstanceCount = m_instances.size();
   m_originalGeometryCount = m_geometryStorages.size();
   m_activeGeometryCount   = m_originalGeometryCount;
+
+
+  if(m_config.clusterStripify && (processingInfo.numTotalStrips.load() > 0))
+  {
+    LOGI("Average triangles per strip %.2f\n",
+         double(processingInfo.numTotalTriangles.load()) / double(processingInfo.numTotalStrips.load()));
+  }
 
   if(!m_loadedFromCache && m_config.autoSaveCache)
   {
@@ -308,93 +353,21 @@ void Scene::computeInstanceBBoxes()
   }
 }
 
-void Scene::buildClusters()
+
+void Scene::ProcessingInfo::setupThreads(size_t geometryCount)
 {
-  nvh::Profiler::Clock clock;
-  double               startTime = clock.getMicroSeconds();
+  bool preferInnerParallelism = geometryCount < numThreads;
 
-  nvcluster::ContextCreateInfo clusterContextInfo;
-  nvcluster::Context           clusterContext;
-  nvclusterCreateContext(&clusterContextInfo, &clusterContext);
+  numOuterThreads = preferInnerParallelism ? 1 : numThreads;
+  numInnerThreads = preferInnerParallelism ? numThreads : 1;
+}
 
-  nvclusterlod::ContextCreateInfo lodContextInfo;
-  nvclusterlod::Context           lodContext;
-
-  lodContextInfo.clusterContext = clusterContext;
-  nvclusterlodCreateContext(&lodContextInfo, &lodContext);
-
-  uint64_t numTotalTriangles = 0;
-  uint64_t numTotalStrips    = 0;
-
-  uint32_t numThreads             = nvh::get_thread_pool().get_thread_count();
-  bool     preferInnerParallelism = m_geometryStorages.size() < numThreads * 2;
-
-  uint32_t numOuterThreads = preferInnerParallelism ? 1 : numThreads;
-  uint32_t numInnerThreads = preferInnerParallelism ? numThreads : 1;
-
-  m_geometryViews.resize(m_geometryStorages.size());
-
-  auto fnGeometryProcess = [&](uint64_t idx, uint32_t threadIdx) {
-    GeometryStorage& geometryStorage = m_geometryStorages[idx];
-    GeometryView&    geometryView    = m_geometryViews[idx];
-
-    bool viewFromStorage = true;
-
-    if(checkCache(geometryStorage.lodInfo, idx))
-    {
-      if(m_config.memoryMappedCache)
-      {
-        m_cacheFileView.getGeometryView(geometryView, idx);
-
-        viewFromStorage = false;
-      }
-      else
-      {
-        loadCachedGeometry(geometryStorage, idx);
-      }
-    }
-    else
-    {
-      buildGeometryClusters(lodContext, geometryStorage, numInnerThreads);
-
-      // no longer need original triangles
-      geometryStorage.globalTriangles = {};
-
-      if(geometryStorage.lodMesh.clusterTriangleRanges.empty())
-        return;
-
-      if(m_config.clusterStripify)
-      {
-        buildGeometryClusterStrips(geometryStorage, numTotalTriangles, numTotalStrips, numInnerThreads);
-      }
-
-      buildGeometryClusterVertices(geometryStorage, numInnerThreads);
-
-      // no longer need vertex indirection
-      geometryStorage.localVertices = {};
-
-      buildGeometryBboxes(geometryStorage, numInnerThreads);
-    }
-
-    if(viewFromStorage)
-    {
-      (GeometryBase&)geometryView = geometryStorage;
-
-      geometryView.vertices            = geometryStorage.vertices;
-      geometryView.localTriangles      = geometryStorage.localTriangles;
-      geometryView.clusterVertexRanges = geometryStorage.clusterVertexRanges;
-      geometryView.clusterBboxes       = geometryStorage.clusterBboxes;
-      geometryView.groupLodLevels      = geometryStorage.groupLodLevels;
-
-      nvclusterlod::toView(geometryStorage.lodHierarchy, geometryView.lodHierarchy);
-      nvclusterlod::toView(geometryStorage.lodMesh, geometryView.lodMesh);
-      geometryView.nodeBboxes = geometryStorage.nodeBboxes;
-    }
-
-    m_clusterMaxVerticesCount = std::max(m_clusterMaxVerticesCount, geometryView.clusterMaxVerticesCount);
-  };
-
-  nvh::parallel_batches_indexed<1>(m_geometryStorages.size(), fnGeometryProcess, numOuterThreads);
+void Scene::computeClusterStats()
+{
+  for(size_t i = 0; i < m_geometryViews.size(); i++)
+  {
+    m_clusterMaxVerticesCount = std::max(m_clusterMaxVerticesCount, m_geometryViews[i].clusterMaxVerticesCount);
+  }
 
   // reset settings in case we had a valid cache file
   if(m_cacheFileView.isValid())
@@ -414,22 +387,74 @@ void Scene::buildClusters()
     }
   }
 
-  nvclusterlodDestroyContext(lodContext);
-  nvclusterDestroyContext(clusterContext);
-
-  double endTime = clock.getMicroSeconds();
-  LOGI("Scene cluster build time: %f milliseconds\n", (endTime - startTime) / 1000.0f);
-
-
-  if(m_config.clusterStripify && (numTotalStrips > 0))
-  {
-    LOGI("Average triangles per strip %.2f\n", double(numTotalTriangles) / double(numTotalStrips));
-  }
-
   computeHistograms();
 }
 
-void Scene::buildGeometryClusters(nvclusterlod::Context lodcontext, GeometryStorage& geom, uint32_t numThreads)
+void Scene::processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex, bool isCached)
+{
+  GeometryStorage& geometryStorage = m_geometryStorages[geometryIndex];
+  GeometryView&    geometryView    = m_geometryViews[geometryIndex];
+
+  bool viewFromStorage = true;
+
+  if(isCached)
+  {
+    if(m_config.memoryMappedCache)
+    {
+      m_cacheFileView.getGeometryView(geometryView, geometryIndex);
+
+      viewFromStorage = false;
+    }
+    else
+    {
+      loadCachedGeometry(geometryStorage, geometryIndex);
+    }
+  }
+  else
+  {
+    buildGeometryClusters(processingInfo, geometryStorage);
+
+    // no longer need original triangles
+    geometryStorage.globalTriangles = {};
+
+    if(geometryStorage.lodMesh.clusterTriangleRanges.empty())
+      return;
+
+    if(m_config.clusterStripify)
+    {
+      buildGeometryClusterStrips(processingInfo, geometryStorage);
+    }
+
+    buildGeometryClusterVertices(processingInfo, geometryStorage);
+
+    // no longer need vertex indirection
+    geometryStorage.localVertices = {};
+
+    buildGeometryBboxes(processingInfo, geometryStorage);
+  }
+
+  if(viewFromStorage)
+  {
+    (GeometryBase&)geometryView = geometryStorage;
+
+    geometryView.vertices            = geometryStorage.vertices;
+    geometryView.localTriangles      = geometryStorage.localTriangles;
+    geometryView.clusterVertexRanges = geometryStorage.clusterVertexRanges;
+    geometryView.clusterBboxes       = geometryStorage.clusterBboxes;
+    geometryView.groupLodLevels      = geometryStorage.groupLodLevels;
+
+    nvclusterlod::toView(geometryStorage.lodHierarchy, geometryView.lodHierarchy);
+    nvclusterlod::toView(geometryStorage.lodMesh, geometryView.lodMesh);
+    geometryView.nodeBboxes = geometryStorage.nodeBboxes;
+  }
+
+  if(m_processingOnlyFile)
+  {
+    saveProcessingOnly(processingInfo, geometryIndex);
+  }
+}
+
+void Scene::buildGeometryClusters(const ProcessingInfo& processingInfo, GeometryStorage& geom)
 {
   nvclusterlod::Result result;
 
@@ -453,7 +478,7 @@ void Scene::buildGeometryClusters(nvclusterlod::Context lodcontext, GeometryStor
   geom.lodInfo.inputTriangleIndicesHash = 0;
   geom.lodInfo.inputVerticesHash        = 0;
 
-  result = nvclusterlod::generateLodMesh(lodcontext, lodMeshInput, geom.lodMesh);
+  result = nvclusterlod::generateLodMesh(processingInfo.lodContext, lodMeshInput, geom.lodMesh);
   if(result != nvclusterlod::SUCCESS)
   {
     assert(0);
@@ -477,7 +502,7 @@ void Scene::buildGeometryClusters(nvclusterlod::Context lodcontext, GeometryStor
   // This is key to the parallel traversal algorithm that traverse multiple lod levels
   // at once.
 
-  result = nvclusterlod::generateLodHierarchy(lodcontext, hierarchyInput, geom.lodHierarchy);
+  result = nvclusterlod::generateLodHierarchy(processingInfo.lodContext, hierarchyInput, geom.lodHierarchy);
   if(result != nvclusterlod::SUCCESS)
   {
     assert(0);
@@ -491,8 +516,8 @@ void Scene::buildGeometryClusters(nvclusterlod::Context lodcontext, GeometryStor
   geom.localVertices.resize(geom.lodMesh.triangleVertices.size());
   geom.clusterVertexRanges.resize(geom.lodMesh.clusterTriangleRanges.size());
 
-  std::vector<uint32_t> threadClusterMaxVertices(numThreads, 0);
-  std::vector<uint32_t> threadClusterMaxTriangles(numThreads, 0);
+  std::vector<uint32_t> threadClusterMaxVertices(processingInfo.numInnerThreads, 0);
+  std::vector<uint32_t> threadClusterMaxTriangles(processingInfo.numInnerThreads, 0);
 
   nvh::parallel_batches_indexed(
       geom.lodMesh.clusterTriangleRanges.size(),
@@ -527,14 +552,14 @@ void Scene::buildGeometryClusters(nvclusterlod::Context lodcontext, GeometryStor
         threadClusterMaxVertices[threadIdx]  = std::max(threadClusterMaxVertices[threadIdx], vertexRange.count);
         threadClusterMaxTriangles[threadIdx] = std::max(threadClusterMaxTriangles[threadIdx], triangleRange.count);
       },
-      numThreads);
+      processingInfo.numInnerThreads);
 
   // no longer needed
   geom.lodMesh.triangleVertices = {};
 
   geom.clusterMaxVerticesCount  = 0;
   geom.clusterMaxTrianglesCount = 0;
-  for(uint32_t t = 0; t < numThreads; t++)
+  for(uint32_t t = 0; t < processingInfo.numInnerThreads; t++)
   {
     geom.clusterMaxVerticesCount  = std::max(geom.clusterMaxVerticesCount, threadClusterMaxVertices[t]);
     geom.clusterMaxTrianglesCount = std::max(geom.clusterMaxTrianglesCount, threadClusterMaxTriangles[t]);
@@ -627,7 +652,7 @@ void Scene::computeLodBboxes_recursive(GeometryStorage& geom, size_t i)
   }
 }
 
-void Scene::buildGeometryBboxes(GeometryStorage& geom, uint32_t numThreads)
+void Scene::buildGeometryBboxes(const ProcessingInfo& processingInfo, GeometryStorage& geom)
 {
   geom.clusterBboxes.resize(geom.lodMesh.clusterTriangleRanges.size());
 
@@ -670,7 +695,7 @@ void Scene::buildGeometryBboxes(GeometryStorage& geom, uint32_t numThreads)
 
         geom.clusterBboxes[idx] = bbox;
       },
-      numThreads);
+      processingInfo.numInnerThreads);
 
 
   // now build lod node bounding boxes
@@ -745,12 +770,12 @@ void Scene::computeHistograms()
   }
 }
 
-void Scene::buildGeometryClusterStrips(GeometryStorage& geom, uint64_t& totalTriangles, uint64_t& totalStrips, uint32_t numThreads)
+void Scene::buildGeometryClusterStrips(ProcessingInfo& processingInfo, GeometryStorage& geom)
 {
-  std::vector<std::vector<uint32_t>> threadIndices(numThreads);
+  std::vector<std::vector<uint32_t>> threadIndices(processingInfo.numInnerThreads);
 
   uint32_t numMaxTriangles = m_config.clusterTriangles;
-  for(uint32_t t = 0; t < numThreads; t++)
+  for(uint32_t t = 0; t < processingInfo.numInnerThreads; t++)
   {
     threadIndices[t].resize(numMaxTriangles * 3 + numMaxTriangles * 3 + meshopt_stripifyBound(numMaxTriangles * 3));
   }
@@ -798,13 +823,13 @@ void Scene::buildGeometryClusterStrips(GeometryStorage& geom, uint64_t& totalTri
             numStrips++;
         }
       },
-      numThreads);
+      processingInfo.numInnerThreads);
 
-  totalTriangles += geom.localTriangles.size();
-  totalStrips += numStrips;
+  processingInfo.numTotalTriangles += geom.localTriangles.size();
+  processingInfo.numTotalStrips += numStrips;
 }
 
-void Scene::buildGeometryClusterVertices(GeometryStorage& geom, uint32_t numThreads)
+void Scene::buildGeometryClusterVertices(const ProcessingInfo& processingInfo, GeometryStorage& geom)
 {
   // build per-cluster vertices
   std::vector<glm::vec4> oldVerticesData = std::move(geom.vertices);
@@ -829,6 +854,8 @@ void Scene::buildGeometryClusterVertices(GeometryStorage& geom, uint32_t numThre
           newVertices[v + vertexRange.offset]   = oldVertices[oldIdx];
         }
       },
-      numThreads);
+      processingInfo.numInnerThreads);
 }
+
+
 }  // namespace lodclusters

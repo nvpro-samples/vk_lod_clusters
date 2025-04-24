@@ -52,8 +52,8 @@ The full logic of the renderers is implemented in:
 This sample is using [nv_cluster_lod_builder](https://github.com/nvpro-samples/nv_cluster_lod_builder) for generating the clusters and 
 the level of detail data structures. We recommend looking at its documentation for further details.
 
-Inside [scene.cpp](/src/scene.cpp) the `Scene:buildClusters()` function covers the usage of the library and what data we need
-to extract from it.
+Inside [scene.cpp](/src/scene.cpp) the `Scene:buildGeometryClusters(...)` function covers the usage of the library and what data we need
+to extract from it. All key processing steps are within `Scene:processGeometry(...)`.
 
 In the UI you can influence the size of clusters and the LoD grouping of them in _"Clusters & LoDs generation"_.
 
@@ -62,7 +62,11 @@ was selected in the ui. And if the upper limit of 256 is exceeded, the applicati
 
 > :warning: The processing of larger scenes can take minutes, even on CPUs with many cores. You may want to use _"File > Save Cache"_ after
 > the processing is completed. It will try to store the result of the cluster and lod building in a simple uncompressed binary file next to the original input file.
-> You can check the log/console output if errors occurred. Through the `-autosavecache 1` command-line option you can enable auto-saving. 
+> You can check the log/console output if errors occurred. Through the `-autosavecache 1` command-line option you can enable auto-saving.
+>
+> With the `-processingonly 1` command-line option you can reduce peak memory consumption during processing of scenes with many geometries.
+> In this mode saving to the cache file is interleaved with the processing and resources are deallocated immediately once saved.
+> At the end of the processing the app closes automatically.
 >
 > When a cached result file is found next to the input model, its results are taken, and the cluster and lod settings are immutable in the UI.
 > 
@@ -337,6 +341,7 @@ You can use the commandline to change some defaults:
 * `-gridunique 0` disables the generation of unique geometries for every model copy. Greatly reduces memory consumption by truly instancing everything. By default on to stress streaming.
 * `-streaming 0` disables streaming system and uses preloaded scene (warning this can use a lot of memory, use above `-gridunique 0` to reduce)
 * `-vsync 0` disable vsync. If changing vsync via UI does not work, try to use the driver's *NVIDIA Control Panel* and set `Vulkan/OpenGL present method: native`.
+* `-autoloadcache 0` disables loading scenes from cache file.
 
 ## Limitations
 

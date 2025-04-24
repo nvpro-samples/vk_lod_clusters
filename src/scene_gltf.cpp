@@ -22,9 +22,11 @@
 #include <memory>
 #include <float.h>
 
-#include <nvh/nvprint.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <nvh/nvprint.hpp>
 #include <nvh/filemapping.hpp>
+#include <nvh/parallel_work.hpp>
+#include <nvh/profiler.hpp>
 #include <cgltf.h>
 
 #include "scene.hpp"
@@ -189,7 +191,7 @@ void addInstancesFromNode(std::vector<lodclusters::Scene::Instance>& instances,
 
 
 namespace lodclusters {
-bool Scene::loadGLTF(const char* filename)
+bool Scene::loadGLTF(ProcessingInfo& processingInfo, const char* filename)
 {
   // Parse the glTF file using cgltf
   cgltf_options options = {};
@@ -246,15 +248,23 @@ bool Scene::loadGLTF(const char* filename)
   }
 
   m_geometryStorages.resize(data->meshes_count);
+  m_geometryViews.resize(data->meshes_count);
 
-  for(size_t meshIdx = 0; meshIdx < data->meshes_count; meshIdx++)
-  {
+  beginProcessingOnly(data->meshes_count);
+
+  processingInfo.setupThreads(data->meshes_count);
+
+  uint32_t lastPercentage  = 0;
+  uint32_t meshesCompleted = 0;
+
+  std::mutex precentageMutex;
+
+  auto fnLoadAndProcessGeometry = [&](uint64_t meshIdx, uint32_t threadIndex) {
     const cgltf_mesh gltfMesh = data->meshes[meshIdx];
     GeometryStorage& geom     = m_geometryStorages[meshIdx];
     geom.bbox                 = {{FLT_MAX, FLT_MAX, FLT_MAX}, {-FLT_MAX, -FLT_MAX, -FLT_MAX}, 0, 0};
 
-
-    // count pass
+    // count triangle and vertices pass
     uint32_t triangleCount = 0;
     uint32_t verticesCount = 0;
     for(size_t primIdx = 0; primIdx < gltfMesh.primitives_count; primIdx++)
@@ -293,129 +303,163 @@ bool Scene::loadGLTF(const char* filename)
     geom.lodInfo.inputTriangleCount = triangleCount;
     geom.lodInfo.inputVertexCount   = verticesCount;
 
-    if(checkCache(geom.lodInfo, meshIdx))
+    // test if this mesh exists in the cache
+    bool isCached = checkCache(geom.lodInfo, meshIdx);
+
+    // load vertices & index data
+    if(!isCached)
     {
-      continue;
-    }
+      geom.vertices.resize(verticesCount);
+      geom.globalTriangles.resize(triangleCount);
 
-    geom.vertices.resize(verticesCount);
-    geom.globalTriangles.resize(triangleCount);
+      // fill pass
+      uint32_t offsetVertices  = 0;
+      uint32_t offsetTriangles = 0;
 
-    // fill pass
-
-    uint32_t offsetVertices  = 0;
-    uint32_t offsetTriangles = 0;
-
-    for(size_t primIdx = 0; primIdx < gltfMesh.primitives_count; primIdx++)
-    {
-      cgltf_primitive* gltfPrim = &gltfMesh.primitives[primIdx];
-
-      if(gltfPrim->type != cgltf_primitive_type_triangles)
+      for(size_t primIdx = 0; primIdx < gltfMesh.primitives_count; primIdx++)
       {
-        continue;
-      }
+        cgltf_primitive* gltfPrim = &gltfMesh.primitives[primIdx];
 
-      // If the mesh has no attributes, there's nothing we can do
-      if(gltfPrim->attributes_count == 0)
-      {
-        continue;
-      }
-
-      uint32_t numVertices = 0;
-
-      for(size_t attribIdx = 0; attribIdx < gltfPrim->attributes_count; attribIdx++)
-      {
-        const cgltf_attribute& gltfAttrib = gltfPrim->attributes[attribIdx];
-        const cgltf_accessor*  accessor   = gltfAttrib.data;
-
-        // TODO: Can we assume alignment in order to make these a single read_float call?
-        if(strcmp(gltfAttrib.name, "POSITION") == 0)
+        if(gltfPrim->type != cgltf_primitive_type_triangles)
         {
-          glm::vec4* writeVertices = geom.vertices.data() + offsetVertices;
+          continue;
+        }
 
-          if(accessor->component_type == cgltf_component_type_r_32f && accessor->type == cgltf_type_vec3
-             && accessor->stride == sizeof(glm::vec3))
+        // If the mesh has no attributes, there's nothing we can do
+        if(gltfPrim->attributes_count == 0)
+        {
+          continue;
+        }
+
+        uint32_t numVertices = 0;
+
+        for(size_t attribIdx = 0; attribIdx < gltfPrim->attributes_count; attribIdx++)
+        {
+          const cgltf_attribute& gltfAttrib = gltfPrim->attributes[attribIdx];
+          const cgltf_accessor*  accessor   = gltfAttrib.data;
+
+          // TODO: Can we assume alignment in order to make these a single read_float call?
+          if(strcmp(gltfAttrib.name, "POSITION") == 0)
           {
-            const glm::vec3* readPositions = (const glm::vec3*)(cgltf_buffer_view_data(accessor->buffer_view) + accessor->offset);
-            for(size_t i = 0; i < accessor->count; i++)
+            glm::vec4* writeVertices = geom.vertices.data() + offsetVertices;
+
+            if(accessor->component_type == cgltf_component_type_r_32f && accessor->type == cgltf_type_vec3
+               && accessor->stride == sizeof(glm::vec3))
             {
-              glm::vec3 tmp      = readPositions[i];
-              writeVertices[i].x = tmp.x;
-              writeVertices[i].y = tmp.y;
-              writeVertices[i].z = tmp.z;
-              geom.bbox.lo       = glm::min(geom.bbox.lo, tmp);
-              geom.bbox.hi       = glm::max(geom.bbox.hi, tmp);
+              const glm::vec3* readPositions =
+                  (const glm::vec3*)(cgltf_buffer_view_data(accessor->buffer_view) + accessor->offset);
+              for(size_t i = 0; i < accessor->count; i++)
+              {
+                glm::vec3 tmp      = readPositions[i];
+                writeVertices[i].x = tmp.x;
+                writeVertices[i].y = tmp.y;
+                writeVertices[i].z = tmp.z;
+                geom.bbox.lo       = glm::min(geom.bbox.lo, tmp);
+                geom.bbox.hi       = glm::max(geom.bbox.hi, tmp);
+              }
             }
+            else
+            {
+              for(size_t i = 0; i < accessor->count; i++)
+              {
+                glm::vec3 tmp;
+                cgltf_accessor_read_float(accessor, i, &tmp.x, 3);
+                writeVertices[i].x = tmp.x;
+                writeVertices[i].y = tmp.y;
+                writeVertices[i].z = tmp.z;
+                geom.bbox.lo       = glm::min(geom.bbox.lo, tmp);
+                geom.bbox.hi       = glm::max(geom.bbox.hi, tmp);
+              }
+            }
+            numVertices = (uint32_t)accessor->count;
+          }
+          else if(strcmp(gltfAttrib.name, "NORMAL") == 0)
+          {
+            glm::vec4* writeVertices = geom.vertices.data() + offsetVertices;
+
+            if(accessor->component_type == cgltf_component_type_r_32f && accessor->type == cgltf_type_vec3
+               && accessor->stride == sizeof(glm::vec3))
+            {
+              const glm::vec3* readPositions =
+                  (const glm::vec3*)(cgltf_buffer_view_data(accessor->buffer_view) + accessor->offset);
+              for(size_t i = 0; i < accessor->count; i++)
+              {
+                glm::vec3 tmp                   = readPositions[i];
+                *(uint32_t*)&writeVertices[i].w = shaderio::vec_to_oct32(tmp);
+              }
+            }
+            else
+            {
+              for(size_t i = 0; i < accessor->count; i++)
+              {
+                glm::vec3 tmp;
+                cgltf_accessor_read_float(accessor, i, &tmp.x, 3);
+                *(uint32_t*)&writeVertices[i].w = shaderio::vec_to_oct32(tmp);
+              }
+            }
+            numVertices = (uint32_t)accessor->count;
+          }
+        }
+
+        offsetVertices += numVertices;
+
+        // indices
+        {
+          const cgltf_accessor* accessor = gltfPrim->indices;
+
+          uint32_t* writeIndices = (uint32_t*)(geom.globalTriangles.data() + offsetTriangles);
+
+          if(accessor->component_type == cgltf_component_type_r_32u && accessor->type == cgltf_type_scalar
+             && accessor->stride == sizeof(uint32_t))
+          {
+            memcpy(writeIndices, cgltf_buffer_view_data(accessor->buffer_view) + accessor->offset,
+                   sizeof(uint32_t) * accessor->count);
           }
           else
           {
             for(size_t i = 0; i < accessor->count; i++)
             {
-              glm::vec3 tmp;
-              cgltf_accessor_read_float(accessor, i, &tmp.x, 3);
-              writeVertices[i].x = tmp.x;
-              writeVertices[i].y = tmp.y;
-              writeVertices[i].z = tmp.z;
-              geom.bbox.lo       = glm::min(geom.bbox.lo, tmp);
-              geom.bbox.hi       = glm::max(geom.bbox.hi, tmp);
+              writeIndices[i] = (uint32_t)cgltf_accessor_read_index(gltfPrim->indices, i);
             }
           }
-          numVertices = (uint32_t)accessor->count;
+
+          offsetTriangles += (uint32_t)accessor->count / 3;
         }
-        else if(strcmp(gltfAttrib.name, "NORMAL") == 0)
-        {
-          glm::vec4* writeVertices = geom.vertices.data() + offsetVertices;
-
-          if(accessor->component_type == cgltf_component_type_r_32f && accessor->type == cgltf_type_vec3
-             && accessor->stride == sizeof(glm::vec3))
-          {
-            const glm::vec3* readPositions = (const glm::vec3*)(cgltf_buffer_view_data(accessor->buffer_view) + accessor->offset);
-            for(size_t i = 0; i < accessor->count; i++)
-            {
-              glm::vec3 tmp                   = readPositions[i];
-              *(uint32_t*)&writeVertices[i].w = shaderio::vec_to_oct32(tmp);
-            }
-          }
-          else
-          {
-            for(size_t i = 0; i < accessor->count; i++)
-            {
-              glm::vec3 tmp;
-              cgltf_accessor_read_float(accessor, i, &tmp.x, 3);
-              *(uint32_t*)&writeVertices[i].w = shaderio::vec_to_oct32(tmp);
-            }
-          }
-          numVertices = (uint32_t)accessor->count;
-        }
-      }
-
-
-      offsetVertices += numVertices;
-
-      // indices
-      {
-        const cgltf_accessor* accessor = gltfPrim->indices;
-
-        uint32_t* writeIndices = (uint32_t*)(geom.globalTriangles.data() + offsetTriangles);
-
-        if(accessor->component_type == cgltf_component_type_r_32u && accessor->type == cgltf_type_scalar
-           && accessor->stride == sizeof(uint32_t))
-        {
-          memcpy(writeIndices, cgltf_buffer_view_data(accessor->buffer_view) + accessor->offset,
-                 sizeof(uint32_t) * accessor->count);
-        }
-        else
-        {
-          for(size_t i = 0; i < accessor->count; i++)
-          {
-            writeIndices[i] = (uint32_t)cgltf_accessor_read_index(gltfPrim->indices, i);
-          }
-        }
-
-        offsetTriangles += (uint32_t)accessor->count / 3;
       }
     }
-  }
+
+    processGeometry(processingInfo, meshIdx, isCached);
+
+    {
+      std::lock_guard lock(precentageMutex);
+
+      meshesCompleted++;
+
+      // statistics
+      const uint32_t precentageGranularity = 5;
+      uint32_t       percentage            = (meshesCompleted * 100) / data->meshes_count;
+      percentage = ((percentage + precentageGranularity - 1) / precentageGranularity) * precentageGranularity;
+
+      if(percentage > lastPercentage)
+      {
+        lastPercentage = percentage;
+        LOGI("... geometry load & processing: %3d%%\n", percentage);
+      }
+    }
+  };
+
+  LOGI("... geometry load & processing: geometries %d, threads %d\n", data->meshes_count, processingInfo.numThreads);
+
+  nvh::Profiler::Clock clock;
+  double               startTime = clock.getMicroSeconds();
+
+  nvh::parallel_batches_indexed<1>(data->meshes_count, fnLoadAndProcessGeometry, processingInfo.numOuterThreads);
+
+  double endTime = clock.getMicroSeconds();
+
+  LOGI("... geometry load & processing: %f milliseconds\n", (endTime - startTime) / 1000.0f);
+
+  endProcessingOnly();
 
   if(data->scenes_count > 0)
   {

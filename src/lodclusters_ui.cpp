@@ -287,6 +287,7 @@ void LodClusters::processUI(double time, nvh::Profiler& profiler, const CallBack
 
     PE::Checkbox("Facet shading", &m_tweak.facetShading);
     PE::Checkbox("Wireframe", (bool*)&m_frameConfig.frameConstants.doWireframe);
+    PE::Checkbox("Instance BBoxes", &m_frameConfig.showInstanceBboxes);
 
     // conditional UI, declutters the UI, prevents presenting many sections in disabled state
     if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)

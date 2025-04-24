@@ -115,13 +115,16 @@ bool Renderer::initBasicShaders(Resources& res)
   m_basicShaders.fullScreenWriteDepthFragShader =
       res.m_shaderManager.createShaderModule(VK_SHADER_STAGE_FRAGMENT_BIT, "fullscreen_write_depth.frag.glsl");
 
+  m_basicShaders.renderInstanceBboxesMeshShader =
+      res.m_shaderManager.createShaderModule(VK_SHADER_STAGE_MESH_BIT_NV, "render_instance_bbox.mesh.glsl");
+  m_basicShaders.renderInstanceBboxesFragmentShader =
+      res.m_shaderManager.createShaderModule(VK_SHADER_STAGE_FRAGMENT_BIT, "render_instance_bbox.frag.glsl");
+
   return res.verifyShaders(m_basicShaders);
 }
 
 void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererConfig& config)
 {
-  initWriteRayTracingDepthBuffer(res);
-
   const Scene& scene = *rscene.scene;
 
   m_renderInstances.resize(scene.m_instances.size());
@@ -141,6 +144,9 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
   m_renderInstanceBuffer =
       res.createBuffer(sizeof(shaderio::RenderInstance) * m_renderInstances.size(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
   res.simpleUploadBuffer(m_renderInstanceBuffer, m_renderInstances.data());
+
+  initWriteRayTracingDepthBuffer(res);
+  initRenderInstanceBboxes(res, rscene);
 }
 
 
@@ -174,26 +180,27 @@ void Renderer::initWriteRayTracingDepthBuffer(Resources& res)
 {
   VkShaderStageFlags stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
-  m_writeDepthBufferDsetContainer.init(res.m_device);
+  nvvk::DescriptorSetContainer& dsetContainer = m_writeDepthBufferDsetContainer;
 
-  m_writeDepthBufferDsetContainer.addBinding(BINDINGS_RAYTRACING_DEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, stageFlags);
-  m_writeDepthBufferDsetContainer.initLayout();
-  m_writeDepthBufferDsetContainer.initPipeLayout();
+  dsetContainer.init(res.m_device);
 
-  m_writeDepthBufferDsetContainer.initPool(1);
+  dsetContainer.addBinding(BINDINGS_RAYTRACING_DEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, stageFlags);
+  dsetContainer.initLayout();
+  dsetContainer.initPipeLayout();
+
+  dsetContainer.initPool(1);
   std::array<VkWriteDescriptorSet, 1> writeSets;
 
   VkDescriptorImageInfo imgInfo{};
   imgInfo.imageView   = res.m_framebuffer.viewRaytracingDepth;
   imgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-  writeSets[0] = m_writeDepthBufferDsetContainer.makeWrite(0, BINDINGS_RAYTRACING_DEPTH, &imgInfo);
+  writeSets[0] = dsetContainer.makeWrite(0, BINDINGS_RAYTRACING_DEPTH, &imgInfo);
   vkUpdateDescriptorSets(res.m_device, uint32_t(writeSets.size()), writeSets.data(), 0, nullptr);
 
   nvvk::GraphicsPipelineState state = res.m_basicGraphicsState;
 
-  nvvk::GraphicsPipelineGenerator gfxGen(res.m_device, m_writeDepthBufferDsetContainer.getPipeLayout(),
-                                         res.m_framebuffer.pipelineRenderingInfo, state);
+  nvvk::GraphicsPipelineGenerator gfxGen(res.m_device, dsetContainer.getPipeLayout(), res.m_framebuffer.pipelineRenderingInfo, state);
 
   state.setBlendAttachmentColorMask(0, 0);
   state.depthStencilState.depthWriteEnable = VK_TRUE;
@@ -211,6 +218,55 @@ void Renderer::writeRayTracingDepthBuffer(VkCommandBuffer cmd)
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_writeDepthBufferPipeline);
 
   vkCmdDraw(cmd, 3, 1, 0, 0);
+}
+
+void Renderer::initRenderInstanceBboxes(Resources& res, RenderScene& rscene)
+{
+  VkShaderStageFlags stageFlags = VK_SHADER_STAGE_MESH_BIT_NV | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+  nvvk::DescriptorSetContainer& dsetContainer = m_renderInstanceBboxesDsetContainer;
+
+  dsetContainer.init(res.m_device);
+
+  dsetContainer.addBinding(BINDINGS_FRAME_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, stageFlags);
+  dsetContainer.addBinding(BINDINGS_GEOMETRIES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, stageFlags);
+  dsetContainer.addBinding(BINDINGS_RENDERINSTANCES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, stageFlags);
+  dsetContainer.initLayout();
+
+  VkPushConstantRange pushRange;
+  pushRange.offset     = 0;
+  pushRange.size       = sizeof(uint32_t);
+  pushRange.stageFlags = stageFlags;
+  dsetContainer.initPipeLayout(1, &pushRange);
+  dsetContainer.initPool(1);
+
+  std::array<VkWriteDescriptorSet, 3> writeSets;
+  writeSets[0] = dsetContainer.makeWrite(0, BINDINGS_FRAME_UBO, &res.m_common.view.info);
+  writeSets[1] = dsetContainer.makeWrite(0, BINDINGS_GEOMETRIES_SSBO, &rscene.getShaderGeometriesBuffer().info);
+  writeSets[2] = dsetContainer.makeWrite(0, BINDINGS_RENDERINSTANCES_SSBO, &m_renderInstanceBuffer.info);
+  vkUpdateDescriptorSets(res.m_device, uint32_t(writeSets.size()), writeSets.data(), 0, nullptr);
+
+  nvvk::GraphicsPipelineState state = res.m_basicGraphicsState;
+  nvvk::GraphicsPipelineGenerator gfxGen(res.m_device, dsetContainer.getPipeLayout(), res.m_framebuffer.pipelineRenderingInfo, state);
+  state.rasterizationState.lineWidth = res.m_framebuffer.supersample * 2;
+  //state.depthStencilState.depthWriteEnable = VK_TRUE;
+  gfxGen.addShader(res.m_shaderManager.get(m_basicShaders.renderInstanceBboxesMeshShader), VK_SHADER_STAGE_MESH_BIT_NV);
+  gfxGen.addShader(res.m_shaderManager.get(m_basicShaders.renderInstanceBboxesFragmentShader), VK_SHADER_STAGE_FRAGMENT_BIT);
+  m_renderInstanceBboxesPipeline = gfxGen.createPipeline();
+}
+
+void Renderer::renderInstanceBboxes(VkCommandBuffer cmd)
+{
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_renderInstanceBboxesDsetContainer.getPipeLayout(), 0,
+                          1, m_renderInstanceBboxesDsetContainer.getSets(), 0, nullptr);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_renderInstanceBboxesPipeline);
+
+  uint32_t numRenderInstances = m_renderInstances.size();
+
+  vkCmdPushConstants(cmd, m_renderInstanceBboxesDsetContainer.getPipeLayout(),
+                     VK_SHADER_STAGE_MESH_BIT_NV | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(uint32_t), &numRenderInstances);
+
+  vkCmdDrawMeshTasksNV(cmd, (numRenderInstances + BBOXES_PER_MESHLET - 1) / BBOXES_PER_MESHLET, 0);
 }
 
 }  // namespace lodclusters

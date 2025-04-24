@@ -92,7 +92,7 @@ public:
   virtual bool init(Resources& res, RenderScene& rscene, const RendererConfig& config) = 0;
   virtual void render(VkCommandBuffer primary, Resources& res, RenderScene& rscene, const FrameConfig& frame, nvvk::ProfilerVK& profiler) = 0;
   virtual void deinit(Resources& res) = 0;
-  virtual ~Renderer(){};  // Defined only so that inherited classes also have virtual destructors. Use deinit().
+  virtual ~Renderer() {};  // Defined only so that inherited classes also have virtual destructors. Use deinit().
   virtual void updatedFrameBuffer(Resources& res) { updatedFrameBufferBasics(res); };
 
   virtual bool supportsClusters() const { return true; }
@@ -112,10 +112,15 @@ protected:
   void initWriteRayTracingDepthBuffer(Resources& res);
   void writeRayTracingDepthBuffer(VkCommandBuffer cmd);
 
+  void initRenderInstanceBboxes(Resources& res, RenderScene& rscene);
+  void renderInstanceBboxes(VkCommandBuffer cmd);
+
   struct BasicShaders
   {
     nvvk::ShaderModuleID fullScreenVertexShader;
     nvvk::ShaderModuleID fullScreenWriteDepthFragShader;
+    nvvk::ShaderModuleID renderInstanceBboxesFragmentShader;
+    nvvk::ShaderModuleID renderInstanceBboxesMeshShader;
   };
 
   BasicShaders m_basicShaders;
@@ -128,6 +133,9 @@ protected:
 
   nvvk::DescriptorSetContainer m_writeDepthBufferDsetContainer;
   VkPipeline                   m_writeDepthBufferPipeline = nullptr;
+
+  nvvk::DescriptorSetContainer m_renderInstanceBboxesDsetContainer;
+  VkPipeline                   m_renderInstanceBboxesPipeline = nullptr;
 };
 
 //////////////////////////////////////////////////////////////////////////

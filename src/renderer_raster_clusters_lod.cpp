@@ -327,6 +327,11 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelines.graphicsMesh);
     vkCmdDrawMeshTasksIndirectNV(cmd, m_sceneBuildBuffer.buffer, offsetof(shaderio::SceneBuilding, indirectDrawClusters), 1, 0);
 
+    if(frame.showInstanceBboxes)
+    {
+      renderInstanceBboxes(cmd);
+    }
+
     vkCmdEndRendering(cmd);
   }
 

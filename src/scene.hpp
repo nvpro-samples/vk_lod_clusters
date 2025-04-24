@@ -21,6 +21,8 @@
 
 #include <vector>
 #include <string>
+#include <atomic>
+#include <mutex>
 
 #include <glm/glm.hpp>
 #include <nvh/filemapping.hpp>
@@ -34,14 +36,32 @@ namespace lodclusters {
 
 struct SceneConfig
 {
-  uint32_t clusterVertices          = 64;
-  uint32_t clusterTriangles         = 64;
-  uint32_t clusterGroupSize         = 32;
-  bool     clusterStripify          = true;
-  float    lodLevelDecimationFactor = 0.5f;
-  bool     autoSaveCache            = false;
-  bool     autoLoadCache            = true;
-  bool     memoryMappedCache        = true;
+  // cluster and cluster group settings
+  uint32_t clusterVertices  = 64;
+  uint32_t clusterTriangles = 64;
+  uint32_t clusterGroupSize = 32;
+
+  // at each lod step reduce cluster group triangles by this factor
+  float lodLevelDecimationFactor = 0.5f;
+
+  // build triangle strips within clusters
+  bool clusterStripify = true;
+
+  // Influence the number of geometries that can be processed in parallel.
+  // Percentage of threads of maximum hardware concurrency
+  float processingThreadsPct = 0.5;
+  // We only process the data and save a cache file, then
+  // terminate the app. This allows to greatly reduce peak memory
+  // consumption during processing.
+  bool processingOnly = false;
+
+  // save cache file after load automatically
+  bool autoSaveCache = false;
+  // try load from cache file if file was found
+  bool autoLoadCache = true;
+  // when loading from cache file, memory map it,
+  // rather than loading it into system RAM.
+  bool memoryMappedCache = true;
 };
 
 struct SceneGridConfig
@@ -176,8 +196,9 @@ public:
   bool m_loadedFromCache = false;
 
 private:
-  static bool loadCached(GeometryView& view, uint64_t dataSize, const void* data);
-  static bool storeCached(const GeometryView& view, uint64_t dataSize, void* data);
+  static bool     loadCached(GeometryView& view, uint64_t dataSize, const void* data);
+  static bool     storeCached(const GeometryView& view, uint64_t dataSize, void* data);
+  static uint64_t storeCached(const GeometryView& view, FILE* outFile);
 
   // GeometryStorage allows building and modifying the data in system RAM
   struct GeometryStorage : GeometryBase
@@ -227,7 +248,7 @@ private:
     struct Header
     {
       uint64_t magic          = 0x006f65676e73766eULL;  // nvsngeo
-      uint32_t geoVersion     = 3;
+      uint32_t geoVersion     = 4;
       uint32_t structSize     = uint32_t(sizeof(GeometryView));
       uint32_t lodVersion     = NVCLUSTERLOD_VERSION;
       uint32_t clusterVersion = NVCLUSTER_VERSION;
@@ -237,6 +258,7 @@ private:
       // 1 initial
       // 2 bugfix wrong storage of `lodInfo`
       // 3 octant vertices
+      // 4 table is 2 x 64-bit per geometry (offse + size) to allow out of order storage
     };
 
     union
@@ -262,10 +284,10 @@ private:
       // second: for each geometry serialized data of the `LodGeometryView`
       uint8_t geometryViewData[];
       // third: offset table
-      // offsets where each `LodGeometry` data is stored.
+      // offsets where each `LodGeometry` data is stored + size
       // ordered with ascending offsets
-      // `geometryDataSize = geometryOffsets[geometryIndex + 1] - geometryOffsets[geometryIndex];`
-      uint64_t geometryOffsets[geometryCount + 1];
+      // `geometryDataSize = geometryOffsets[geometryIndex * 2 + 1];`
+      uint64_t geometryOffsets[geometryCount * 2];
       uint64_t geometryCount;
     };
 #endif
@@ -315,7 +337,30 @@ private:
   nvh::FileReadMapping m_cacheFileMapping;
   CacheFileView        m_cacheFileView;
 
-  bool loadGLTF(const char* filename);
+  // only used in `processingOnly` mode
+  FILE*                 m_processingOnlyFile       = nullptr;
+  uint64_t              m_processingOnlyFileOffset = 0;
+  std::vector<uint64_t> m_processingOnlyGeometryOffsets;
+
+  struct ProcessingInfo
+  {
+    nvcluster::Context    clusterContext;
+    nvclusterlod::Context lodContext;
+
+    uint32_t numThreads = 1;
+
+    uint32_t numOuterThreads = 1;
+    uint32_t numInnerThreads = 1;
+
+    std::atomic_uint64_t numTotalTriangles = 0;
+    std::atomic_uint64_t numTotalStrips    = 0;
+
+    std::mutex processOnlySaveMutex;
+
+    void setupThreads(size_t geometryCount);
+  };
+
+  bool loadGLTF(ProcessingInfo& processingInfo, const char* filename);
 
   nvcluster::Config getClusterConfig() const
   {
@@ -334,15 +379,20 @@ private:
 
   bool checkCache(const nvclusterlod::LodGeometryInfo& info, size_t geometryIndex);
 
+  void processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex, bool isCached);
   void loadCachedGeometry(GeometryStorage& geom, size_t geometryIndex);
 
-  void buildGeometryClusters(nvclusterlod::Context lodcontext, GeometryStorage& geometry, uint32_t numThreads);
+  void buildGeometryClusters(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
   void computeLodBboxes_recursive(GeometryStorage& geom, size_t nodeIdx);
-  void buildGeometryBboxes(GeometryStorage& geometry, uint32_t numThreads);
-  void buildGeometryClusterStrips(GeometryStorage& geom, uint64_t& totalTriangles, uint64_t& totalStrips, uint32_t numThreads);
-  void buildGeometryClusterVertices(GeometryStorage& geometry, uint32_t numThreads);
-  void buildClusters();
+  void buildGeometryBboxes(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
+  void buildGeometryClusterStrips(ProcessingInfo& processingInfo, GeometryStorage& geom);
+  void buildGeometryClusterVertices(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
 
+  void beginProcessingOnly(size_t geometryCount);
+  void saveProcessingOnly(ProcessingInfo& processingInfo, size_t geometryIndex);
+  void endProcessingOnly();
+
+  void computeClusterStats();
   void computeHistograms();
   void computeInstanceBBoxes();
 };

@@ -48,9 +48,10 @@ struct FrameConfig
   uint32_t winWidth;
   uint32_t winHeight;
 
-  bool  freezeCulling = false;
-  bool  hbaoActive    = true;
-  float lodPixelError = 1.0f;
+  bool  showInstanceBboxes = false;
+  bool  freezeCulling      = false;
+  bool  hbaoActive         = true;
+  float lodPixelError      = 1.0f;
   // how many frames until we schedule a group for unloading
   uint32_t streamingAgeThreshold = 16;
   // how much threads to use in the persistent kernels

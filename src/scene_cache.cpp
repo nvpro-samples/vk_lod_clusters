@@ -32,7 +32,7 @@ bool Scene::storeCached(const GeometryView& view, uint64_t dataSize, void* data)
   uint64_t dataAddress = reinterpret_cast<uint64_t>(data);
   uint64_t dataEnd     = dataAddress + dataSize;
 
-  bool isValid = dataAddress % nvclusterlod::detail::ALIGNMENT == 0 && dataAddress + sizeof(GeometryBase) <= dataEnd;
+  bool isValid = (dataAddress % nvclusterlod::detail::ALIGNMENT) == 0 && (dataAddress + sizeof(GeometryBase)) <= dataEnd;
 
   if(isValid)
   {
@@ -57,6 +57,93 @@ bool Scene::storeCached(const GeometryView& view, uint64_t dataSize, void* data)
   dataAddress += nvclusterlod::getCachedSize(view.lodHierarchy);
 
   return isValid;
+}
+
+static bool fileWriteAligned(uint64_t& outAccumulatedSize, FILE* outFile, size_t dataSize, const void* data)
+{
+  assert(outAccumulatedSize % nvclusterlod::detail::ALIGNMENT == 0);
+
+  static const uint8_t padBytes[nvclusterlod::detail::ALIGNMENT] = {};
+
+  if(fwrite(data, dataSize, 1, outFile) != 1)
+    return false;
+
+  uint64_t newDataSize = (dataSize + nvclusterlod::detail::ALIGN_MASK) & ~nvclusterlod::detail::ALIGN_MASK;
+
+  uint64_t padSize = newDataSize - dataSize;
+  if(padSize)
+  {
+    if(fwrite(padBytes, padSize, 1, outFile) != 1)
+    {
+      return false;
+    }
+  }
+
+  outAccumulatedSize += newDataSize;
+  return true;
+}
+
+template <typename T>
+inline void fileWriteAligned(bool& isValid, uint64_t& outAccumulatedSize, FILE* outFile, const std::span<const T>& view)
+{
+  assert(outAccumulatedSize % nvclusterlod::detail::ALIGNMENT == 0);
+
+  if(isValid)
+  {
+    union
+    {
+      uint64_t count;
+      uint8_t  countData[nvclusterlod::detail::ALIGNMENT];
+    };
+    memset(countData, 0, sizeof(countData));
+
+    count = view.size();
+
+    if(fwrite(countData, nvclusterlod::detail::ALIGNMENT, 1, outFile) != 1)
+    {
+      isValid = false;
+      return;
+    }
+
+    outAccumulatedSize += nvclusterlod::detail::ALIGNMENT;
+
+    if(view.size() && !fileWriteAligned(outAccumulatedSize, outFile, view.size_bytes(), view.data()))
+    {
+      isValid = false;
+    }
+  }
+}
+
+uint64_t Scene::storeCached(const GeometryView& view, FILE* outFile)
+{
+  uint64_t dataSize = 0;
+
+  bool isValid = fileWriteAligned(dataSize, outFile, sizeof(GeometryBase), (const GeometryBase*)&view);
+
+  if(isValid)
+  {
+    fileWriteAligned(isValid, dataSize, outFile, view.vertices);
+    fileWriteAligned(isValid, dataSize, outFile, view.localTriangles);
+    fileWriteAligned(isValid, dataSize, outFile, view.clusterVertexRanges);
+    fileWriteAligned(isValid, dataSize, outFile, view.clusterBboxes);
+    fileWriteAligned(isValid, dataSize, outFile, view.groupLodLevels);
+    fileWriteAligned(isValid, dataSize, outFile, view.nodeBboxes);
+
+
+    fileWriteAligned(isValid, dataSize, outFile, view.lodMesh.triangleVertices);
+    fileWriteAligned(isValid, dataSize, outFile, view.lodMesh.clusterTriangleRanges);
+    fileWriteAligned(isValid, dataSize, outFile, view.lodMesh.clusterGeneratingGroups);
+    fileWriteAligned(isValid, dataSize, outFile, view.lodMesh.clusterBoundingSpheres);
+    fileWriteAligned(isValid, dataSize, outFile, view.lodMesh.groupQuadricErrors);
+    fileWriteAligned(isValid, dataSize, outFile, view.lodMesh.groupClusterRanges);
+    fileWriteAligned(isValid, dataSize, outFile, view.lodMesh.lodLevelGroupRanges);
+
+    fileWriteAligned(isValid, dataSize, outFile, view.lodHierarchy.nodes);
+    fileWriteAligned(isValid, dataSize, outFile, view.lodHierarchy.groupCumulativeBoundingSpheres);
+    fileWriteAligned(isValid, dataSize, outFile, view.lodHierarchy.groupCumulativeQuadricError);
+  }
+
+  return dataSize;
 }
 
 bool Scene::loadCached(GeometryView& view, uint64_t dataSize, const void* data)
@@ -116,13 +203,13 @@ bool Scene::CacheFileView::init(uint64_t dataSize, const void* data)
 
   m_geometryCount = *getPointer<uint64_t>(m_dataSize - sizeof(uint64_t));
 
-  if(dataSize <= (sizeof(CacheHeader) + sizeof(uint64_t) * (m_geometryCount + 2)))
+  if(!m_geometryCount || (dataSize <= (sizeof(CacheHeader) + sizeof(uint64_t) * (m_geometryCount * 2 + 1))))
   {
     m_dataSize = 0;
     return false;
   }
 
-  m_tableStart = m_dataSize - sizeof(uint64_t) * (m_geometryCount + 2);
+  m_tableStart = m_dataSize - sizeof(uint64_t) * (m_geometryCount * 2 + 1);
 
   return true;
 }
@@ -137,8 +224,8 @@ bool Scene::CacheFileView::getGeometryView(GeometryView& view, uint64_t geometry
     return false;
   }
 
-  const uint64_t* geometryOffsets = getPointer<uint64_t>(m_tableStart, m_geometryCount + 1);
-  uint64_t        base            = geometryOffsets[geometryIndex];
+  const uint64_t* geometryOffsets = getPointer<uint64_t>(m_tableStart, m_geometryCount * 2);
+  uint64_t        base            = geometryOffsets[geometryIndex * 2 + 0];
 
   if(base + sizeof(GeometryBase) > m_tableStart)
   {
@@ -147,7 +234,7 @@ bool Scene::CacheFileView::getGeometryView(GeometryView& view, uint64_t geometry
     return false;
   }
 
-  uint64_t geometryTotalSize = geometryOffsets[geometryIndex + 1] - base;
+  uint64_t geometryTotalSize = geometryOffsets[geometryIndex * 2 + 1];
   uint64_t baseEnd           = base + geometryTotalSize;
 
   const uint8_t* geoData = getPointer<uint8_t>(base, geometryTotalSize);
@@ -201,29 +288,32 @@ void Scene::loadCachedGeometry(GeometryStorage& storage, size_t geometryIndex)
 
 bool Scene::saveCache() const
 {
-  uint64_t dataSize = sizeof(Scene::CacheHeader);
+  uint64_t dataOffset = sizeof(Scene::CacheHeader);
 
   std::vector<uint64_t> geometryOffsets;
-  geometryOffsets.reserve(m_geometryViews.size() + 2);
+  geometryOffsets.reserve(m_geometryViews.size() * 2 + 1);
 
   for(const GeometryView& geom : m_geometryViews)
   {
-    geometryOffsets.push_back(dataSize);
+    uint64_t geomDataSize = geom.getCachedSize();
+    geometryOffsets.push_back(dataOffset);
+    geometryOffsets.push_back(geomDataSize);
 
-    dataSize += geom.getCachedSize();
+    dataOffset += geomDataSize;
   }
-  geometryOffsets.push_back(dataSize);
   geometryOffsets.push_back(m_geometryViews.size());
 
-  dataSize += geometryOffsets.size() * sizeof(uint64_t);
+  uint64_t tableOffset = dataOffset;
+
+  dataOffset += geometryOffsets.size() * sizeof(uint64_t);
 
   nvh::FileReadOverWriteMapping outMapping;
 
   std::string outFilename = m_filename + ".nvsngeo";
 
-  if(!outMapping.open(outFilename.c_str(), dataSize))
+  if(!outMapping.open(outFilename.c_str(), dataOffset))
   {
-    LOGE("Scene::saveCache failed to save file %s", outFilename.c_str());
+    LOGE("Scene::saveCache failed to save file %s\n", outFilename.c_str());
     return false;
   }
 
@@ -233,15 +323,14 @@ bool Scene::saveCache() const
   Scene::CacheHeader cacheHeader;
   memcpy(mappingData, &cacheHeader, sizeof(cacheHeader));
   // write offset table at end
-  memcpy(mappingData + geometryOffsets[m_geometryViews.size()], geometryOffsets.data(),
-         sizeof(uint64_t) * geometryOffsets.size());
+  memcpy(mappingData + tableOffset, geometryOffsets.data(), sizeof(uint64_t) * geometryOffsets.size());
 
   bool hadError = false;
   nvh::parallel_batches(m_geometryViews.size(), [&](uint64_t idx) {
     const GeometryView& view = m_geometryViews[idx];
 
-    uint64_t dataOffset = geometryOffsets[idx];
-    uint64_t dataSize   = geometryOffsets[idx + 1] - dataOffset;
+    uint64_t dataOffset = geometryOffsets[idx * 2 + 0];
+    uint64_t dataSize   = geometryOffsets[idx * 2 + 1];
 
     if(!Scene::storeCached(view, dataSize, mappingData + dataOffset))
     {
@@ -259,6 +348,79 @@ bool Scene::saveCache() const
   }
 
   return !hadError;
+}
+
+
+void Scene::beginProcessingOnly(size_t geometryCount)
+{
+  // don't trigger this code path if not valid
+  if(!m_config.processingOnly || m_cacheFileView.isValid())
+  {
+    return;
+  }
+
+  std::string outFilename = m_filename + ".nvsngeo";
+
+  m_processingOnlyFile = nullptr;
+  int result           = 0;
+#ifdef WIN32
+  result = fopen_s(&m_processingOnlyFile, outFilename.c_str(), "wb") == 0;
+#else
+  m_processingOnlyFile = fopen(outFilename.c_str(), "wb");
+  result               = (m_processingOnlyFile) != nullptr;
+#endif
+
+  if(!result)
+  {
+    LOGE("Scene::beginProcessOnlySave failed to save file %s\n", outFilename.c_str());
+    return;
+  }
+
+  Scene::CacheHeader header;
+
+  fwrite(&header, sizeof(header), 1, m_processingOnlyFile);
+
+  m_processingOnlyFileOffset = sizeof(Scene::CacheHeader);
+
+  m_processingOnlyGeometryOffsets.resize(geometryCount * 2 + 1);
+  m_processingOnlyGeometryOffsets[geometryCount * 2] = geometryCount;
+
+  LOGI("Scene::beginProcessOnlySave started save file %s\n", outFilename.c_str());
+}
+
+
+void Scene::saveProcessingOnly(ProcessingInfo& processingInfo, size_t geometryIndex)
+{
+  // unfortunately single-threaded writing for now
+  {
+    std::lock_guard lock(processingInfo.processOnlySaveMutex);
+
+    uint64_t dataSize = storeCached(m_geometryViews[geometryIndex], m_processingOnlyFile);
+    m_processingOnlyGeometryOffsets[geometryIndex * 2 + 0] = m_processingOnlyFileOffset;
+    m_processingOnlyGeometryOffsets[geometryIndex * 2 + 1] = dataSize;
+
+    m_processingOnlyFileOffset += dataSize;
+  }
+
+  // in process only mode we deallocate all data after storage
+  m_geometryViews[geometryIndex]    = {};
+  m_geometryStorages[geometryIndex] = {};
+}
+
+void Scene::endProcessingOnly()
+{
+  if(!m_processingOnlyFile)
+    return;
+
+  std::string outFilename = m_filename + ".nvsngeo";
+
+  fwrite(m_processingOnlyGeometryOffsets.data(), m_processingOnlyGeometryOffsets.size() * sizeof(uint64_t), 1, m_processingOnlyFile);
+
+  fclose(m_processingOnlyFile);
+
+  LOGI("Scene::endProcessOnlySave finished to save file %s\n", outFilename.c_str());
+
+  exit(0);
 }
 
 }  // namespace lodclusters

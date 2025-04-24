@@ -829,9 +829,13 @@ void LodClusters::setupConfigParameters(nvh::ParameterList& parameterList)
   parameterList.add("clusterconfig", (int*)&m_tweak.clusterConfig);
   parameterList.add("loderror", &m_frameConfig.lodPixelError);
   parameterList.add("culling", &m_tweak.useCulling);
-  parameterList.add("autosavecache|default false", &m_sceneConfig.autoSaveCache);
-  parameterList.add("autoloadcache|default true", &m_sceneConfig.autoLoadCache);
-  parameterList.add("mappedcache|default true", &m_sceneConfig.memoryMappedCache);
+  parameterList.add("autosavecache|automatically store cache file for loaded scene. default false", &m_sceneConfig.autoSaveCache);
+  parameterList.add("autoloadcache|automatically load cache file if found. default true", &m_sceneConfig.autoLoadCache);
+  parameterList.add("mappedcache|work from memory mapped cache file, otherwise load to sysmem. default true",
+                    &m_sceneConfig.memoryMappedCache);
+  parameterList.add("processingonly|directly terminate app once cache file was saved. default false", &m_sceneConfig.processingOnly);
+  parameterList.add("processingthreadpct|float percentage of threads during initial file load and processing into lod clusters, default 0.5 == 50%",
+                    &m_sceneConfig.processingThreadsPct);
 
   parameterList.addFilename(".gltf", &m_modelFilename);
   parameterList.addFilename(".glb", &m_modelFilename);
