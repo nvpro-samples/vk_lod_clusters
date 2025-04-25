@@ -147,8 +147,17 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
 
   initWriteRayTracingDepthBuffer(res);
   initRenderInstanceBboxes(res, rscene);
-}
 
+  if(config.useSorting)
+  {
+    VrdxSorterStorageRequirements sorterRequirements = {};
+    vrdxGetSorterKeyValueStorageRequirements(res.m_vrdxSorter, uint32_t(m_renderInstances.size()), &sorterRequirements);
+
+    m_sortingAuxBuffer = res.createBuffer(sorterRequirements.size, sorterRequirements.usage);
+
+    m_resourceReservedUsage.operationsMemBytes += m_sortingAuxBuffer.info.range;
+  }
+}
 
 void Renderer::deinitBasics(Resources& res)
 {
@@ -156,10 +165,14 @@ void Renderer::deinitBasics(Resources& res)
 
   vkDestroyPipeline(res.m_device, m_writeDepthBufferPipeline, nullptr);
   m_writeDepthBufferPipeline = VK_NULL_HANDLE;
-
   m_writeDepthBufferDsetContainer.deinit();
 
+  vkDestroyPipeline(res.m_device, m_renderInstanceBboxesPipeline, nullptr);
+  m_renderInstanceBboxesPipeline = VK_NULL_HANDLE;
+  m_renderInstanceBboxesDsetContainer.deinit();
+
   res.destroy(m_renderInstanceBuffer);
+  res.destroy(m_sortingAuxBuffer);
 }
 
 void Renderer::updatedFrameBufferBasics(Resources& res)

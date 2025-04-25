@@ -323,6 +323,7 @@ void LodClusters::processUI(double time, nvh::Profiler& profiler, const CallBack
                         ImGuiInputTextFlags_EnterReturnsTrue);
     PE::InputIntClamped("Max traversal tasks (bits)", (int*)&m_rendererConfig.numTraversalTaskBits, 16, 25, 1, 1,
                         ImGuiInputTextFlags_EnterReturnsTrue);
+    PE::Checkbox("Instance Sorting", &m_rendererConfig.useSorting);
     PE::Checkbox("Culling (Occlusion & Frustum)", &m_tweak.useCulling);
     PE::Checkbox("Freeze Cull / LoD", &m_frameConfig.freezeCulling);
     PE::InputFloat("LoD pixel error", &m_frameConfig.lodPixelError, 0.25f, 0.25f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);

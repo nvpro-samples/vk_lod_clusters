@@ -54,6 +54,7 @@ public:
 struct RendererConfig
 {
   bool flipWinding = false;
+  bool useSorting  = false;
 
   // the maximum number of renderable clusters per frame in bits i.e. (1 << number)
   uint32_t numRenderClusterBits = 20;
@@ -136,6 +137,8 @@ protected:
 
   nvvk::DescriptorSetContainer m_renderInstanceBboxesDsetContainer;
   VkPipeline                   m_renderInstanceBboxesPipeline = nullptr;
+
+  RBuffer m_sortingAuxBuffer;
 };
 
 //////////////////////////////////////////////////////////////////////////

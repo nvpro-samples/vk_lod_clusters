@@ -220,6 +220,16 @@ bool Resources::init(nvvk::Context* context, const std::vector<std::string>& sha
 
   m_sky.setup(m_device, &m_allocator);
 
+  {
+    VrdxSorterCreateInfo sorterCreateInfo;
+    sorterCreateInfo.device         = m_device;
+    sorterCreateInfo.physicalDevice = m_physical;
+    sorterCreateInfo.pipelineCache  = nullptr;
+
+    vrdxCreateSorter(&sorterCreateInfo, &m_vrdxSorter);
+  }
+
+
   return true;
 }
 
@@ -242,6 +252,8 @@ void Resources::deinit()
   m_hbaoPass.deinit();
 
   m_hiz.deinit();
+
+  vrdxDestroySorter(m_vrdxSorter);
 
   m_sky.destroy();
   m_tempCommandPool.deinit();

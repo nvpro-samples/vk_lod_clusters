@@ -407,3 +407,5 @@ We recommend making use of _"File > Save Cache"_ menu entry to store the results
 ## Third Party
 
 [meshoptimizer](https://github.com/zeux/meshoptimizer) is used during the mesh simplification process and when the triangles within a cluster are re-ordered to improve triangle strips.
+
+[vulkan_radix_sort](https://github.com/jaesung-cs/vulkan_radix_sort) is used when "Instance Sorting" is activated prior traversal.

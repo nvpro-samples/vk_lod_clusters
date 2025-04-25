@@ -124,6 +124,10 @@ struct SceneBuilding
   
   // instance states store culling/visibility related information
   BUFFER_REF(uint32s_inout) instanceStates;
+  
+  BUFFER_REF(uint32s_inout) instanceSortValues;
+  BUFFER_REF(uint32s_inout) instanceSortKeys;
+  
   BUFFER_REF(TlasInstances_inout) tlasInstances;
   
   // per instance

@@ -22,8 +22,7 @@
   Shader Description
   ==================
   
-  This compute shader initializes the traversal queue with the 
-  root nodes of the lod hierarchy of rendered instances.
+  This compute shader computes the distance of the instance to the camera.
 
   A thread represents one instance.
 */
@@ -90,76 +89,31 @@ layout(scalar, binding = BINDINGS_SCENEBUILDING_SSBO, set = 0) buffer buildBuffe
 
 ////////////////////////////////////////////
 
-layout(local_size_x=TRAVERSAL_INIT_WORKGROUP) in;
-
-#include "culling.glsl"
+layout(local_size_x=TRAVERSAL_PRESORT_WORKGROUP) in;
 
 ////////////////////////////////////////////
 
 void main()
 {
-  uint instanceID   = gl_GlobalInvocationID.x;
+  uint instanceID = gl_GlobalInvocationID.x;
   uint instanceLoad = min(build.numRenderInstances-1, instanceID);
-  bool isValid      = instanceID == instanceLoad;
-
-#if USE_SORTING
-  instanceLoad = build.instanceSortValues.d[instanceLoad];
-  instanceID   = instanceLoad;
-#endif
-
-  // TODO optimization:
-  // For better loading behavior when streaming, the instances should be sorted
-  // relative to camera position.
   
   RenderInstance instance = instances[instanceLoad];
   Geometry geometry = geometries[instance.geometryID];
   
-  vec4 clipMin;
-  vec4 clipMax;
-  bool clipValid;
+  mat4 worldToObject = inverse(instance.worldMatrix);
   
-  uint status = 0;
+  vec3 oPos = (worldToObject * vec4(view.viewPos.xyz,1)).xyz;
   
-  bool inFrustum = intersectFrustum(geometry.bbox.lo, geometry.bbox.hi, instance.worldMatrix, clipMin, clipMax, clipValid);
-  bool isVisible = inFrustum && (!clipValid || (intersectSize(clipMin, clipMax) && intersectHiz(clipMin, clipMax)));
+  bool isInside = all(equal(greaterThanEqual(oPos, geometry.bbox.lo),lessThanEqual(oPos, geometry.bbox.hi)));
   
-  status  = (inFrustum ? INSTANCE_FRUSTUM_BIT : 0) |
-            (isVisible ? INSTANCE_VISIBLE_BIT : 0);
+  vec3 oPosClamp = isInside ? (geometry.bbox.lo + geometry.bbox.hi) * 0.5 :
+    clamp(oPos, geometry.bbox.lo, geometry.bbox.hi);
   
-
-  bool doNode = isValid
-  #if USE_CULLING && TARGETS_RASTERIZATION
-    && isVisible
-  #endif
-    ;
-  uvec4 voteNodes = subgroupBallot(doNode);
+  vec4 wPos = instance.worldMatrix * vec4(oPosClamp, 1);
   
-  // TODO optimization: enqueue all root children, so traversal can start with more nodes immediately
-  // TODO feature: allow single-lod level render option by picking a single appropriate child of the root node
-  // The root hierarchy node of a geometry is up to 32 wide, and each child represents one distinct lod level.
-  
-  uint offsetNodes = 0;
-  if (subgroupElect())
-  {
-    offsetNodes = atomicAdd(buildRW.traversalTaskCounter, int(subgroupBallotBitCount(voteNodes)));
-  }
-  
-  offsetNodes = subgroupBroadcastFirst(offsetNodes);  
-  offsetNodes += subgroupBallotExclusiveBitCount(voteNodes);
-      
-  if (doNode && offsetNodes < build.maxTraversalInfos) {
-    uint packedNode = geometry.nodes.d[0].packed;
-    TraversalInfo traversalInfo;
-    traversalInfo.instanceID = instanceID;
-    traversalInfo.packedNode = packedNode;
-    build.traversalNodeInfos.d[offsetNodes] = packTraversalInfo(traversalInfo);
-  }
-
-  #if TARGETS_RAY_TRACING
   if (instanceID == instanceLoad) {
-    build.instanceStates.d[instanceID] = status;
-    build.blasBuildInfos.d[instanceID].clusterReferencesCount = 0;
-    build.blasBuildInfos.d[instanceID].clusterReferencesStride = 8;
+    build.instanceSortValues.d[instanceID] = instanceID;
+    build.instanceSortKeys.d[instanceID]   = floatBitsToUint(distance(wPos.xyz, view.viewPos.xyz));
   }
-  #endif
 }

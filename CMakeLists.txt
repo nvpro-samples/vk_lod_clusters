@@ -108,9 +108,11 @@ endif()
 file(GLOB SOURCE_FILES src/*.*)
 file(GLOB SHADER_FILES shaders/*.glsl shaders/*.h)
 list(APPEND SHADER_FILES ${NVPRO_CORE_DIR}/nvvkhl/shaders/dh_sky.h)
+file(GLOB VK_RADIX_SORT_FILES thirdparty/vulkan_radix_sort/src/vk_radix_sort.cc)
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 include_directories(${NVPRO_CORE_DIR}/nvvkhl/shaders)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/vulkan_radix_sort/include)
 
 #####################################################################################
 # Executable
@@ -123,7 +125,7 @@ if(WIN32 AND NOT GLUT_FOUND)
 else()
   add_definitions(-fpermissive)
 endif()
-add_executable(${PROJNAME} ${SOURCE_FILES} ${COMMON_SOURCE_FILES} ${PACKAGE_SOURCE_FILES} ${SHADER_FILES} ${MESHOPT_FILES})
+add_executable(${PROJNAME} ${SOURCE_FILES} ${COMMON_SOURCE_FILES} ${PACKAGE_SOURCE_FILES} ${SHADER_FILES} ${MESHOPT_FILES} ${VK_RADIX_SORT_FILES})
 
 set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${PROJNAME})
 

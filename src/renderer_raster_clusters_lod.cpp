@@ -41,6 +41,7 @@ private:
     nvvk::ShaderModuleID graphicsMesh;
     nvvk::ShaderModuleID graphicsFragment;
 
+    nvvk::ShaderModuleID computeTraversalPresort;
     nvvk::ShaderModuleID computeTraversalInit;
     nvvk::ShaderModuleID computeTraversalRun;
     nvvk::ShaderModuleID computeBuildSetup;
@@ -48,10 +49,11 @@ private:
 
   struct Pipelines
   {
-    VkPipeline graphicsMesh         = nullptr;
-    VkPipeline computeTraversalInit = nullptr;
-    VkPipeline computeTraversalRun  = nullptr;
-    VkPipeline computeBuildSetup    = nullptr;
+    VkPipeline graphicsMesh            = nullptr;
+    VkPipeline computeTraversalPresort = nullptr;
+    VkPipeline computeTraversalInit    = nullptr;
+    VkPipeline computeTraversalRun     = nullptr;
+    VkPipeline computeBuildSetup       = nullptr;
   };
 
   RendererConfig     m_config;
@@ -77,12 +79,15 @@ bool RendererRasterClustersLod::initShaders(Resources& res, const RenderScene& r
                                shaderio::adjustClusterProperty(rscene.scene->m_config.clusterTriangles));
   prepend += nvh::stringFormat("#define TARGETS_RASTERIZATION %d\n", 1);
   prepend += nvh::stringFormat("#define USE_STREAMING %d\n", rscene.useStreaming ? 1 : 0);
+  prepend += nvh::stringFormat("#define USE_SORTING %d\n", config.useSorting ? 1 : 0);
   prepend += nvh::stringFormat("#define MESHSHADER_WORKGROUP_SIZE %d\n", 32);
 
   m_shaders.graphicsMesh =
       res.m_shaderManager.createShaderModule(VK_SHADER_STAGE_MESH_BIT_NV, "render_raster_clusters.mesh.glsl", prepend);
   m_shaders.graphicsFragment =
       res.m_shaderManager.createShaderModule(VK_SHADER_STAGE_FRAGMENT_BIT, "render_raster.frag.glsl", prepend);
+  m_shaders.computeTraversalPresort =
+      res.m_shaderManager.createShaderModule(VK_SHADER_STAGE_COMPUTE_BIT, "traversal_presort.comp.glsl", prepend);
   m_shaders.computeTraversalInit =
       res.m_shaderManager.createShaderModule(VK_SHADER_STAGE_COMPUTE_BIT, "traversal_init.comp.glsl", prepend);
   m_shaders.computeTraversalRun =
@@ -127,11 +132,22 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     m_sceneBuildShaderio.maxRenderClusters  = uint32_t(1u << config.numRenderClusterBits);
     m_sceneBuildShaderio.maxTraversalInfos  = uint32_t(1u << config.numTraversalTaskBits);
 
-    m_sceneDataBuffer = res.createBuffer(sizeof(shaderio::ClusterInfo) * m_sceneBuildShaderio.maxRenderClusters,
-                                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    BufferRanges mem = {};
+    m_sceneBuildShaderio.renderClusterInfos =
+        mem.append(sizeof(shaderio::ClusterInfo) * m_sceneBuildShaderio.maxRenderClusters, 8);
+
+    if(config.useSorting)
+    {
+      m_sceneBuildShaderio.instanceSortKeys   = mem.append(sizeof(uint32_t) * m_renderInstances.size(), 4);
+      m_sceneBuildShaderio.instanceSortValues = mem.append(sizeof(uint32_t) * m_renderInstances.size(), 4);
+    }
+
+    m_sceneDataBuffer = res.createBuffer(mem.getSize(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     m_resourceReservedUsage.operationsMemBytes += m_sceneDataBuffer.info.range;
 
-    m_sceneBuildShaderio.renderClusterInfos = m_sceneDataBuffer.address;
+    m_sceneBuildShaderio.renderClusterInfos += m_sceneDataBuffer.address;
+    m_sceneBuildShaderio.instanceSortKeys += m_sceneDataBuffer.address;
+    m_sceneBuildShaderio.instanceSortValues += m_sceneDataBuffer.address;
 
     m_sceneTraversalBuffer =
         res.createBuffer(sizeof(uint64_t) * m_sceneBuildShaderio.maxTraversalInfos, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -202,6 +218,12 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     compInfo.layout                      = m_dsetContainer.getPipeLayout();
     //compInfo.flags                       = VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR;
 
+    if(config.useSorting)
+    {
+      compInfo.stage.module = res.m_shaderManager.get(m_shaders.computeTraversalPresort);
+      vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTraversalPresort);
+    }
+
     compInfo.stage.module = res.m_shaderManager.get(m_shaders.computeBuildSetup);
     vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeBuildSetup);
 
@@ -259,6 +281,30 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
   if(rscene.useStreaming)
   {
     rscene.sceneStreaming.cmdPreTraversal(cmd, 0, profiler);
+  }
+
+  if(m_config.useSorting)
+  {
+    auto timerSection = profiler.timeRecurring("Traversal Instance Sort", cmd);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_dsetContainer.getPipeLayout(), 0, 1,
+                            m_dsetContainer.getSets(), 0, nullptr);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalPresort);
+    vkCmdDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TRAVERSAL_PRESORT_WORKGROUP), 1, 1);
+
+    memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                         &memBarrier, 0, nullptr, 0, nullptr);
+
+    vrdxCmdSortKeyValue(cmd, res.m_vrdxSorter, m_sceneBuildShaderio.numRenderInstances, m_sceneDataBuffer.buffer,
+                        m_sceneBuildShaderio.instanceSortKeys - m_sceneDataBuffer.address, m_sceneDataBuffer.buffer,
+                        m_sceneBuildShaderio.instanceSortValues - m_sceneDataBuffer.address, m_sortingAuxBuffer.buffer,
+                        0, nullptr, 0);
+
+    memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                         &memBarrier, 0, nullptr, 0, nullptr);
   }
 
   {
@@ -364,6 +410,7 @@ void RendererRasterClustersLod::updatedFrameBuffer(Resources& res)
 void RendererRasterClustersLod::deinit(Resources& res)
 {
   vkDestroyPipeline(res.m_device, m_pipelines.graphicsMesh, nullptr);
+  vkDestroyPipeline(res.m_device, m_pipelines.computeTraversalPresort, nullptr);
   vkDestroyPipeline(res.m_device, m_pipelines.computeTraversalInit, nullptr);
   vkDestroyPipeline(res.m_device, m_pipelines.computeTraversalRun, nullptr);
   vkDestroyPipeline(res.m_device, m_pipelines.computeBuildSetup, nullptr);

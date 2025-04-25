@@ -36,6 +36,7 @@
 #include <nvvk/shadermodulemanager_vk.hpp>
 #include <nvvk/resourceallocator_vk.hpp>
 #include <nvvkhl/sky.hpp>
+#include <vk_radix_sort.h>
 
 #include "hbao_pass.hpp"
 #include "nvhiz_vk.hpp"
@@ -303,6 +304,8 @@ public:
   size_t   m_fboChangeID = ~0;
 
   glm::vec4 m_bgColor = {0.1, 0.13, 0.15, 1.0};
+
+  VrdxSorter m_vrdxSorter = nullptr;
 
   bool init(nvvk::Context* context, const std::vector<std::string>& shaderSearchPaths);
   void deinit();

@@ -1,4 +1,7 @@
 # Changelog for vk_lod_clusters
+* 2026-4-25:
+  * Added "Instance Sorting" option, does sort instances by distance to camera. `-instancesorting 0/1`.
+  * bugfix gltf meshes with multiple primitives
 * 2026-4-23:
   * Add `-processingthreadpct <float 0-1.0>` to control the percentage of threads doing the geometry processing (number of geometries in parallel). Percentage of what the system supports for concurrency. Default is `0.5`.
   * Add `-processingonly 0/1` to reduce peak memory consumption during processing and saving the cache file. This always saves a cache file (unless the old one was valid) and terminates the application afterwards.

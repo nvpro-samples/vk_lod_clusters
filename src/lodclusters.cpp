@@ -555,8 +555,8 @@ LodClusters::ChangeStates LodClusters::handleChanges(uint32_t width, uint32_t he
   }
 
   bool rendererChanged = false;
-  if(sceneChanged || shaderChanged || renderSceneChanged || tweakChanged(m_tweak.renderer)
-     || tweakChanged(m_tweak.flipWinding) || rendererCfgChanged(m_rendererConfig.numRenderClusterBits)
+  if(sceneChanged || shaderChanged || renderSceneChanged || tweakChanged(m_tweak.renderer) || tweakChanged(m_tweak.flipWinding)
+     || rendererCfgChanged(m_rendererConfig.useSorting) || rendererCfgChanged(m_rendererConfig.numRenderClusterBits)
      || rendererCfgChanged(m_rendererConfig.numTraversalTaskBits) || tweakChanged(m_tweak.useDebugVisualization))
   {
     rendererChanged = true;
@@ -829,6 +829,7 @@ void LodClusters::setupConfigParameters(nvh::ParameterList& parameterList)
   parameterList.add("clusterconfig", (int*)&m_tweak.clusterConfig);
   parameterList.add("loderror", &m_frameConfig.lodPixelError);
   parameterList.add("culling", &m_tweak.useCulling);
+  parameterList.add("instancesorting", &m_rendererConfig.useSorting);
   parameterList.add("autosavecache|automatically store cache file for loaded scene. default false", &m_sceneConfig.autoSaveCache);
   parameterList.add("autoloadcache|automatically load cache file if found. default true", &m_sceneConfig.autoLoadCache);
   parameterList.add("mappedcache|work from memory mapped cache file, otherwise load to sysmem. default true",
