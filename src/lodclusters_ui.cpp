@@ -259,7 +259,8 @@ void LodClusters::processUI(double time, nvh::Profiler& profiler, const CallBack
   if(ImGui::CollapsingHeader("Scene Modifiers"))  //, nullptr, ImGuiTreeNodeFlags_DefaultOpen ))
   {
     PE::begin("##Scene Complexity");
-    PE::Checkbox("Flip faces winding", &m_tweak.flipWinding);
+    PE::Checkbox("Flip faces winding", &m_rendererConfig.flipWinding);
+    PE::Checkbox("Disable back-face culling", &m_rendererConfig.twoSided);
     PE::InputInt("Render grid copies", (int*)&m_sceneGridConfig.numCopies, 1, 16, ImGuiInputTextFlags_EnterReturnsTrue,
                  "Instances the entire scene on a grid");
     PE::InputInt("Render grid bits", (int*)&m_sceneGridConfig.gridBits, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,

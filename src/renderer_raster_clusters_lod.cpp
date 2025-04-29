@@ -205,6 +205,10 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     nvvk::GraphicsPipelineGenerator gfxGen(res.m_device, m_dsetContainer.getPipeLayout(),
                                            res.m_framebuffer.pipelineRenderingInfo, state);
     state.rasterizationState.frontFace = config.flipWinding ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    if(config.twoSided)
+    {
+      state.rasterizationState.cullMode = VK_CULL_MODE_NONE;
+    }
     gfxGen.addShader(res.m_shaderManager.get(m_shaders.graphicsMesh), VK_SHADER_STAGE_MESH_BIT_NV);
     gfxGen.addShader(res.m_shaderManager.get(m_shaders.graphicsFragment), VK_SHADER_STAGE_FRAGMENT_BIT);
     m_pipelines.graphicsMesh = gfxGen.createPipeline();

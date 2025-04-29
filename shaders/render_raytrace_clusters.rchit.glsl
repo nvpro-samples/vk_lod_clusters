@@ -150,17 +150,20 @@ void main()
   vec3 wPos = vec3(gl_ObjectToWorldEXT * vec4(oPos, 1.0));
 
   vec3 oNormal;
+  bool backFacing = false;
 #if ALLOW_VERTEX_NORMALS
-  if(view.facetShading != 0)
+  if(view.facetShading != 0 || view.flipWinding == 2)
 #endif
   {
     // Otherwise compute geometric normal
     vec3 e0 = gl_HitTriangleVertexPositionsEXT[1] - gl_HitTriangleVertexPositionsEXT[0];
     vec3 e1 = gl_HitTriangleVertexPositionsEXT[2] - gl_HitTriangleVertexPositionsEXT[0];
     oNormal    = normalize(cross(e0, e1));
+    
+    backFacing = dot(oNormal, gl_ObjectRayDirectionEXT) > 0;
   }
 #if ALLOW_VERTEX_NORMALS
-  else
+  if(view.facetShading == 0)
   {
     oNormal = baryWeight.x * oct32_to_vec(floatBitsToUint(oVertices.d[triangleIndices.x].w)) + 
               baryWeight.y * oct32_to_vec(floatBitsToUint(oVertices.d[triangleIndices.y].w)) + 
@@ -171,7 +174,7 @@ void main()
   mat3 worldMatrixIT = transpose(inverse(mat3(instance.worldMatrix)));
 
   vec3 wNormal = normalize(vec3(worldMatrixIT * oNormal));
-  if(view.flipWinding != 0)
+  if(view.flipWinding == 1 || (view.flipWinding == 2 && backFacing))
   {
     wNormal = -wNormal;
   }

@@ -80,7 +80,7 @@ void main()
   rayHit.differentialY.xyz = directionOffsetY.xyz;
 #endif
 
-  traceRayEXT(asScene, gl_RayFlagsCullBackFacingTrianglesEXT, 0xff, 0, 0,  // hit offset, hit stride
+  traceRayEXT(asScene, view.flipWinding == 2 ? 0 : gl_RayFlagsCullBackFacingTrianglesEXT, 0xff, 0, 0,  // hit offset, hit stride
               0,                                                           // miss offset
               origin.xyz, tMin, direction.xyz, tMax,
               0  // rayPayloadNV location qualifier

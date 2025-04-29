@@ -223,8 +223,6 @@ void LodClusters::initRenderer(RendererType rtype)
       break;
   }
 
-  m_rendererConfig.flipWinding = m_tweak.flipWinding;
-
   if(m_renderer && !m_renderer->init(m_resources, *m_renderScene, m_rendererConfig))
   {
     m_renderer = nullptr;
@@ -555,9 +553,10 @@ LodClusters::ChangeStates LodClusters::handleChanges(uint32_t width, uint32_t he
   }
 
   bool rendererChanged = false;
-  if(sceneChanged || shaderChanged || renderSceneChanged || tweakChanged(m_tweak.renderer) || tweakChanged(m_tweak.flipWinding)
-     || rendererCfgChanged(m_rendererConfig.useSorting) || rendererCfgChanged(m_rendererConfig.numRenderClusterBits)
-     || rendererCfgChanged(m_rendererConfig.numTraversalTaskBits) || tweakChanged(m_tweak.useDebugVisualization))
+  if(sceneChanged || shaderChanged || renderSceneChanged || tweakChanged(m_tweak.renderer)
+     || tweakChanged(m_tweak.useDebugVisualization) || rendererCfgChanged(m_rendererConfig.flipWinding)
+     || rendererCfgChanged(m_rendererConfig.twoSided) || rendererCfgChanged(m_rendererConfig.useSorting)
+     || rendererCfgChanged(m_rendererConfig.numRenderClusterBits) || rendererCfgChanged(m_rendererConfig.numTraversalTaskBits))
   {
     rendererChanged = true;
 
@@ -633,7 +632,11 @@ void LodClusters::renderFrame(VkCommandBuffer      cmd,
     }
 
     frameConstants.bgColor     = m_resources.m_bgColor;
-    frameConstants.flipWinding = m_tweak.flipWinding ? 1 : 0;
+    frameConstants.flipWinding = m_rendererConfig.flipWinding ? 1 : 0;
+    if(m_rendererConfig.twoSided)
+    {
+      frameConstants.flipWinding = 2;
+    }
 
     frameConstants.viewport    = glm::ivec2(renderWidth, renderHeight);
     frameConstants.viewportf   = glm::vec2(renderWidth, renderHeight);

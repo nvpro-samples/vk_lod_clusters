@@ -78,7 +78,6 @@ public:
     RendererType renderer    = RENDERER_RAYTRACE_CLUSTERS_LOD;
     int          supersample = 2;
 
-    bool flipWinding  = false;
     bool facetShading = true;
 
     bool useCulling   = false;

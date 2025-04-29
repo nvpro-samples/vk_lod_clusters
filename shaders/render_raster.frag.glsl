@@ -112,6 +112,10 @@ void main()
   else
   {
     wNormal = IN.wNormal;
+    if(view.flipWinding == 1 || (view.flipWinding == 2 && !gl_FrontFacing))
+    {
+      wNormal = -wNormal;
+    }
   }
 #endif
 #endif
