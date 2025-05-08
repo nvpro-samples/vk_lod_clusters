@@ -1,6 +1,6 @@
 # Changelog for vk_lod_clusters
 * 2026-4-26:
-  * Added "Disable backface culling" to "Scene Complexity" UI.
+  * Added "Disable back-face culling" to "Scene Complexity" UI.
 * 2026-4-25:
   * Added "Instance Sorting" option, does sort instances by distance to camera. `-instancesorting 0/1`.
   * bugfix gltf meshes with multiple primitives

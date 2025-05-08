@@ -127,13 +127,13 @@ bool Scene::init(const char* filename, const SceneConfig& config)
   }
   for(size_t i = 0; i < m_instances.size(); i++)
   {
-    const GeometryStorage& geom = m_geometryStorages[m_instances[i].geometryID];
+    const GeometryView& geom = m_geometryViews[m_instances[i].geometryID];
     m_hiTrianglesCountInstanced += geom.hiTriangleCount;
     m_hiClustersCountInstanced += geom.hiClustersCount;
   }
 
   m_originalInstanceCount = m_instances.size();
-  m_originalGeometryCount = m_geometryStorages.size();
+  m_originalGeometryCount = m_geometryViews.size();
   m_activeGeometryCount   = m_originalGeometryCount;
 
 
