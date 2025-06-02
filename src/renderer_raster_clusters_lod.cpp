@@ -253,8 +253,8 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
   m_sceneBuildShaderio.traversalViewMatrix =
       frame.freezeCulling ? frame.frameConstantsLast.viewMatrix : frame.frameConstants.viewMatrix;
   m_sceneBuildShaderio.errorOverDistanceThreshold =
-      nvclusterlod::pixelErrorToQuadricErrorOverDistance(frame.lodPixelError, frame.frameConstants.fov,
-                                                         frame.frameConstants.viewportf.y);
+      nvclusterlod::pixelErrorToQuadricErrorOverDistance(frame.lodPixelError * float(frame.frameConstants.supersample),
+                                                         frame.frameConstants.fov, frame.frameConstants.viewportf.y);
 
   const bool useSky = true;  // When using Sky, the sky is rendered first and the rest of the scene is rendered on top of it.
 

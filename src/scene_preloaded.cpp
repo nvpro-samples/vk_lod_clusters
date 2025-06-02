@@ -93,6 +93,13 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
     shaderGeometry.preloadedGroups   = preloadGeometry.groups.address;
     shaderGeometry.preloadedClusters = preloadGeometry.clusters.address;
 
+    // lowest detail group must have just a single cluster
+    nvcluster::Range lastGroupRange = sceneGeometry.lodMesh.lodLevelGroupRanges.back();
+    assert(lastGroupRange.count == 1);
+    assert(sceneGeometry.lodMesh.groupClusterRanges[lastGroupRange.offset].count == 1);
+
+    shaderGeometry.lowDetailClusterID = sceneGeometry.lodMesh.groupClusterRanges[lastGroupRange.offset].offset;
+
     // basic uploads
 
     uploader.uploadBuffer(preloadGeometry.nodes, sceneGeometry.lodHierarchy.nodes.data());

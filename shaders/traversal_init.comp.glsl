@@ -93,6 +93,7 @@ layout(scalar, binding = BINDINGS_SCENEBUILDING_SSBO, set = 0) buffer buildBuffe
 layout(local_size_x=TRAVERSAL_INIT_WORKGROUP) in;
 
 #include "culling.glsl"
+#include "traversal.glsl"
 
 ////////////////////////////////////////////
 
@@ -132,9 +133,64 @@ void main()
     && isVisible
   #endif
     ;
-  uvec4 voteNodes = subgroupBallot(doNode);
+    
+  bool addNode = doNode;
   
-  // TODO optimization: enqueue all root children, so traversal can start with more nodes immediately
+  if (doNode) 
+  {
+    // We test if we are only using the furthest lod.
+    // If that is true, then we can skip lod traversal completely and
+    // straight enqueue the lowest detail cluster directly.    
+    
+    uint rootNodePacked = geometry.nodes.d[0].packed;
+    
+    uint childOffset        = PACKED_GET(rootNodePacked, Node_packed_nodeChildOffset);
+    uint childCountMinusOne = PACKED_GET(rootNodePacked, Node_packed_nodeChildCountMinusOne);
+    
+    // test if the second to last lod needs to be traversed
+    uint childNodeIndex     = (childCountMinusOne > 1 ? (childCountMinusOne - 1) : 0);
+    Node childNode          = geometry.nodes.d[childOffset + childNodeIndex];
+    TraversalMetric traversalMetric = childNode.traversalMetric;
+  
+    mat4  worldMatrix  = instances[instanceID].worldMatrix;
+    float uniformScale = computeUniformScale(worldMatrix);
+    float errorScale   = 1.0;
+  #if USE_CULLING && TARGETS_RAY_TRACING
+    if (status == 0) errorScale = 10.0;
+  #endif
+  
+    // if there is no need to traverse the pen ultimate lod
+    // then just insert the last lod node's cluster directly
+    if (!traverseChild(mat4x3(build.traversalViewMatrix * worldMatrix), uniformScale, traversalMetric, errorScale))
+    {
+      // lowest lod is guaranteed to have only one cluster
+      
+      uvec4 voteClusters = subgroupBallot(true); 
+      
+      uint offsetClusters = 0;
+      if (subgroupElect())
+      {
+        offsetClusters = atomicAdd(buildRW.renderClusterCounter, int(subgroupBallotBitCount(voteClusters)));
+      }
+  
+      offsetClusters = subgroupBroadcastFirst(offsetClusters);  
+      offsetClusters += subgroupBallotExclusiveBitCount(voteClusters);
+      
+      if (offsetClusters < build.maxRenderClusters)
+      {
+        ClusterInfo clusterInfo;
+        clusterInfo.instanceID = instanceID;
+        clusterInfo.clusterID  = geometry.lowDetailClusterID;
+        build.renderClusterInfos.d[offsetClusters] = clusterInfo;
+      }
+      
+      // by adding the cluster, we can skip adding the node
+      addNode = false;
+    }
+  }
+    
+  uvec4 voteNodes = subgroupBallot(addNode);  
+  
   // TODO feature: allow single-lod level render option by picking a single appropriate child of the root node
   // The root hierarchy node of a geometry is up to 32 wide, and each child represents one distinct lod level.
   
@@ -147,18 +203,21 @@ void main()
   offsetNodes = subgroupBroadcastFirst(offsetNodes);  
   offsetNodes += subgroupBallotExclusiveBitCount(voteNodes);
       
-  if (doNode && offsetNodes < build.maxTraversalInfos) {
-    uint packedNode = geometry.nodes.d[0].packed;
+  if (addNode && offsetNodes < build.maxTraversalInfos)
+  {
+    uint rootNodePacked = geometry.nodes.d[0].packed;
+
     TraversalInfo traversalInfo;
     traversalInfo.instanceID = instanceID;
-    traversalInfo.packedNode = packedNode;
+    traversalInfo.packedNode = rootNodePacked;
+
     build.traversalNodeInfos.d[offsetNodes] = packTraversalInfo(traversalInfo);
   }
 
   #if TARGETS_RAY_TRACING
   if (instanceID == instanceLoad) {
     build.instanceStates.d[instanceID] = status;
-    build.blasBuildInfos.d[instanceID].clusterReferencesCount = 0;
+    build.blasBuildInfos.d[instanceID].clusterReferencesCount = (!doNode || addNode) ? 0 : 1;
     build.blasBuildInfos.d[instanceID].clusterReferencesStride = 8;
   }
   #endif

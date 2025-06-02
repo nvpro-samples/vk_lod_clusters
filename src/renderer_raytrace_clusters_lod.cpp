@@ -394,8 +394,8 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
   m_sceneBuildShaderio.traversalViewMatrix =
       frame.freezeCulling ? frame.frameConstantsLast.viewMatrix : frame.frameConstants.viewMatrix;
   m_sceneBuildShaderio.errorOverDistanceThreshold =
-      nvclusterlod::pixelErrorToQuadricErrorOverDistance(frame.lodPixelError, frame.frameConstants.fov,
-                                                         frame.frameConstants.viewportf.y);
+      nvclusterlod::pixelErrorToQuadricErrorOverDistance(frame.lodPixelError * float(frame.frameConstants.supersample),
+                                                         frame.frameConstants.fov, frame.frameConstants.viewportf.y);
 
   vkCmdUpdateBuffer(cmd, res.m_common.view.buffer, 0, sizeof(shaderio::FrameConstants) * 2, (const uint32_t*)&frame.frameConstants);
   vkCmdUpdateBuffer(cmd, m_sceneBuildBuffer.buffer, 0, sizeof(shaderio::SceneBuilding), (const uint32_t*)&m_sceneBuildShaderio);

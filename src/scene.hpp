@@ -88,22 +88,22 @@ public:
 
   struct GeometryBase
   {
-    uint32_t clusterMaxVerticesCount;
-    uint32_t clusterMaxTrianglesCount;
+    uint32_t clusterMaxVerticesCount{};
+    uint32_t clusterMaxTrianglesCount{};
 
-    uint32_t lodLevelsCount;
+    uint32_t lodLevelsCount{};
 
     // based on highest detail lod
-    uint32_t hiTriangleCount;
-    uint32_t hiVerticesCount;
-    uint32_t hiClustersCount;
+    uint32_t hiTriangleCount{};
+    uint32_t hiVerticesCount{};
+    uint32_t hiClustersCount{};
 
     // total sum
-    uint32_t totalTriangleCount;
-    uint32_t totalVerticesCount;
-    uint32_t totalClustersCount;
+    uint32_t totalTriangleCount{};
+    uint32_t totalVerticesCount{};
+    uint32_t totalClustersCount{};
 
-    shaderio::BBox bbox;
+    shaderio::BBox bbox{};
 
     nvclusterlod::LodGeometryInfo lodInfo;
   };
@@ -194,6 +194,9 @@ public:
   uint32_t m_nodeChildrenHistogramMax;
 
   bool m_loadedFromCache = false;
+
+  size_t m_originalInstanceCount = 0;
+  size_t m_originalGeometryCount = 0;
 
 private:
   static bool     loadCached(GeometryView& view, uint64_t dataSize, const void* data);
@@ -317,8 +320,6 @@ private:
     uint64_t       m_geometryCount = 0;
   };
 
-  size_t m_originalInstanceCount = 0;
-  size_t m_originalGeometryCount = 0;
 
   size_t m_activeGeometryCount = 0;
 

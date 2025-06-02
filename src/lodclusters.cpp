@@ -272,8 +272,8 @@ bool LodClusters::initCore(nvvk::Context& context, int winWidth, int winHeight, 
     VkPhysicalDeviceShaderSMBuiltinsPropertiesNV smProperties = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SM_BUILTINS_PROPERTIES_NV};
     physicalProperties.pNext = &smProperties;
     vkGetPhysicalDeviceProperties2(context.m_physicalDevice, &physicalProperties);
-    // ommit * 32 here, gives much better perf
-    m_frameConfig.traversalPersistentThreads = smProperties.shaderSMCount * smProperties.shaderWarpsPerSM;
+    // pseudo heuristic
+    m_frameConfig.traversalPersistentThreads = smProperties.shaderSMCount * smProperties.shaderWarpsPerSM * 8;
   }
 
   {
@@ -755,8 +755,11 @@ void LodClusters::setCameraFromScene(const char* filename)
 {
   ImGuiH::SetCameraJsonFile(std::filesystem::path(filename).stem().string());
 
-  float     radius = glm::length(m_scene->m_bbox.hi - m_scene->m_bbox.lo) * 0.5f;
+  glm::vec3 extent = m_scene->m_bbox.hi - m_scene->m_bbox.lo;
+  float     radius = glm::length(extent) * 0.5f;
   glm::vec3 center = (m_scene->m_bbox.hi + m_scene->m_bbox.lo) * 0.5f;
+
+  bool bigScene = m_scene->m_originalInstanceCount > 1000;
 
   if(!m_scene->m_cameras.empty())
   {
@@ -790,13 +793,23 @@ void LodClusters::setCameraFromScene(const char* filename)
   }
   else
   {
-    // Re-adjusting camera to fit the new scene
-    CameraManip.fit(m_scene->m_bbox.lo, m_scene->m_bbox.hi, true);
+    glm::vec3 up  = {0, 1, 0};
+    glm::vec3 dir = {1.0f, bigScene ? 0.33f : 0.75f, 1.0f};
+
+    CameraManip.setLookat(center + dir * (radius * (bigScene ? 0.5f : 1.f)), center, up);
     ImGuiH::SetHomeCamera(CameraManip.getCamera());
   }
 
-  CameraManip.setSpeed(radius);
-  CameraManip.setClipPlanes(glm::vec2(0.01F * radius, 100.0F * radius));
+  if(bigScene)
+  {
+    CameraManip.setSpeed(radius * 0.02f);
+    CameraManip.setClipPlanes(glm::vec2(0.0001F * radius, 2.0F * radius));
+  }
+  else
+  {
+    CameraManip.setSpeed(radius * 2.0f);
+    CameraManip.setClipPlanes(glm::vec2(0.01F * radius, 100.0F * radius));
+  }
 }
 
 float LodClusters::decodePickingDepth(const shaderio::Readback& readback)
@@ -822,6 +835,7 @@ void LodClusters::setupConfigParameters(nvh::ParameterList& parameterList)
 
   parameterList.add("resetstats", &m_tweak.autoResetTimers);
 
+
   parameterList.add("renderer", (uint32_t*)&m_tweak.renderer);
   parameterList.add("streaming", &m_tweak.useStreaming);
   parameterList.add("clasallocator", &m_streamingConfig.usePersistentClasAllocator);
@@ -833,6 +847,12 @@ void LodClusters::setupConfigParameters(nvh::ParameterList& parameterList)
   parameterList.add("loderror", &m_frameConfig.lodPixelError);
   parameterList.add("culling", &m_tweak.useCulling);
   parameterList.add("instancesorting", &m_rendererConfig.useSorting);
+  parameterList.add("renderclusterbits", &m_rendererConfig.numRenderClusterBits);
+  parameterList.add("rendertraversalbits", &m_rendererConfig.numRenderClusterBits);
+  parameterList.add("hbao", &m_tweak.hbaoActive);
+  parameterList.add("facetshading", &m_tweak.facetShading);
+  parameterList.add("flipwinding", &m_rendererConfig.flipWinding);
+  parameterList.add("twosided", &m_rendererConfig.twoSided);
   parameterList.add("autosavecache|automatically store cache file for loaded scene. default false", &m_sceneConfig.autoSaveCache);
   parameterList.add("autoloadcache|automatically load cache file if found. default true", &m_sceneConfig.autoLoadCache);
   parameterList.add("mappedcache|work from memory mapped cache file, otherwise load to sysmem. default true",

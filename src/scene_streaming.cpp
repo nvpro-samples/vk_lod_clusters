@@ -347,8 +347,7 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
     uploader.uploadBuffer(persistentGeometry.nodes, sceneGeometry.lodHierarchy.nodes.data());
     uploader.uploadBuffer(persistentGeometry.nodeBboxes, sceneGeometry.nodeBboxes.data());
 
-    // seed lowest detail group
-
+    // seed lowest detail group, which must have just a single cluster
     nvcluster::Range lastGroupRange = sceneGeometry.lodMesh.lodLevelGroupRanges.back();
     assert(lastGroupRange.count == 1);
     assert(sceneGeometry.lodMesh.groupClusterRanges[lastGroupRange.offset].count == 1);
@@ -371,6 +370,8 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
     fillGroupData(sceneGeometry, geometryGroup, dataOffsets, rgroup->groupResidentID, rgroup->clusterResidentID,
                   rgroup->clusterResidentID, persistentGeometry.lowDetailGroupsData.address, loGroupData,
                   persistentGeometry.lowDetailGroupsData.info.range);
+
+    shaderGeometry.lowDetailClusterID = rgroup->clusterResidentID;
   }
 
   // this will set all addresses to invalid, except lowest detail geometry group, which is persistently loaded.
@@ -1043,8 +1044,10 @@ void SceneStreaming::cmdPreTraversal(VkCommandBuffer cmd, VkDeviceAddress clasSc
         vkCmdDispatch(cmd, 1, 1, 1);
 
         memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+        memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+        ;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 1,
                              &memBarrier, 0, nullptr, 0, nullptr);
 
         // this dispatch handles the offset computation where each size-based free range starts

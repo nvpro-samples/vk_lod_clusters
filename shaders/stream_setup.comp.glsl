@@ -123,7 +123,7 @@ void main()
   }
   else if (push.setup == STREAM_SETUP_ALLOCATOR_FREEINSERT)
   {
-    uint freeGaps = streaming.clasAllocator.freeGapsCounter;
+    uint freeGaps = streamingRW.clasAllocator.freeGapsCounter;
     uint maxFreeGaps = (streaming.clasAllocator.sectorCount << streaming.clasAllocator.sectorSizeShift);
   
     // reset to zero for `stream_allocator_setup_insertion.comp.glsl`

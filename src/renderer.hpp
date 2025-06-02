@@ -58,9 +58,9 @@ struct RendererConfig
   bool useSorting  = false;
 
   // the maximum number of renderable clusters per frame in bits i.e. (1 << number)
-  uint32_t numRenderClusterBits = 20;
+  uint32_t numRenderClusterBits = 22;
   // the maximum number of traversal intermediate tasks
-  uint32_t numTraversalTaskBits = 20;
+  uint32_t numTraversalTaskBits = 22;
 
   // build flags for the cluster BLAS
   VkBuildAccelerationStructureFlagsKHR clusterBlasFlags = 0;

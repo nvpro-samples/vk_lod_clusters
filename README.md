@@ -88,7 +88,7 @@ Use _"Traversal"_ settings within the UI to influence it.
 
 Relevant files to traversal in their usage order:
 * [shaders/shaderio_building.h](/shaders/shaderio_building.h): All data structures related to traversal are stored in `SceneBuilding`
-* [shaders/traversal_init.comp.glsl](/shaders/traversal_init.comp.glsl): Seeds the LoD root nodes of instances for traversal into `SceneBuilding::traversalNodeInfos`.
+* [shaders/traversal_init.comp.glsl](/shaders/traversal_init.comp.glsl): Seeds the LoD root nodes of instances for traversal into `SceneBuilding::traversalNodeInfos`. Implements a shortcut to directly insert the low detail cluster into `SceneBuilding::renderClusterInfos` if only the furthest LoD would be traversed.
 * [shaders/traversal_run.comp.glsl](/shaders/traversal_run.comp.glsl): Performs the hierarchical LoD traversal using a persistent kernel. Outputs the list of render clusters `SceneBuilding::renderClusterInfos`.
 * [shaders/build_setup.comp.glsl](/shaders/build_setup.comp.glsl): Simple compute shader that is used to do basic operations in preparation of other kernels. Often clamping results to stay within limits.
 * [shaders/blas_setup_insertion.comp.glsl](/shaders/blas_setup_insertion.comp.glsl): Sets up the per-BLAS range for the cluster references based on how many clusters each BLAS needs (which traversal computed as well).
@@ -342,6 +342,7 @@ You can use the commandline to change some defaults:
 * `-streaming 0` disables streaming system and uses preloaded scene (warning this can use a lot of memory, use above `-gridunique 0` to reduce)
 * `-vsync 0` disable vsync. If changing vsync via UI does not work, try to use the driver's *NVIDIA Control Panel* and set `Vulkan/OpenGL present method: native`.
 * `-autoloadcache 0` disables loading scenes from cache file.
+* `-mappedcache 0` disables persistent use of the memory mapped cache file.
 
 ## Limitations
 
@@ -353,9 +354,9 @@ You can use the commandline to change some defaults:
 
 ## Future Improvements
 
-* Sort instances by proximity to the camera and seed traversal in such order. This will help loading objects close to the camera first.
+* Implement sorting of streaming requests based on distance of instance. Sorting instances alone is not sufficient.
 * Detecting instances with lowest detail could allow re-using a single persistent lowest-detail BLAS, rather than building one per-instance all the time.
-* Using this LOD system for minification and tessellation for magnification is another use-case we intend to demonstrate in a future sample.
+* Using this LdD system for minification and tessellation for magnification is another use-case we intend to demonstrate in a future sample.
 * Further optimizations to the allocator
 * Ray tracing could use culling information better. Currently there is a simple logic that just lowers the LoD factors when an instance is culled by frustum or HiZ.
 * Improve performance of the library that builds the cluster lod system.

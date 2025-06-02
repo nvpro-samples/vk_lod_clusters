@@ -308,14 +308,12 @@ void Scene::updateSceneGrid(const SceneGridConfig& gridConfig)
       // modify matrix for the grid
       glm::mat4 worldMatrix = m_instances[i].matrix;
 
-
-      glm::vec3 translation;
-      translation = worldMatrix[3];
       if(axis & (8 | 16 | 32))
       {
-        worldMatrix[3] = glm::vec4(0, 0, 0, 1);
-        worldMatrix    = gridRotMatrix * worldMatrix;
+        worldMatrix = gridRotMatrix * worldMatrix;
       }
+      glm::vec3 translation;
+      translation    = worldMatrix[3];
       worldMatrix[3] = glm::vec4(translation + gridShift, 1.f);
 
       instance.matrix = worldMatrix;
@@ -412,25 +410,32 @@ void Scene::processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex
   }
   else
   {
-    buildGeometryClusters(processingInfo, geometryStorage);
-
-    // no longer need original triangles
-    geometryStorage.globalTriangles = {};
-
-    if(geometryStorage.lodMesh.clusterTriangleRanges.empty())
-      return;
-
-    if(m_config.clusterStripify)
+    if(geometryStorage.globalTriangles.empty())
     {
-      buildGeometryClusterStrips(processingInfo, geometryStorage);
+      geometryStorage = {};
     }
+    else
+    {
+      buildGeometryClusters(processingInfo, geometryStorage);
 
-    buildGeometryClusterVertices(processingInfo, geometryStorage);
+      // no longer need original triangles
+      geometryStorage.globalTriangles = {};
 
-    // no longer need vertex indirection
-    geometryStorage.localVertices = {};
+      if(geometryStorage.lodMesh.clusterTriangleRanges.empty())
+        return;
 
-    buildGeometryBboxes(processingInfo, geometryStorage);
+      if(m_config.clusterStripify)
+      {
+        buildGeometryClusterStrips(processingInfo, geometryStorage);
+      }
+
+      buildGeometryClusterVertices(processingInfo, geometryStorage);
+
+      // no longer need vertex indirection
+      geometryStorage.localVertices = {};
+
+      buildGeometryBboxes(processingInfo, geometryStorage);
+    }
   }
 
   if(viewFromStorage)

@@ -642,6 +642,13 @@ void LodClusters::processUI(double time, nvh::Profiler& profiler, const CallBack
       ImGui::Text("%s", formatMetric(m_scene->m_hiClustersCountInstanced * m_sceneGridConfig.numCopies).c_str());
       ImGui::TableNextColumn();
       ImGui::Text("%s", formatMetric(m_scene->m_hiClustersCount).c_str());
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::Text("Instances");
+      ImGui::TableNextColumn();
+      ImGui::Text("%s", formatMetric(m_scene->m_instances.size()).c_str());
+      ImGui::TableNextColumn();
+      ImGui::Text("%s", formatMetric(m_scene->m_originalInstanceCount).c_str());
       ImGui::EndTable();
     }
   }
@@ -743,8 +750,8 @@ void LodClusters::processUI(double time, nvh::Profiler& profiler, const CallBack
   if(ImGui::CollapsingHeader("Rendering Advanced", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
   {
     PE::begin("##Renderer Advanced");
-    PE::InputIntClamped("Persistent traversal threads", (int*)&m_frameConfig.traversalPersistentThreads, 128, 32 * 1024,
-                        1, 1, ImGuiInputTextFlags_EnterReturnsTrue);
+    PE::InputIntClamped("Persistent traversal threads", (int*)&m_frameConfig.traversalPersistentThreads, 128,
+                        256 * 1024, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue);
     PE::end();
   }
 

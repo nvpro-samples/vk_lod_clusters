@@ -151,6 +151,7 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
 layout(local_size_x=TRAVERSAL_RUN_WORKGROUP) in;
 
 #include "culling.glsl"
+#include "traversal.glsl"
 
 ////////////////////////////////////////////
 
@@ -198,24 +199,6 @@ bool queryWasVisible(mat4 instanceTransform, BBox bbox)
 }
 
 #endif
-
-float computeUniformScale(mat4 transform)
-{
-  return max(max(length(vec3(transform[0])), length(vec3(transform[1]))), length(vec3(transform[2])));
-}
-
-// key function for the lod metric, whether to descend into higher detail
-bool traverseChild(mat4x3 instanceToEye, float uniformScale, TraversalMetric metric, float errorScale)
-{
-  vec3  boundingSpherePos = vec3(metric.boundingSphereX, metric.boundingSphereY, metric.boundingSphereZ);
-  float minDistance       = view.nearPlane;
-  float sphereDistance    = length(vec3(instanceToEye * vec4(boundingSpherePos, 1.0f)));
-  float errorDistance     = max(minDistance, sphereDistance - metric.boundingSphereRadius * uniformScale);
-  float errorOverDistance = metric.maxQuadricError * uniformScale / errorDistance;
-  
-  // we are too coarse still
-  return errorOverDistance >= build.errorOverDistanceThreshold * errorScale;
-}
 
 void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSubID, bool isValid, uint threadReadIndex, uint pass)
 {
@@ -298,7 +281,6 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
         // we haven't made the request this frame, so trigger it
         bool triggerRequest = lastRequestFrameIndex != streaming.request.frameIndex;
         
-      #if 1
         uvec4 voteRequested  = subgroupBallot(triggerRequest);
         uint  countRequested = subgroupBallotBitCount(voteRequested);
         uint offsetRequested = 0;
@@ -307,9 +289,6 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
         }
         offsetRequested = subgroupBroadcastFirst(offsetRequested);
         offsetRequested += subgroupBallotExclusiveBitCount(voteRequested);
-      #else
-        offsetRequested = atomicAdd(streamingRW.request.loadCounter, triggerRequest ? 1 : 0);
-      #endif
         
         if (triggerRequest && offsetRequested <= streaming.request.maxLoads) {
           // while streaming data is based on geometry 
@@ -333,11 +312,11 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
     Group group = Group_in(geometry.streamingGroupAddresses.d[groupIndex]).d;
   #else
     // can directly access the group
-    Group group    = geometry.preloadedGroups.d[groupIndex];
+    Group group = geometry.preloadedGroups.d[groupIndex];
   #endif
 
   #if USE_CULLING && TARGETS_RASTERIZATION
-    bbox           = group.clusterBboxes.d[clusterIndex];
+    bbox        = group.clusterBboxes.d[clusterIndex];
   #endif
     
     // lets see if we reached the highest detail already

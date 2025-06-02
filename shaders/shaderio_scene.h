@@ -99,14 +99,14 @@ struct Group
   // when this group is first loaded, this is where the
   // temporary clas builds start.
   uint32_t streamingNewBuildOffset;
-  
+
   uint16_t lodLevel;
   uint16_t clusterCount;
 
   TraversalMetric traversalMetric;
-  
+
   BUFFER_REF(uint32s_in) clusterGeneratingGroups;
-  BUFFER_REF(BBoxes_in)  clusterBboxes;
+  BUFFER_REF(BBoxes_in) clusterBboxes;
 };
 
 BUFFER_REF_DECLARE(Group_in, Group, , 16);
@@ -162,8 +162,8 @@ struct Geometry
   uint32_t clustersCount;
   uint32_t groupsCount;
   uint32_t nodesCount;
-  uint32_t _pad;
-    
+  uint32_t lowDetailClusterID;
+
   // object space geometry bbox
   BBox bbox;
 
