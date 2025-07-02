@@ -17,13 +17,16 @@
 * SPDX-License-Identifier: Apache-2.0
 */
 
+#include <random>
 #include <vector>
 
-#include <nvvk/raytraceKHR_vk.hpp>
+#include <glm/gtc/constants.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/ext/scalar_constants.hpp>
+#include "glm/gtc/matrix_transform.hpp"
 
 #include "renderer.hpp"
-#include "shaders/shaderio.h"
-#include "vk_nv_cluster_acc.h"
+#include "../shaders/shaderio.h"
 
 
 namespace lodclusters {
@@ -74,7 +77,7 @@ bool RenderScene::updateClasRequired(bool state)
   }
 }
 
-const RBufferTyped<shaderio::Geometry>& RenderScene::getShaderGeometriesBuffer() const
+const nvvk::BufferTyped<shaderio::Geometry>& RenderScene::getShaderGeometriesBuffer() const
 {
 
   if(useStreaming)
@@ -109,22 +112,26 @@ size_t RenderScene::getOperationsSize() const
 
 //////////////////////////////////////////////////////////////////////////
 
-bool Renderer::initBasicShaders(Resources& res)
+bool Renderer::initBasicShaders(Resources& res, RenderScene& rscene, const RendererConfig& config)
 {
-  m_basicShaders.fullScreenVertexShader = res.m_shaderManager.createShaderModule(VK_SHADER_STAGE_VERTEX_BIT, "fullscreen.vert.glsl");
-  m_basicShaders.fullScreenWriteDepthFragShader =
-      res.m_shaderManager.createShaderModule(VK_SHADER_STAGE_FRAGMENT_BIT, "fullscreen_write_depth.frag.glsl");
+  res.compileShader(m_basicShaders.fullScreenVertexShader, VK_SHADER_STAGE_VERTEX_BIT, "fullscreen.vert.glsl");
+  res.compileShader(m_basicShaders.fullScreenWriteDepthFragShader, VK_SHADER_STAGE_FRAGMENT_BIT, "fullscreen_write_depth.frag.glsl");
+  res.compileShader(m_basicShaders.fullScreenBackgroundFragShader, VK_SHADER_STAGE_FRAGMENT_BIT, "fullscreen_background.frag.glsl");
+  res.compileShader(m_basicShaders.renderInstanceBboxesMeshShader, VK_SHADER_STAGE_MESH_BIT_NV, "render_instance_bbox.mesh.glsl");
+  res.compileShader(m_basicShaders.renderInstanceBboxesFragmentShader, VK_SHADER_STAGE_FRAGMENT_BIT, "render_instance_bbox.frag.glsl");
 
-  m_basicShaders.renderInstanceBboxesMeshShader =
-      res.m_shaderManager.createShaderModule(VK_SHADER_STAGE_MESH_BIT_NV, "render_instance_bbox.mesh.glsl");
-  m_basicShaders.renderInstanceBboxesFragmentShader =
-      res.m_shaderManager.createShaderModule(VK_SHADER_STAGE_FRAGMENT_BIT, "render_instance_bbox.frag.glsl");
+  if(!res.verifyShaders(m_basicShaders))
+  {
+    return false;
+  }
 
-  return res.verifyShaders(m_basicShaders);
+  return true;
 }
 
 void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererConfig& config)
 {
+  initBasicPipelines(res, rscene, config);
+
   const Scene& scene = *rscene.scene;
 
   m_renderInstances.resize(scene.m_instances.size());
@@ -141,145 +148,129 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
     renderInstance.maxLodLevelRcp = 1.0f / float(geometry.lodLevelsCount - 1);
   }
 
-  m_renderInstanceBuffer =
-      res.createBuffer(sizeof(shaderio::RenderInstance) * m_renderInstances.size(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+  res.createBuffer(m_renderInstanceBuffer, sizeof(shaderio::RenderInstance) * m_renderInstances.size(),
+                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
   res.simpleUploadBuffer(m_renderInstanceBuffer, m_renderInstances.data());
-
-  initWriteRayTracingDepthBuffer(res);
-  initRenderInstanceBboxes(res, rscene);
 
   if(config.useSorting)
   {
     VrdxSorterStorageRequirements sorterRequirements = {};
     vrdxGetSorterKeyValueStorageRequirements(res.m_vrdxSorter, uint32_t(m_renderInstances.size()), &sorterRequirements);
 
-    m_sortingAuxBuffer = res.createBuffer(sorterRequirements.size, sorterRequirements.usage);
+    res.createBuffer(m_sortingAuxBuffer, sorterRequirements.size, sorterRequirements.usage);
 
-    m_resourceReservedUsage.operationsMemBytes += m_sortingAuxBuffer.info.range;
+    m_resourceReservedUsage.operationsMemBytes += m_sortingAuxBuffer.bufferSize;
   }
+
+  updateBasicDescriptors(res, rscene);
 }
 
 void Renderer::deinitBasics(Resources& res)
 {
-  res.destroyShaders(m_basicShaders);
+  res.destroyPipelines(m_basicPipelines);
+  vkDestroyPipelineLayout(res.m_device, m_basicPipelineLayout, nullptr);
 
-  vkDestroyPipeline(res.m_device, m_writeDepthBufferPipeline, nullptr);
-  m_writeDepthBufferPipeline = VK_NULL_HANDLE;
-  m_writeDepthBufferDsetContainer.deinit();
+  m_basicDset.deinit();
 
-  vkDestroyPipeline(res.m_device, m_renderInstanceBboxesPipeline, nullptr);
-  m_renderInstanceBboxesPipeline = VK_NULL_HANDLE;
-  m_renderInstanceBboxesDsetContainer.deinit();
-
-  res.destroy(m_renderInstanceBuffer);
-  res.destroy(m_sortingAuxBuffer);
+  res.m_allocator.destroyBuffer(m_renderInstanceBuffer);
+  res.m_allocator.destroyBuffer(m_sortingAuxBuffer);
 }
 
-void Renderer::updatedFrameBufferBasics(Resources& res)
+void Renderer::updateBasicDescriptors(Resources& res, RenderScene& scene)
 {
-  {
-    std::array<VkWriteDescriptorSet, 1> writeSets;
-
-    VkDescriptorImageInfo imgInfo{};
-    imgInfo.imageView   = res.m_framebuffer.viewRaytracingDepth;
-    imgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-    writeSets[0] = m_writeDepthBufferDsetContainer.makeWrite(0, BINDINGS_RAYTRACING_DEPTH, &imgInfo);
-    vkUpdateDescriptorSets(res.m_device, uint32_t(writeSets.size()), writeSets.data(), 0, nullptr);
-  }
+  nvvk::WriteSetContainer writeSets;
+  writeSets.append(m_basicDset.getWriteSet(BINDINGS_FRAME_UBO), res.m_commonBuffers.frameConstants);
+  writeSets.append(m_basicDset.getWriteSet(BINDINGS_RAYTRACING_DEPTH), res.m_frameBuffer.imgRaytracingDepth.descriptor);
+  writeSets.append(m_basicDset.getWriteSet(BINDINGS_GEOMETRIES_SSBO), scene.getShaderGeometriesBuffer());
+  writeSets.append(m_basicDset.getWriteSet(BINDINGS_RENDERINSTANCES_SSBO), m_renderInstanceBuffer);
+  vkUpdateDescriptorSets(res.m_device, writeSets.size(), writeSets.data(), 0, nullptr);
 }
 
-void Renderer::initWriteRayTracingDepthBuffer(Resources& res)
+
+void Renderer::initBasicPipelines(Resources& res, RenderScene& scene, const RendererConfig& config)
 {
-  VkShaderStageFlags stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+  m_basicShaderFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_MESH_BIT_NV | VK_SHADER_STAGE_FRAGMENT_BIT;
 
-  nvvk::DescriptorSetContainer& dsetContainer = m_writeDepthBufferDsetContainer;
+  m_basicDset.bindings.addBinding(BINDINGS_FRAME_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_basicShaderFlags);
+  m_basicDset.bindings.addBinding(BINDINGS_RAYTRACING_DEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_basicShaderFlags);
+  m_basicDset.bindings.addBinding(BINDINGS_GEOMETRIES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
+  m_basicDset.bindings.addBinding(BINDINGS_RENDERINSTANCES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
+  m_basicDset.initFromBindings(res.m_device);
 
-  dsetContainer.init(res.m_device);
+  nvvk::createPipelineLayout(res.m_device, &m_basicPipelineLayout, {m_basicDset.layout},
+                             {{m_basicShaderFlags, 0, sizeof(uint32_t)}});
 
-  dsetContainer.addBinding(BINDINGS_RAYTRACING_DEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, stageFlags);
-  dsetContainer.initLayout();
-  dsetContainer.initPipeLayout();
+  nvvk::GraphicsPipelineCreator graphicsGen;
+  nvvk::GraphicsPipelineState   state                = res.m_basicGraphicsState;
+  graphicsGen.pipelineInfo.layout                    = m_basicPipelineLayout;
+  graphicsGen.renderingState.depthAttachmentFormat   = res.m_frameBuffer.pipelineRenderingInfo.depthAttachmentFormat;
+  graphicsGen.renderingState.stencilAttachmentFormat = res.m_frameBuffer.pipelineRenderingInfo.stencilAttachmentFormat;
+  graphicsGen.colorFormats                           = {res.m_frameBuffer.colorFormat};
 
-  dsetContainer.initPool(1);
-  std::array<VkWriteDescriptorSet, 1> writeSets;
+  state.rasterizationState.lineWidth = float(res.m_frameBuffer.supersample * 2);
 
-  VkDescriptorImageInfo imgInfo{};
-  imgInfo.imageView   = res.m_framebuffer.viewRaytracingDepth;
-  imgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+  graphicsGen.clearShaders();
+  graphicsGen.addShader(VK_SHADER_STAGE_MESH_BIT_NV, "main",
+                        nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.renderInstanceBboxesMeshShader));
+  graphicsGen.addShader(VK_SHADER_STAGE_FRAGMENT_BIT, "main",
+                        nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.renderInstanceBboxesFragmentShader));
 
-  writeSets[0] = dsetContainer.makeWrite(0, BINDINGS_RAYTRACING_DEPTH, &imgInfo);
-  vkUpdateDescriptorSets(res.m_device, uint32_t(writeSets.size()), writeSets.data(), 0, nullptr);
+  graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_basicPipelines.renderInstanceBboxes);
 
-  nvvk::GraphicsPipelineState state = res.m_basicGraphicsState;
-
-  nvvk::GraphicsPipelineGenerator gfxGen(res.m_device, dsetContainer.getPipeLayout(), res.m_framebuffer.pipelineRenderingInfo, state);
-
-  state.setBlendAttachmentColorMask(0, 0);
   state.depthStencilState.depthWriteEnable = VK_TRUE;
   state.depthStencilState.depthCompareOp   = VK_COMPARE_OP_ALWAYS;
   state.rasterizationState.cullMode        = VK_CULL_MODE_NONE;
-  gfxGen.addShader(res.m_shaderManager.get(m_basicShaders.fullScreenVertexShader), VK_SHADER_STAGE_VERTEX_BIT);
-  gfxGen.addShader(res.m_shaderManager.get(m_basicShaders.fullScreenWriteDepthFragShader), VK_SHADER_STAGE_FRAGMENT_BIT);
-  m_writeDepthBufferPipeline = gfxGen.createPipeline();
-}
 
-void Renderer::writeRayTracingDepthBuffer(VkCommandBuffer cmd)
-{
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_writeDepthBufferDsetContainer.getPipeLayout(), 0, 1,
-                          m_writeDepthBufferDsetContainer.getSets(), 0, nullptr);
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_writeDepthBufferPipeline);
+  graphicsGen.clearShaders();
+  graphicsGen.addShader(VK_SHADER_STAGE_VERTEX_BIT, "main",
+                        nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullScreenVertexShader));
+  graphicsGen.addShader(VK_SHADER_STAGE_FRAGMENT_BIT, "main",
+                        nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullScreenBackgroundFragShader));
 
-  vkCmdDraw(cmd, 3, 1, 0, 0);
-}
+  graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_basicPipelines.background);
 
-void Renderer::initRenderInstanceBboxes(Resources& res, RenderScene& rscene)
-{
-  VkShaderStageFlags stageFlags = VK_SHADER_STAGE_MESH_BIT_NV | VK_SHADER_STAGE_FRAGMENT_BIT;
+  state.colorWriteMasks = {0};
 
-  nvvk::DescriptorSetContainer& dsetContainer = m_renderInstanceBboxesDsetContainer;
+  graphicsGen.clearShaders();
+  graphicsGen.addShader(VK_SHADER_STAGE_VERTEX_BIT, "main",
+                        nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullScreenVertexShader));
+  graphicsGen.addShader(VK_SHADER_STAGE_FRAGMENT_BIT, "main",
+                        nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullScreenWriteDepthFragShader));
 
-  dsetContainer.init(res.m_device);
-
-  dsetContainer.addBinding(BINDINGS_FRAME_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, stageFlags);
-  dsetContainer.addBinding(BINDINGS_GEOMETRIES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, stageFlags);
-  dsetContainer.addBinding(BINDINGS_RENDERINSTANCES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, stageFlags);
-  dsetContainer.initLayout();
-
-  VkPushConstantRange pushRange;
-  pushRange.offset     = 0;
-  pushRange.size       = sizeof(uint32_t);
-  pushRange.stageFlags = stageFlags;
-  dsetContainer.initPipeLayout(1, &pushRange);
-  dsetContainer.initPool(1);
-
-  std::array<VkWriteDescriptorSet, 3> writeSets;
-  writeSets[0] = dsetContainer.makeWrite(0, BINDINGS_FRAME_UBO, &res.m_common.view.info);
-  writeSets[1] = dsetContainer.makeWrite(0, BINDINGS_GEOMETRIES_SSBO, &rscene.getShaderGeometriesBuffer().info);
-  writeSets[2] = dsetContainer.makeWrite(0, BINDINGS_RENDERINSTANCES_SSBO, &m_renderInstanceBuffer.info);
-  vkUpdateDescriptorSets(res.m_device, uint32_t(writeSets.size()), writeSets.data(), 0, nullptr);
-
-  nvvk::GraphicsPipelineState state = res.m_basicGraphicsState;
-  nvvk::GraphicsPipelineGenerator gfxGen(res.m_device, dsetContainer.getPipeLayout(), res.m_framebuffer.pipelineRenderingInfo, state);
-  state.rasterizationState.lineWidth = res.m_framebuffer.supersample * 2;
-  //state.depthStencilState.depthWriteEnable = VK_TRUE;
-  gfxGen.addShader(res.m_shaderManager.get(m_basicShaders.renderInstanceBboxesMeshShader), VK_SHADER_STAGE_MESH_BIT_NV);
-  gfxGen.addShader(res.m_shaderManager.get(m_basicShaders.renderInstanceBboxesFragmentShader), VK_SHADER_STAGE_FRAGMENT_BIT);
-  m_renderInstanceBboxesPipeline = gfxGen.createPipeline();
+  graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_basicPipelines.writeDepth);
 }
 
 void Renderer::renderInstanceBboxes(VkCommandBuffer cmd)
 {
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_renderInstanceBboxesDsetContainer.getPipeLayout(), 0,
-                          1, m_renderInstanceBboxesDsetContainer.getSets(), 0, nullptr);
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_renderInstanceBboxesPipeline);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelineLayout, 0, 1, m_basicDset.sets.data(), 0, nullptr);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelines.renderInstanceBboxes);
 
-  uint32_t numRenderInstances = m_renderInstances.size();
-
-  vkCmdPushConstants(cmd, m_renderInstanceBboxesDsetContainer.getPipeLayout(),
-                     VK_SHADER_STAGE_MESH_BIT_NV | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(uint32_t), &numRenderInstances);
+  uint32_t numRenderInstances = uint32_t(m_renderInstances.size());
+  vkCmdPushConstants(cmd, m_basicPipelineLayout, m_basicShaderFlags, 0, sizeof(uint32_t), &numRenderInstances);
 
   vkCmdDrawMeshTasksNV(cmd, (numRenderInstances + BBOXES_PER_MESHLET - 1) / BBOXES_PER_MESHLET, 0);
+}
+
+void Renderer::writeRayTracingDepthBuffer(VkCommandBuffer cmd)
+{
+  uint32_t dummy = 0;
+  vkCmdPushConstants(cmd, m_basicPipelineLayout, m_basicShaderFlags, 0, sizeof(uint32_t), &dummy);
+
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelineLayout, 0, 1, m_basicDset.sets.data(), 0, nullptr);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelines.writeDepth);
+
+  vkCmdDraw(cmd, 3, 1, 0, 0);
+}
+
+void Renderer::writeBackgroundSky(VkCommandBuffer cmd)
+{
+  uint32_t dummy = 0;
+  vkCmdPushConstants(cmd, m_basicPipelineLayout, m_basicShaderFlags, 0, sizeof(uint32_t), &dummy);
+
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelineLayout, 0, 1, m_basicDset.sets.data(), 0, nullptr);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelines.background);
+
+  vkCmdDraw(cmd, 3, 1, 0, 0);
 }
 
 }  // namespace lodclusters

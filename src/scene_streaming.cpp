@@ -17,7 +17,7 @@
 * SPDX-License-Identifier: Apache-2.0
 */
 
-#include <nvh/misc.hpp>
+#include <volk.h>
 
 #include "scene_streaming.hpp"
 
@@ -65,7 +65,7 @@ static uint32_t getGroupDataOffsets(const Scene::GeometryView& geometry, Geometr
   uint32_t numVertices  = 0;
   uint32_t numClusters  = 0;
 
-  nvcluster::Range clusterRange = geometry.lodMesh.groupClusterRanges[geometryGroup.groupID];
+  nvcluster_Range clusterRange = geometry.lodMesh.groupClusterRanges[geometryGroup.groupID];
 
   numClusters = clusterRange.count;
 
@@ -115,21 +115,21 @@ static void fillGroupData(const Scene::GeometryView& sceneGeometry,
 
   uint32_t groupIndex = geometryGroup.groupID;
 
-  nvcluster::Range clusterRange = sceneGeometry.lodMesh.groupClusterRanges[groupIndex];
+  nvcluster_Range clusterRange = sceneGeometry.lodMesh.groupClusterRanges[groupIndex];
 
   uint8_t lodLevel = uint8_t(sceneGeometry.groupLodLevels[groupIndex]);
 
-  shaderio::Group& group                = *pointers.group.pointer;
-  group                                 = {};
-  group.geometryID                      = geometryGroup.geometryID;
-  group.groupID                         = geometryGroup.groupID;
-  group.residentID                      = groupResidentID;
-  group.clusterResidentID               = clusterResidentID;
-  group.lodLevel                        = lodLevel;
-  group.clusterCount                    = clusterRange.count;
-  group.traversalMetric.boundingSphereX = sceneGeometry.lodHierarchy.groupCumulativeBoundingSpheres[groupIndex].x;
-  group.traversalMetric.boundingSphereY = sceneGeometry.lodHierarchy.groupCumulativeBoundingSpheres[groupIndex].y;
-  group.traversalMetric.boundingSphereZ = sceneGeometry.lodHierarchy.groupCumulativeBoundingSpheres[groupIndex].z;
+  shaderio::Group& group  = *pointers.group.pointer;
+  group                   = {};
+  group.geometryID        = geometryGroup.geometryID;
+  group.groupID           = geometryGroup.groupID;
+  group.residentID        = groupResidentID;
+  group.clusterResidentID = clusterResidentID;
+  group.lodLevel          = lodLevel;
+  group.clusterCount      = clusterRange.count;
+  group.traversalMetric.boundingSphereX = sceneGeometry.lodHierarchy.groupCumulativeBoundingSpheres[groupIndex].center.x;
+  group.traversalMetric.boundingSphereY = sceneGeometry.lodHierarchy.groupCumulativeBoundingSpheres[groupIndex].center.y;
+  group.traversalMetric.boundingSphereZ = sceneGeometry.lodHierarchy.groupCumulativeBoundingSpheres[groupIndex].center.z;
   group.traversalMetric.boundingSphereRadius = sceneGeometry.lodHierarchy.groupCumulativeBoundingSpheres[groupIndex].radius;
   group.traversalMetric.maxQuadricError = sceneGeometry.lodHierarchy.groupCumulativeQuadricError[groupIndex];
   group.streamingNewBuildOffset         = streamingNewBuildOffset;
@@ -143,8 +143,8 @@ static void fillGroupData(const Scene::GeometryView& sceneGeometry,
 
   for(uint32_t c = 0; c < clusterRange.count; c++)
   {
-    nvcluster::Range vertexRange   = sceneGeometry.clusterVertexRanges[c + clusterRange.offset];
-    nvcluster::Range triangleRange = sceneGeometry.lodMesh.clusterTriangleRanges[c + clusterRange.offset];
+    nvcluster_Range vertexRange   = sceneGeometry.clusterVertexRanges[c + clusterRange.offset];
+    nvcluster_Range triangleRange = sceneGeometry.lodMesh.clusterTriangleRanges[c + clusterRange.offset];
 
     shaderio::Cluster& cluster = pointers.clusters.pointer[c];
 
@@ -214,24 +214,20 @@ bool SceneStreaming::init(Resources* resources, const Scene* scene, const Stream
 
   // setup descriptor set container
   {
-    m_dsetContainer.init(res.m_device);
-    m_dsetContainer.addBinding(BINDINGS_FRAME_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-    m_dsetContainer.addBinding(BINDINGS_READBACK_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-    m_dsetContainer.addBinding(BINDINGS_GEOMETRIES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-    m_dsetContainer.addBinding(BINDINGS_STREAMING_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-    m_dsetContainer.addBinding(BINDINGS_STREAMING_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-    m_dsetContainer.initLayout();
+    m_dsetPack.bindings.addBinding(BINDINGS_FRAME_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    m_dsetPack.bindings.addBinding(BINDINGS_READBACK_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    m_dsetPack.bindings.addBinding(BINDINGS_GEOMETRIES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    m_dsetPack.bindings.addBinding(BINDINGS_STREAMING_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    m_dsetPack.bindings.addBinding(BINDINGS_STREAMING_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    m_dsetPack.initFromBindings(res.m_device);
 
-    VkPushConstantRange pushRange;
-    pushRange.offset     = 0;
-    pushRange.size       = sizeof(uint32_t);
-    pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    m_dsetContainer.initPipeLayout(1, &pushRange);
+    nvvk::createPipelineLayout(res.m_device, &m_pipelineLayout, {m_dsetPack.layout},
+                               {{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t)}});
   }
 
   if(!initShadersAndPipelines())
   {
-    m_dsetContainer.deinit();
+    m_dsetPack.deinit();
     return false;
   }
 
@@ -258,22 +254,22 @@ bool SceneStreaming::init(Resources* resources, const Scene* scene, const Stream
   m_operationsSize += m_updates.getOperationsSize();
   m_operationsSize += m_storage.getOperationsSize();
 
-  m_shaderBuffer = res.createBuffer(sizeof(shaderio::SceneStreaming), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT
-                                                                          | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
-  m_operationsSize += m_shaderBuffer.info.range;
+  res.createBuffer(m_shaderBuffer, sizeof(shaderio::SceneStreaming),
+                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT
+                       | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+  m_operationsSize += m_shaderBuffer.bufferSize;
 
   // seed lo res geometry
   initGeometries(res, scene);
 
   {
-    m_dsetContainer.initPool(1);
-    std::vector<VkWriteDescriptorSet> writeSets;
-    writeSets.push_back(m_dsetContainer.makeWrite(0, BINDINGS_FRAME_UBO, &res.m_common.view.info));
-    writeSets.push_back(m_dsetContainer.makeWrite(0, BINDINGS_READBACK_SSBO, &res.m_common.readbackDevice.info));
-    writeSets.push_back(m_dsetContainer.makeWrite(0, BINDINGS_GEOMETRIES_SSBO, &m_shaderGeometriesBuffer.info));
-    writeSets.push_back(m_dsetContainer.makeWrite(0, BINDINGS_STREAMING_SSBO, &m_shaderBuffer.info));
-    writeSets.push_back(m_dsetContainer.makeWrite(0, BINDINGS_STREAMING_UBO, &m_shaderBuffer.info));
-    vkUpdateDescriptorSets(res.m_device, uint32_t(writeSets.size()), writeSets.data(), 0, nullptr);
+    nvvk::WriteSetContainer writeSets;
+    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_FRAME_UBO), res.m_commonBuffers.frameConstants);
+    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_READBACK_SSBO), res.m_commonBuffers.readBack);
+    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_GEOMETRIES_SSBO), m_shaderGeometriesBuffer);
+    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_STREAMING_SSBO), m_shaderBuffer);
+    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_STREAMING_UBO), m_shaderBuffer);
+    vkUpdateDescriptorSets(res.m_device, writeSets.size(), writeSets.data(), 0, nullptr);
   }
 
   return true;
@@ -289,7 +285,7 @@ void SceneStreaming::resetGeometryGroupAddresses(Resources::BatchedUploader& upl
     SceneStreaming::PersistentGeometry& persistentGeometry = m_persistentGeometries[geometryIndex];
     const Scene::GeometryView&          sceneGeometry      = m_scene->getActiveGeometry(geometryIndex);
 
-    nvcluster::Range lastGroupRange = sceneGeometry.lodMesh.lodLevelGroupRanges.back();
+    nvcluster_Range lastGroupRange = sceneGeometry.lodMesh.lodLevelGroupRanges.back();
 
     uint64_t* groupAddresses = uploader.uploadBuffer(persistentGeometry.groupAddresses, (uint64_t*)nullptr);
     for(uint32_t groupIndex = 0; groupIndex < lastGroupRange.offset; groupIndex++)
@@ -328,9 +324,9 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
     res.createBufferTyped(persistentGeometry.nodes, numNodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     res.createBufferTyped(persistentGeometry.nodeBboxes, numNodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
-    m_persistentGeometrySize += persistentGeometry.groupAddresses.info.range;
-    m_persistentGeometrySize += persistentGeometry.nodes.info.range;
-    m_persistentGeometrySize += persistentGeometry.nodeBboxes.info.range;
+    m_persistentGeometrySize += persistentGeometry.groupAddresses.bufferSize;
+    m_persistentGeometrySize += persistentGeometry.nodes.bufferSize;
+    m_persistentGeometrySize += persistentGeometry.nodeBboxes.bufferSize;
 
     // setup shaderio
     shaderGeometry                         = {};
@@ -348,7 +344,7 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
     uploader.uploadBuffer(persistentGeometry.nodeBboxes, sceneGeometry.nodeBboxes.data());
 
     // seed lowest detail group, which must have just a single cluster
-    nvcluster::Range lastGroupRange = sceneGeometry.lodMesh.lodLevelGroupRanges.back();
+    nvcluster_Range lastGroupRange = sceneGeometry.lodMesh.lodLevelGroupRanges.back();
     assert(lastGroupRange.count == 1);
     assert(sceneGeometry.lodMesh.groupClusterRanges[lastGroupRange.offset].count == 1);
 
@@ -357,10 +353,11 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
     uint64_t         lastClustersCount = getGroupDataOffsets(sceneGeometry, geometryGroup, dataOffsets);
     uint64_t         lastGroupSize     = dataOffsets.finalSize;
 
-    persistentGeometry.lowDetailGroupsData = res.createBuffer(lastGroupSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    m_persistentGeometrySize += persistentGeometry.lowDetailGroupsData.info.range;
+    res.createBuffer(persistentGeometry.lowDetailGroupsData, lastGroupSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    m_persistentGeometrySize += persistentGeometry.lowDetailGroupsData.bufferSize;
 
-    assert(m_resident.canAllocateGroup(lastClustersCount));
+    assert(lastClustersCount <= 0xFFFFFFFF);
+    assert(m_resident.canAllocateGroup(uint32_t(lastClustersCount)));
 
     StreamingResident::Group* rgroup = m_resident.addGroup(geometryGroup, 1);
     rgroup->deviceAddress            = persistentGeometry.lowDetailGroupsData.address;
@@ -369,7 +366,7 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
     void* loGroupData = uploader.uploadBuffer(persistentGeometry.lowDetailGroupsData, (void*)nullptr);
     fillGroupData(sceneGeometry, geometryGroup, dataOffsets, rgroup->groupResidentID, rgroup->clusterResidentID,
                   rgroup->clusterResidentID, persistentGeometry.lowDetailGroupsData.address, loGroupData,
-                  persistentGeometry.lowDetailGroupsData.info.range);
+                  persistentGeometry.lowDetailGroupsData.bufferSize);
 
     shaderGeometry.lowDetailClusterID = rgroup->clusterResidentID;
   }
@@ -378,7 +375,7 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
   resetGeometryGroupAddresses(uploader);
 
   res.createBufferTyped(m_shaderGeometriesBuffer, scene->getActiveGeometryCount(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-  m_operationsSize += m_shaderGeometriesBuffer.info.range;
+  m_operationsSize += m_shaderGeometriesBuffer.bufferSize;
 
   uploader.uploadBuffer(m_shaderGeometriesBuffer, m_shaderGeometries.data());
 
@@ -388,11 +385,11 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
   uploader.flush();
 }
 
-void SceneStreaming::cmdBeginFrame(VkCommandBuffer   cmd,
-                                   QueueState&       cmdQueueState,
-                                   QueueState&       asyncQueueState,
-                                   uint32_t          ageThreshold,
-                                   nvvk::ProfilerVK& profiler)
+void SceneStreaming::cmdBeginFrame(VkCommandBuffer         cmd,
+                                   QueueState&             cmdQueueState,
+                                   QueueState&             asyncQueueState,
+                                   uint32_t                ageThreshold,
+                                   nvvk::ProfilerGpuTimer& profiler)
 {
   // This function sets up all relevant streaming tasks for the frame
   // and configures the content of `m_shaderData` which is uploaded
@@ -416,7 +413,7 @@ void SceneStreaming::cmdBeginFrame(VkCommandBuffer   cmd,
     bool b = true;
   }
 
-  auto     timerSection = profiler.timeRecurring("Stream Begin", cmd);
+  auto     timerSection = profiler.cmdFrameSection(cmd, "Stream Begin");
   VkDevice device       = m_resources->m_device;
 
   // For each task queue we must ensure that we have one new task index
@@ -674,7 +671,7 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer cmd, QueueState&
     // will not use the data anymore.
     // So defer the actual unloading to the `SceneStreaming::handleCompletedUpdate`
     // above.
-    assert(group->storageHandle.isValid());
+    assert(group->storageHandle);
     updateTask.unloadHandles[unloadIndex] = group->storageHandle;
 
     // and remove from active resident
@@ -754,8 +751,11 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer cmd, QueueState&
       }
     }
 
+    uint64_t                  deviceAddress;
+    nvvk::BufferSubAllocation storageHandle;
+
     bool canTransfer      = m_storage.canTransfer(storageTask, groupSize);
-    bool canStore         = m_storage.canAllocate(groupSize);
+    bool canStore         = m_storage.allocate(storageHandle, geometryGroup, groupSize, deviceAddress);
     bool canAllocateGroup = m_resident.canAllocateGroup(clustersCount);
 
     // test if we can allocate
@@ -765,6 +765,12 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer cmd, QueueState&
       m_stats.couldNotTransfer += (!canTransfer);
       m_stats.couldNotAllocateGroup += (!canAllocateGroup);
       m_stats.couldNotStore += (!canStore);
+
+      if(canStore)
+      {
+        // return memory on failure
+        m_storage.free(storageHandle);
+      }
 
       if(clustersCount < 8)
       {
@@ -778,10 +784,8 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer cmd, QueueState&
       }
     }
 
-    uint64_t deviceAddress;
-
     StreamingResident::Group* residentGroup = m_resident.addGroup(geometryGroup, clustersCount);
-    residentGroup->storageHandle            = m_storage.allocate(geometryGroup, groupSize, deviceAddress);
+    residentGroup->storageHandle            = storageHandle;
     residentGroup->deviceAddress            = deviceAddress;
     void* groupData                         = m_storage.appendTransfer(storageTask, residentGroup->storageHandle);
 
@@ -821,8 +825,13 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer cmd, QueueState&
     // don't use immediate command buffer from main queue,
     // but use transfer queue instead.
 
-    m_storage.m_taskCommandPool.setCycle(pushStorageIndex);
-    cmd = m_storage.m_taskCommandPool.createCommandBuffer();
+    NVVK_CHECK(m_storage.m_taskCommandPool.acquireCommandBuffer(pushStorageIndex, cmd));
+    VkCommandBufferBeginInfo cmdInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+
+    vkBeginCommandBuffer(cmd, &cmdInfo);
   }
 
   uint32_t transferCount = 0;
@@ -852,7 +861,7 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer cmd, QueueState&
 
   bool useDecoupledUpdate = m_config.useAsyncTransfer && m_config.useDecoupledAsyncTransfer;
 
-  SemaphoreState storageSemaphoreState =
+  nvvk::SemaphoreState storageSemaphoreState =
       m_config.useAsyncTransfer ? asyncQueueState.getCurrentState() : cmdQueueState.getCurrentState();
 
   if(m_config.useAsyncTransfer)
@@ -900,7 +909,7 @@ static uint32_t getWorkGroupCount(uint32_t numThreads, uint32_t workGroupSize)
   return (numThreads + workGroupSize - 1) / workGroupSize;
 }
 
-void SceneStreaming::cmdPreTraversal(VkCommandBuffer cmd, VkDeviceAddress clasScratchBuffer, nvvk::ProfilerVK& profiler)
+void SceneStreaming::cmdPreTraversal(VkCommandBuffer cmd, VkDeviceAddress clasScratchBuffer, nvvk::ProfilerGpuTimer& profiler)
 {
   // Prior traversal we run the update task.
   // This modifies the device address array of geometry groups so that
@@ -913,17 +922,16 @@ void SceneStreaming::cmdPreTraversal(VkCommandBuffer cmd, VkDeviceAddress clasSc
   //
   // This function is called by the renderer.
 
-  auto timerSection = profiler.timeRecurring("Stream Pre Traversal", cmd);
+  auto timerSection = profiler.cmdFrameSection(cmd, "Stream Pre Traversal");
 
   VkMemoryBarrier memBarrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
 
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_dsetContainer.getPipeLayout(), 0, 1,
-                          m_dsetContainer.getSets(), 0, nullptr);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.sets.data(), 0, nullptr);
 
 
   if(m_requiresClas && m_config.usePersistentClasAllocator)
   {
-    auto timerSection = profiler.timeRecurring("Clas Deallocate Groups", cmd);
+    auto timerSection = profiler.cmdFrameSection(cmd, "Clas Deallocate Groups");
     if(m_shaderData.update.patchUnloadGroupsCount)
     {
       // this dispatch will handle giving back clas memory of unloaded groups
@@ -968,7 +976,7 @@ void SceneStreaming::cmdPreTraversal(VkCommandBuffer cmd, VkDeviceAddress clasSc
   // them to their resident locations.
 
   {
-    auto timerSection = profiler.timeRecurring("Clas Build New", cmd);
+    auto timerSection = profiler.cmdFrameSection(cmd, "Clas Build New");
 
     uint32_t newClasCount = m_shaderData.update.newClasCount;
 
@@ -1017,7 +1025,7 @@ void SceneStreaming::cmdPreTraversal(VkCommandBuffer cmd, VkDeviceAddress clasSc
     // When we use the persistent clas memory allocator we need to find
     // empty gaps to allocate the persistent location for our newly built clas from.
 
-    auto timerSection = profiler.timeRecurring("Clas Prep Allocation", cmd);
+    auto timerSection = profiler.cmdFrameSection(cmd, "Clas Prep Allocation");
 
     if(m_shaderData.update.patchGroupsCount || STREAMING_DEBUG_ALWAYS_BUILD_FREEGAPS)
     {
@@ -1039,7 +1047,7 @@ void SceneStreaming::cmdPreTraversal(VkCommandBuffer cmd, VkDeviceAddress clasSc
 
         // this setup computes the launch grid for the indirect dispatch further down, and resets some internal atomics
         uint32_t streamSetup = STREAM_SETUP_ALLOCATOR_FREEINSERT;
-        vkCmdPushConstants(cmd, m_dsetContainer.getPipeLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(streamSetup), &streamSetup);
+        vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(streamSetup), &streamSetup);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeSetup);
         vkCmdDispatch(cmd, 1, 1, 1);
 
@@ -1073,7 +1081,7 @@ void SceneStreaming::cmdPreTraversal(VkCommandBuffer cmd, VkDeviceAddress clasSc
   {
     // For the clas compaction scheme we compute the move operations for all old clas
 
-    auto timerSection = profiler.timeRecurring("Clas Offsets Old", cmd);
+    auto timerSection = profiler.cmdFrameSection(cmd, "Clas Offsets Old");
 
     if(m_shaderData.update.patchUnloadGroupsCount)
     {
@@ -1087,14 +1095,14 @@ void SceneStreaming::cmdPreTraversal(VkCommandBuffer cmd, VkDeviceAddress clasSc
       // Without any unloads happening, there is no need to compact, and so we just use this setup
       // kernel to update internal state on the gpu-timeline from past frames' compaction state.
       uint32_t streamSetup = STREAM_SETUP_COMPACTION_OLD_NO_UNLOADS;
-      vkCmdPushConstants(cmd, m_dsetContainer.getPipeLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(streamSetup), &streamSetup);
+      vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(streamSetup), &streamSetup);
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeSetup);
       vkCmdDispatch(cmd, 1, 1, 1);
     }
   }
 }
 
-void SceneStreaming::cmdPostTraversal(VkCommandBuffer cmd, VkDeviceAddress clasScratchBuffer, nvvk::ProfilerVK& profiler)
+void SceneStreaming::cmdPostTraversal(VkCommandBuffer cmd, VkDeviceAddress clasScratchBuffer, nvvk::ProfilerGpuTimer& profiler)
 {
   // After traversal was performed, this function filters resident cluster groups
   // by age to append to the unload request list.
@@ -1106,10 +1114,9 @@ void SceneStreaming::cmdPostTraversal(VkCommandBuffer cmd, VkDeviceAddress clasS
   //
   // This function is called by the renderer.
 
-  auto timerSection = profiler.timeRecurring("Stream Post Traversal", cmd);
+  auto timerSection = profiler.cmdFrameSection(cmd, "Stream Post Traversal");
 
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_dsetContainer.getPipeLayout(), 0, 1,
-                          m_dsetContainer.getSets(), 0, nullptr);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.sets.data(), 0, nullptr);
 
   if(m_shaderData.resident.activeGroupsCount)
   {
@@ -1132,7 +1139,7 @@ void SceneStreaming::cmdPostTraversal(VkCommandBuffer cmd, VkDeviceAddress clasS
     // This also computes the move operations from newly built clas in scratch
     // space to their resident locations.
 
-    auto timerSection = profiler.timeRecurring("Clas Allocate New", cmd);
+    auto timerSection = profiler.cmdFrameSection(cmd, "Clas Allocate New");
 
     uint32_t patchLoadGroupsCount = m_shaderData.update.patchGroupsCount - m_shaderData.update.patchUnloadGroupsCount;
 
@@ -1147,7 +1154,7 @@ void SceneStreaming::cmdPostTraversal(VkCommandBuffer cmd, VkDeviceAddress clasS
     // In the compaction based scheme we will move all old clas to the beginning
     // of the memory range, so that newly built can be appended at the end.
 
-    auto timerSection = profiler.timeRecurring("Clas Compact Old", cmd);
+    auto timerSection = profiler.cmdFrameSection(cmd, "Clas Compact Old");
 
     // requires `m_pipelines.computeMoveClasOld` to have been run
 
@@ -1214,7 +1221,7 @@ void SceneStreaming::cmdPostTraversal(VkCommandBuffer cmd, VkDeviceAddress clasS
     //
     // This is true for both persistent clas allocator, as well as the simple compaction scheme.
 
-    auto timerSection = profiler.timeRecurring("Clas Append New", cmd);
+    auto timerSection = profiler.cmdFrameSection(cmd, "Clas Append New");
 
     // wait for completion
     VkMemoryBarrier memBarrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
@@ -1266,12 +1273,12 @@ void SceneStreaming::cmdPostTraversal(VkCommandBuffer cmd, VkDeviceAddress clasS
 
     uint32_t specialID = m_config.usePersistentClasAllocator ? STREAM_SETUP_ALLOCATOR_STATUS : STREAM_SETUP_COMPACTION_STATUS;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeSetup);
-    vkCmdPushConstants(cmd, m_dsetContainer.getPipeLayout(), VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(specialID), &specialID);
+    vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(specialID), &specialID);
     vkCmdDispatch(cmd, 1, 1, 1);
   }
 }
 
-void SceneStreaming::cmdEndFrame(VkCommandBuffer cmd, QueueState& cmdQueueState, nvvk::ProfilerVK& profiler)
+void SceneStreaming::cmdEndFrame(VkCommandBuffer cmd, QueueState& cmdQueueState, nvvk::ProfilerGpuTimer& profiler)
 {
   // Perform the request readback.
   // we pass the location of `shaderio::StreamingRequest` within m_streamingBuffer, as it contains
@@ -1280,7 +1287,7 @@ void SceneStreaming::cmdEndFrame(VkCommandBuffer cmd, QueueState& cmdQueueState,
   //
   // This function is called by the renderer.
 
-  auto timerSection = profiler.timeRecurring("Stream End", cmd);
+  auto timerSection = profiler.cmdFrameSection(cmd, "Stream End");
 
   m_requests.cmdRunTask(cmd, m_shaderData.request, m_shaderBuffer.buffer, offsetof(shaderio::SceneStreaming, request));
 
@@ -1348,12 +1355,14 @@ void SceneStreaming::deinit()
   if(!m_resources)
     return;
 
+  Resources& res = *m_resources;
+
   deinitClas();
 
   deinitShadersAndPipelines();
-  m_dsetContainer.deinit();
+  m_dsetPack.deinit();
+  vkDestroyPipelineLayout(res.m_device, m_pipelineLayout, nullptr);
 
-  Resources& res = *m_resources;
   m_resident.deinit(res);
   m_storage.deinit(res);
   m_updates.deinit(res);
@@ -1361,14 +1370,14 @@ void SceneStreaming::deinit()
 
   for(auto it : m_persistentGeometries)
   {
-    res.destroy(it.groupAddresses);
-    res.destroy(it.nodeBboxes);
-    res.destroy(it.nodes);
-    res.destroy(it.lowDetailGroupsData);
+    res.m_allocator.destroyBuffer(it.groupAddresses);
+    res.m_allocator.destroyBuffer(it.nodeBboxes);
+    res.m_allocator.destroyBuffer(it.nodes);
+    res.m_allocator.destroyBuffer(it.lowDetailGroupsData);
   }
 
-  res.destroy(m_shaderGeometriesBuffer);
-  res.destroy(m_shaderBuffer);
+  res.m_allocator.destroyBuffer(m_shaderGeometriesBuffer);
+  res.m_allocator.destroyBuffer(m_shaderBuffer);
 
   m_resources = nullptr;
   m_scene     = nullptr;
@@ -1409,35 +1418,32 @@ bool SceneStreaming::initShadersAndPipelines()
 {
   Resources& res = *m_resources;
 
-  m_shaders.computeAgeFilterGroups =
-      res.m_shaderManager.createShaderModule(VK_SHADER_STAGE_COMPUTE_BIT, "stream_agefilter_groups.comp.glsl");
-  m_shaders.computeSetup = res.m_shaderManager.createShaderModule(VK_SHADER_STAGE_COMPUTE_BIT, "stream_setup.comp.glsl");
-  m_shaders.computeUpdateSceneRaster = res.m_shaderManager.createShaderModule(VK_SHADER_STAGE_COMPUTE_BIT, "stream_update_scene.comp.glsl",
-                                                                              "#define TARGETS_RASTERIZATION 1\n");
-  m_shaders.computeUpdateSceneRay = res.m_shaderManager.createShaderModule(VK_SHADER_STAGE_COMPUTE_BIT, "stream_update_scene.comp.glsl",
-                                                                           "#define TARGETS_RASTERIZATION 0\n");
+  shaderc::CompileOptions optionsRaster = res.makeCompilerOptions();
+  optionsRaster.AddMacroDefinition("TARGETS_RASTERIZATION", "1");
+  shaderc::CompileOptions optionsRay = res.makeCompilerOptions();
+  optionsRay.AddMacroDefinition("TARGETS_RASTERIZATION", "0");
+
+  res.compileShader(m_shaders.computeAgeFilterGroups, VK_SHADER_STAGE_COMPUTE_BIT, "stream_agefilter_groups.comp.glsl");
+
+  res.compileShader(m_shaders.computeAgeFilterGroups, VK_SHADER_STAGE_COMPUTE_BIT, "stream_agefilter_groups.comp.glsl");
+  res.compileShader(m_shaders.computeSetup, VK_SHADER_STAGE_COMPUTE_BIT, "stream_setup.comp.glsl");
+  res.compileShader(m_shaders.computeUpdateSceneRaster, VK_SHADER_STAGE_COMPUTE_BIT, "stream_update_scene.comp.glsl", &optionsRaster);
+  res.compileShader(m_shaders.computeUpdateSceneRay, VK_SHADER_STAGE_COMPUTE_BIT, "stream_update_scene.comp.glsl", &optionsRay);
 
   // we load all shaders regardless of use for now
 
   if(m_config.usePersistentClasAllocator)
   {
-    m_shaders.computeAllocatorBuildFreeGaps =
-        res.m_shaderManager.createShaderModule(VK_SHADER_STAGE_COMPUTE_BIT, "stream_allocator_build_freegaps.comp.glsl");
-    m_shaders.computeAllocatorFreeGapsInsert =
-        res.m_shaderManager.createShaderModule(VK_SHADER_STAGE_COMPUTE_BIT, "stream_allocator_freegaps_insert.comp.glsl");
-    m_shaders.computeAllocatorLoadGroups =
-        res.m_shaderManager.createShaderModule(VK_SHADER_STAGE_COMPUTE_BIT, "stream_allocator_load_groups.comp.glsl");
-    m_shaders.computeAllocatorSetupInsertion =
-        res.m_shaderManager.createShaderModule(VK_SHADER_STAGE_COMPUTE_BIT, "stream_allocator_setup_insertion.comp.glsl");
-    m_shaders.computeAllocatorUnloadGroups =
-        res.m_shaderManager.createShaderModule(VK_SHADER_STAGE_COMPUTE_BIT, "stream_allocator_unload_groups.comp.glsl");
+    res.compileShader(m_shaders.computeAllocatorBuildFreeGaps, VK_SHADER_STAGE_COMPUTE_BIT, "stream_allocator_build_freegaps.comp.glsl");
+    res.compileShader(m_shaders.computeAllocatorFreeGapsInsert, VK_SHADER_STAGE_COMPUTE_BIT, "stream_allocator_freegaps_insert.comp.glsl");
+    res.compileShader(m_shaders.computeAllocatorLoadGroups, VK_SHADER_STAGE_COMPUTE_BIT, "stream_allocator_load_groups.comp.glsl");
+    res.compileShader(m_shaders.computeAllocatorSetupInsertion, VK_SHADER_STAGE_COMPUTE_BIT, "stream_allocator_setup_insertion.comp.glsl");
+    res.compileShader(m_shaders.computeAllocatorUnloadGroups, VK_SHADER_STAGE_COMPUTE_BIT, "stream_allocator_unload_groups.comp.glsl");
   }
   else
   {
-    m_shaders.computeCompactClasOld =
-        res.m_shaderManager.createShaderModule(VK_SHADER_STAGE_COMPUTE_BIT, "stream_compaction_old_clas.comp.glsl");
-    m_shaders.computeCompactClasNew =
-        res.m_shaderManager.createShaderModule(VK_SHADER_STAGE_COMPUTE_BIT, "stream_compaction_new_clas.comp.glsl");
+    res.compileShader(m_shaders.computeCompactionClasOld, VK_SHADER_STAGE_COMPUTE_BIT, "stream_compaction_old_clas.comp.glsl");
+    res.compileShader(m_shaders.computeCompactionClasNew, VK_SHADER_STAGE_COMPUTE_BIT, "stream_compaction_new_clas.comp.glsl");
   }
 
   if(!res.verifyShaders(m_shaders))
@@ -1446,48 +1452,49 @@ bool SceneStreaming::initShadersAndPipelines()
   }
 
   {
-    VkComputePipelineCreateInfo compInfo = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    compInfo.stage                       = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-    compInfo.stage.stage                 = VK_SHADER_STAGE_COMPUTE_BIT;
-    compInfo.stage.pName                 = "main";
-    compInfo.layout                      = m_dsetContainer.getPipeLayout();
-    compInfo.flags                       = VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR;
+    VkComputePipelineCreateInfo compInfo   = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    VkShaderModuleCreateInfo    shaderInfo = {};
+    compInfo.stage                         = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    compInfo.stage.stage                   = VK_SHADER_STAGE_COMPUTE_BIT;
+    compInfo.stage.pName                   = "main";
+    compInfo.stage.pNext                   = &shaderInfo;
+    compInfo.layout                        = m_pipelineLayout;
 
-    compInfo.stage.module = res.m_shaderManager.get(m_shaders.computeAgeFilterGroups);
+    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeAgeFilterGroups);
     vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeAgeFilterGroups);
 
-    compInfo.stage.module = res.m_shaderManager.get(m_shaders.computeSetup);
+    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeSetup);
     vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeSetup);
 
-    compInfo.stage.module = res.m_shaderManager.get(m_shaders.computeUpdateSceneRaster);
+    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeUpdateSceneRaster);
     vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeUpdateSceneRaster);
 
-    compInfo.stage.module = res.m_shaderManager.get(m_shaders.computeUpdateSceneRay);
+    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeUpdateSceneRay);
     vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeUpdateSceneRay);
 
     if(m_config.usePersistentClasAllocator)
     {
-      compInfo.stage.module = res.m_shaderManager.get(m_shaders.computeAllocatorBuildFreeGaps);
+      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeAllocatorBuildFreeGaps);
       vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeAllocatorBuildFreeGaps);
 
-      compInfo.stage.module = res.m_shaderManager.get(m_shaders.computeAllocatorFreeGapsInsert);
+      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeAllocatorFreeGapsInsert);
       vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeAllocatorFreeGapsInsert);
 
-      compInfo.stage.module = res.m_shaderManager.get(m_shaders.computeAllocatorLoadGroups);
+      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeAllocatorLoadGroups);
       vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeAllocatorLoadGroups);
 
-      compInfo.stage.module = res.m_shaderManager.get(m_shaders.computeAllocatorSetupInsertion);
+      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeAllocatorSetupInsertion);
       vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeAllocatorSetupInsertion);
 
-      compInfo.stage.module = res.m_shaderManager.get(m_shaders.computeAllocatorUnloadGroups);
+      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeAllocatorUnloadGroups);
       vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeAllocatorUnloadGroups);
     }
     else
     {
-      compInfo.stage.module = res.m_shaderManager.get(m_shaders.computeCompactClasOld);
+      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeCompactionClasOld);
       vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeCompactionClasOld);
 
-      compInfo.stage.module = res.m_shaderManager.get(m_shaders.computeCompactClasNew);
+      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeCompactionClasNew);
       vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeCompactionClasNew);
     }
   }
@@ -1499,18 +1506,7 @@ void SceneStreaming::deinitShadersAndPipelines()
 {
   Resources& res = *m_resources;
 
-  res.destroyShaders(m_shaders);
-  vkDestroyPipeline(res.m_device, m_pipelines.computeAgeFilterGroups, nullptr);
-  vkDestroyPipeline(res.m_device, m_pipelines.computeCompactionClasNew, nullptr);
-  vkDestroyPipeline(res.m_device, m_pipelines.computeCompactionClasOld, nullptr);
-  vkDestroyPipeline(res.m_device, m_pipelines.computeSetup, nullptr);
-  vkDestroyPipeline(res.m_device, m_pipelines.computeUpdateSceneRaster, nullptr);
-  vkDestroyPipeline(res.m_device, m_pipelines.computeUpdateSceneRay, nullptr);
-  vkDestroyPipeline(res.m_device, m_pipelines.computeAllocatorBuildFreeGaps, nullptr);
-  vkDestroyPipeline(res.m_device, m_pipelines.computeAllocatorFreeGapsInsert, nullptr);
-  vkDestroyPipeline(res.m_device, m_pipelines.computeAllocatorLoadGroups, nullptr);
-  vkDestroyPipeline(res.m_device, m_pipelines.computeAllocatorSetupInsertion, nullptr);
-  vkDestroyPipeline(res.m_device, m_pipelines.computeAllocatorUnloadGroups, nullptr);
+  res.destroyPipelines(m_pipelines);
 }
 
 bool SceneStreaming::initClas()
@@ -1530,7 +1526,7 @@ bool SceneStreaming::initClas()
   VkPhysicalDeviceClusterAccelerationStructurePropertiesNV clusterProps = {
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV};
   props2.pNext = &clusterProps;
-  vkGetPhysicalDeviceProperties2(res.m_physical, &props2);
+  vkGetPhysicalDeviceProperties2(res.m_physicalDevice, &props2);
 
   m_clasScratchAlignment = clusterProps.clusterScratchByteAlignment;
 
@@ -1541,8 +1537,8 @@ bool SceneStreaming::initClas()
   m_clasOperationsSize += m_updates.getClasOperationsSize();
 
   m_clasTriangleInput = {VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_TRIANGLE_CLUSTER_INPUT_NV};
-  m_clasTriangleInput.maxClusterTriangleCount       = m_scene->m_clusterMaxTrianglesCount;
-  m_clasTriangleInput.maxClusterVertexCount         = m_scene->m_clusterMaxVerticesCount;
+  m_clasTriangleInput.maxClusterTriangleCount       = m_scene->m_maxClusterTriangles;
+  m_clasTriangleInput.maxClusterVertexCount         = m_scene->m_maxClusterVertices;
   m_clasTriangleInput.maxClusterUniqueGeometryCount = 1;
   m_clasTriangleInput.maxGeometryIndexValue         = 0;
   m_clasTriangleInput.minPositionTruncateBitCount   = m_config.clasPositionTruncateBits;
@@ -1560,13 +1556,13 @@ bool SceneStreaming::initClas()
     clasInput.opType                          = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV;
     clasInput.opMode                          = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV;
     clasInput.opInput.pTriangleClusters       = &m_clasTriangleInput;
-    m_clasTriangleInput.maxTotalTriangleCount = m_scene->m_clusterMaxTrianglesCount * maxNewPerFrameClusters;
-    m_clasTriangleInput.maxTotalVertexCount   = m_scene->m_clusterMaxVerticesCount * maxNewPerFrameClusters;
+    m_clasTriangleInput.maxTotalTriangleCount = m_scene->m_maxClusterTriangles * maxNewPerFrameClusters;
+    m_clasTriangleInput.maxTotalVertexCount   = m_scene->m_maxClusterVertices * maxNewPerFrameClusters;
     vkGetClusterAccelerationStructureBuildSizesNV(res.m_device, &clasInput, &buildSizesInfo);
     m_clasScratchNewBuildSize = buildSizesInfo.buildScratchSize;
     m_clasScratchNewClasSize  = buildSizesInfo.accelerationStructureSize;
     // we put scratch operation space after new clas data, make sure it has the proper alignment
-    m_clasScratchNewClasSize = nvh::align_up(m_clasScratchNewClasSize, m_clasScratchAlignment);
+    m_clasScratchNewClasSize = nvutils::align_up(m_clasScratchNewClasSize, m_clasScratchAlignment);
 
     // explicit build of single to get worst-case size
     clasInput.maxAccelerationStructureCount   = 1;
@@ -1574,8 +1570,8 @@ bool SceneStreaming::initClas()
     clasInput.opType                          = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV;
     clasInput.opMode                          = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV;
     clasInput.opInput.pTriangleClusters       = &m_clasTriangleInput;
-    m_clasTriangleInput.maxTotalTriangleCount = m_scene->m_clusterMaxTrianglesCount;
-    m_clasTriangleInput.maxTotalVertexCount   = m_scene->m_clusterMaxVerticesCount;
+    m_clasTriangleInput.maxTotalTriangleCount = m_scene->m_maxClusterTriangles;
+    m_clasTriangleInput.maxTotalVertexCount   = m_scene->m_maxClusterVertices;
     vkGetClusterAccelerationStructureBuildSizesNV(res.m_device, &clasInput, &buildSizesInfo);
     m_clasSingleMaxSize = buildSizesInfo.accelerationStructureSize;
 
@@ -1623,7 +1619,7 @@ bool SceneStreaming::initClas()
   }
   else
   {
-    m_stats.maxSizedReserved = m_stats.reservedClasBytes / (m_clasSingleMaxSize * m_scene->m_config.clusterGroupSize);
+    m_stats.maxSizedReserved = uint32_t(m_stats.reservedClasBytes / (m_clasSingleMaxSize * m_scene->m_config.clusterGroupSize));
   }
 
   {
@@ -1640,27 +1636,31 @@ bool SceneStreaming::initClas()
     clasInput.opType                          = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV;
     clasInput.opMode                          = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV;
     clasInput.opInput.pTriangleClusters       = &m_clasTriangleInput;
-    m_clasTriangleInput.maxTotalTriangleCount = m_scene->m_clusterMaxTrianglesCount * loClustersCount;
-    m_clasTriangleInput.maxTotalVertexCount   = m_scene->m_clusterMaxVerticesCount * loClustersCount;
+    m_clasTriangleInput.maxTotalTriangleCount = m_scene->m_maxClusterTriangles * loClustersCount;
+    m_clasTriangleInput.maxTotalVertexCount   = m_scene->m_maxClusterVertices * loClustersCount;
     vkGetClusterAccelerationStructureBuildSizesNV(res.m_device, &clasInput, &buildSizesInfo);
     size_t buildScratchSize = buildSizesInfo.buildScratchSize;
     clasInput.opMode        = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_COMPUTE_SIZES_NV;
     vkGetClusterAccelerationStructureBuildSizesNV(res.m_device, &clasInput, &buildSizesInfo);
     size_t sizeScratchSize = buildSizesInfo.buildScratchSize;
 
-    RBuffer scratchTemp = res.createBuffer(std::max(buildScratchSize, sizeScratchSize), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    nvvk::Buffer scratchTemp;
+    res.createBuffer(scratchTemp, std::max(buildScratchSize, sizeScratchSize),
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
 
-    RBufferTyped<VkClusterAccelerationStructureBuildTriangleClusterInfoNV> clasBuildInfosHost;
+    nvvk::BufferTyped<VkClusterAccelerationStructureBuildTriangleClusterInfoNV> clasBuildInfosHost;
     res.createBufferTyped(clasBuildInfosHost, loClustersCount,
                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
-                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+                          VMA_MEMORY_USAGE_CPU_ONLY, VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
 
-    RBufferTyped<uint32_t> clasSizesHost;
-    res.createBufferTyped(clasSizesHost, loClustersCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-    RBufferTyped<uint64_t> clasAddressesHost;
-    res.createBufferTyped(clasAddressesHost, loClustersCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    nvvk::BufferTyped<uint32_t> clasSizesHost;
+    res.createBufferTyped(clasSizesHost, loClustersCount,
+                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY,
+                          VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
+    nvvk::BufferTyped<uint64_t> clasAddressesHost;
+    res.createBufferTyped(clasAddressesHost, loClustersCount,
+                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY,
+                          VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
 
 
     uint32_t                                                  clusterOffset  = 0;
@@ -1675,14 +1675,14 @@ bool SceneStreaming::initClas()
       GroupDataOffsets dataOffsets;
       getGroupDataOffsets(sceneGeometry, residentGroup.geometryGroup, dataOffsets);
 
-      nvcluster::Range groupRange = sceneGeometry.lodMesh.groupClusterRanges[residentGroup.geometryGroup.groupID];
+      nvcluster_Range groupRange = sceneGeometry.lodMesh.groupClusterRanges[residentGroup.geometryGroup.groupID];
 
       for(uint32_t c = 0; c < residentGroup.clusterCount; c++)
       {
         assert((residentGroup.clusterResidentID + c) == clusterOffset);
 
-        nvcluster::Range triangleRange = sceneGeometry.lodMesh.clusterTriangleRanges[c + groupRange.offset];
-        nvcluster::Range vertexRange   = sceneGeometry.clusterVertexRanges[c + groupRange.offset];
+        nvcluster_Range triangleRange = sceneGeometry.lodMesh.clusterTriangleRanges[c + groupRange.offset];
+        nvcluster_Range vertexRange   = sceneGeometry.clusterVertexRanges[c + groupRange.offset];
 
         VkClusterAccelerationStructureBuildTriangleClusterInfoNV& buildInfo = clasBuildInfos[clusterOffset];
         buildInfo                                                           = {};
@@ -1718,11 +1718,11 @@ bool SceneStreaming::initClas()
     cmdInfo.input.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_COMPUTE_SIZES_NV;
 
     cmdInfo.srcInfosArray.deviceAddress = clasBuildInfosHost.address;
-    cmdInfo.srcInfosArray.size          = clasBuildInfosHost.info.range;
+    cmdInfo.srcInfosArray.size          = clasBuildInfosHost.bufferSize;
     cmdInfo.srcInfosArray.stride        = sizeof(shaderio::ClasBuildInfo);
 
     cmdInfo.dstSizesArray.deviceAddress = clasSizesHost.address;
-    cmdInfo.dstSizesArray.size          = clasSizesHost.info.range;
+    cmdInfo.dstSizesArray.size          = clasSizesHost.bufferSize;
     cmdInfo.dstSizesArray.stride        = sizeof(uint32_t);
 
     VkCommandBuffer cmd = res.createTempCmdBuffer();
@@ -1738,8 +1738,9 @@ bool SceneStreaming::initClas()
       clasSize += clasSizesMapping[c];
     }
 
-    m_clasLowDetailBuffer =
-        res.createBuffer(clasSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
+
+    res.createBuffer(m_clasLowDetailBuffer, clasSize,
+                     VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
     m_clasLowDetailSize = clasSize;
 
     clasSize                       = 0;
@@ -1755,7 +1756,7 @@ bool SceneStreaming::initClas()
     cmdInfo.input.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV;
 
     cmdInfo.dstAddressesArray.deviceAddress = clasAddressesHost.address;
-    cmdInfo.dstAddressesArray.size          = clasAddressesHost.info.range;
+    cmdInfo.dstAddressesArray.size          = clasAddressesHost.bufferSize;
     cmdInfo.dstAddressesArray.stride        = sizeof(uint64_t);
 
     cmd = res.createTempCmdBuffer();
@@ -1763,18 +1764,18 @@ bool SceneStreaming::initClas()
 
     // and also copy the sizes & addresses to the persistent resident table
 
-    const RBuffer& residentClasBuffer = m_resident.getClasBuffer();
+    const nvvk::Buffer& residentClasBuffer = m_resident.getClasBuffer();
 
     VkBufferCopy region;
     region.srcOffset = 0;
     region.dstOffset = m_shaderData.resident.clasSizes - residentClasBuffer.address;
-    region.size      = clasSizesHost.info.range;
+    region.size      = clasSizesHost.bufferSize;
 
     vkCmdCopyBuffer(cmd, clasSizesHost.buffer, residentClasBuffer.buffer, 1, &region);
 
     region.srcOffset = 0;
     region.dstOffset = m_shaderData.resident.clasAddresses - residentClasBuffer.address;
-    region.size      = clasAddressesHost.info.range;
+    region.size      = clasAddressesHost.bufferSize;
 
     vkCmdCopyBuffer(cmd, clasAddressesHost.buffer, residentClasBuffer.buffer, 1, &region);
 
@@ -1785,10 +1786,10 @@ bool SceneStreaming::initClas()
 
     res.tempSyncSubmit(cmd);
 
-    res.destroy(scratchTemp);
-    res.destroy(clasSizesHost);
-    res.destroy(clasAddressesHost);
-    res.destroy(clasBuildInfosHost);
+    res.m_allocator.destroyBuffer(scratchTemp);
+    res.m_allocator.destroyBuffer(clasSizesHost);
+    res.m_allocator.destroyBuffer(clasAddressesHost);
+    res.m_allocator.destroyBuffer(clasBuildInfosHost);
   }
 
   return true;
@@ -1809,7 +1810,7 @@ void SceneStreaming::deinitClas()
   }
   m_shaderData.clasAllocator = {};
 
-  res.destroy(m_clasLowDetailBuffer);
+  res.m_allocator.destroyBuffer(m_clasLowDetailBuffer);
   m_stats.reservedClasBytes = 0;
 
   m_clasOperationsSize      = 0;

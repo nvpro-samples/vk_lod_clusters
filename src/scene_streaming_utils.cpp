@@ -35,9 +35,9 @@ void StreamingRequests::init(Resources& res, const StreamingConfig& config, uint
 
   BufferRanges ranges = {};
   m_shaderData.loadGeometryGroups =
-      ranges.append(sizeof(GeometryGroup) * nvh::align_up(config.maxPerFrameLoadRequests, groupCountAlignment), 8);
+      ranges.append(sizeof(GeometryGroup) * nvutils::align_up(config.maxPerFrameLoadRequests, groupCountAlignment), 8);
   m_shaderData.unloadGeometryGroups =
-      ranges.append(sizeof(GeometryGroup) * nvh::align_up(config.maxPerFrameUnloadRequests, groupCountAlignment), 8);
+      ranges.append(sizeof(GeometryGroup) * nvutils::align_up(config.maxPerFrameUnloadRequests, groupCountAlignment), 8);
   m_requestSize = ranges.getSize();
 
   // must come after the others
@@ -50,12 +50,12 @@ void StreamingRequests::init(Resources& res, const StreamingConfig& config, uint
     sharingQueueFamilies.push_back(res.m_queueStates.transfer.m_familyIndex);
   }
 
-  m_requestBuffer = res.createBuffer((m_requestSize + sizeof(shaderio::StreamingRequest)) * STREAMING_MAX_ACTIVE_TASKS,
-                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &sharingQueueFamilies);
+  res.createBuffer(m_requestBuffer, (m_requestSize + sizeof(shaderio::StreamingRequest)) * STREAMING_MAX_ACTIVE_TASKS,
+                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                   VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0, 0, sharingQueueFamilies);
 
-  m_requestHostBuffer = res.createBuffer(m_requestBuffer.info.range, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  res.createBuffer(m_requestHostBuffer, m_requestBuffer.bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_CPU_ONLY,
+                   VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
 
   for(uint32_t c = 0; c < STREAMING_MAX_ACTIVE_TASKS; c++)
   {
@@ -73,13 +73,13 @@ void StreamingRequests::init(Resources& res, const StreamingConfig& config, uint
 
 void StreamingRequests::deinit(Resources& res)
 {
-  res.destroy(m_requestBuffer);
-  res.destroy(m_requestHostBuffer);
+  res.m_allocator.destroyBuffer(m_requestBuffer);
+  res.m_allocator.destroyBuffer(m_requestHostBuffer);
 }
 
 size_t StreamingRequests::getOperationsSize() const
 {
-  return m_requestBuffer.info.range;
+  return m_requestBuffer.bufferSize;
 }
 
 void StreamingRequests::applyTask(shaderio::StreamingRequest& shaderData, uint32_t taskIndex, uint32_t frameIndex)
@@ -123,8 +123,8 @@ void StreamingResident::init(Resources& res, const StreamingConfig& config, uint
 
   // some values are aligned up for easier gpu kernel access
 
-  m_maxClusters  = nvh::align_up(config.maxClusters, clusterCountAlignment);
-  m_maxGroups    = nvh::align_up(config.maxGroups, groupCountAlignment);
+  m_maxClusters  = nvutils::align_up(config.maxClusters, clusterCountAlignment);
+  m_maxGroups    = nvutils::align_up(config.maxGroups, groupCountAlignment);
   m_maxClasBytes = 0;
 
   m_lowDetailGroupsCount   = 0;
@@ -155,11 +155,12 @@ void StreamingResident::init(Resources& res, const StreamingConfig& config, uint
     sharingQueueFamilies.push_back(res.m_queueStates.transfer.m_familyIndex);
   }
 
-  m_residentBuffer = res.createBuffer(ranges.getSize(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &sharingQueueFamilies);
+  res.createBuffer(m_residentBuffer, ranges.getSize(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                   VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0, 0, sharingQueueFamilies);
 
-  res.createBufferTyped(m_residentActiveHostBuffer, (m_maxGroups)*STREAMING_MAX_ACTIVE_TASKS, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  res.createBufferTyped(m_residentActiveHostBuffer, (m_maxGroups)*STREAMING_MAX_ACTIVE_TASKS,
+                        VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY,
+                        VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
 
   m_shaderData              = {};
   m_shaderData.groups       = m_residentBuffer.address + m_residentGroupsOffset;
@@ -169,8 +170,11 @@ void StreamingResident::init(Resources& res, const StreamingConfig& config, uint
 
 void StreamingResident::deinit(Resources& res)
 {
-  res.destroy(m_residentBuffer);
-  res.destroy(m_residentActiveHostBuffer);
+  m_groupAllocator.destroyAll();
+  m_clusterAllocator.destroyAll();
+
+  res.m_allocator.destroyBuffer(m_residentBuffer);
+  res.m_allocator.destroyBuffer(m_residentActiveHostBuffer);
   deinitClas(res);
 
   *this = {};
@@ -178,7 +182,7 @@ void StreamingResident::deinit(Resources& res)
 
 size_t StreamingResident::getOperationsSize() const
 {
-  return m_residentBuffer.info.range;
+  return m_residentBuffer.bufferSize;
 }
 
 const StreamingResident::Group* StreamingResident::initClas(Resources&                   res,
@@ -200,7 +204,7 @@ const StreamingResident::Group* StreamingResident::initClas(Resources&          
   }
 
   // one buffer for organization
-  m_clasManageBuffer = res.createBuffer(ranges.getSize(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+  res.createBuffer(m_clasManageBuffer, ranges.getSize(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
   m_shaderData.clasAddresses += m_clasManageBuffer.address;
   m_shaderData.clasSizes += m_clasManageBuffer.address;
@@ -212,8 +216,8 @@ const StreamingResident::Group* StreamingResident::initClas(Resources&          
   }
 
   // one buffer for actual storage, allow > 4 GB
-  m_clasDataBuffer             = res.createLargeBuffer(m_maxClasBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
-                                                                           | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
+  res.createLargeBuffer(m_clasDataBuffer, m_maxClasBytes,
+                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
   m_shaderData.clasBaseAddress = m_clasDataBuffer.address;
   m_shaderData.clasMaxSize     = m_maxClasBytes;
 
@@ -227,7 +231,7 @@ const StreamingResident::Group* StreamingResident::initClas(Resources&          
 
 size_t StreamingResident::getClasOperationsSize() const
 {
-  return m_clasManageBuffer.info.range;
+  return m_clasManageBuffer.bufferSize;
 }
 
 void StreamingResident::getStats(StreamingStats& stats) const
@@ -240,8 +244,8 @@ void StreamingResident::getStats(StreamingStats& stats) const
 
 void StreamingResident::deinitClas(Resources& res)
 {
-  res.destroy(m_clasManageBuffer);
-  res.destroy(m_clasDataBuffer);
+  res.m_allocator.destroyBuffer(m_clasManageBuffer);
+  res.m_allocator.destroyLargeBuffer(m_clasDataBuffer);
 
   m_shaderData.clasBaseAddress           = 0;
   m_shaderData.clasAddresses             = 0;
@@ -259,8 +263,8 @@ void StreamingResident::reset(shaderio::StreamingResident& shaderData)
     Group& group = m_groups[m_activeGroupIndices[activeGroup]];
 
     m_mapGeometryGroup2Residency.erase(group.geometryGroup.key);
-    m_groupAllocator.subFree(group.groupResidentID, 1);
-    m_clusterAllocator.subFree(group.clusterResidentID, group.clusterCount);
+    m_groupAllocator.destroyID(group.groupResidentID);
+    m_clusterAllocator.destroyRangeID(group.clusterResidentID, group.clusterCount);
   }
 
   m_activeGroupsCount   = m_lowDetailGroupsCount;
@@ -398,7 +402,7 @@ uint32_t StreamingResident::getLoadActiveClustersOffset() const
 
 bool StreamingResident::canAllocateGroup(uint32_t numClusters) const
 {
-  return m_groupAllocator.isAvailable(1, 1) && m_clusterAllocator.isAvailable(numClusters, 1);
+  return m_groupAllocator.isRangeAvailable(1) && m_clusterAllocator.isRangeAvailable(numClusters);
 }
 
 const StreamingResident::Group* StreamingResident::findGroup(GeometryGroup geometryGroup) const
@@ -419,11 +423,9 @@ StreamingResident::Group* StreamingResident::addGroup(GeometryGroup geometryGrou
   bool     valid = false;
   uint32_t groupResidentID;
   uint32_t clusterResidentID;
-  uint32_t outAligned;
-  uint32_t outSize;
-  valid = m_groupAllocator.subAllocate(1, 1, groupResidentID, outAligned, outSize);
+  valid = m_groupAllocator.createID(groupResidentID);
   assert(valid);
-  valid = m_clusterAllocator.subAllocate(clusterCount, 1, clusterResidentID, outAligned, outSize);
+  valid = m_clusterAllocator.createRangeID(clusterResidentID, clusterCount);
   assert(valid);
 
   StreamingResident::Group& group = m_groups[groupResidentID];
@@ -475,8 +477,8 @@ void StreamingResident::removeGroup(uint32_t groupResidentID)
 
   m_activeClustersCount -= group.clusterCount;
 
-  m_groupAllocator.subFree(groupResidentID, 1);
-  m_clusterAllocator.subFree(group.clusterResidentID, group.clusterCount);
+  m_groupAllocator.destroyID(groupResidentID);
+  m_clusterAllocator.destroyRangeID(group.clusterResidentID, group.clusterCount);
 
   group = {};
 }
@@ -535,7 +537,7 @@ void StreamingAllocator::init(Resources&                    res,
   m_shaderData.usedBits          = ranges.append(sizeof(uint32_t) * memory32s, 4);
   m_shaderData.stats             = ranges.append(sizeof(shaderio::AllocatorStats), 8);
 
-  m_managementBuffer = res.createBuffer(ranges.getSize(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+  res.createBuffer(m_managementBuffer, ranges.getSize(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
   m_shaderData.freeGapsPos += m_managementBuffer.address;
   m_shaderData.freeGapsSize += m_managementBuffer.address;
@@ -554,12 +556,12 @@ void StreamingAllocator::init(Resources&                    res,
 
 void StreamingAllocator::deinit(Resources& res)
 {
-  res.destroy(m_managementBuffer);
+  res.m_allocator.destroyBuffer(m_managementBuffer);
 }
 
 size_t StreamingAllocator::getOperationsSize() const
 {
-  return m_managementBuffer.info.range;
+  return m_managementBuffer.bufferSize;
 }
 
 uint32_t StreamingAllocator::getMaxSized() const
@@ -569,7 +571,7 @@ uint32_t StreamingAllocator::getMaxSized() const
 
 void StreamingAllocator::cmdReset(VkCommandBuffer cmd)
 {
-  vkCmdFillBuffer(cmd, m_managementBuffer.buffer, 0, m_managementBuffer.info.range, 0);
+  vkCmdFillBuffer(cmd, m_managementBuffer.buffer, 0, m_managementBuffer.bufferSize, 0);
 }
 
 void StreamingAllocator::cmdBeginFrame(VkCommandBuffer cmd)
@@ -593,8 +595,8 @@ void StreamingUpdates::init(Resources& res, const StreamingConfig& config, uint3
 
   // some values are aligned up for easier gpu kernel access
 
-  uint32_t loadRequests   = nvh::align_up(config.maxPerFrameLoadRequests, groupCountAlignment);
-  uint32_t unloadRequests = nvh::align_up(config.maxPerFrameUnloadRequests, groupCountAlignment);
+  uint32_t loadRequests   = nvutils::align_up(config.maxPerFrameLoadRequests, groupCountAlignment);
+  uint32_t unloadRequests = nvutils::align_up(config.maxPerFrameUnloadRequests, groupCountAlignment);
 
   m_shaderData                        = {};
   m_shaderData.patchGroupsCount       = loadRequests + unloadRequests;
@@ -611,11 +613,12 @@ void StreamingUpdates::init(Resources& res, const StreamingConfig& config, uint3
   }
 
   res.createBufferTyped(m_patchesBuffer, m_shaderData.patchGroupsCount * STREAMING_MAX_ACTIVE_TASKS,
-                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &sharingQueueFamilies);
+                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0, 0, sharingQueueFamilies);
 
 
-  res.createBufferTyped(m_patchesHostBuffer, m_shaderData.patchGroupsCount * STREAMING_MAX_ACTIVE_TASKS, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+  res.createBufferTyped(m_patchesHostBuffer, m_shaderData.patchGroupsCount * STREAMING_MAX_ACTIVE_TASKS,
+                        VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY,
+                        VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
 
   m_shaderData.patches = m_patchesBuffer.address;
 
@@ -630,15 +633,16 @@ void StreamingUpdates::init(Resources& res, const StreamingConfig& config, uint3
 
 size_t StreamingUpdates::getOperationsSize() const
 {
-  return m_patchesBuffer.info.range;
+  return m_patchesBuffer.bufferSize;
 }
 
 void StreamingUpdates::initClas(Resources& res, const StreamingConfig& config, const SceneConfig& sceneConfig)
 {
   // some values are aligned up for easier gpu kernel access
 
-  uint32_t maxLoadClusters = nvh::align_up(config.maxPerFrameLoadRequests * sceneConfig.clusterGroupSize, m_clusterCountAlignment);
-  uint32_t maxClusters = nvh::align_up(config.maxClusters, m_clusterCountAlignment);
+  uint32_t maxLoadClusters =
+      nvutils::align_up(config.maxPerFrameLoadRequests * sceneConfig.clusterGroupSize, m_clusterCountAlignment);
+  uint32_t maxClusters = nvutils::align_up(config.maxClusters, m_clusterCountAlignment);
 
   BufferRanges ranges = {};
 
@@ -652,8 +656,8 @@ void StreamingUpdates::initClas(Resources& res, const StreamingConfig& config, c
   m_shaderData.moveClasDstAddresses = ranges.append(sizeof(uint64_t) * maxMovedClusters, 8);
   m_shaderData.moveClasSrcAddresses = ranges.append(sizeof(uint64_t) * maxMovedClusters, 8);
 
-  m_clasBuffer = res.createBuffer(ranges.getSize(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
-                                                        | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
+  res.createBuffer(m_clasBuffer, ranges.getSize(),
+                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
 
   m_shaderData.newClasBuilds += m_clasBuffer.address;
   m_shaderData.newClasAddresses += m_clasBuffer.address;
@@ -666,12 +670,12 @@ void StreamingUpdates::initClas(Resources& res, const StreamingConfig& config, c
 
 size_t StreamingUpdates::getClasOperationsSize() const
 {
-  return m_clasBuffer.info.range;
+  return m_clasBuffer.bufferSize;
 }
 
 void StreamingUpdates::deinitClas(Resources& res)
 {
-  res.destroy(m_clasBuffer);
+  res.m_allocator.destroyBuffer(m_clasBuffer);
 
   m_shaderData.newClasBuilds      = 0;
   m_shaderData.newClasAddresses   = 0;
@@ -685,8 +689,8 @@ void StreamingUpdates::deinitClas(Resources& res)
 void StreamingUpdates::deinit(Resources& res)
 {
   deinitClas(res);
-  res.destroy(m_patchesBuffer);
-  res.destroy(m_patchesHostBuffer);
+  res.m_allocator.destroyBuffer(m_patchesBuffer);
+  res.m_allocator.destroyBuffer(m_patchesHostBuffer);
 }
 
 void StreamingUpdates::reset()
@@ -799,21 +803,28 @@ void StreamingStorage::init(Resources& res, const StreamingConfig& config)
   m_maxTransferBytes = config.maxTransferMegaBytes * 1024 * 1024;
   m_blockBytes       = std::min(size_t(128) * 1024 * 1024, m_maxSceneBytes);
 
-  std::vector<uint32_t> sharingQueueFamilies;
+  m_dataQueueFamilies = {};
   if(config.useAsyncTransfer)
   {
-    sharingQueueFamilies.push_back(res.m_queueStates.primary.m_familyIndex);
-    sharingQueueFamilies.push_back(res.m_queueStates.transfer.m_familyIndex);
+    m_dataQueueFamilies.push_back(res.m_queueStates.primary.m_familyIndex);
+    m_dataQueueFamilies.push_back(res.m_queueStates.transfer.m_familyIndex);
 
-    m_taskCommandPool.init(res.m_device, res.m_queueStates.transfer.m_familyIndex, VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
-                           STREAMING_MAX_ACTIVE_TASKS);
+    m_taskCommandPool.init(res.m_device, res.m_queueStates.transfer.m_familyIndex, nvvk::ManagedCommandPools::Mode::EXPLICIT_INDEX,
+                           VK_COMMAND_POOL_CREATE_TRANSIENT_BIT, STREAMING_MAX_ACTIVE_TASKS);
   }
 
-  m_transferHostBuffer = res.createBuffer(m_maxTransferBytes * STREAMING_MAX_ACTIVE_TASKS, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-  m_dataAllocator.init(res.m_allocator.getMemoryAllocator(), m_blockBytes,
-                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false, sharingQueueFamilies);
+  res.createBuffer(m_transferHostBuffer, m_maxTransferBytes * STREAMING_MAX_ACTIVE_TASKS, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                   VMA_MEMORY_USAGE_CPU_ONLY, VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
+
+  m_dataInfo.blockSize         = m_blockBytes;
+  m_dataInfo.memoryUsage       = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+  m_dataInfo.maxAllocatedSize  = m_maxSceneBytes;
+  m_dataInfo.queueFamilies     = m_dataQueueFamilies;
+  m_dataInfo.resourceAllocator = &res.m_allocator;
+  m_dataInfo.usageFlags =
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+
+  m_dataAllocator.init(m_dataInfo);
 
   m_copyRegions = {};
   m_copyInfos   = {};
@@ -823,7 +834,7 @@ void StreamingStorage::init(Resources& res, const StreamingConfig& config)
 
 void StreamingStorage::deinit(Resources& res)
 {
-  res.destroy(m_transferHostBuffer);
+  res.m_allocator.destroyBuffer(m_transferHostBuffer);
   m_dataAllocator.deinit();
   m_taskCommandPool.deinit();
 
@@ -859,17 +870,17 @@ bool StreamingStorage::canTransfer(const TaskInfo& task, size_t size) const
   return task.usedMemory + size <= m_maxTransferBytes;
 }
 
-void* StreamingStorage::appendTransfer(TaskInfo& task, nvvk::BufferSubAllocator::Handle dstHandle)
+void* StreamingStorage::appendTransfer(TaskInfo& task, const nvvk::BufferSubAllocation& dstHandle)
 {
-  nvvk::BufferSubAllocator::Binding dstBinding = m_dataAllocator.getSubBinding(dstHandle);
+  nvvk::BufferRange dstBinding = m_dataAllocator.subRange(dstHandle);
 
-  assert(task.usedMemory + dstBinding.size <= m_maxTransferBytes);
+  assert(task.usedMemory + dstBinding.range <= m_maxTransferBytes);
 
   size_t transferOffset  = task.baseOffset;
   void*  transferPointer = reinterpret_cast<uint8_t*>(m_transferHostBuffer.mapping) + task.baseOffset;
 
-  task.usedMemory += dstBinding.size;
-  task.baseOffset += dstBinding.size;
+  task.usedMemory += dstBinding.range;
+  task.baseOffset += dstBinding.range;
 
   if(!m_copyInfos.empty() && m_copyInfos.back().targetBuffer == dstBinding.buffer)
   {
@@ -878,7 +889,7 @@ void* StreamingStorage::appendTransfer(TaskInfo& task, nvvk::BufferSubAllocator:
     // check if we can grow the last region
     if(lastRegion.dstOffset + lastRegion.size == dstBinding.offset)
     {
-      lastRegion.size += dstBinding.size;
+      lastRegion.size += dstBinding.range;
       return transferPointer;
     }
 
@@ -899,7 +910,7 @@ void* StreamingStorage::appendTransfer(TaskInfo& task, nvvk::BufferSubAllocator:
     VkBufferCopy region;
     region.srcOffset = transferOffset;
     region.dstOffset = dstBinding.offset;
-    region.size      = dstBinding.size;
+    region.size      = dstBinding.range;
 
     m_copyInfos.back().regionCount++;
     m_copyRegions.push_back(region);
@@ -918,38 +929,36 @@ uint32_t StreamingStorage::cmdUploadTask(VkCommandBuffer cmd)
   return uint32_t(m_copyRegions.size());
 }
 
-bool StreamingStorage::canAllocate(size_t sz) const
-{
-  VkDeviceSize allocatedSize;
-  VkDeviceSize usedSize;
-  m_dataAllocator.getUtilization(allocatedSize, usedSize);
-
-  return m_dataAllocator.fitsInAllocated(sz) || (allocatedSize + m_blockBytes) <= m_maxSceneBytes;
-}
-
 void StreamingStorage::reset()
 {
-  m_dataAllocator.free(false);
+  m_dataAllocator.deinit();
+  NVVK_CHECK(m_dataAllocator.init(m_dataInfo));
 }
 
-nvvk::BufferSubAllocator::Handle StreamingStorage::allocate(GeometryGroup geometryGroup, size_t sz, uint64_t& deviceAddress)
+bool StreamingStorage::allocate(nvvk::BufferSubAllocation& handle, GeometryGroup group, size_t sz, uint64_t& deviceAddress)
 {
-  nvvk::BufferSubAllocator::Handle handle = m_dataAllocator.subAllocate(sz);
-
-  deviceAddress = m_dataAllocator.getSubBinding(handle).address;
-  assert(handle.isValid());
-  return handle;
+  if(m_dataAllocator.subAllocate(handle, sz) == VK_SUCCESS)
+  {
+    deviceAddress = m_dataAllocator.subRange(handle).address;
+    return true;
+  }
+  else
+  {
+    return false;
+  }
 }
 
-void StreamingStorage::free(nvvk::BufferSubAllocator::Handle handle)
+void StreamingStorage::free(nvvk::BufferSubAllocation& handle)
 {
-  assert(handle.isValid());
+  assert(handle);
   m_dataAllocator.subFree(handle);
 }
 
 void StreamingStorage::getStats(StreamingStats& stats) const
 {
-  m_dataAllocator.getUtilization(stats.reservedDataBytes, stats.usedDataBytes);
+  nvvk::BufferSubAllocator::Report report = m_dataAllocator.getReport();
+  stats.reservedDataBytes                 = report.reservedSize;
+  stats.usedDataBytes                     = report.requestedSize;
 }
 
 }  // namespace lodclusters

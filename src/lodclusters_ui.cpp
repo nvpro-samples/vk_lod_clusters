@@ -18,22 +18,16 @@
 */
 
 #include <filesystem>
-#include <inttypes.h>
 
-#include <imgui/backends/imgui_vk_extra.h>
-#include <imgui/imgui_camera_widget.h>
-#include <imgui/imgui_orient.h>
-#include <implot.h>
-#include <glm/gtc/type_ptr.hpp>
-#include <glm/gtc/matrix_access.hpp>
-#include <nvh/fileoperations.hpp>
-#include <nvh/misc.hpp>
-#include <nvh/cameramanipulator.hpp>
-#include <nvvkhl/shaders/dh_sky.h>
-#include <nvvkhl/application.hpp>
+#include <imgui/imgui.h>
+#include <imgui/imgui_internal.h>
+#include <implot/implot.h>
+#include <nvgui/camera.hpp>
+#include <nvgui/sky.hpp>
+#include <nvgui/property_editor.hpp>
+#include <nvgui/window.hpp>
 
 #include "lodclusters.hpp"
-#include "vk_nv_cluster_acc.h"
 
 namespace lodclusters {
 
@@ -77,7 +71,43 @@ std::string formatMetric(size_t size)
   return fmt::format("{:.3} {}", fsize, units[currentUnit]);
 }
 
-static uint32_t getUsagePct(uint32_t requested, uint32_t reserved)
+template <typename T>
+void uiPlot(const std::string& plotName, const std::string& tooltipFormat, const std::vector<T>& data, const T& maxValue, int offset = 0)
+{
+  ImVec2 plotSize = ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y / 2);
+
+  // Ensure minimum height to avoid overly squished graphics
+  plotSize.y = std::max(plotSize.y, ImGui::GetTextLineHeight() * 20);
+
+  const ImPlotFlags     plotFlags = ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText | ImPlotFlags_Crosshairs;
+  const ImPlotAxisFlags axesFlags = ImPlotAxisFlags_Lock | ImPlotAxisFlags_NoLabel;
+  const ImColor         plotColor = ImColor(0.07f, 0.9f, 0.06f, 1.0f);
+
+  if(ImPlot::BeginPlot(plotName.c_str(), plotSize, plotFlags))
+  {
+    ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_NoButtons);
+    ImPlot::SetupAxes(nullptr, "Count", axesFlags, axesFlags);
+    ImPlot::SetupAxesLimits(0, double(data.size()), 0, static_cast<double>(maxValue), ImPlotCond_Always);
+
+    ImPlot::PushStyleVar(ImPlotStyleVar_FillAlpha, 0.25f);
+    ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
+    ImPlot::SetNextFillStyle(plotColor);
+    ImPlot::PlotShaded("", data.data(), (int)data.size(), -INFINITY, 1.0, 0.0, 0, offset);
+    ImPlot::PopStyleVar();
+
+    if(ImPlot::IsPlotHovered())
+    {
+      ImPlotPoint mouse       = ImPlot::GetPlotMousePos();
+      int         mouseOffset = (int(mouse.x)) % (int)data.size();
+      ImGui::BeginTooltip();
+      ImGui::Text(tooltipFormat.c_str(), mouseOffset, data[mouseOffset]);
+      ImGui::EndTooltip();
+    }
+
+    ImPlot::EndPlot();
+  }
+}
+static uint32_t getUsagePct(uint64_t requested, uint64_t reserved)
 {
   bool     exceeds = requested > reserved;
   uint32_t pct     = uint32_t(double(requested) * 100.0 / double(reserved));
@@ -97,8 +127,8 @@ struct UsagePercentages
 
   void setupPercentages(shaderio::Readback& readback, const RendererConfig& rendererConfig)
   {
-    pctRender    = getUsagePct(readback.numRenderClusters, 1 << rendererConfig.numRenderClusterBits);
-    pctTraversal = getUsagePct(readback.numTraversalInfos, 1 << rendererConfig.numTraversalTaskBits);
+    pctRender    = getUsagePct(readback.numRenderClusters, uint64_t(1) << rendererConfig.numRenderClusterBits);
+    pctTraversal = getUsagePct(readback.numTraversalInfos, uint64_t(1) << rendererConfig.numTraversalTaskBits);
   }
 
   void setupPercentages(StreamingStats& stats, const StreamingConfig& streamingConfig)
@@ -126,26 +156,16 @@ struct UsagePercentages
 
 void LodClusters::viewportUI(ImVec2 corner)
 {
-  if(ImGui::IsItemHovered())
-  {
-    const auto mouseAbsPos = ImGui::GetMousePos();
+  ImVec2     mouseAbsPos = ImGui::GetMousePos();
+  glm::uvec2 mousePos    = {mouseAbsPos.x - corner.x, mouseAbsPos.y - corner.y};
 
-    glm::uvec2 mousePos = {mouseAbsPos.x - corner.x, mouseAbsPos.y - corner.y};
-
-    m_frameConfig.frameConstants.mousePosition = mousePos * glm::uvec2(m_tweak.supersample, m_tweak.supersample);
-    m_mouseButtonHandler.update(mousePos);
-    MouseButtonHandler::ButtonState leftButtonState = m_mouseButtonHandler.getButtonState(ImGuiMouseButton_Left);
-    m_requestCameraRecenter = (leftButtonState == MouseButtonHandler::eDoubleClick) || ImGui::IsKeyPressed(ImGuiKey_Space);
-    /* JEM dactivates selection, TODO remove code once validated with CK
-    m_requestSelection = leftButtonState == MouseButtonHandler::eSingleClick;
-    */
-  }
+  m_frameConfig.frameConstants.mousePosition = mousePos * glm::uvec2(m_tweak.supersample, m_tweak.supersample);
 
   if(m_renderer)
   {
     shaderio::Readback readback;
-
     m_resources.getReadbackData(readback);
+
     UsagePercentages pct;
     pct.setupPercentages(readback, m_rendererConfig);
 
@@ -184,9 +204,28 @@ void LodClusters::viewportUI(ImVec2 corner)
   }
 }
 
-void LodClusters::processUI(double time, nvh::Profiler& profiler, const CallBacks& callbacks)
+void LodClusters::onUIRender()
 {
-  if(!m_renderScene)
+  ImGuiWindow* viewport = ImGui::FindWindowByName("Viewport");
+
+  if(viewport)
+  {
+    if(nvgui::isWindowHovered(viewport))
+    {
+      if(ImGui::IsKeyDown(ImGuiKey_R))
+      {
+        m_reloadShaders = true;
+      }
+      if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) || ImGui::IsKeyPressed(ImGuiKey_Space))
+      {
+        m_requestCameraRecenter = true;
+      }
+    }
+  }
+
+  bool earlyOut = !m_scene;
+
+  if(earlyOut)
   {
     return;
   }
@@ -194,34 +233,17 @@ void LodClusters::processUI(double time, nvh::Profiler& profiler, const CallBack
   shaderio::Readback readback;
   m_resources.getReadbackData(readback);
 
-  /* JEM dactivates selection, TODO remove code once validated with CK
-  bool isRightClick = m_mouseButtonHandler.getButtonState(ImGuiMouseButton_Right) == MouseButtonHandler::eSingleClick;
-
-  if(isRightClick || ImGui::IsKeyPressed(ImGuiKey_Escape))
-  {
-    m_hasSelection = false;
-  }
-
-  if(m_requestSelection)
-  {
-    m_selectionData = readback;
-    m_hasSelection  = isReadbackValid(readback);
-
-    m_frameConfig.frameConstants.visFilterClusterID  = m_selectionData.clusterTriangleId >> 8;
-    m_frameConfig.frameConstants.visFilterInstanceID = m_selectionData.instanceId;
-  }
-  */
-  if(m_requestCameraRecenter && isReadbackValid(readback))
+  // camera control, recenter
+  if(m_requestCameraRecenter && isPickingValid(readback))
   {
 
     glm::uvec2 mousePos = {m_frameConfig.frameConstants.mousePosition.x / m_tweak.supersample,
                            m_frameConfig.frameConstants.mousePosition.y / m_tweak.supersample};
 
-    const glm::mat4 view = CameraManip.getMatrix();
+    const glm::mat4 view = m_info.cameraManipulator->getViewMatrix();
     const glm::mat4 proj = m_frameConfig.frameConstants.projMatrix;
 
     float d = decodePickingDepth(readback);
-
 
     if(d < 1.0F)  // Ignore infinite
     {
@@ -231,9 +253,11 @@ void LodClusters::processUI(double time, nvh::Profiler& profiler, const CallBack
 
       // Set the interest position
       glm::vec3 eye, center, up;
-      CameraManip.getLookat(eye, center, up);
-      CameraManip.setLookat(eye, hitPos, up, false);
+      m_info.cameraManipulator->getLookat(eye, center, up);
+      m_info.cameraManipulator->setLookat(eye, hitPos, up, false);
     }
+
+    m_requestCameraRecenter = false;
   }
 
   ImVec4 text_color = ImGui::GetStyleColorVec4(ImGuiCol_Text);
@@ -251,10 +275,9 @@ void LodClusters::processUI(double time, nvh::Profiler& profiler, const CallBack
   }
 
   ImGui::Begin("Settings");
+  ImGui::PushItemWidth(170 * ImGui::GetWindowDpiScale());
 
-  ImGui::PushItemWidth(ImGuiH::dpiScaled(170));
-
-  namespace PE = ImGuiH::PropertyEditor;
+  namespace PE = nvgui::PropertyEditor;
 
   if(ImGui::CollapsingHeader("Scene Modifiers"))  //, nullptr, ImGuiTreeNodeFlags_DefaultOpen ))
   {
@@ -284,7 +307,8 @@ void LodClusters::processUI(double time, nvh::Profiler& profiler, const CallBack
     PE::begin("##Rendering");
     PE::entry("Renderer", [&]() { return m_ui.enumCombobox(GUI_RENDERER, "renderer", &m_tweak.renderer); });
     PE::entry("Super sampling", [&]() { return m_ui.enumCombobox(GUI_SUPERSAMPLE, "sampling", &m_tweak.supersample); });
-    PE::Text("Render Resolution:", "%d x %d", m_resources.m_framebuffer.renderWidth, m_resources.m_framebuffer.renderHeight);
+    PE::Text("Render Resolution:", "%d x %d", m_resources.m_frameBuffer.renderSize.width,
+             m_resources.m_frameBuffer.renderSize.height);
 
     PE::Checkbox("Facet shading", &m_tweak.facetShading);
     PE::Checkbox("Wireframe", (bool*)&m_frameConfig.frameConstants.doWireframe);
@@ -710,8 +734,10 @@ void LodClusters::processUI(double time, nvh::Profiler& profiler, const CallBack
 
   if(m_scene && ImGui::CollapsingHeader("Model Cluster Stats"))  //, nullptr, ImGuiTreeNodeFlags_DefaultOpen))
   {
-    ImGui::Text("Cluster count: %" PRIu64, m_scene->m_totalClustersCount);
-    ImGui::Text("Clusters with max (%u) triangles: %u (%.1f%%)", m_scene->m_config.clusterTriangles,
+    ImGui::Text("Cluster max triangles: %d", m_scene->m_maxClusterTriangles);
+    ImGui::Text("Cluster max vertices: %d", m_scene->m_maxClusterVertices);
+    ImGui::Text("Cluster count: %llu", m_scene->m_totalClustersCount);
+    ImGui::Text("Clusters with config (%u) triangles: %u (%.1f%%)", m_scene->m_config.clusterTriangles,
                 m_scene->m_clusterTriangleHistogram.back(),
                 float(m_scene->m_clusterTriangleHistogram.back()) * 100.f / float(m_scene->m_totalClustersCount));
 
@@ -731,20 +757,22 @@ void LodClusters::processUI(double time, nvh::Profiler& profiler, const CallBack
 
   if(ImGui::CollapsingHeader("Camera", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
   {
-    ImGuiH::CameraWidget();
+    nvgui::CameraWidget(m_info.cameraManipulator);
   }
 
   if(ImGui::CollapsingHeader("Lighting", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
   {
-    namespace PE = ImGuiH::PropertyEditor;
+    namespace PE = nvgui::PropertyEditor;
     PE::begin();
     PE::SliderFloat("Light Mixer", &m_frameConfig.frameConstants.lightMixer, 0.0f, 1.0f, "%.3f", 0,
                     "Mix between flashlight and sun light");
     PE::end();
     ImGui::TextDisabled("Sun & Sky");
-    PE::begin();
-    nvvkhl::skyParametersUI(m_frameConfig.frameConstants.skyParams);
-    PE::end();
+    {
+      PE::begin();
+      nvgui::skySimpleParametersUI(m_frameConfig.frameConstants.skyParams);
+      PE::end();
+    }
   }
 
   if(ImGui::CollapsingHeader("Rendering Advanced", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
@@ -768,8 +796,10 @@ void LodClusters::processUI(double time, nvh::Profiler& profiler, const CallBack
   }
   if(ImGui::CollapsingHeader("Debug Shader Values", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
   {
-    ImGui::InputInt("dbgInt", (int*)&m_frameConfig.frameConstants.dbgUint, 1, 100, ImGuiInputTextFlags_EnterReturnsTrue);
-    ImGui::InputFloat("dbgFloat", &m_frameConfig.frameConstants.dbgFloat, 0.1f, 1.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
+    PE::begin("##HiddenID");
+    PE::InputInt("dbgInt", (int*)&m_frameConfig.frameConstants.dbgUint, 1, 100, ImGuiInputTextFlags_EnterReturnsTrue);
+    PE::InputFloat("dbgFloat", &m_frameConfig.frameConstants.dbgFloat, 0.1f, 1.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
+    PE::end();
 
     ImGui::Text(" debugI :  %10d", readback.debugI);
     ImGui::Text(" debugUI:  %10u", readback.debugUI);
@@ -815,5 +845,14 @@ void LodClusters::processUI(double time, nvh::Profiler& profiler, const CallBack
   }
   ImGui::End();
 #endif
+
+  handleChanges();
+
+  // Rendered image displayed fully in 'Viewport' window
+  ImGui::Begin("Viewport");
+  ImVec2 corner = ImGui::GetCursorScreenPos();  // Corner of the viewport
+  ImGui::Image((ImTextureID)m_imguiTexture, ImGui::GetContentRegionAvail());
+  viewportUI(corner);
+  ImGui::End();
 }
 }  // namespace lodclusters

@@ -21,7 +21,6 @@
 
 #include "scene.hpp"
 #include "resources.hpp"
-#include "vk_nv_cluster_acc.h"
 
 namespace lodclusters {
 
@@ -47,7 +46,7 @@ public:
   void deinit();
 
   // renderers need to access this buffer
-  const RBufferTyped<shaderio::Geometry>& getShaderGeometriesBuffer() const { return m_shaderGeometriesBuffer; }
+  const nvvk::BufferTyped<shaderio::Geometry>& getShaderGeometriesBuffer() const { return m_shaderGeometriesBuffer; }
 
   // device memory usage
   size_t getClasSize() const { return m_clasSize; }
@@ -57,22 +56,22 @@ public:
 private:
   struct Geometry
   {
-    RBufferTyped<shaderio::Node> nodes;
-    RBufferTyped<shaderio::BBox> nodeBboxes;
+    nvvk::BufferTyped<shaderio::Node> nodes;
+    nvvk::BufferTyped<shaderio::BBox> nodeBboxes;
 
-    RBufferTyped<shaderio::Group> groups;
+    nvvk::BufferTyped<shaderio::Group> groups;
 
-    RBufferTyped<uint8_t>   localTriangles;
-    RBufferTyped<glm::vec4> vertices;
+    nvvk::BufferTyped<uint8_t>   localTriangles;
+    nvvk::BufferTyped<glm::vec4> vertices;
 
-    RBufferTyped<shaderio::Cluster> clusters;
-    RBufferTyped<uint32_t>          clusterGeneratingGroups;
-    RBufferTyped<shaderio::BBox>    clusterBboxes;
+    nvvk::BufferTyped<shaderio::Cluster> clusters;
+    nvvk::BufferTyped<uint32_t>          clusterGeneratingGroups;
+    nvvk::BufferTyped<shaderio::BBox>    clusterBboxes;
 
     // for ray tracing
-    RBufferTyped<uint64_t> clusterClasAddresses;
-    RBufferTyped<uint32_t> clusterClasSizes;
-    RBuffer                clasData;
+    nvvk::BufferTyped<uint64_t> clusterClasAddresses;
+    nvvk::BufferTyped<uint32_t> clusterClasSizes;
+    nvvk::Buffer                clasData;
   };
 
   Config       m_config;
@@ -88,7 +87,7 @@ private:
   std::vector<ScenePreloaded::Geometry> m_geometries;
   std::vector<shaderio::Geometry>       m_shaderGeometries;
 
-  RBufferTyped<shaderio::Geometry> m_shaderGeometriesBuffer;
+  nvvk::BufferTyped<shaderio::Geometry> m_shaderGeometriesBuffer;
 
   bool initClas();
   void deinitClas();

@@ -17,10 +17,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <nvh/misc.hpp>
+#include <cassert>
+
+#include <volk.h>
+#include <fmt/format.h>
 
 #include "nvhiz_vk.hpp"
-
 
 static const VkFormat NVHIZ_FORMAT = VK_FORMAT_R32_SFLOAT;
 
@@ -82,8 +84,7 @@ void NVHizVK::init(VkDevice device, const Config& config, uint32_t descrSetsCoun
     infoReduc.sType                            = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO;
     infoReduc.reductionMode = m_config.reversedZ ? VK_SAMPLER_REDUCTION_MODE_MIN : VK_SAMPLER_REDUCTION_MODE_MAX;
 
-    VkSamplerCreateInfo info     = {};
-    info.sType                   = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    VkSamplerCreateInfo info     = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     info.addressModeU            = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     info.addressModeV            = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     info.addressModeW            = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -147,8 +148,7 @@ void NVHizVK::init(VkDevice device, const Config& config, uint32_t descrSetsCoun
     bindings[BINDING_WRITE_FAR].descriptorCount    = MAX_MIP_LEVELS;
     bindings[BINDING_WRITE_FAR].pImmutableSamplers = nullptr;
 
-    VkDescriptorSetLayoutCreateInfo info = {};
-    info.sType                           = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    VkDescriptorSetLayoutCreateInfo info = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     info.bindingCount                    = BINDING_COUNT;
     info.pBindings                       = bindings;
 
@@ -165,8 +165,7 @@ void NVHizVK::init(VkDevice device, const Config& config, uint32_t descrSetsCoun
   {
     m_descrSets = new VkDescriptorSet[m_descrSetsCount];
 
-    VkDescriptorPoolCreateInfo info = {};
-    info.sType                      = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    VkDescriptorPoolCreateInfo info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     info.poolSizeCount              = 2;
     info.pPoolSizes                 = m_poolSizes;
     info.maxSets                    = m_descrSetsCount;
@@ -179,8 +178,7 @@ void NVHizVK::init(VkDevice device, const Config& config, uint32_t descrSetsCoun
       setLayouts[i] = m_descrLayout;
     }
 
-    VkDescriptorSetAllocateInfo allocateInfo = {};
-    allocateInfo.sType                       = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    VkDescriptorSetAllocateInfo allocateInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     allocateInfo.descriptorPool              = m_descrPool;
     allocateInfo.descriptorSetCount          = m_descrSetsCount;
     allocateInfo.pSetLayouts                 = setLayouts;
@@ -196,8 +194,7 @@ void NVHizVK::init(VkDevice device, const Config& config, uint32_t descrSetsCoun
     range.size       = sizeof(PushConstants);
     range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
-    VkPipelineLayoutCreateInfo info = {};
-    info.sType                      = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    VkPipelineLayoutCreateInfo info = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     info.pSetLayouts                = &m_descrLayout;
     info.setLayoutCount             = 1;
     info.pPushConstantRanges        = &range;
@@ -206,8 +203,6 @@ void NVHizVK::init(VkDevice device, const Config& config, uint32_t descrSetsCoun
     result = vkCreatePipelineLayout(m_device, &info, nullptr, &m_pipelineLayout);
     assert(result == VK_SUCCESS);
   }
-
-  std::ignore = result;
 }
 
 VkSampler NVHizVK::getReadFarSampler() const
@@ -217,7 +212,7 @@ VkSampler NVHizVK::getReadFarSampler() const
 
 const VkDescriptorPoolSize* NVHizVK::getDescriptorPoolSizes(uint32_t& count) const
 {
-  count = NV_ARRAY_SIZE(m_poolSizes);
+  count = POOLSIZE_COUNT;
   return m_poolSizes;
 }
 
@@ -226,27 +221,6 @@ VkDescriptorSetLayout NVHizVK::getDescriptorSetLayout() const
   return m_descrLayout;
 }
 
-std::string NVHizVK::getShaderDefines(uint32_t shader) const
-{
-  ProgHizMode  hiz;
-  ProgViewMode view;
-  getShaderIndexConfig(shader, hiz, view);
-
-  std::string config;
-
-  config += nvh::stringFormat("#define NV_HIZ_LEVELS %d\n", m_config.hizLevels);
-  config += nvh::stringFormat("#define NV_HIZ_MSAA_SAMPLES %d\n", m_config.msaaSamples);
-  config += nvh::stringFormat("#define NV_HIZ_REVERSED_Z %d\n", m_config.reversedZ ? 1 : 0);
-  config += nvh::stringFormat("#define NV_HIZ_NEAR_LEVEL %d\n", m_config.hizNearLevel);
-  config += nvh::stringFormat("#define NV_HIZ_FAR_LEVEL %d\n", m_config.hizFarLevel);
-  config += nvh::stringFormat("#define NV_HIZ_IS_FIRST %d\n", hiz != PROG_HIZ_FAR_REST ? 1 : 0);
-  config += nvh::stringFormat("#define NV_HIZ_OUTPUT_NEAR %d\n", hiz == PROG_HIZ_FAR_AND_NEAR ? 1 : 0);
-  config += nvh::stringFormat("#define NV_HIZ_USE_STEREO %d\n", view == PROG_VIEW_STEREO ? 1 : 0);
-
-  return config;
-}
-
-#if 0
 void NVHizVK::appendShaderDefines(uint32_t shader, shaderc::CompileOptions& options) const
 {
   ProgHizMode  hiz;
@@ -262,7 +236,6 @@ void NVHizVK::appendShaderDefines(uint32_t shader, shaderc::CompileOptions& opti
   options.AddMacroDefinition("NV_HIZ_OUTPUT_NEAR", std::to_string(hiz == PROG_HIZ_FAR_AND_NEAR ? 1u : 0u));
   options.AddMacroDefinition("NV_HIZ_USE_STEREO", std::to_string(view == PROG_VIEW_STEREO ? 1u : 0u));
 }
-#endif
 
 void NVHizVK::deinitPipelines()
 {
@@ -280,19 +253,20 @@ void NVHizVK::deinitPipelines()
   memset(&m_pipelines, 0, sizeof(m_pipelines));
 }
 
-void NVHizVK::initPipelines(const VkShaderModule modules[SHADER_COUNT])
+void NVHizVK::initPipelines(const shaderc::SpvCompilationResult spvResults[SHADER_COUNT])
 {
   deinitPipelines();
 
   for(uint32_t i = 0; i < SHADER_COUNT; i++)
   {
-    VkComputePipelineCreateInfo info = {};
-    info.sType                       = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    info.stage.sType                 = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    info.stage.stage                 = VK_SHADER_STAGE_COMPUTE_BIT;
-    info.stage.pName                 = "main";
-    info.stage.module                = modules[i];
-    info.layout                      = m_pipelineLayout;
+    VkComputePipelineCreateInfo info       = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    VkShaderModuleCreateInfo    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(spvResults[i]);
+
+    info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    info.stage.pNext = &shaderInfo;
+    info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    info.stage.pName = "main";
+    info.layout      = m_pipelineLayout;
     VkResult result;
     result = vkCreateComputePipelines(m_device, nullptr, 1, &info, nullptr, &m_pipelines[i]);
     assert(result == VK_SUCCESS);

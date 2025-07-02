@@ -17,88 +17,105 @@
 * SPDX-License-Identifier: Apache-2.0
 */
 
-
-#include <filesystem>
-
-#include <imgui/backends/imgui_vk_extra.h>
-#include <imgui/imgui_camera_widget.h>
-#include <imgui/imgui_orient.h>
-#include <implot.h>
-#include <nvh/fileoperations.hpp>
-#include <nvh/misc.hpp>
-#include <nvh/cameramanipulator.hpp>
-#include <nvvkhl/shaders/dh_sky.h>
-#include <nvvkhl/application.hpp>
-#include <glm/gtc/type_ptr.hpp>
-#include <glm/gtc/matrix_access.hpp>
+#include <fmt/format.h>
+#include <nvutils/file_operations.hpp>
+#include <nvgui/camera.hpp>
 
 #include "lodclusters.hpp"
-#include "vk_nv_cluster_acc.h"
 
 bool g_verbose = false;
 
 namespace lodclusters {
-std::string LodClusters::getShaderPrepend()
+
+LodClusters::LodClusters(const Info& info)
+    : m_info(info)
 {
-  std::string prepend = m_customShaderPrepend;
-  if(!prepend.empty())
-  {
-    char* test  = &prepend[0];
-    char* found = nullptr;
-    while((found = strstr(test, "\\n")) != nullptr)
-    {
-      found[0] = ' ';
-      found[1] = '\n';
-      test += 2;
-    }
-  }
+  nvutils::ProfilerTimeline::CreateInfo createInfo;
+  createInfo.name = "graphics";
 
+  m_profilerTimeline = m_info.profilerManager->createTimeline(createInfo);
 
-  prepend += nvh::stringFormat("#define DEBUG_VISUALIZATION %d\n", m_tweak.useDebugVisualization ? 1 : 0);
-  prepend += nvh::stringFormat("#define USE_CULLING %d\n", m_tweak.useCulling ? 1 : 0);
+  m_info.parameterRegistry->add({"scene"}, {".gltf", ".glb"}, &m_sceneFilePath);
+  m_info.parameterRegistry->add({"renderer"}, (int*)&m_tweak.renderer);
+  m_info.parameterRegistry->add({"verbose"}, &g_verbose, true);
+  m_info.parameterRegistry->add({"resetstats"}, &m_tweak.autoResetTimers);
+  m_info.parameterRegistry->add({"supersample"}, &m_tweak.supersample);
 
-#ifdef _DEBUG
-  printf(prepend.c_str());
-#endif
+  m_info.parameterRegistry->add({"streaming"}, &m_tweak.useStreaming);
+  m_info.parameterRegistry->add({"clasallocator"}, &m_streamingConfig.usePersistentClasAllocator);
+  m_info.parameterRegistry->add({"gridcopies"}, &m_sceneGridConfig.numCopies);
+  m_info.parameterRegistry->add({"gridconfig"}, &m_sceneGridConfig.gridBits);
+  m_info.parameterRegistry->add({"gridunique"}, &m_sceneGridConfig.uniqueGeometriesForCopies);
+  m_info.parameterRegistry->add({"clusterconfig"}, (int*)&m_tweak.clusterConfig);
+  m_info.parameterRegistry->add({"loderror"}, &m_frameConfig.lodPixelError);
+  m_info.parameterRegistry->add({"culling"}, &m_tweak.useCulling);
+  m_info.parameterRegistry->add({"instancesorting"}, &m_rendererConfig.useSorting);
+  m_info.parameterRegistry->add({"renderclusterbits"}, &m_rendererConfig.numRenderClusterBits);
+  m_info.parameterRegistry->add({"rendertraversalbits"}, &m_rendererConfig.numRenderClusterBits);
+  m_info.parameterRegistry->add({"hbao"}, &m_tweak.hbaoActive);
+  m_info.parameterRegistry->add({"facetshading"}, &m_tweak.facetShading);
+  m_info.parameterRegistry->add({"flipwinding"}, &m_rendererConfig.flipWinding);
+  m_info.parameterRegistry->add({"twosided"}, &m_rendererConfig.twoSided);
+  m_info.parameterRegistry->add({"autosavecache", "automatically store cache file for loaded scene. default false"},
+                                &m_sceneConfig.autoSaveCache);
+  m_info.parameterRegistry->add({"autoloadcache", "automatically load cache file if found. default true"},
+                                &m_sceneConfig.autoLoadCache);
+  m_info.parameterRegistry->add({"mappedcache", "work from memory mapped cache file, otherwise load to sysmem. default true"},
+                                &m_sceneConfig.memoryMappedCache);
+  m_info.parameterRegistry->add({"processingonly", "directly terminate app once cache file was saved. default false"},
+                                &m_sceneConfig.processingOnly);
+  m_info.parameterRegistry->add({"processingthreadpct", "float percentage of threads during initial file load and processing into lod clusters, default 0.5 == 50 %"},
+                                &m_sceneConfig.processingThreadsPct);
 
-  return prepend;
+  m_frameConfig.frameConstants                         = {};
+  m_frameConfig.frameConstants.ambientOcclusionSamples = 1;
+  m_frameConfig.frameConstants.facetShading            = 1;
+  m_frameConfig.frameConstants.doShadow                = 1;
+  m_frameConfig.frameConstants.ambientOcclusionRadius  = 0.1f;
+
+  m_frameConfig.frameConstants                         = {};
+  m_frameConfig.frameConstants                         = {};
+  m_frameConfig.frameConstants.wireThickness           = 2.f;
+  m_frameConfig.frameConstants.wireSmoothing           = 1.f;
+  m_frameConfig.frameConstants.wireColor               = {118.f / 255.f, 185.f / 255.f, 0.f};
+  m_frameConfig.frameConstants.wireStipple             = 0;
+  m_frameConfig.frameConstants.wireBackfaceColor       = {0.5f, 0.5f, 0.5f};
+  m_frameConfig.frameConstants.wireStippleRepeats      = 5;
+  m_frameConfig.frameConstants.wireStippleLength       = 0.5f;
+  m_frameConfig.frameConstants.doShadow                = 1;
+  m_frameConfig.frameConstants.doWireframe             = 0;
+  m_frameConfig.frameConstants.ambientOcclusionRadius  = 0.1f;
+  m_frameConfig.frameConstants.ambientOcclusionSamples = 16;
+  m_frameConfig.frameConstants.visualize               = VISUALIZE_LOD;
+
+  m_frameConfig.frameConstants.lightMixer = 0.5f;
+  m_frameConfig.frameConstants.skyParams  = {};
 }
-
-bool LodClusters::initScene(const char* filename)
+bool LodClusters::initScene(const std::filesystem::path& filePath)
 {
   deinitScene();
 
-  if(filename)
+  std::string fileName = nvutils::utf8FromPath(filePath);
+
+  if(!fileName.empty())
   {
-    LOGI("Loading scene %s\n", filename);
+    LOGI("Loading scene %s\n", fileName.c_str());
 
     m_scene = std::make_unique<Scene>();
-    if(!m_scene->init(filename, m_sceneConfig))
+    if(!m_scene->init(filePath, m_sceneConfig))
     {
       m_scene = nullptr;
       LOGW("Loading scene failed\n");
     }
     else
     {
-      // a scene may come with loaded config, that can differ from what user asked for
-      m_lastSceneConfig = m_sceneConfig = m_scene->m_config;
-
-      if(m_sceneConfig.clusterTriangles == 64 && m_sceneConfig.clusterVertices == 64)
-        m_tweak.clusterConfig = m_lastTweak.clusterConfig = CLUSTER_64T_64V;
-      else if(m_sceneConfig.clusterTriangles == 96 && m_sceneConfig.clusterVertices == 96)
-        m_tweak.clusterConfig = m_lastTweak.clusterConfig = CLUSTER_96T_96V;
-      else if(m_sceneConfig.clusterTriangles == 128 && m_sceneConfig.clusterVertices == 128)
-        m_tweak.clusterConfig = m_lastTweak.clusterConfig = CLUSTER_128T_128V;
-      else if(m_sceneConfig.clusterTriangles == 128 && m_sceneConfig.clusterVertices == 256)
-        m_tweak.clusterConfig = m_lastTweak.clusterConfig = CLUSTER_128T_256V;
-      else if(m_sceneConfig.clusterTriangles == 256 && m_sceneConfig.clusterVertices == 256)
-        m_tweak.clusterConfig = m_lastTweak.clusterConfig = CLUSTER_256T_256V;
-      else
-        m_tweak.clusterConfig = m_lastTweak.clusterConfig = CLUSTER_CUSTOM;
+      adjustSceneClusterConfig();
 
       m_scene->updateSceneGrid(m_sceneGridConfig);
-      m_lastSceneGridConfig = m_sceneGridConfig;
+      m_sceneGridConfigLast = m_sceneGridConfig;
     }
+
+    m_sceneFilePath = filePath;
 
     if(m_scene)
     {
@@ -124,7 +141,7 @@ void LodClusters::initRenderScene()
   {
     // override to use streaming
     m_tweak.useStreaming     = true;
-    m_lastTweak.useStreaming = true;
+    m_tweakLast.useStreaming = true;
 
     if(!m_renderScene->init(&m_resources, m_scene.get(), m_streamingConfig, true))
     {
@@ -138,7 +155,17 @@ void LodClusters::initRenderScene()
     deinitRenderScene();
   }
 
-  m_lastStreamingConfig = m_streamingConfig;
+  m_streamingConfigLast = m_streamingConfig;
+}
+
+void LodClusters::deinitRenderScene()
+{
+  NVVK_CHECK(vkDeviceWaitIdle(m_app->getDevice()));
+  if(m_renderScene)
+  {
+    m_renderScene->deinit();
+    m_renderScene = nullptr;
+  }
 }
 
 void LodClusters::deinitScene()
@@ -152,42 +179,46 @@ void LodClusters::deinitScene()
   }
 }
 
-void LodClusters::deinitRenderScene()
+void LodClusters::onResize(VkCommandBuffer cmd, const VkExtent2D& size)
 {
-  if(m_renderScene)
+  m_windowSize = size;
+  m_resources.initFramebuffer(m_windowSize, m_tweak.supersample, m_tweak.hbaoFullRes);
+  updateImguiImage();
+  if(m_renderer)
   {
-    m_renderScene->deinit();
-    m_renderScene = nullptr;
+    m_renderer->updatedFrameBuffer(m_resources, *m_renderScene);
+    m_rendererFboChangeID = m_resources.m_fboChangeID;
   }
 }
 
-bool LodClusters::initFramebuffers(int width, int height)
+void LodClusters::updateImguiImage()
 {
-  bool result = m_resources.initFramebuffer(width, height, std::max(1, m_tweak.supersample), m_tweak.hbaoFullRes);
-  updateTargetImage();
+  if(m_imguiTexture)
+  {
+    ImGui_ImplVulkan_RemoveTexture(m_imguiTexture);
+    m_imguiTexture = nullptr;
+  }
 
-  return result;
+  VkImageView imageView = m_resources.m_frameBuffer.useResolved ? m_resources.m_frameBuffer.imgColorResolved.descriptor.imageView :
+                                                                  m_resources.m_frameBuffer.imgColor.descriptor.imageView;
+
+  assert(imageView);
+
+  m_imguiTexture = ImGui_ImplVulkan_AddTexture(m_imguiSampler, imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 }
 
-void LodClusters::updateTargetImage()
+void LodClusters::onPreRender()
 {
-  if(m_resources.m_framebuffer.useResolved)
-  {
-    m_targetImage.image = m_resources.m_framebuffer.imgColorResolved.image;
-    m_targetImage.view  = m_resources.m_framebuffer.viewColorResolved;
-  }
-  else
-  {
-    m_targetImage.image = m_resources.m_framebuffer.imgColor.image;
-    m_targetImage.view  = m_resources.m_framebuffer.viewColor;
-  }
+  m_profilerTimeline->frameAdvance();
 }
+
 
 void LodClusters::deinitRenderer()
 {
+  NVVK_CHECK(vkDeviceWaitIdle(m_app->getDevice()));
+
   if(m_renderer)
   {
-    m_resources.synchronize("sync deinitRenderer");
     m_renderer->deinit(m_resources);
     m_renderer = nullptr;
   }
@@ -199,8 +230,6 @@ void LodClusters::initRenderer(RendererType rtype)
   deinitRenderer();
   if(!m_renderScene)
     return;
-
-  m_resources.m_shaderManager.m_prepend = getShaderPrepend();
 
   printf("init renderer %d\n", rtype);
 
@@ -236,11 +265,13 @@ void LodClusters::postInitNewScene()
 {
   assert(m_scene);
 
-  setCameraFromScene(m_modelFilename.c_str());
+  float     sceneDimension = glm::length(m_scene->m_bbox.hi - m_scene->m_bbox.lo);
+  glm::vec3 center         = (m_scene->m_bbox.hi + m_scene->m_bbox.lo) * 0.5f;
 
-  float sceneDimension                   = glm::length((m_scene->m_bbox.hi - m_scene->m_bbox.lo));
-  m_frameConfig.frameConstants.wLightPos = (m_scene->m_bbox.hi + m_scene->m_bbox.lo) * 0.5f + sceneDimension;
+  m_frameConfig.frameConstants.wLightPos = center + sceneDimension;
   m_frameConfig.frameConstants.sceneSize = glm::length(m_scene->m_bbox.hi - m_scene->m_bbox.lo);
+
+  setSceneCamera(m_sceneFilePath);
 
   m_frames = 0;
 
@@ -248,22 +279,13 @@ void LodClusters::postInitNewScene()
 }
 
 
-bool LodClusters::initCore(nvvk::Context& context, int winWidth, int winHeight, const std::string& exePath)
+void LodClusters::onAttach(nvapp::Application* app)
 {
+  m_app = app;
+
   m_tweak.supersample = std::max(1, m_tweak.supersample);
 
-  m_rtClusterSupport = context.hasDeviceExtension(VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME)
-                       && load_VK_NV_cluster_accleration_structure(context.m_instance, context.m_device);
-
-  context.ignoreDebugMessage(0x8c548bfd);  // rayquery missing
-  context.ignoreDebugMessage(0x901f59ec);  // unknown enum
-  context.ignoreDebugMessage(0x79de34d4);  // unsupported ext
-  context.ignoreDebugMessage(0x23e43bb7);  // attachment not written
-  context.ignoreDebugMessage(0x6bbb14);    // spir-v location mesh shader
-  context.ignoreDebugMessage(0x5d6b67e2);  // shader module
-  context.ignoreDebugMessage(0x1292ada1);
-
-  CameraManip.setMode(nvh::CameraManipulator::Fly);
+  m_info.cameraManipulator->setMode(nvutils::CameraManipulator::Fly);
 
   m_renderer = nullptr;
 
@@ -271,51 +293,9 @@ bool LodClusters::initCore(nvvk::Context& context, int winWidth, int winHeight, 
     VkPhysicalDeviceProperties2 physicalProperties = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
     VkPhysicalDeviceShaderSMBuiltinsPropertiesNV smProperties = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SM_BUILTINS_PROPERTIES_NV};
     physicalProperties.pNext = &smProperties;
-    vkGetPhysicalDeviceProperties2(context.m_physicalDevice, &physicalProperties);
+    vkGetPhysicalDeviceProperties2(app->getPhysicalDevice(), &physicalProperties);
     // pseudo heuristic
     m_frameConfig.traversalPersistentThreads = smProperties.shaderSMCount * smProperties.shaderWarpsPerSM * 8;
-  }
-
-  {
-    std::vector<std::string> shaderSearchPaths;
-    std::string              path = NVPSystem::exePath();
-    shaderSearchPaths.push_back(NVPSystem::exePath());
-    shaderSearchPaths.push_back(NVPSystem::exePath() + "shaders");
-    shaderSearchPaths.push_back(std::string("GLSL_" PROJECT_NAME));
-    shaderSearchPaths.push_back(NVPSystem::exePath() + std::string("GLSL_" PROJECT_NAME));
-    shaderSearchPaths.push_back(NVPSystem::exePath() + std::string(PROJECT_RELDIRECTORY));
-    shaderSearchPaths.push_back(NVPSystem::exePath() + std::string(PROJECT_RELDIRECTORY) + "shaders");
-    shaderSearchPaths.push_back(NVPSystem::exePath() + std::string(PROJECT_NVPRO_CORE_RELDIRECTORY) + "nvvkhl/shaders");
-
-    bool valid = m_resources.init(&context, shaderSearchPaths);
-    valid      = valid && m_resources.initFramebuffer(winWidth, winHeight, m_tweak.supersample, m_tweak.hbaoFullRes);
-
-    updateTargetImage();
-
-    if(!valid)
-    {
-      LOGE("failed to initialize resources\n");
-      exit(-1);
-    }
-  }
-
-  {
-    m_frameConfig.frameConstants                         = {};
-    m_frameConfig.frameConstants.wireThickness           = 2.f;
-    m_frameConfig.frameConstants.wireSmoothing           = 1.f;
-    m_frameConfig.frameConstants.wireColor               = {118.f / 255.f, 185.f / 255.f, 0.f};
-    m_frameConfig.frameConstants.wireStipple             = 0;
-    m_frameConfig.frameConstants.wireBackfaceColor       = {0.5f, 0.5f, 0.5f};
-    m_frameConfig.frameConstants.wireStippleRepeats      = 5;
-    m_frameConfig.frameConstants.wireStippleLength       = 0.5f;
-    m_frameConfig.frameConstants.doShadow                = 1;
-    m_frameConfig.frameConstants.doWireframe             = 0;
-    m_frameConfig.frameConstants.ambientOcclusionRadius  = 0.1f;
-    m_frameConfig.frameConstants.ambientOcclusionSamples = 16;
-    m_frameConfig.frameConstants.visualize               = VISUALIZE_LOD;
-
-    m_frameConfig.frameConstants.lightMixer = 0.5f;
-    m_frameConfig.frameConstants.skyParams  = nvvkhl_shaders::initSimpleSkyParameters();
   }
 
   {
@@ -325,7 +305,7 @@ bool LodClusters::initCore(nvvk::Context& context, int winWidth, int winHeight, 
     m_ui.enumAdd(GUI_BUILDMODE, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR, "fast build");
     m_ui.enumAdd(GUI_BUILDMODE, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR, "fast trace");
 
-    if(!m_rtClusterSupport)
+    if(!m_resources.m_supportsClusters)
     {
       LOGW("WARNING: Cluster raytracing extension not supported\n");
       if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
@@ -337,13 +317,14 @@ bool LodClusters::initCore(nvvk::Context& context, int winWidth, int winHeight, 
     {
       m_ui.enumAdd(GUI_RENDERER, RENDERER_RAYTRACE_CLUSTERS_LOD, "Ray tracing");
     }
-    //m_ui.enumAdd(GUI_MESHLET, CLUSTER_32T_32T, "32T_32V");
-    m_ui.enumAdd(GUI_MESHLET, CLUSTER_64T_64V, "64T_64V");
-    m_ui.enumAdd(GUI_MESHLET, CLUSTER_96T_96V, "96T_96V");
-    m_ui.enumAdd(GUI_MESHLET, CLUSTER_128T_128V, "128T_128V");
-    m_ui.enumAdd(GUI_MESHLET, CLUSTER_128T_256V, "128T_256V");
-    m_ui.enumAdd(GUI_MESHLET, CLUSTER_256T_256V, "256T_256V");
-    m_ui.enumAdd(GUI_MESHLET, CLUSTER_CUSTOM, "CUSTOM");
+
+    {
+      for(uint32_t i = 0; i < NUM_CLUSTER_CONFIGS; i++)
+      {
+        std::string enumStr = fmt::format("{}T_{}V", s_clusterInfos[i].tris, s_clusterInfos[i].verts);
+        m_ui.enumAdd(GUI_MESHLET, s_clusterInfos[i].cfg, enumStr.c_str());
+      }
+    }
 
     m_ui.enumAdd(GUI_SUPERSAMPLE, 1, "none");
     m_ui.enumAdd(GUI_SUPERSAMPLE, 2, "4x");
@@ -355,14 +336,33 @@ bool LodClusters::initCore(nvvk::Context& context, int winWidth, int winHeight, 
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_TRIANGLE, "triangles");
   }
 
+  // Initialize core components
+
+  m_profilerGpuTimer.init(m_profilerTimeline, app->getDevice(), app->getPhysicalDevice(), app->getQueue(0).familyIndex, true);
+  m_resources.init(app->getDevice(), app->getPhysicalDevice(), app->getInstance(), app->getQueue(0), app->getQueue(1));
+
+  {
+    NVVK_CHECK(m_resources.m_samplerPool.acquireSampler(m_imguiSampler));
+    NVVK_DBG_NAME(m_imguiSampler);
+  }
+
+  m_resources.initFramebuffer({128, 128}, m_tweak.supersample, m_tweak.hbaoFullRes);
+  updateImguiImage();
+
   updatedClusterConfig();
 
   // Search for default scene if none was provided on the command line
-  if(m_modelFilename.empty())
+  if(m_sceneFilePath.empty())
   {
-    const std::vector<std::string> defaultSearchPaths = {NVPSystem::exePath() + PROJECT_DOWNLOAD_RELDIRECTORY,
-                                                         NVPSystem::exePath() + "media"};  // for INSTALL search path
-    m_modelFilename                                   = nvh::findFile("bunny_v2/bunny.gltf", defaultSearchPaths, true);
+    const std::filesystem::path              exeDirectoryPath   = nvutils::getExecutablePath().parent_path();
+    const std::vector<std::filesystem::path> defaultSearchPaths = {
+        // regular build
+        std::filesystem::absolute(exeDirectoryPath / PROJECT_EXE_TO_DOWNLOAD_DIRECTORY),
+        // install build
+        std::filesystem::absolute(exeDirectoryPath / "resources"),
+    };
+
+    m_sceneFilePath = nvutils::findFile("bunny_v2/bunny.gltf", defaultSearchPaths);
 
     if(m_sceneGridConfig.numCopies == 1)
     {
@@ -388,31 +388,30 @@ bool LodClusters::initCore(nvvk::Context& context, int winWidth, int winHeight, 
     m_streamingConfig.maxGeometryMegaBytes = 1 * 1024;
   }
 
-  if(initScene(!m_modelFilename.empty() ? m_modelFilename.c_str() : nullptr))
+  if(initScene(m_sceneFilePath))
   {
     postInitNewScene();
     initRenderer(m_tweak.renderer);
   }
-  else
-  {
-    return false;
-  }
 
-  m_lastTweak               = m_tweak;
-  m_lastSceneConfig         = m_sceneConfig;
-  m_lastRendererConfig      = m_rendererConfig;
-  m_lastCustomShaderPrepend = m_customShaderPrepend;
-
-  m_mouseButtonHandler.init();
-
-  return true;
+  m_tweakLast          = m_tweak;
+  m_sceneConfigLast    = m_sceneConfig;
+  m_rendererConfigLast = m_rendererConfig;
 }
 
-void LodClusters::deinit(nvvk::Context& context)
+void LodClusters::onDetach()
 {
+  NVVK_CHECK(vkDeviceWaitIdle(m_app->getDevice()));
+
   deinitRenderer();
   deinitScene();
+
+  m_resources.m_samplerPool.releaseSampler(m_imguiSampler);
+  ImGui_ImplVulkan_RemoveTexture(m_imguiTexture);
+
   m_resources.deinit();
+
+  m_profilerGpuTimer.deinit();
 }
 
 void LodClusters::saveCacheFile()
@@ -423,127 +422,117 @@ void LodClusters::saveCacheFile()
   }
 }
 
-void LodClusters::loadFile(const std::string& filename)
+void LodClusters::onFileDrop(const std::filesystem::path& filePath)
 {
   // reset grid parameter (in case scene is too large to be replicated)
   m_sceneGridConfig.numCopies = 1;
   //
-  if(filename.empty())
+  if(filePath.empty())
     return;
-  m_modelFilename = filename;
-  LOGI("Loading model: %s\n", filename.c_str());
+  LOGI("Loading model: %s\n", nvutils::utf8FromPath(filePath).c_str());
   deinitRenderer();
-  m_resources.synchronize("open file");
 
-  if(initScene(m_modelFilename.c_str()))
+  if(initScene(filePath))
   {
     postInitNewScene();
     initRenderer(m_tweak.renderer);
-    m_lastTweak       = m_tweak;
-    m_lastSceneConfig = m_sceneConfig;
+    m_tweakLast       = m_tweak;
+    m_sceneConfigLast = m_sceneConfig;
   }
 }
 
-void LodClusters::onSceneChanged()
+
+const LodClusters::ClusterInfo LodClusters::s_clusterInfos[NUM_CLUSTER_CONFIGS] = {
+    {64, 64, CLUSTER_64T_64V},     {64, 128, CLUSTER_64T_128V},   {64, 192, CLUSTER_64T_192V},
+    {96, 96, CLUSTER_96T_96V},     {128, 128, CLUSTER_128T_128V}, {128, 256, CLUSTER_128T_256V},
+    {256, 256, CLUSTER_256T_256V},
+};
+
+void LodClusters::adjustSceneClusterConfig()
 {
-  m_resources.synchronize("sync sceneChanged");
-  deinitRenderer();
-  initScene(m_modelFilename.c_str());
+#if 0
+  m_scene->m_clusterTriangleHistogram.resize(entry.tris + 1);
+  m_scene->m_clusterVertexHistogram.resize(entry.verts + 1);
+
+  for(uint32_t i = 0; i < NUM_CLUSTER_CONFIGS; i++)
+  {
+    const ClusterInfo& entry = s_clusterInfos[i];
+    if(m_scene->m_maxClusterTriangles <= entry.tris && m_scene->m_maxClusterVertices <= entry.verts)
+    {
+      m_tweak.clusterConfig = entry.cfg;
+
+      m_scene->m_config.clusterTriangles = entry.tris;
+      m_sceneConfig.clusterTriangles     = entry.tris;
+      m_sceneConfigLast.clusterTriangles = entry.tris;
+
+      m_scene->m_config.clusterVertices = entry.verts;
+      m_sceneConfig.clusterVertices     = entry.verts;
+      m_sceneConfigLast.clusterVertices = entry.verts;
+      return;
+    }
+  }
+#endif
 }
 
 void LodClusters::updatedClusterConfig()
 {
-  switch(m_tweak.clusterConfig)
+  for(uint32_t i = 0; i < NUM_CLUSTER_CONFIGS; i++)
   {
-    case CLUSTER_64T_64V:
-      m_sceneConfig.clusterTriangles = 64;
-      m_sceneConfig.clusterVertices  = 64;
-      break;
-    case CLUSTER_96T_96V:
-      m_sceneConfig.clusterTriangles = 96;
-      m_sceneConfig.clusterVertices  = 96;
-      break;
-    case CLUSTER_128T_128V:
-      m_sceneConfig.clusterTriangles = 128;
-      m_sceneConfig.clusterVertices  = 128;
-      break;
-    case CLUSTER_128T_256V:
-      m_sceneConfig.clusterTriangles = 128;
-      m_sceneConfig.clusterVertices  = 256;
-      break;
-    case CLUSTER_256T_256V:
-      m_sceneConfig.clusterTriangles = 256;
-      m_sceneConfig.clusterVertices  = 256;
-      break;
+    if(s_clusterInfos[i].cfg == m_tweak.clusterConfig)
+    {
+      m_sceneConfig.clusterTriangles = s_clusterInfos[i].tris;
+      m_sceneConfig.clusterVertices  = s_clusterInfos[i].verts;
+      return;
+    }
   }
 }
 
-void LodClusters::applyConfigFile(nvh::ParameterList& parameterList, const char* filename)
+void LodClusters::handleChanges()
 {
-  std::string result = nvh::loadFile(filename, false);
-  if(result.empty())
-  {
-    LOGW("file not found: %s\n", filename);
-    return;
-  }
-  std::vector<const char*> args;
-  nvh::ParameterList::tokenizeString(result, args);
-
-  std::string path = nvh::getFilePath(filename);
-
-  parameterList.applyTokens(uint32_t(args.size()), args.data(), "-", path.c_str());
-}
-
-LodClusters::ChangeStates LodClusters::handleChanges(uint32_t width, uint32_t height, const EventStates& states)
-{
-  ChangeStates changes = {};
-  changes.targetImage  = 0;
-  changes.timerReset   = 0;
-
-  if(m_tweak.clusterConfig != m_lastTweak.clusterConfig)
+  if(m_tweak.clusterConfig != m_tweakLast.clusterConfig)
   {
     updatedClusterConfig();
   }
 
   bool sceneChanged = false;
-  if(memcmp(&m_sceneConfig, &m_lastSceneConfig, sizeof(m_sceneConfig)))
+  if(memcmp(&m_sceneConfig, &m_sceneConfigLast, sizeof(m_sceneConfig)))
   {
     sceneChanged = true;
 
-    onSceneChanged();
+    deinitRenderer();
+    initScene(m_sceneFilePath);
   }
 
   bool sceneGridChanged = false;
-  if(!sceneChanged && memcmp(&m_sceneGridConfig, &m_lastSceneGridConfig, sizeof(m_lastSceneGridConfig)) && m_scene)
+  if(!sceneChanged && memcmp(&m_sceneGridConfig, &m_sceneGridConfigLast, sizeof(m_sceneGridConfig)) && m_scene)
   {
     sceneGridChanged = true;
-
-    m_resources.synchronize("sync sceneGridChanged");
 
     deinitRenderer();
     m_scene->updateSceneGrid(m_sceneGridConfig);
   }
 
   bool shaderChanged = false;
-  if(states.reloadShaders || m_customShaderPrepend != m_lastCustomShaderPrepend || tweakChanged(m_tweak.useCulling))
+  if(m_reloadShaders)
   {
     shaderChanged = true;
   }
 
+  bool frameBufferChanged = false;
   if(tweakChanged(m_tweak.supersample) || tweakChanged(m_tweak.hbaoFullRes))
   {
-    m_resources.initFramebuffer(width, height, m_tweak.supersample, m_tweak.hbaoFullRes);
-    updateTargetImage();
-    changes.targetImage = 1;
+    m_resources.initFramebuffer(m_windowSize, m_tweak.supersample, m_tweak.hbaoFullRes);
+    updateImguiImage();
+
+    frameBufferChanged = true;
   }
 
   bool renderSceneChanged = false;
   if(sceneGridChanged || tweakChanged(m_tweak.useStreaming)
-     || (memcmp(&m_streamingConfig, &m_lastStreamingConfig, sizeof(m_streamingConfig))))
+     || (memcmp(&m_streamingConfig, &m_streamingConfigLast, sizeof(m_streamingConfig))))
   {
     if(!sceneChanged || !sceneGridChanged)
     {
-      m_resources.synchronize("sync renderSceneChanged");
       deinitRenderer();
     }
 
@@ -555,56 +544,59 @@ LodClusters::ChangeStates LodClusters::handleChanges(uint32_t width, uint32_t he
   bool rendererChanged = false;
   if(sceneChanged || shaderChanged || renderSceneChanged || tweakChanged(m_tweak.renderer)
      || tweakChanged(m_tweak.useDebugVisualization) || rendererCfgChanged(m_rendererConfig.flipWinding)
-     || rendererCfgChanged(m_rendererConfig.twoSided) || rendererCfgChanged(m_rendererConfig.useSorting)
-     || rendererCfgChanged(m_rendererConfig.numRenderClusterBits) || rendererCfgChanged(m_rendererConfig.numTraversalTaskBits))
+     || rendererCfgChanged(m_rendererConfig.doCulling) || rendererCfgChanged(m_rendererConfig.twoSided)
+     || rendererCfgChanged(m_rendererConfig.useSorting) || rendererCfgChanged(m_rendererConfig.numRenderClusterBits)
+     || rendererCfgChanged(m_rendererConfig.numTraversalTaskBits))
   {
     rendererChanged = true;
 
-    m_resources.synchronize("sync rendererChanged");
     initRenderer(m_tweak.renderer);
   }
+  else if(m_renderer && frameBufferChanged)
+  {
+    m_renderer->updatedFrameBuffer(m_resources, *m_renderScene);
+    m_rendererFboChangeID = m_resources.m_fboChangeID;
+  }
 
-  bool hadChange = shaderChanged || memcmp(&m_lastTweak, &m_tweak, sizeof(m_tweak))
-                   || memcmp(&m_lastRendererConfig, &m_rendererConfig, sizeof(m_rendererConfig))
-                   || memcmp(&m_lastSceneConfig, &m_sceneConfig, sizeof(m_sceneConfig))
-                   || memcmp(&m_lastStreamingConfig, &m_streamingConfig, sizeof(m_streamingConfig))
-                   || memcmp(&m_lastSceneGridConfig, &m_sceneGridConfig, sizeof(m_sceneGridConfig));
+  bool hadChange = shaderChanged || memcmp(&m_tweakLast, &m_tweak, sizeof(m_tweak))
+                   || memcmp(&m_rendererConfigLast, &m_rendererConfig, sizeof(m_rendererConfig))
+                   || memcmp(&m_sceneConfigLast, &m_sceneConfig, sizeof(m_sceneConfig))
+                   || memcmp(&m_streamingConfigLast, &m_streamingConfig, sizeof(m_streamingConfig))
+                   || memcmp(&m_sceneGridConfigLast, &m_sceneGridConfig, sizeof(m_sceneGridConfig));
+  m_tweakLast           = m_tweak;
+  m_rendererConfigLast  = m_rendererConfig;
+  m_streamingConfigLast = m_streamingConfig;
+  m_sceneConfigLast     = m_sceneConfig;
+  m_sceneGridConfigLast = m_sceneGridConfig;
+
 
   if(hadChange)
   {
     m_equalFrames = 0;
+    if(m_tweak.autoResetTimers)
+    {
+      m_info.profilerManager->resetFrameSections(8);
+    }
   }
-
-  m_lastTweak               = m_tweak;
-  m_lastRendererConfig      = m_rendererConfig;
-  m_lastSceneConfig         = m_sceneConfig;
-  m_lastSceneGridConfig     = m_sceneGridConfig;
-  m_lastStreamingConfig     = m_streamingConfig;
-  m_lastCustomShaderPrepend = m_customShaderPrepend;
-
-  changes.timerReset = hadChange && m_tweak.autoResetTimers;
-
-  return changes;
 }
 
-void LodClusters::renderFrame(VkCommandBuffer      cmd,
-                              uint32_t             width,
-                              uint32_t             height,
-                              double               time,
-                              nvvk::ProfilerVK&    profilerVK,
-                              uint32_t             cycleIndex,
-                              nvvkhl::Application* app)
+void LodClusters::onRender(VkCommandBuffer cmd)
 {
-  m_resources.beginFrame(cycleIndex);
+  double time = m_clock.getSeconds();
 
-  m_frameConfig.winWidth  = width;
-  m_frameConfig.winHeight = height;
+  m_resources.beginFrame(m_app->getFrameCycleIndex());
+
+  m_frameConfig.windowSize = m_windowSize;
+  m_frameConfig.hbaoActive = false;
 
   if(m_renderer)
   {
+    uint32_t width  = m_windowSize.width;
+    uint32_t height = m_windowSize.height;
+
     if(m_rendererFboChangeID != m_resources.m_fboChangeID)
     {
-      m_renderer->updatedFrameBuffer(m_resources);
+      m_renderer->updatedFrameBuffer(m_resources, *m_renderScene);
       m_rendererFboChangeID = m_resources.m_fboChangeID;
     }
 
@@ -641,16 +633,17 @@ void LodClusters::renderFrame(VkCommandBuffer      cmd,
     frameConstants.viewport    = glm::ivec2(renderWidth, renderHeight);
     frameConstants.viewportf   = glm::vec2(renderWidth, renderHeight);
     frameConstants.supersample = m_tweak.supersample;
-    frameConstants.nearPlane   = CameraManip.getClipPlanes().x;
-    frameConstants.farPlane    = CameraManip.getClipPlanes().y;
-    frameConstants.wUpDir      = CameraManip.getUp();
-    frameConstants.fov         = glm::radians(CameraManip.getFov());
+    frameConstants.nearPlane   = m_info.cameraManipulator->getClipPlanes().x;
+    frameConstants.farPlane    = m_info.cameraManipulator->getClipPlanes().y;
+    frameConstants.wUpDir      = m_info.cameraManipulator->getUp();
 
-    glm::mat4 projection = glm::perspectiveRH_ZO(frameConstants.fov, float(width) / float(height),
+    frameConstants.fov = glm::radians(m_info.cameraManipulator->getFov());
+
+    glm::mat4 projection = glm::perspectiveRH_ZO(glm::radians(m_info.cameraManipulator->getFov()), float(width) / float(height),
                                                  frameConstants.nearPlane, frameConstants.farPlane);
     projection[1][1] *= -1;
 
-    glm::mat4 view  = CameraManip.getMatrix();
+    glm::mat4 view  = m_info.cameraManipulator->getViewMatrix();
     glm::mat4 viewI = glm::inverse(view);
 
     frameConstants.viewProjMatrix  = projection * view;
@@ -723,26 +716,26 @@ void LodClusters::renderFrame(VkCommandBuffer      cmd,
         m_equalFrames++;
     }
 
-    m_renderer->render(cmd, m_resources, *m_renderScene, m_frameConfig, profilerVK);
+    m_renderer->render(cmd, m_resources, *m_renderScene, m_frameConfig, m_profilerGpuTimer);
   }
   else
   {
-    m_resources.emptyFrame(cmd, m_frameConfig, profilerVK);
+    m_resources.emptyFrame(cmd, m_frameConfig, m_profilerGpuTimer);
   }
 
   {
-    m_resources.postProcessFrame(cmd, m_frameConfig, profilerVK);
+    m_resources.postProcessFrame(cmd, m_frameConfig, m_profilerGpuTimer);
   }
 
   m_resources.endFrame();
 
   // signal new semaphore state with this command buffer's submit
   VkSemaphoreSubmitInfo semSubmit = m_resources.m_queueStates.primary.advanceSignalSubmit(VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT);
-  app->addSignalSemaphore(semSubmit);
+  m_app->addSignalSemaphore(semSubmit);
   // but also enqueue waits if there are any
   while(!m_resources.m_queueStates.primary.m_pendingWaits.empty())
   {
-    app->addWaitSemaphore(m_resources.m_queueStates.primary.m_pendingWaits.back());
+    m_app->addWaitSemaphore(m_resources.m_queueStates.primary.m_pendingWaits.back());
     m_resources.m_queueStates.primary.m_pendingWaits.pop_back();
   }
 
@@ -750,10 +743,9 @@ void LodClusters::renderFrame(VkCommandBuffer      cmd,
   m_frames++;
 }
 
-
-void LodClusters::setCameraFromScene(const char* filename)
+void LodClusters::setSceneCamera(const std::filesystem::path& filePath)
 {
-  ImGuiH::SetCameraJsonFile(std::filesystem::path(filename).stem().string());
+  nvgui::SetCameraJsonFile(filePath);
 
   glm::vec3 extent = m_scene->m_bbox.hi - m_scene->m_bbox.lo;
   float     radius = glm::length(extent) * 0.5f;
@@ -764,8 +756,7 @@ void LodClusters::setCameraFromScene(const char* filename)
   if(!m_scene->m_cameras.empty())
   {
     auto& c = m_scene->m_cameras[0];
-    //CameraManip.setMatrix(c.worldMatrix);
-    CameraManip.setFov(c.fovy);
+    m_info.cameraManipulator->setFov(c.fovy);
 
 
     c.eye              = glm::vec3(c.worldMatrix[3]);
@@ -775,9 +766,9 @@ void LodClusters::setCameraFromScene(const char* filename)
     c.center           = c.eye + (rotMat * c.center);
     c.up               = {0, 1, 0};
 
-    CameraManip.setCamera({c.eye, c.center, c.up, static_cast<float>(glm::degrees(c.fovy))});
+    m_info.cameraManipulator->setCamera({c.eye, c.center, c.up, static_cast<float>(glm::degrees(c.fovy))});
 
-    ImGuiH::SetHomeCamera({c.eye, c.center, c.up, static_cast<float>(glm::degrees(c.fovy))});
+    nvgui::SetHomeCamera({c.eye, c.center, c.up, static_cast<float>(glm::degrees(c.fovy))});
     for(auto& cam : m_scene->m_cameras)
     {
       cam.eye            = glm::vec3(cam.worldMatrix[3]);
@@ -788,7 +779,7 @@ void LodClusters::setCameraFromScene(const char* filename)
       cam.up             = {0, 1, 0};
 
 
-      ImGuiH::AddCamera({cam.eye, cam.center, cam.up, static_cast<float>(glm::degrees(cam.fovy))});
+      nvgui::AddCamera({cam.eye, cam.center, cam.up, static_cast<float>(glm::degrees(cam.fovy))});
     }
   }
   else
@@ -796,25 +787,25 @@ void LodClusters::setCameraFromScene(const char* filename)
     glm::vec3 up  = {0, 1, 0};
     glm::vec3 dir = {1.0f, bigScene ? 0.33f : 0.75f, 1.0f};
 
-    CameraManip.setLookat(center + dir * (radius * (bigScene ? 0.5f : 1.f)), center, up);
-    ImGuiH::SetHomeCamera(CameraManip.getCamera());
+    m_info.cameraManipulator->setLookat(center + dir * (radius * (bigScene ? 0.5f : 1.f)), center, up);
+    nvgui::SetHomeCamera(m_info.cameraManipulator->getCamera());
   }
 
   if(bigScene)
   {
-    CameraManip.setSpeed(radius * 0.02f);
-    CameraManip.setClipPlanes(glm::vec2(0.0001F * radius, 2.0F * radius));
+    m_info.cameraManipulator->setSpeed(radius * 0.02f);
+    m_info.cameraManipulator->setClipPlanes(glm::vec2(0.0001F * radius, 2.0F * radius));
   }
   else
   {
-    CameraManip.setSpeed(radius * 2.0f);
-    CameraManip.setClipPlanes(glm::vec2(0.01F * radius, 100.0F * radius));
+    m_info.cameraManipulator->setSpeed(radius * 2.0f);
+    m_info.cameraManipulator->setClipPlanes(glm::vec2(0.01F * radius, 100.0F * radius));
   }
 }
 
 float LodClusters::decodePickingDepth(const shaderio::Readback& readback)
 {
-  if(!isReadbackValid(readback))
+  if(!isPickingValid(readback))
   {
     return 0.f;
   }
@@ -824,115 +815,8 @@ float LodClusters::decodePickingDepth(const shaderio::Readback& readback)
   return 1.f - res;
 }
 
-bool LodClusters::isReadbackValid(const shaderio::Readback& readback)
+bool LodClusters::isPickingValid(const shaderio::Readback& readback)
 {
   return readback._packedDepth0 != 0u;
-}
-
-void LodClusters::setupConfigParameters(nvh::ParameterList& parameterList)
-{
-  parameterList.add("verbose", &g_verbose, true);
-
-  parameterList.add("resetstats", &m_tweak.autoResetTimers);
-
-
-  parameterList.add("renderer", (uint32_t*)&m_tweak.renderer);
-  parameterList.add("streaming", &m_tweak.useStreaming);
-  parameterList.add("clasallocator", &m_streamingConfig.usePersistentClasAllocator);
-  parameterList.add("supersample", &m_tweak.supersample);
-  parameterList.add("gridcopies", &m_sceneGridConfig.numCopies);
-  parameterList.add("gridconfig", &m_sceneGridConfig.gridBits);
-  parameterList.add("gridunique", &m_sceneGridConfig.uniqueGeometriesForCopies);
-  parameterList.add("clusterconfig", (int*)&m_tweak.clusterConfig);
-  parameterList.add("loderror", &m_frameConfig.lodPixelError);
-  parameterList.add("culling", &m_tweak.useCulling);
-  parameterList.add("instancesorting", &m_rendererConfig.useSorting);
-  parameterList.add("renderclusterbits", &m_rendererConfig.numRenderClusterBits);
-  parameterList.add("rendertraversalbits", &m_rendererConfig.numRenderClusterBits);
-  parameterList.add("hbao", &m_tweak.hbaoActive);
-  parameterList.add("facetshading", &m_tweak.facetShading);
-  parameterList.add("flipwinding", &m_rendererConfig.flipWinding);
-  parameterList.add("twosided", &m_rendererConfig.twoSided);
-  parameterList.add("autosavecache|automatically store cache file for loaded scene. default false", &m_sceneConfig.autoSaveCache);
-  parameterList.add("autoloadcache|automatically load cache file if found. default true", &m_sceneConfig.autoLoadCache);
-  parameterList.add("mappedcache|work from memory mapped cache file, otherwise load to sysmem. default true",
-                    &m_sceneConfig.memoryMappedCache);
-  parameterList.add("processingonly|directly terminate app once cache file was saved. default false", &m_sceneConfig.processingOnly);
-  parameterList.add("processingthreadpct|float percentage of threads during initial file load and processing into lod clusters, default 0.5 == 50%",
-                    &m_sceneConfig.processingThreadsPct);
-
-  parameterList.addFilename(".gltf", &m_modelFilename);
-  parameterList.addFilename(".glb", &m_modelFilename);
-}
-
-void LodClusters::setupContextInfo(nvvk::ContextCreateInfo& contextInfo)
-{
-  static VkPhysicalDeviceMeshShaderFeaturesNV meshFeatures = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_NV};
-
-  static VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR execPropertiesFeatures = {
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
-  static VkPhysicalDeviceImagelessFramebufferFeaturesKHR imagelessFeatures = {
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGELESS_FRAMEBUFFER_FEATURES_KHR};
-  static VkPhysicalDeviceShaderClockFeaturesKHR clockFeatures = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR};
-
-  static VkPhysicalDeviceAccelerationStructureFeaturesKHR accFeatures = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
-  static VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayFeatures = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR};
-  static VkPhysicalDeviceRayQueryFeaturesKHR queryFeatures = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
-  static VkPhysicalDeviceClusterAccelerationStructureFeaturesNV clusterFeatures = {
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_FEATURES_NV};
-
-  static VkPhysicalDeviceShaderAtomicFloatFeaturesEXT atomicFloatFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
-
-  static VkPhysicalDeviceFragmentShadingRateFeaturesKHR shadingRateFeatures{
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR};
-
-  static VkPhysicalDeviceFragmentShaderBarycentricFeaturesKHR barycentricFeatures{
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_BARYCENTRIC_FEATURES_KHR};
-
-  static VkPhysicalDeviceShaderSMBuiltinsFeaturesNV shaderBuiltinFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SM_BUILTINS_FEATURES_NV};
-
-  static VkPhysicalDeviceRayTracingPositionFetchFeaturesKHR shaderRayPosFetchFeatures{
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_POSITION_FETCH_FEATURES_KHR};
-
-  contextInfo.apiMajor = 1;
-  contextInfo.apiMinor = 3;
-
-  contextInfo.addInstanceExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-
-#if defined(_DEBUG) && 0
-  // enable debugPrintf
-  contextInfo.addDeviceExtension(VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME, false);
-  static VkValidationFeaturesEXT      validationInfo    = {VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT};
-  static VkValidationFeatureEnableEXT enabledFeatures[] = {VK_VALIDATION_FEATURE_ENABLE_DEBUG_PRINTF_EXT};
-  validationInfo.enabledValidationFeatureCount          = NV_ARRAY_SIZE(enabledFeatures);
-  validationInfo.pEnabledValidationFeatures             = enabledFeatures;
-  contextInfo.instanceCreateInfoExt                     = &validationInfo;
-#ifdef _WIN32
-  _putenv_s("DEBUG_PRINTF_TO_STDOUT", "1");
-#else
-  putenv("DEBUG_PRINTF_TO_STDOUT=1");
-#endif
-#endif  // _DEBUG
-
-  contextInfo.addDeviceExtension(VK_EXT_SAMPLER_FILTER_MINMAX_EXTENSION_NAME, false);
-  contextInfo.addDeviceExtension(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, false);
-  contextInfo.addDeviceExtension(VK_KHR_SHADER_CLOCK_EXTENSION_NAME, false, &clockFeatures);
-  contextInfo.addDeviceExtension(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME, true, &shadingRateFeatures);
-  contextInfo.addDeviceExtension(VK_NV_MESH_SHADER_EXTENSION_NAME, false, &meshFeatures);
-
-  contextInfo.addDeviceExtension(VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME, true, &execPropertiesFeatures);
-
-  contextInfo.addDeviceExtension(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME, false);
-  contextInfo.addDeviceExtension(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME, false, &accFeatures);
-  contextInfo.addDeviceExtension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME, false, &rayFeatures);
-  contextInfo.addDeviceExtension(VK_KHR_RAY_QUERY_EXTENSION_NAME, false, &queryFeatures);
-
-  contextInfo.addDeviceExtension(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME, false, &atomicFloatFeatures);
-  contextInfo.addDeviceExtension(VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME, false, &barycentricFeatures);
-  contextInfo.addDeviceExtension(VK_NV_SHADER_SM_BUILTINS_EXTENSION_NAME, false, &shaderBuiltinFeatures);
-  contextInfo.addDeviceExtension(VK_KHR_RAY_TRACING_POSITION_FETCH_EXTENSION_NAME, false, &shaderRayPosFetchFeatures);
-
-  contextInfo.addDeviceExtension(VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME, true, &clusterFeatures,
-                                 VK_NV_CLUSTER_ACCELERATION_STRUCTURE_SPEC_VERSION);
 }
 }  // namespace lodclusters

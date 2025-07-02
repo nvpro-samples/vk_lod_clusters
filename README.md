@@ -62,9 +62,9 @@ was selected in the ui. And if the upper limit of 256 is exceeded, the applicati
 
 > :warning: The processing of larger scenes can take minutes, even on CPUs with many cores. You may want to use _"File > Save Cache"_ after
 > the processing is completed. It will try to store the result of the cluster and lod building in a simple uncompressed binary file next to the original input file.
-> You can check the log/console output if errors occurred. Through the `-autosavecache 1` command-line option you can enable auto-saving.
+> You can check the log/console output if errors occurred. Through the `--autosavecache 1` command-line option you can enable auto-saving.
 >
-> With the `-processingonly 1` command-line option you can reduce peak memory consumption during processing of scenes with many geometries.
+> With the `--processingonly 1` command-line option you can reduce peak memory consumption during processing of scenes with many geometries.
 > In this mode saving to the cache file is interleaved with the processing and resources are deallocated immediately once saved.
 > At the end of the processing the app closes automatically.
 >
@@ -373,8 +373,8 @@ We recommend starting with a `Release` build, as the `Debug` build has a lot mor
 
 The cmake setup will download the `Stanford Bunny` glTF 2.0 model that serves as default scene.
 
-It will also look for [`nvpro_core`](https://github.com/nvpro-samples/nvpro_core) either as subdirectory of the current project directory, or up to two levels above. If it is not found, it will automatically download the git repo into `/build/_deps`.
-Note, that the repository of `nvpro_core` needs to be updated manually in case the sample is updated manually, as version mismatches could occur over time.
+It will also look for [`nvpro_core2`](https://github.com/nvpro-samples/nvpro_core2) either as subdirectory of the current project directory, or up to two levels above. If it is not found, it will automatically download the git repo into `/build/_deps`.
+Note, that the repository of `nvpro_core2` needs to be updated manually in case the sample is updated manually, as version mismatches could occur over time.
 
 The Vulkan validation layers may interfere with extensions it doesn't know about, therefore it is currently disabled in debug builds.
 This will be changed with future Vulkan SDKs.

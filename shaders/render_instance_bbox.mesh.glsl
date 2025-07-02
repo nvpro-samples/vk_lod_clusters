@@ -39,7 +39,7 @@ layout(push_constant) uniform pushData
 }
 push;
 
-layout(std140, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuffer
+layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuffer
 {
   FrameConstants view;
 };

@@ -21,12 +21,14 @@
 
 #include <queue>
 
-#include <nvh/trangeallocator.hpp>
+#include <nvutils/logger.hpp>
+#include <nvutils/id_pool.hpp>
+#include <nvvk/buffer_suballocator.hpp>
+#include <nvvk/command_pools.hpp>
 
 #include "scene.hpp"
 #include "resources.hpp"
-#include "vk_nv_cluster_acc.h"
-#include "shaders/shaderio_streaming.h"
+#include "../shaders/shaderio_streaming.h"
 
 
 namespace lodclusters {
@@ -143,8 +145,8 @@ public:
   const TaskInfo& getCompletedTask(uint32_t taskIndex) { return m_taskInfos[taskIndex]; }
 
 private:
-  RBuffer m_requestBuffer;
-  RBuffer m_requestHostBuffer;
+  nvvk::Buffer m_requestBuffer;
+  nvvk::Buffer m_requestHostBuffer;
 
   uint64_t m_requestSize;
   uint64_t m_shaderDataOffset;
@@ -189,13 +191,13 @@ public:
 
   struct Group
   {
-    GeometryGroup                    geometryGroup;
-    uint32_t                         activeIndex;
-    uint32_t                         groupResidentID;
-    uint32_t                         clusterResidentID;
-    uint32_t                         clusterCount;
-    uint64_t                         deviceAddress;
-    nvvk::BufferSubAllocator::Handle storageHandle;
+    GeometryGroup             geometryGroup;
+    uint32_t                  activeIndex;
+    uint32_t                  groupResidentID;
+    uint32_t                  clusterResidentID;
+    uint32_t                  clusterCount;
+    uint64_t                  deviceAddress;
+    nvvk::BufferSubAllocation storageHandle;
   };
 
   void init(Resources& res, const StreamingConfig& config, uint32_t groupCountAlignment, uint32_t clusterCountAlignment);
@@ -213,8 +215,8 @@ public:
   void   getStats(StreamingStats& stats) const;
 
   // run after initial persistent lo-detail groups were added
-  void           uploadInitialState(Resources::BatchedUploader& uploader, shaderio::StreamingResident& shaderData);
-  const RBuffer& getClasBuffer() const { return m_clasManageBuffer; }
+  void                uploadInitialState(Resources::BatchedUploader& uploader, shaderio::StreamingResident& shaderData);
+  const nvvk::Buffer& getClasBuffer() const { return m_clasManageBuffer; }
 
   const StreamingResident::Group* findGroup(GeometryGroup geometryGroup) const;
   const StreamingResident::Group& getGroup(uint32_t groupResidentID) const { return m_groups[groupResidentID]; }
@@ -263,8 +265,8 @@ private:
   // uint64_t is GeometryGroup::key
   std::unordered_map<uint64_t, uint32_t> m_mapGeometryGroup2Residency;
 
-  nvh::TRangeAllocator<1> m_groupAllocator;
-  nvh::TRangeAllocator<1> m_clusterAllocator;
+  nvutils::IDPool m_groupAllocator;
+  nvutils::IDPool m_clusterAllocator;
 
   uint32_t m_maxClusters;
   uint32_t m_maxGroups;
@@ -281,19 +283,19 @@ private:
   uint32_t m_activeGroupsCount;
   uint32_t m_activeClustersCount;
 
-  RBuffer  m_residentBuffer;
-  uint64_t m_residentGroupsOffset;
-  uint64_t m_residentClustersOffset;
-  uint64_t m_residentActiveOffset;
-  uint64_t m_residentActiveUpdateOffset;
+  nvvk::Buffer m_residentBuffer;
+  uint64_t     m_residentGroupsOffset;
+  uint64_t     m_residentClustersOffset;
+  uint64_t     m_residentActiveOffset;
+  uint64_t     m_residentActiveUpdateOffset;
 
-  RBuffer      m_clasManageBuffer;
-  RLargeBuffer m_clasDataBuffer;
+  nvvk::Buffer      m_clasManageBuffer;
+  nvvk::LargeBuffer m_clasDataBuffer;
 
   shaderio::StreamingResident m_shaderData;
 
-  RBufferTyped<uint32_t> m_residentActiveHostBuffer;
-  UpdateRange            m_groupIndicesUpdateRange;
+  nvvk::BufferTyped<uint32_t> m_residentActiveHostBuffer;
+  UpdateRange                 m_groupIndicesUpdateRange;
 
   TaskInfo m_taskInfos[STREAMING_MAX_ACTIVE_TASKS];
 };
@@ -336,7 +338,7 @@ public:
 private:
   shaderio::StreamingAllocator m_shaderData;
 
-  RBuffer m_managementBuffer;
+  nvvk::Buffer m_managementBuffer;
 };
 
 
@@ -367,14 +369,14 @@ class StreamingUpdates
 public:
   struct TaskInfo
   {
-    uint32_t                          loadCount;
-    uint32_t                          unloadCount;
-    uint32_t                          newClusterCount;
-    uint32_t                          loadActiveGroupsOffset;
-    uint32_t                          loadActiveClustersOffset;
-    shaderio::StreamingPatch*         loadPatches;
-    shaderio::StreamingPatch*         unloadPatches;
-    nvvk::BufferSubAllocator::Handle* unloadHandles;
+    uint32_t                   loadCount;
+    uint32_t                   unloadCount;
+    uint32_t                   newClusterCount;
+    uint32_t                   loadActiveGroupsOffset;
+    uint32_t                   loadActiveClustersOffset;
+    shaderio::StreamingPatch*  loadPatches;
+    shaderio::StreamingPatch*  unloadPatches;
+    nvvk::BufferSubAllocation* unloadHandles;
   };
 
   struct NewInfo
@@ -393,7 +395,7 @@ public:
 
   void reset();
 
-  NewInfo getFutureNew(uint32_t frameIndex) const
+  NewInfo getFutureNew(uint64_t frameIndex) const
   {
     // first get all pending counts that we don't know in which frame they end up yet,
     // but by design are guaranteed in the future of frameIndex
@@ -422,11 +424,11 @@ public:
   const TaskInfo& getCompletedTask(uint32_t taskIndex) const { return m_taskInfos[taskIndex]; }
 
 private:
-  RBufferTyped<shaderio::StreamingPatch> m_patchesBuffer;
-  RBufferTyped<shaderio::StreamingPatch> m_patchesHostBuffer;
+  nvvk::BufferTyped<shaderio::StreamingPatch> m_patchesBuffer;
+  nvvk::BufferTyped<shaderio::StreamingPatch> m_patchesHostBuffer;
 
-  std::vector<nvvk::BufferSubAllocator::Handle> m_unloadHandles;
-  TaskInfo                                      m_taskInfos[STREAMING_MAX_ACTIVE_TASKS];
+  std::vector<nvvk::BufferSubAllocation> m_unloadHandles;
+  TaskInfo                               m_taskInfos[STREAMING_MAX_ACTIVE_TASKS];
 
   shaderio::StreamingUpdate m_shaderData;
 
@@ -434,10 +436,10 @@ private:
   uint32_t m_scheduleIndex;
   NewInfo  m_pendingNew;
   NewInfo  m_scheduledNew[STREAMING_MAX_ACTIVE_TASKS]      = {};
-  uint32_t m_scheduledNewFrame[STREAMING_MAX_ACTIVE_TASKS] = {};
+  uint64_t m_scheduledNewFrame[STREAMING_MAX_ACTIVE_TASKS] = {};
 
   // persistent
-  RBuffer m_clasBuffer;
+  nvvk::Buffer m_clasBuffer;
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -468,7 +470,7 @@ public:
   void reset();
 
   // freeing is not done during regular transfer tasks
-  void free(nvvk::BufferSubAllocator::Handle);
+  void free(nvvk::BufferSubAllocation& handle);
 
   void   getStats(StreamingStats& stats) const;
   size_t getOperationsSize() const;
@@ -478,17 +480,16 @@ public:
   // first get operation
   TaskInfo& getNewTask(uint32_t taskIndex);
   // first test if space is available
-  bool canAllocate(size_t sz) const;
   bool canTransfer(const TaskInfo& operation, size_t size) const;
   // then allocate
-  nvvk::BufferSubAllocator::Handle allocate(GeometryGroup geometryGroup, size_t sz, uint64_t& deviceAddress);
+  bool allocate(nvvk::BufferSubAllocation& handle, GeometryGroup group, size_t sz, uint64_t& deviceAddress);
   // and get transfer space
-  void* appendTransfer(TaskInfo& operation, nvvk::BufferSubAllocator::Handle dstHandle);
+  void* appendTransfer(TaskInfo& operation, const nvvk::BufferSubAllocation& dstHandle);
   // at end of updates trigger cmd update
   // returns number of copy operations required
   uint32_t cmdUploadTask(VkCommandBuffer cmd);
 
-  nvvk::RingCommandPool m_taskCommandPool;
+  nvvk::ManagedCommandPools m_taskCommandPool;
 
 private:
   struct CopyInfo
@@ -502,8 +503,10 @@ private:
   size_t m_maxTransferBytes;
   size_t m_blockBytes;
 
-  RBuffer                  m_transferHostBuffer;
-  nvvk::BufferSubAllocator m_dataAllocator;
+  nvvk::Buffer                       m_transferHostBuffer;
+  nvvk::BufferSubAllocator::InitInfo m_dataInfo;
+  nvvk::BufferSubAllocator           m_dataAllocator;
+  std::vector<uint32_t>              m_dataQueueFamilies;
 
   std::vector<CopyInfo>     m_copyInfos;
   std::vector<VkBufferCopy> m_copyRegions;
@@ -586,19 +589,19 @@ public:
       // if there is no task bits available we must enforce a wait,
       // cause we must guarantee to have at least one available index
       // every frame
-      if(!m_taskQueue.front().semaphoreState.wait(device, ~0ULL))
+      if(m_taskQueue.front().semaphoreState.wait(device, ~0ULL) == VK_TIMEOUT)
       {
-        LOGE("Failure to wait for semaphore")
+        LOGE("Failure to wait for semaphore");
         {
           exit(-1);
         }
       }
     }
 
-    return !m_taskQueue.empty() && m_taskQueue.front().semaphoreState.isAvailable(device);
+    return !m_taskQueue.empty() && m_taskQueue.front().semaphoreState.testSignaled(device);
   }
 
-  void push(uint32_t taskIndex, SemaphoreState semaphoreState, uint32_t dependentIndex = INVALID_TASK_INDEX)
+  void push(uint32_t taskIndex, nvvk::SemaphoreState semaphoreState, uint32_t dependentIndex = INVALID_TASK_INDEX)
   {
     Task task = {
         .semaphoreState = semaphoreState,
@@ -628,9 +631,9 @@ public:
 private:
   struct Task
   {
-    SemaphoreState semaphoreState;
-    uint32_t       taskIndex      = INVALID_TASK_INDEX;
-    uint32_t       dependentIndex = INVALID_TASK_INDEX;
+    nvvk::SemaphoreState semaphoreState;
+    uint32_t             taskIndex      = INVALID_TASK_INDEX;
+    uint32_t             dependentIndex = INVALID_TASK_INDEX;
   };
 
   std::queue<Task> m_taskQueue;

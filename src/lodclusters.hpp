@@ -19,31 +19,19 @@
 
 #pragma once
 
-#include <memory>
-
-#include <nvvk/context_vk.hpp>
+#include <backends/imgui_impl_vulkan.h>
+#include <nvapp/application.hpp>
+#include <nvutils/camera_manipulator.hpp>
+#include <nvutils/parameter_registry.hpp>
+#include <nvvk/context.hpp>
 #include <nvvk/profiler_vk.hpp>
-#include <nvh/timesampler.hpp>
-#include <vulkan/vulkan_core.h>
-#include <imgui/imgui_helper.h>
-#include <implot.h>
-#include <glm/glm.hpp>
-#include <nvh/parametertools.hpp>
+#include <nvgui/enum_registry.hpp>
 
 #include "renderer.hpp"
-#include "resources.hpp"
-#include "scene.hpp"
-#include "shaders/shaderio.h"
-
-
-namespace nvvkhl {
-class Application;
-}
 
 namespace lodclusters {
-int const SAMPLE_SIZE_WIDTH(1024);
-int const SAMPLE_SIZE_HEIGHT(1024);
-class LodClusters
+
+class LodClusters : public nvapp::IAppElement
 {
 public:
   enum RendererType
@@ -55,12 +43,23 @@ public:
   enum ClusterConfig
   {
     CLUSTER_64T_64V,
+    CLUSTER_64T_128V,
+    CLUSTER_64T_192V,
     CLUSTER_96T_96V,
     CLUSTER_128T_128V,
     CLUSTER_128T_256V,
     CLUSTER_256T_256V,
-    CLUSTER_CUSTOM,
+    NUM_CLUSTER_CONFIGS,
   };
+
+  struct ClusterInfo
+  {
+    uint32_t      tris;
+    uint32_t      verts;
+    ClusterConfig cfg;
+  };
+
+  static const ClusterInfo s_clusterInfos[NUM_CLUSTER_CONFIGS];
 
   enum GuiEnums
   {
@@ -73,7 +72,7 @@ public:
 
   struct Tweak
   {
-    ClusterConfig clusterConfig = CLUSTER_64T_64V;
+    ClusterConfig clusterConfig = CLUSTER_64T_192V;
 
     RendererType renderer    = RENDERER_RAYTRACE_CLUSTERS_LOD;
     int          supersample = 2;
@@ -92,136 +91,6 @@ public:
     float hbaoRadius  = 0.05f;
   };
 
-  struct MouseButtonHandler
-  {
-    enum InternalState
-    {
-      eInternalNone,
-      eInternalFirstDown,
-      eInternalFirstUp,
-      eInternalDrag,
-      eInternalFirstClick,
-      eInternalSecondDown,
-      eInternalSecondUp,
-      eInternalSecondClick
-    };
-
-
-    struct ButtonClick
-    {
-      glm::uvec2     pos;
-      InternalState  internal = eInternalNone;
-      double         firstUpTime;
-      nvh::Stopwatch internalTime;
-    };
-    inline void init()
-    {
-      for(auto& p : mouseClickPos)
-      {
-        p.pos = glm::uvec2(~0u, ~0u);
-      }
-    }
-
-    inline void update(glm::uvec2 mousePos) { currentPos = mousePos; }
-
-
-    enum ButtonState
-    {
-      eNone,
-      eSingleClick,
-      eDoubleClick,
-      eDrag
-    };
-
-    ButtonState getButtonState(ImGuiMouseButton button)
-    {
-      ButtonClick& b = mouseClickPos[button];
-
-      bool isDown  = ImGui::IsMouseDown(button);
-      bool isUp    = ImGui::IsMouseReleased(button);
-      bool isMoved = (b.pos != currentPos);
-
-      switch(b.internal)
-      {
-        case eInternalNone:
-          if(isDown)
-          {
-            b.internal = eInternalFirstDown;
-            b.pos      = currentPos;
-          }
-          break;
-
-        case eInternalFirstDown:
-          if(isUp)
-          {
-            b.internal    = eInternalFirstUp;
-            b.firstUpTime = b.internalTime.elapsed();
-            break;
-          }
-          if(isMoved)
-          {
-            b.internal = eInternalDrag;
-          }
-          break;
-
-        case eInternalFirstUp: {
-          double elapsed = b.internalTime.elapsed() - b.firstUpTime;
-          if(isMoved || elapsed > doubleClickThreshold)
-          {
-            b.internal = eInternalFirstClick;
-            break;
-          }
-          if(isDown)
-          {
-            b.internal = eInternalSecondDown;
-          }
-          break;
-        }
-        case eInternalFirstClick:
-          b.internal = eInternalNone;
-          break;
-
-        case eInternalDrag:
-          if(isUp)
-          {
-            b.internal = eInternalNone;
-          }
-          break;
-
-        case eInternalSecondDown:
-          if(isMoved)
-          {
-            b.internal = eInternalDrag;
-            break;
-          }
-          if(isUp)
-          {
-            b.internal = eInternalSecondUp;
-          }
-          break;
-        case eInternalSecondUp:
-          b.internal = eInternalNone;
-          break;
-      }
-
-
-      switch(b.internal)
-      {
-        case eInternalFirstClick:
-          return eSingleClick;
-        case eInternalDrag:
-          return eDrag;
-        case eInternalSecondUp:
-          return eDoubleClick;
-        default:
-          return eNone;
-      }
-    }
-
-    std::array<ButtonClick, ImGuiMouseButton_COUNT> mouseClickPos;
-    glm::uvec2                                      currentPos;
-    const double                                    doubleClickThreshold = 100.0;
-  };
 
   struct ViewPoint
   {
@@ -238,34 +107,71 @@ public:
     VkFormat    format;
   };
 
-  bool m_rtClusterSupport = false;
+  struct Info
+  {
+    nvutils::ProfilerManager*                   profilerManager{};
+    nvutils::ParameterRegistry*                 parameterRegistry{};
+    std::shared_ptr<nvutils::CameraManipulator> cameraManipulator;
+  };
 
-  ImGuiH::Registry m_ui;
-  double           m_uiTime = 0;
+  LodClusters(const Info& info);
+
+  ~LodClusters() override { m_info.profilerManager->destroyTimeline(m_profilerTimeline); }
+
+  void onAttach(nvapp::Application* app) override;
+  void onDetach() override;
+  void onUIRender() override;
+  void onPreRender() override;
+  void onRender(VkCommandBuffer cmd) override;
+  void onResize(VkCommandBuffer cmd, const VkExtent2D& size) override;
+  void onFileDrop(const std::filesystem::path& filename) override;
+
+  void setSupportsClusters(bool supported) { m_resources.m_supportsClusters = supported; }
+
+private:
+  VkExtent2D                 m_windowSize;
+  Info                       m_info;
+  nvutils::ProfilerTimeline* m_profilerTimeline{};
+  nvvk::ProfilerGpuTimer     m_profilerGpuTimer{};
+  nvapp::Application*        m_app{};
+
+  //////////////////////////////////////////////////////////////////////////
+
+  // key components
+
+  Resources                 m_resources;
+  FrameConfig               m_frameConfig;
+  double                    m_lastTime = 0;
+  VkDescriptorSet           m_imguiTexture{};
+  VkSampler                 m_imguiSampler{};
+  nvgui::EnumRegistry       m_ui;
+  nvutils::PerformanceTimer m_clock;
+
+  bool   m_reloadShaders         = false;
+  bool   m_requestCameraRecenter = false;
+  int    m_frames                = 0;
+  double m_animTime              = 0;
 
   Tweak m_tweak;
-  Tweak m_lastTweak;
+  Tweak m_tweakLast;
 
-  FrameConfig m_frameConfig;
+  std::unique_ptr<Scene> m_scene;
+  std::filesystem::path  m_sceneFilePath;
+  SceneConfig            m_sceneConfig;
+  SceneConfig            m_sceneConfigLast;
+  glm::vec3              m_sceneUpVector = glm::vec3(0, 1, 0);
+  SceneGridConfig        m_sceneGridConfig;
+  SceneGridConfig        m_sceneGridConfigLast;
 
-  std::unique_ptr<Scene>       m_scene;
   std::unique_ptr<RenderScene> m_renderScene;
 
-  SceneConfig     m_sceneConfig;
-  SceneConfig     m_lastSceneConfig;
-  SceneGridConfig m_sceneGridConfig;
-  SceneGridConfig m_lastSceneGridConfig;
-  RendererConfig  m_rendererConfig;
-  RendererConfig  m_lastRendererConfig;
   StreamingConfig m_streamingConfig;
-  StreamingConfig m_lastStreamingConfig;
+  StreamingConfig m_streamingConfigLast;
 
   std::unique_ptr<Renderer> m_renderer;
-  Resources                 m_resources;
-  std::string               m_rendererShaderPrepend;
-  std::string               m_rendererLastShaderPrepend;
-  TargetImage               m_targetImage;
-  size_t                    m_rendererFboChangeID;
+  uint64_t                  m_rendererFboChangeID{};
+  RendererConfig            m_rendererConfig;
+  RendererConfig            m_rendererConfigLast;
 
   std::vector<uint32_t> m_streamClasHistogram;
   std::vector<uint32_t> m_streamGeometryHistogram;
@@ -273,158 +179,62 @@ public:
   uint32_t              m_streamClasHistogramMax;
   int32_t               m_streamHistogramOffset = 0;
 
-  std::string m_customShaderPrepend;
-  std::string m_lastCustomShaderPrepend;
-
-  std::string m_modelFilename;
-  glm::vec3   m_modelUpVector = glm::vec3(0, 1, 0);
-
-  int      m_frames      = 0;
   uint32_t m_equalFrames = 0;
-  double   m_animTime    = 0;
-  double   m_lastTime    = 0;
 
-  bool m_requestCameraRecenter = false;
-  /* JEM dactivates selection, TODO remove code once validated with CK
-  bool m_requestSelection      = false;
-  bool               m_hasSelection  = false;
-  shaderio::Readback m_selectionData = {};
-  */
-  static void setupContextInfo(nvvk::ContextCreateInfo& info);
-
-  bool initCore(nvvk::Context& context, int winWidth, int winHeight, const std::string& exePath);
-  void deinit(nvvk::Context& context);
-
-  void loadFile(const std::string& filename);
+  bool initScene(const std::filesystem::path& filePath);
+  void setSceneCamera(const std::filesystem::path& filePath);
   void saveCacheFile();
-  bool initScene(const char* filename);
   void deinitScene();
   void postInitNewScene();
 
   void initRenderScene();
   void deinitRenderScene();
 
-  bool initFramebuffers(int width, int height);
-  void updateTargetImage();
   void initRenderer(RendererType rtype);
   void deinitRenderer();
 
-  void setupConfigParameters(nvh::ParameterList& parameterList);
+  void updateImguiImage();
 
-  void onSceneChanged();
-
+  void adjustSceneClusterConfig();
   void updatedClusterConfig();
 
-  void applyConfigFile(nvh::ParameterList& parameterList, const char* filename);
+  void handleChanges();
 
-  std::string getShaderPrepend();
+  float decodePickingDepth(const shaderio::Readback& readback);
+  bool  isPickingValid(const shaderio::Readback& readback);
 
-  struct CallBacks
-  {
-    std::function<std::string(const char* what, const char* files)> openFile;
-    nvh::ParameterList*                                             parameterList;
-  };
-
-  void processUI(double time, nvh::Profiler& profiler, const CallBacks& callbacks);
   void viewportUI(ImVec2 corner);
-
-  struct EventStates
-  {
-    glm::ivec2 winSize          = {};
-    glm::ivec2 mouse            = {};
-    int        mouseButtonFlags = 0;
-    int        mouseWheel       = 0;
-
-    bool reloadShaders = false;
-    bool alignView     = false;
-    bool saveView      = false;
-  };
-
-  struct ChangeStates
-  {
-    uint32_t timerReset : 1;
-    uint32_t targetImage : 1;
-  };
-  ChangeStates handleChanges(uint32_t width, uint32_t height, const EventStates& states);
-
-  void renderFrame(VkCommandBuffer      cmd,
-                   uint32_t             width,
-                   uint32_t             height,
-                   double               time,
-                   nvvk::ProfilerVK&    profilerVK,
-                   uint32_t             cycleIndex,
-                   nvvkhl::Application* app);
 
   template <typename T>
   bool sceneChanged(const T& val) const
   {
     size_t offset = size_t(&val) - size_t(&m_sceneConfig);
-    return memcmp(&val, reinterpret_cast<const uint8_t*>(&m_lastSceneConfig) + offset, sizeof(T)) != 0;
+    assert(offset < sizeof(m_sceneConfig));
+    return memcmp(&val, reinterpret_cast<const uint8_t*>(&m_sceneConfigLast) + offset, sizeof(T)) != 0;
   }
 
   template <typename T>
   bool tweakChanged(const T& val) const
   {
     size_t offset = size_t(&val) - size_t(&m_tweak);
-    return memcmp(&val, reinterpret_cast<const uint8_t*>(&m_lastTweak) + offset, sizeof(T)) != 0;
+    assert(offset < sizeof(m_tweak));
+    return memcmp(&val, reinterpret_cast<const uint8_t*>(&m_tweakLast) + offset, sizeof(T)) != 0;
   }
 
   template <typename T>
   bool rendererCfgChanged(const T& val) const
   {
     size_t offset = size_t(&val) - size_t(&m_rendererConfig);
-    return memcmp(&val, reinterpret_cast<const uint8_t*>(&m_lastRendererConfig) + offset, sizeof(T)) != 0;
+    assert(offset < sizeof(m_rendererConfig));
+    return memcmp(&val, reinterpret_cast<const uint8_t*>(&m_rendererConfigLast) + offset, sizeof(T)) != 0;
   }
 
   template <typename T>
   bool streamingCfgChanged(const T& val) const
   {
     size_t offset = size_t(&val) - size_t(&m_streamingConfig);
-    return memcmp(&val, reinterpret_cast<const uint8_t*>(&m_lastStreamingConfig) + offset, sizeof(T)) != 0;
+    assert(offset < sizeof(m_rendererConfig));
+    return memcmp(&val, reinterpret_cast<const uint8_t*>(&m_streamingConfigLast) + offset, sizeof(T)) != 0;
   }
-
-
-  template <typename T>
-  void uiPlot(const std::string& plotName, const std::string& tooltipFormat, const std::vector<T>& data, const T& maxValue, int offset = 0)
-  {
-    ImVec2 plotSize = ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y / 2);
-
-    // Ensure minimum height to avoid overly squished graphics
-    plotSize.y = std::max(plotSize.y, ImGui::GetTextLineHeight() * 20);
-
-    const ImPlotFlags     plotFlags = ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText | ImPlotFlags_Crosshairs;
-    const ImPlotAxisFlags axesFlags = ImPlotAxisFlags_Lock | ImPlotAxisFlags_NoLabel;
-    const ImColor         plotColor = ImColor(0.07f, 0.9f, 0.06f, 1.0f);
-
-    if(ImPlot::BeginPlot(plotName.c_str(), plotSize, plotFlags))
-    {
-      ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_NoButtons);
-      ImPlot::SetupAxes(nullptr, "Count", axesFlags, axesFlags);
-      ImPlot::SetupAxesLimits(0, data.size(), 0, static_cast<double>(maxValue), ImPlotCond_Always);
-
-      ImPlot::PushStyleVar(ImPlotStyleVar_FillAlpha, 0.25f);
-      ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
-      ImPlot::SetNextFillStyle(plotColor);
-      ImPlot::PlotShaded("", data.data(), (int)data.size(), -INFINITY, 1.0, 0.0, 0, offset);
-      ImPlot::PopStyleVar();
-
-      if(ImPlot::IsPlotHovered())
-      {
-        ImPlotPoint mouse       = ImPlot::GetPlotMousePos();
-        int         mouseOffset = (int(mouse.x)) % (int)data.size();
-        ImGui::BeginTooltip();
-        ImGui::Text(tooltipFormat.c_str(), mouseOffset, data[mouseOffset]);
-        ImGui::EndTooltip();
-      }
-
-      ImPlot::EndPlot();
-    }
-  }
-  void setCameraFromScene(const char* filename);
-
-  float decodePickingDepth(const shaderio::Readback& readback);
-  bool  isReadbackValid(const shaderio::Readback& readback);
-
-  MouseButtonHandler m_mouseButtonHandler;
 };
 }  // namespace lodclusters

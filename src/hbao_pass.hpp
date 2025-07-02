@@ -1,33 +1,31 @@
 /*
- * Copyright (c) 2018-2025, NVIDIA CORPORATION.  All rights reserved.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- * SPDX-FileCopyrightText: Copyright (c) 2018-2025 NVIDIA CORPORATION
- * SPDX-License-Identifier: Apache-2.0
- */
+* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+*
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+*     http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
+*
+* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-License-Identifier: Apache-2.0
+*/
 
+#pragma once
 
-#ifndef HBAOPASS_H__
-#define HBAOPASS_H__
-
-#include <assert.h>
+#include <cassert>
 
 #include <vulkan/vulkan_core.h>
-#include <nvvk/shadermodulemanager_vk.hpp>
-#include <nvvk/descriptorsets_vk.hpp>
-#include <nvvk/resourceallocator_vk.hpp>
-#include <nvh/trangeallocator.hpp>
+#include <nvvkglsl/glsl.hpp>
+#include <nvvk/descriptors.hpp>
+#include <nvvk/resource_allocator.hpp>
+#include <nvvk/sampler_pool.hpp>
 #include <glm/glm.hpp>
 
 //////////////////////////////////////////////////////////////////////////
@@ -50,8 +48,8 @@ public:
     uint32_t maxFrames;
   };
 
-  void init(VkDevice device, nvvk::ResourceAllocator* allocator, nvvk::ShaderModuleManager* shaderManager, const Config& config);
-  void reloadShaders();
+  bool init(nvvk::ResourceAllocator* allocator, nvvk::SamplerPool* samplerPool, nvvkglsl::GlslCompiler* glslCompiler, const Config& config);
+  bool reloadShaders();
   void deinit();
 
   struct FrameConfig
@@ -70,7 +68,7 @@ public:
 
   struct FrameIMGs
   {
-    nvvk::Texture depthlinear, viewnormal, result, blur, resultarray, deptharray;
+    nvvk::Image depthlinear, viewnormal, result, blur, resultarray, deptharray;
   };
 
   struct Frame
@@ -115,32 +113,42 @@ public:
 private:
   struct Shaders
   {
-    nvvk::ShaderModuleID depth_linearize, viewnormal, blur, blur_apply, deinterleave, calc, reinterleave;
+    shaderc::SpvCompilationResult depth_linearize{};
+    shaderc::SpvCompilationResult viewnormal{};
+    shaderc::SpvCompilationResult blur{};
+    shaderc::SpvCompilationResult blur_apply{};
+    shaderc::SpvCompilationResult deinterleave{};
+    shaderc::SpvCompilationResult calc{};
+    shaderc::SpvCompilationResult reinterleave{};
   };
 
   struct Pipelines
   {
-    VkPipeline depth_linearize = VK_NULL_HANDLE;
-    VkPipeline viewnormal      = VK_NULL_HANDLE;
-    VkPipeline blur            = VK_NULL_HANDLE;
-    VkPipeline blur_apply      = VK_NULL_HANDLE;
-    VkPipeline deinterleave    = VK_NULL_HANDLE;
-    VkPipeline calc            = VK_NULL_HANDLE;
-    VkPipeline reinterleave    = VK_NULL_HANDLE;
+    VkPipeline depth_linearize{};
+    VkPipeline viewnormal{};
+    VkPipeline blur{};
+    VkPipeline blur_apply{};
+    VkPipeline deinterleave{};
+    VkPipeline calc{};
+    VkPipeline reinterleave{};
   };
 
-  VkDevice                   m_device;
-  nvvk::ResourceAllocator*   m_allocator;
-  nvvk::ShaderModuleManager* m_shaderManager;
-  nvh::TRangeAllocator<1>    m_slots;
-  Config                     m_config;
+  VkDevice                 m_device{};
+  nvvk::ResourceAllocator* m_allocator{};
+  nvvk::SamplerPool*       m_samplerPool{};
+  nvvkglsl::GlslCompiler*  m_glslCompiler{};
 
-  nvvk::DescriptorSetContainer m_setup;
+  uint64_t m_slotsUsed = {};
+  Config   m_config;
+
+  nvvk::DescriptorPack m_dsetPack;
+  VkPipelineLayout     m_pipelineLayout{};
 
   nvvk::Buffer           m_ubo;
   VkDescriptorBufferInfo m_uboInfo;
 
-  VkSampler m_linearSampler;
+  VkSampler m_linearSampler{};
+  VkSampler m_nearestSampler{};
 
   Shaders   m_shaders;
   Pipelines m_pipelines;
@@ -150,5 +158,3 @@ private:
   void updatePipelines();
   void updateUbo(VkCommandBuffer cmd, const Frame& frame, const Settings& settings) const;
 };
-
-#endif

@@ -17,15 +17,16 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef _NVHIZ_H__
-#define _NVHIZ_H__
+#pragma once
 
 #include <stdint.h>
 #include <string>
 #include <vector>
+#include <span>
 
-#include <platform.h>
 #include <vulkan/vulkan_core.h>
+
+#include <nvvkglsl/glsl.hpp>
 
 class NVHizVK
 {
@@ -48,6 +49,7 @@ private:
 public:
   static const uint32_t MAX_MIP_LEVELS = 16;
   static const uint32_t SHADER_COUNT   = (uint32_t(PROG_HIZ_COUNT) * uint32_t(PROG_VIEW_COUNT));
+  static const uint32_t POOLSIZE_COUNT = 2;
 
   enum BindingSlots
   {
@@ -122,11 +124,8 @@ public:
   VkSampler                   getReadFarSampler() const;
   const VkDescriptorPoolSize* getDescriptorPoolSizes(uint32_t& count) const;
   VkDescriptorSetLayout       getDescriptorSetLayout() const;
-  std::string                 getShaderDefines(uint32_t shader) const;
-#if 0
   void                        appendShaderDefines(uint32_t shader, shaderc::CompileOptions& options) const;
-#endif
-  void initPipelines(const VkShaderModule modules[SHADER_COUNT]);
+  void                        initPipelines(const shaderc::SpvCompilationResult spvResults[SHADER_COUNT]);
 
   void deinit();
 
@@ -184,10 +183,8 @@ private:
   VkPipeline            m_pipelines[SHADER_COUNT] = {0};
   VkPipelineLayout      m_pipelineLayout          = {};
   VkDescriptorSetLayout m_descrLayout             = {};
-  VkDescriptorPoolSize  m_poolSizes[2];
+  VkDescriptorPoolSize  m_poolSizes[POOLSIZE_COUNT];
   uint32_t              m_descrSetsCount = 0;
   VkDescriptorPool      m_descrPool      = {};
   VkDescriptorSet*      m_descrSets      = {};
 };
-
-#endif

@@ -18,9 +18,10 @@
 * SPDX-License-Identifier: Apache-2.0
 */
 
-#include <nvh/parallel_work.hpp>
-#include <nvh/filemapping.hpp>
-#include <nvh/nvprint.hpp>
+#include <nvutils/file_operations.hpp>
+#include <nvutils/parallel_work.hpp>
+#include <nvutils/file_mapping.hpp>
+#include <nvutils/logger.hpp>
 
 #include "scene.hpp"
 
@@ -307,9 +308,9 @@ bool Scene::saveCache() const
 
   dataOffset += geometryOffsets.size() * sizeof(uint64_t);
 
-  nvh::FileReadOverWriteMapping outMapping;
+  nvutils::FileReadOverWriteMapping outMapping;
 
-  std::string outFilename = m_filename + ".nvsngeo";
+  std::string outFilename = nvutils::utf8FromPath(m_filePath) + ".nvsngeo";
 
   if(!outMapping.open(outFilename.c_str(), dataOffset))
   {
@@ -326,7 +327,7 @@ bool Scene::saveCache() const
   memcpy(mappingData + tableOffset, geometryOffsets.data(), sizeof(uint64_t) * geometryOffsets.size());
 
   bool hadError = false;
-  nvh::parallel_batches(m_geometryViews.size(), [&](uint64_t idx) {
+  nvutils::parallel_batches(m_geometryViews.size(), [&](uint64_t idx) {
     const GeometryView& view = m_geometryViews[idx];
 
     uint64_t dataOffset = geometryOffsets[idx * 2 + 0];
@@ -359,7 +360,7 @@ void Scene::beginProcessingOnly(size_t geometryCount)
     return;
   }
 
-  std::string outFilename = m_filename + ".nvsngeo";
+  std::string outFilename = nvutils::utf8FromPath(m_filePath) + ".nvsngeo";
 
   m_processingOnlyFile = nullptr;
   int result           = 0;
@@ -412,7 +413,7 @@ void Scene::endProcessingOnly()
   if(!m_processingOnlyFile)
     return;
 
-  std::string outFilename = m_filename + ".nvsngeo";
+  std::string outFilename = nvutils::utf8FromPath(m_filePath) + ".nvsngeo";
 
   fwrite(m_processingOnlyGeometryOffsets.data(), m_processingOnlyGeometryOffsets.size() * sizeof(uint64_t), 1, m_processingOnlyFile);
 

@@ -25,12 +25,13 @@
 #include <mutex>
 
 #include <glm/glm.hpp>
-#include <nvh/filemapping.hpp>
+#include <nvutils/file_mapping.hpp>
+#include <nvutils/timers.hpp>
 #include <nvclusterlod/nvclusterlod_hierarchy_storage.hpp>
 #include <nvclusterlod/nvclusterlod_mesh_storage.hpp>
 #include <nvclusterlod/nvclusterlod_cache.hpp>
 
-#include "shaders/shaderio_scene.h"
+#include "../shaders/shaderio_scene.h"
 
 namespace lodclusters {
 
@@ -116,9 +117,9 @@ public:
 
     std::span<const uint8_t> localTriangles;
 
-    std::span<const nvcluster::Range> clusterVertexRanges;
-    std::span<const shaderio::BBox>   clusterBboxes;
-    std::span<const uint8_t>          groupLodLevels;
+    std::span<const nvcluster_Range> clusterVertexRanges;
+    std::span<const shaderio::BBox>  clusterBboxes;
+    std::span<const uint8_t>         groupLodLevels;
 
     std::span<const shaderio::BBox> nodeBboxes;
 
@@ -152,7 +153,7 @@ public:
     float     fovy;
   };
 
-  bool init(const char* filename, const SceneConfig& config);
+  bool init(const std::filesystem::path& filePath, const SceneConfig& config);
   bool saveCache() const;
   void deinit();
 
@@ -170,19 +171,20 @@ public:
   const GeometryView& getActiveGeometry(size_t idx) const { return m_geometryViews[idx % m_originalGeometryCount]; }
   size_t              getActiveGeometryCount() const { return m_activeGeometryCount; }
 
-  uint32_t              m_maxPerGeometryClusters    = 0;
-  uint32_t              m_maxPerGeometryTriangles   = 0;
-  uint32_t              m_maxPerGeometryVertices    = 0;
-  uint32_t              m_hiPerGeometryClusters     = 0;
-  uint32_t              m_hiPerGeometryTriangles    = 0;
-  uint32_t              m_hiPerGeometryVertices     = 0;
-  uint64_t              m_hiClustersCount           = 0;
-  uint64_t              m_hiTrianglesCount          = 0;
-  uint64_t              m_hiClustersCountInstanced  = 0;
-  uint64_t              m_hiTrianglesCountInstanced = 0;
-  uint64_t              m_totalClustersCount        = 0;
-  uint32_t              m_clusterMaxVerticesCount   = 0;
-  uint32_t              m_clusterMaxTrianglesCount  = 0;
+  uint32_t m_maxClusterTriangles       = 0;
+  uint32_t m_maxClusterVertices        = 0;
+  uint32_t m_maxPerGeometryClusters    = 0;
+  uint32_t m_maxPerGeometryTriangles   = 0;
+  uint32_t m_maxPerGeometryVertices    = 0;
+  uint32_t m_hiPerGeometryClusters     = 0;
+  uint32_t m_hiPerGeometryTriangles    = 0;
+  uint32_t m_hiPerGeometryVertices     = 0;
+  uint64_t m_hiClustersCount           = 0;
+  uint64_t m_hiTrianglesCount          = 0;
+  uint64_t m_hiClustersCountInstanced  = 0;
+  uint64_t m_hiTrianglesCountInstanced = 0;
+  uint64_t m_totalClustersCount        = 0;
+
   std::vector<uint32_t> m_clusterTriangleHistogram;
   std::vector<uint32_t> m_clusterVertexHistogram;
   std::vector<uint32_t> m_groupClusterHistogram;
@@ -217,9 +219,9 @@ private:
     // temporary, removed after processing
     std::vector<uint32_t> localVertices;
 
-    std::vector<nvcluster::Range> clusterVertexRanges;
-    std::vector<shaderio::BBox>   clusterBboxes;
-    std::vector<uint8_t>          groupLodLevels;
+    std::vector<nvcluster_Range> clusterVertexRanges;
+    std::vector<shaderio::BBox>  clusterBboxes;
+    std::vector<uint8_t>         groupLodLevels;
 
     nvclusterlod::LodMesh       lodMesh;
     nvclusterlod::LodHierarchy  lodHierarchy;
@@ -326,7 +328,7 @@ private:
   std::vector<GeometryStorage> m_geometryStorages;
   std::vector<GeometryView>    m_geometryViews;
 
-  std::string m_filename;
+  std::filesystem::path m_filePath;
 
   // When loading a scene from a cache file, we can actually
   // directly load all data from the memory mapped file, rather than
@@ -335,8 +337,8 @@ private:
   // `SceneConfig::memoryMappedCache` is true, otherwise they are closed
   // within `Scene::init`.
 
-  nvh::FileReadMapping m_cacheFileMapping;
-  CacheFileView        m_cacheFileView;
+  nvutils::FileReadMapping m_cacheFileMapping;
+  CacheFileView            m_cacheFileView;
 
   // only used in `processingOnly` mode
   FILE*                 m_processingOnlyFile       = nullptr;
@@ -345,48 +347,78 @@ private:
 
   struct ProcessingInfo
   {
-    nvcluster::Context    clusterContext;
-    nvclusterlod::Context lodContext;
+    // how we perform multi-threading:
+    // - either over geometries (outer loop)
+    // - or within a geometry (inner loops)
 
-    uint32_t numThreads = 1;
+    nvcluster_Context    clusterContext{};
+    nvclusterlod_Context lodContext{};
+
+    uint32_t numPoolThreadsOriginal = 1;
+    uint32_t numPoolThreads         = 1;
 
     uint32_t numOuterThreads = 1;
     uint32_t numInnerThreads = 1;
 
-    std::atomic_uint64_t numTotalTriangles = 0;
-    std::atomic_uint64_t numTotalStrips    = 0;
+    size_t geometryCount = 0;
 
     std::mutex processOnlySaveMutex;
 
-    void setupThreads(size_t geometryCount);
+    // some stats
+
+    std::atomic_uint64_t numTotalTriangles = 0;
+    std::atomic_uint64_t numTotalStrips    = 0;
+
+    // logging progress
+
+    uint32_t   progressLastPercentage      = 0;
+    uint32_t   progressGeometriesCompleted = 0;
+    std::mutex progressMutex;
+
+    nvutils::PerformanceTimer clock;
+    double                    startTime = 0;
+
+    void init(float pct);
+    void setupParallelism(size_t geometryCount_);
+    void deinit();
+
+    void logBegin();
+    void logCompletedGeometry();
+    void logEnd();
   };
 
-  bool loadGLTF(ProcessingInfo& processingInfo, const char* filename);
+  bool loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path& filePath);
 
-  nvcluster::Config getClusterConfig() const
+  nvcluster_Config getClusterConfig() const
   {
-    nvcluster::Config clusterConfig = {};
-    clusterConfig.minClusterSize    = (m_config.clusterTriangles * 3) / 4;
-    clusterConfig.maxClusterSize    = m_config.clusterTriangles;
+    nvcluster_Config clusterConfig = {};
+    clusterConfig.minClusterSize   = (m_config.clusterTriangles * 3) / 4;
+    clusterConfig.maxClusterSize   = m_config.clusterTriangles;
+
+    if(m_config.clusterVertices < m_config.clusterTriangles * 3)
+    {
+      clusterConfig.maxClusterVertices = m_config.clusterVertices;
+      clusterConfig.itemVertexCount    = 3;
+    }
     return clusterConfig;
   }
-  nvcluster::Config getGroupConfig() const
+  nvcluster_Config getGroupConfig() const
   {
-    nvcluster::Config groupConfig = {};
-    groupConfig.minClusterSize    = (m_config.clusterGroupSize * 3) / 4;
-    groupConfig.maxClusterSize    = m_config.clusterGroupSize;
+    nvcluster_Config groupConfig = {};
+    groupConfig.minClusterSize   = (m_config.clusterGroupSize * 3) / 4;
+    groupConfig.maxClusterSize   = m_config.clusterGroupSize;
     return groupConfig;
   }
 
   bool checkCache(const nvclusterlod::LodGeometryInfo& info, size_t geometryIndex);
 
   void processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex, bool isCached);
-  void loadCachedGeometry(GeometryStorage& geom, size_t geometryIndex);
+  void loadCachedGeometry(GeometryStorage& geometry, size_t geometryIndex);
 
   void buildGeometryClusters(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
-  void computeLodBboxes_recursive(GeometryStorage& geom, size_t nodeIdx);
+  void computeLodBboxes_recursive(GeometryStorage& geometry, size_t nodeIdx);
   void buildGeometryBboxes(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
-  void buildGeometryClusterStrips(ProcessingInfo& processingInfo, GeometryStorage& geom);
+  void buildGeometryClusterStrips(ProcessingInfo& processingInfo, GeometryStorage& geometry);
   void buildGeometryClusterVertices(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
 
   void beginProcessingOnly(size_t geometryCount);

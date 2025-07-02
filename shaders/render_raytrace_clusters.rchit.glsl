@@ -16,6 +16,7 @@
 * SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
+
 /*
   
   Shader Description
@@ -202,7 +203,7 @@ void main()
         ambientOcclusion(wPos, wNormal, view.ambientOcclusionSamples, view.ambientOcclusionRadius * view.sceneSize);
 
     float sunContribution  = 1.0;
-    vec3  directionToLight = view.skyParams.directionToLight;
+    vec3  directionToLight = view.skyParams.sunDirection;
     if(view.doShadow == 1)
       sunContribution = traceShadowRay(wPos, directionToLight);
 

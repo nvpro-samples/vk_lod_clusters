@@ -17,7 +17,6 @@
 * SPDX-License-Identifier: Apache-2.0
 */
 
-#define M_PI 3.141592653589793238F
 
 #extension GL_EXT_fragment_shader_barycentric : enable
 
@@ -138,7 +137,7 @@ vec4 shading(uint instanceID, vec3 wPos, vec3 wNormal, uint visData, float overh
   vec3 overheadLightColor = view.skyParams.lightRadiance;
   vec3  overheadLighting       = vec3(overheadLightIntensity * overheadLight * overheadLightColor);
   {
-    vec3 lightDir = normalize(view.skyParams.directionToLight);
+    vec3 lightDir = normalize(view.skyParams.sunDirection);
     vec3 reflDir  = normalize(-reflect(lightDir, normal));
     float diffuse    = max(0, dot(normal, lightDir));
     float specular   = pow(max(0, dot(reflDir, eyeDir)), 16) * 0.3;

@@ -17,10 +17,12 @@
 #specific to the project
 #############################
 
-zbsgfxpack.lua
 cmake_built
 cmake_build
 build
-_install
+_bin/
+_install/
 bin_x64
-external/downloaded_resources/
+downloaded_resources/
+_downloaded_resources/
+zbsgfxpack.lua

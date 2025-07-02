@@ -140,20 +140,20 @@ public:
   //    implicitly does "handleCompletedUpdate" and "handleCompletedStorage"
   //    explicitly calls `handleCompletedRequest`
   // barriers: none
-  void cmdBeginFrame(VkCommandBuffer cmd, QueueState& cmdQueueState, QueueState& asyncQueueState, uint32_t ageThreshold, nvvk::ProfilerVK& profiler);
+  void cmdBeginFrame(VkCommandBuffer cmd, QueueState& cmdQueueState, QueueState& asyncQueueState, uint32_t ageThreshold, nvvk::ProfilerGpuTimer& profiler);
 
   // triggers scene update & clas build if required
   // barriers: requires transfers from `cmdBeginFrame` to be completed
-  void cmdPreTraversal(VkCommandBuffer cmd, VkDeviceAddress clasScratchBuffer, nvvk::ProfilerVK& profiler);
+  void cmdPreTraversal(VkCommandBuffer cmd, VkDeviceAddress clasScratchBuffer, nvvk::ProfilerGpuTimer& profiler);
 
   // triggers age filter & clas move
   // barriers: requires compute shader writes from `cmdPreTraversal` to be completed,
   //           for ray tracing also requires acceleration structure builds
-  void cmdPostTraversal(VkCommandBuffer cmd, VkDeviceAddress clasScratchBuffer, nvvk::ProfilerVK& profiler);
+  void cmdPostTraversal(VkCommandBuffer cmd, VkDeviceAddress clasScratchBuffer, nvvk::ProfilerGpuTimer& profiler);
 
   // triggers request download
   // barriers: requires compute shader writes from `cmdPostTraversal` to be completed
-  void cmdEndFrame(VkCommandBuffer cmd, QueueState& cmdQueueState, nvvk::ProfilerVK& profiler);
+  void cmdEndFrame(VkCommandBuffer cmd, QueueState& cmdQueueState, nvvk::ProfilerGpuTimer& profiler);
 
   // statistics on streaming operations
   void getStats(StreamingStats& stats) const;
@@ -164,8 +164,8 @@ public:
   size_t getRequiredClasScratchAlginment() const { return m_clasScratchAlignment; }
 
   // used by renderer
-  const RBufferTyped<shaderio::Geometry>& getShaderGeometriesBuffer() const { return m_shaderGeometriesBuffer; }
-  const RBuffer&                          getShaderStreamingBuffer() const { return m_shaderBuffer; }
+  const nvvk::BufferTyped<shaderio::Geometry>& getShaderGeometriesBuffer() const { return m_shaderGeometriesBuffer; }
+  const nvvk::Buffer&                          getShaderStreamingBuffer() const { return m_shaderBuffer; }
 
   // device side memory usage, reserved or current state
   size_t getClasSize(bool reserved) const;
@@ -200,15 +200,15 @@ private:
 
   struct PersistentGeometry
   {
-    RBufferTyped<shaderio::Node> nodes;
-    RBufferTyped<shaderio::BBox> nodeBboxes;
-    RBufferTyped<uint64_t>       groupAddresses;
-    RBuffer                      lowDetailGroupsData;
+    nvvk::BufferTyped<shaderio::Node> nodes;
+    nvvk::BufferTyped<shaderio::BBox> nodeBboxes;
+    nvvk::BufferTyped<uint64_t>       groupAddresses;
+    nvvk::Buffer                      lowDetailGroupsData;
   };
 
-  std::vector<PersistentGeometry>  m_persistentGeometries;
-  std::vector<shaderio::Geometry>  m_shaderGeometries;
-  RBufferTyped<shaderio::Geometry> m_shaderGeometriesBuffer;
+  std::vector<PersistentGeometry>       m_persistentGeometries;
+  std::vector<shaderio::Geometry>       m_shaderGeometries;
+  nvvk::BufferTyped<shaderio::Geometry> m_shaderGeometriesBuffer;
 
   void initGeometries(Resources& res, const Scene* scene);
   void resetGeometryGroupAddresses(Resources::BatchedUploader& uploader);
@@ -218,7 +218,7 @@ private:
   // the main buffer and its content used to provide data to all compute kernels,
   // it is updated within `cmdBeginFrame`
   shaderio::SceneStreaming m_shaderData;
-  RBuffer                  m_shaderBuffer;
+  nvvk::Buffer             m_shaderBuffer;
 
   // streaming requests run through 3 stages:
   // first a request is tasked (what geometry groups to load or unload)
@@ -250,8 +250,8 @@ private:
   // ray tracing specific
   VkClusterAccelerationStructureTriangleClusterInputNV m_clasTriangleInput;
 
-  RBuffer m_clasLowDetailBuffer;
-  size_t  m_clasLowDetailSize;
+  nvvk::Buffer m_clasLowDetailBuffer;
+  size_t       m_clasLowDetailSize;
 
   // max size of a clas can have
   size_t m_clasSingleMaxSize;
@@ -273,20 +273,20 @@ private:
 
   struct Shaders
   {
-    nvvk::ShaderModuleID computeAgeFilterGroups;
-    nvvk::ShaderModuleID computeUpdateSceneRaster;
-    nvvk::ShaderModuleID computeUpdateSceneRay;
-    nvvk::ShaderModuleID computeSetup;
+    shaderc::SpvCompilationResult computeAgeFilterGroups;
+    shaderc::SpvCompilationResult computeUpdateSceneRaster;
+    shaderc::SpvCompilationResult computeUpdateSceneRay;
+    shaderc::SpvCompilationResult computeSetup;
 
     // if usePersistentClasAllocator
-    nvvk::ShaderModuleID computeAllocatorBuildFreeGaps;
-    nvvk::ShaderModuleID computeAllocatorFreeGapsInsert;
-    nvvk::ShaderModuleID computeAllocatorSetupInsertion;
-    nvvk::ShaderModuleID computeAllocatorUnloadGroups;
-    nvvk::ShaderModuleID computeAllocatorLoadGroups;
+    shaderc::SpvCompilationResult computeAllocatorBuildFreeGaps;
+    shaderc::SpvCompilationResult computeAllocatorFreeGapsInsert;
+    shaderc::SpvCompilationResult computeAllocatorSetupInsertion;
+    shaderc::SpvCompilationResult computeAllocatorUnloadGroups;
+    shaderc::SpvCompilationResult computeAllocatorLoadGroups;
     // else
-    nvvk::ShaderModuleID computeCompactClasOld;
-    nvvk::ShaderModuleID computeCompactClasNew;
+    shaderc::SpvCompilationResult computeCompactionClasOld;
+    shaderc::SpvCompilationResult computeCompactionClasNew;
   };
 
   struct Pipelines
@@ -307,9 +307,10 @@ private:
     VkPipeline computeCompactionClasNew = nullptr;
   };
 
-  Shaders                      m_shaders;
-  Pipelines                    m_pipelines;
-  nvvk::DescriptorSetContainer m_dsetContainer;
+  Shaders              m_shaders;
+  Pipelines            m_pipelines;
+  VkPipelineLayout     m_pipelineLayout{};
+  nvvk::DescriptorPack m_dsetPack;
 
   bool initShadersAndPipelines();
   void deinitShadersAndPipelines();

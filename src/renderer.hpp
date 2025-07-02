@@ -16,9 +16,17 @@
 * SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
+
 #pragma once
 
+#if __INTELLISENSE__
+#undef VK_NO_PROTOTYPES
+#endif
+
 #include <memory>
+
+#include <nvvk/acceleration_structures.hpp>
+#include <nvvk/compute_pipeline.hpp>
 
 #include "resources.hpp"
 #include "scene.hpp"
@@ -45,17 +53,19 @@ public:
 
   bool updateClasRequired(bool state);
 
-  const RBufferTyped<shaderio::Geometry>& getShaderGeometriesBuffer() const;
-  size_t                                  getClasSize(bool reserved) const;
-  size_t                                  getOperationsSize() const;
-  size_t                                  getGeometrySize(bool reserved) const;
+  const nvvk::BufferTyped<shaderio::Geometry>& getShaderGeometriesBuffer() const;
+  size_t                                       getClasSize(bool reserved) const;
+  size_t                                       getOperationsSize() const;
+  size_t                                       getGeometrySize(bool reserved) const;
 };
 
 struct RendererConfig
 {
-  bool flipWinding = false;
-  bool twoSided    = false;
-  bool useSorting  = false;
+  bool flipWinding        = false;
+  bool twoSided           = false;
+  bool useSorting         = false;
+  bool doCulling          = false;
+  bool debugVisualization = true;
 
   // the maximum number of renderable clusters per frame in bits i.e. (1 << number)
   uint32_t numRenderClusterBits = 22;
@@ -69,6 +79,12 @@ struct RendererConfig
 class Renderer
 {
 public:
+  virtual bool init(Resources& res, RenderScene& rscene, const RendererConfig& config) = 0;
+  virtual void render(VkCommandBuffer primary, Resources& res, RenderScene& rscene, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler) = 0;
+  virtual void deinit(Resources& res) = 0;
+  virtual ~Renderer() {};  // Defined only so that inherited classes also have virtual destructors. Use deinit().
+  virtual void updatedFrameBuffer(Resources& res, RenderScene& rscene) { updateBasicDescriptors(res, rscene); };
+
   struct ResourceUsageInfo
   {
     size_t rtTlasMemBytes{};
@@ -91,55 +107,54 @@ public:
     }
   };
 
-  virtual bool init(Resources& res, RenderScene& rscene, const RendererConfig& config) = 0;
-  virtual void render(VkCommandBuffer primary, Resources& res, RenderScene& rscene, const FrameConfig& frame, nvvk::ProfilerVK& profiler) = 0;
-  virtual void deinit(Resources& res) = 0;
-  virtual ~Renderer() {};  // Defined only so that inherited classes also have virtual destructors. Use deinit().
-  virtual void updatedFrameBuffer(Resources& res) { updatedFrameBufferBasics(res); };
-
-  virtual bool supportsClusters() const { return true; }
-
   inline ResourceUsageInfo getResourceUsage(bool reserved) const
   {
     return reserved ? m_resourceReservedUsage : m_resourceActualUsage;
   };
 
 protected:
-  bool initBasicShaders(Resources& res);
   void initBasics(Resources& res, RenderScene& rscene, const RendererConfig& config);
   void deinitBasics(Resources& res);
 
-  void updatedFrameBufferBasics(Resources& res);
+  bool initBasicShaders(Resources& res, RenderScene& rscene, const RendererConfig& config);
+  void initBasicPipelines(Resources& res, RenderScene& rscene, const RendererConfig& config);
+  void updateBasicDescriptors(Resources& res, RenderScene& scene);
 
-  void initWriteRayTracingDepthBuffer(Resources& res);
   void writeRayTracingDepthBuffer(VkCommandBuffer cmd);
-
-  void initRenderInstanceBboxes(Resources& res, RenderScene& rscene);
+  void writeBackgroundSky(VkCommandBuffer cmd);
   void renderInstanceBboxes(VkCommandBuffer cmd);
 
   struct BasicShaders
   {
-    nvvk::ShaderModuleID fullScreenVertexShader;
-    nvvk::ShaderModuleID fullScreenWriteDepthFragShader;
-    nvvk::ShaderModuleID renderInstanceBboxesFragmentShader;
-    nvvk::ShaderModuleID renderInstanceBboxesMeshShader;
+    shaderc::SpvCompilationResult fullScreenVertexShader;
+    shaderc::SpvCompilationResult fullScreenWriteDepthFragShader;
+    shaderc::SpvCompilationResult fullScreenBackgroundFragShader;
+
+    shaderc::SpvCompilationResult renderInstanceBboxesFragmentShader;
+    shaderc::SpvCompilationResult renderInstanceBboxesMeshShader;
   };
 
-  BasicShaders m_basicShaders;
+  struct BasicPipelines
+  {
+    VkPipeline writeDepth{};
+    VkPipeline background{};
+    VkPipeline renderInstanceBboxes{};
+  };
+
+  BasicShaders   m_basicShaders;
+  BasicPipelines m_basicPipelines;
 
   std::vector<shaderio::RenderInstance> m_renderInstances;
-  RBuffer                               m_renderInstanceBuffer;
+  nvvk::Buffer                          m_renderInstanceBuffer;
 
   ResourceUsageInfo m_resourceReservedUsage{};
   ResourceUsageInfo m_resourceActualUsage{};
 
-  nvvk::DescriptorSetContainer m_writeDepthBufferDsetContainer;
-  VkPipeline                   m_writeDepthBufferPipeline = nullptr;
+  nvvk::DescriptorPack m_basicDset;
+  VkShaderStageFlags   m_basicShaderFlags{};
+  VkPipelineLayout     m_basicPipelineLayout{};
 
-  nvvk::DescriptorSetContainer m_renderInstanceBboxesDsetContainer;
-  VkPipeline                   m_renderInstanceBboxesPipeline = nullptr;
-
-  RBuffer m_sortingAuxBuffer;
+  nvvk::Buffer m_sortingAuxBuffer;
 };
 
 //////////////////////////////////////////////////////////////////////////

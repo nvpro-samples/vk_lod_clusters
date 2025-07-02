@@ -17,29 +17,26 @@
 * SPDX-License-Identifier: Apache-2.0
 */
 
-#include <unordered_map>
-#include <string>
-#include <memory>
 #include <float.h>
 
 #include <glm/gtc/type_ptr.hpp>
-#include <nvh/nvprint.hpp>
-#include <nvh/filemapping.hpp>
-#include <nvh/parallel_work.hpp>
-#include <nvh/profiler.hpp>
 #include <cgltf.h>
+#include <nvutils/logger.hpp>
+#include <nvutils/file_mapping.hpp>
+#include <nvutils/file_operations.hpp>
+#include <nvutils/parallel_work.hpp>
 
 #include "scene.hpp"
 
-#include <shaders/octant_encoding.h>
+#include "../shaders/octant_encoding.h"
 
 namespace {
 struct FileMappingList
 {
   struct Entry
   {
-    nvh::FileReadMapping mapping;
-    int64_t              refCount = 1;
+    nvutils::FileReadMapping mapping;
+    int64_t                  refCount = 1;
   };
   std::unordered_map<std::string, Entry>       m_nameToMapping;
   std::unordered_map<const void*, std::string> m_dataToName;
@@ -191,8 +188,10 @@ void addInstancesFromNode(std::vector<lodclusters::Scene::Instance>& instances,
 
 
 namespace lodclusters {
-bool Scene::loadGLTF(ProcessingInfo& processingInfo, const char* filename)
+bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path& filePath)
 {
+  std::string fileName = nvutils::utf8FromPath(filePath);
+
   // Parse the glTF file using cgltf
   cgltf_options options = {};
 
@@ -207,7 +206,7 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const char* filename)
     // We have this local pointer followed by an ownership transfer here
     // because cgltf_parse_file takes a pointer to a pointer to cgltf_data.
     cgltf_data* rawData = nullptr;
-    cgltfResult         = cgltf_parse_file(&options, filename, &rawData);
+    cgltfResult         = cgltf_parse_file(&options, fileName.c_str(), &rawData);
     data                = unique_cgltf_ptr(rawData, &cgltf_free);
   }
   // Check for errors; special message for legacy files
@@ -237,7 +236,7 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const char* filename)
   }
 
   // For now, also tell cgltf to go ahead and load all buffers.
-  cgltfResult = cgltf_load_buffers(&options, data.get(), filename);
+  cgltfResult = cgltf_load_buffers(&options, data.get(), fileName.c_str());
   if(cgltfResult != cgltf_result_success)
   {
     LOGE(
@@ -252,17 +251,12 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const char* filename)
 
   beginProcessingOnly(data->meshes_count);
 
-  processingInfo.setupThreads(data->meshes_count);
+  processingInfo.setupParallelism(data->meshes_count);
 
-  uint32_t lastPercentage  = 0;
-  uint32_t meshesCompleted = 0;
-
-  std::mutex precentageMutex;
-
-  auto fnLoadAndProcessGeometry = [&](uint64_t meshIdx, uint32_t threadIndex) {
+  auto fnLoadAndProcessGeometry = [&](uint64_t meshIdx, uint32_t threadOuterIdx) {
     const cgltf_mesh gltfMesh = data->meshes[meshIdx];
-    GeometryStorage& geom     = m_geometryStorages[meshIdx];
-    geom.bbox                 = {{FLT_MAX, FLT_MAX, FLT_MAX}, {-FLT_MAX, -FLT_MAX, -FLT_MAX}, 0, 0};
+    GeometryStorage& geometry = m_geometryStorages[meshIdx];
+    geometry.bbox             = {{FLT_MAX, FLT_MAX, FLT_MAX}, {-FLT_MAX, -FLT_MAX, -FLT_MAX}, 0, 0};
 
     // count triangle and vertices pass
     uint32_t triangleCount = 0;
@@ -299,18 +293,18 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const char* filename)
     }
 
     // use memset 0 to avoid issues with padding within struct
-    memset(&geom.lodInfo, 0, sizeof(geom.lodInfo));
-    geom.lodInfo.inputTriangleCount = triangleCount;
-    geom.lodInfo.inputVertexCount   = verticesCount;
+    memset(&geometry.lodInfo, 0, sizeof(geometry.lodInfo));
+    geometry.lodInfo.inputTriangleCount = triangleCount;
+    geometry.lodInfo.inputVertexCount   = verticesCount;
 
     // test if this mesh exists in the cache
-    bool isCached = checkCache(geom.lodInfo, meshIdx);
+    bool isCached = checkCache(geometry.lodInfo, meshIdx);
 
     // load vertices & index data
     if(!isCached)
     {
-      geom.vertices.resize(verticesCount);
-      geom.globalTriangles.resize(triangleCount);
+      geometry.vertices.resize(verticesCount);
+      geometry.globalTriangles.resize(triangleCount);
 
       // fill pass
       uint32_t offsetVertices  = 0;
@@ -341,7 +335,7 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const char* filename)
           // TODO: Can we assume alignment in order to make these a single read_float call?
           if(strcmp(gltfAttrib.name, "POSITION") == 0)
           {
-            glm::vec4* writeVertices = geom.vertices.data() + offsetVertices;
+            glm::vec4* writeVertices = geometry.vertices.data() + offsetVertices;
 
             if(accessor->component_type == cgltf_component_type_r_32f && accessor->type == cgltf_type_vec3
                && accessor->stride == sizeof(glm::vec3))
@@ -354,8 +348,8 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const char* filename)
                 writeVertices[i].x = tmp.x;
                 writeVertices[i].y = tmp.y;
                 writeVertices[i].z = tmp.z;
-                geom.bbox.lo       = glm::min(geom.bbox.lo, tmp);
-                geom.bbox.hi       = glm::max(geom.bbox.hi, tmp);
+                geometry.bbox.lo   = glm::min(geometry.bbox.lo, tmp);
+                geometry.bbox.hi   = glm::max(geometry.bbox.hi, tmp);
               }
             }
             else
@@ -367,15 +361,15 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const char* filename)
                 writeVertices[i].x = tmp.x;
                 writeVertices[i].y = tmp.y;
                 writeVertices[i].z = tmp.z;
-                geom.bbox.lo       = glm::min(geom.bbox.lo, tmp);
-                geom.bbox.hi       = glm::max(geom.bbox.hi, tmp);
+                geometry.bbox.lo   = glm::min(geometry.bbox.lo, tmp);
+                geometry.bbox.hi   = glm::max(geometry.bbox.hi, tmp);
               }
             }
             numVertices = (uint32_t)accessor->count;
           }
           else if(strcmp(gltfAttrib.name, "NORMAL") == 0)
           {
-            glm::vec4* writeVertices = geom.vertices.data() + offsetVertices;
+            glm::vec4* writeVertices = geometry.vertices.data() + offsetVertices;
 
             if(accessor->component_type == cgltf_component_type_r_32f && accessor->type == cgltf_type_vec3
                && accessor->stride == sizeof(glm::vec3))
@@ -406,7 +400,7 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const char* filename)
         {
           const cgltf_accessor* accessor = gltfPrim->indices;
 
-          uint32_t* writeIndices = (uint32_t*)(geom.globalTriangles.data() + offsetTriangles);
+          uint32_t* writeIndices = (uint32_t*)(geometry.globalTriangles.data() + offsetTriangles);
 
           if(offsetVertices == 0 && accessor->component_type == cgltf_component_type_r_32u
              && accessor->type == cgltf_type_scalar && accessor->stride == sizeof(uint32_t))
@@ -431,34 +425,14 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const char* filename)
 
     processGeometry(processingInfo, meshIdx, isCached);
 
-    {
-      std::lock_guard lock(precentageMutex);
-
-      meshesCompleted++;
-
-      // statistics
-      const uint32_t precentageGranularity = 5;
-      uint32_t       percentage            = (meshesCompleted * 100) / data->meshes_count;
-      percentage = ((percentage + precentageGranularity - 1) / precentageGranularity) * precentageGranularity;
-
-      if(percentage > lastPercentage)
-      {
-        lastPercentage = percentage;
-        LOGI("... geometry load & processing: %3d%%\n", percentage);
-      }
-    }
+    processingInfo.logCompletedGeometry();
   };
 
-  LOGI("... geometry load & processing: geometries %d, threads %d\n", data->meshes_count, processingInfo.numThreads);
+  processingInfo.logBegin();
 
-  nvh::Profiler::Clock clock;
-  double               startTime = clock.getMicroSeconds();
+  nvutils::parallel_batches_pooled<1>(data->meshes_count, fnLoadAndProcessGeometry, processingInfo.numOuterThreads);
 
-  nvh::parallel_batches_indexed<1>(data->meshes_count, fnLoadAndProcessGeometry, processingInfo.numOuterThreads);
-
-  double endTime = clock.getMicroSeconds();
-
-  LOGI("... geometry load & processing: %f milliseconds\n", (endTime - startTime) / 1000.0f);
+  processingInfo.logEnd();
 
   endProcessingOnly();
 
