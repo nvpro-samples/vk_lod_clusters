@@ -365,6 +365,8 @@ You can use the commandline to change some defaults:
 
 ## Building and Running
 
+Requires at least Vulkan SDK 1.4.309.0
+
 The new `VK_NV_cluster_acceleration_structure` extension requires new drivers, earliest release version is `572.16` from 1/30/2025.
 The sample should run on older drivers with just rasterization available.
 
@@ -375,9 +377,6 @@ The cmake setup will download the `Stanford Bunny` glTF 2.0 model that serves as
 
 It will also look for [`nvpro_core2`](https://github.com/nvpro-samples/nvpro_core2) either as subdirectory of the current project directory, or up to two levels above. If it is not found, it will automatically download the git repo into `/build/_deps`.
 Note, that the repository of `nvpro_core2` needs to be updated manually in case the sample is updated manually, as version mismatches could occur over time.
-
-The Vulkan validation layers may interfere with extensions it doesn't know about, therefore it is currently disabled in debug builds.
-This will be changed with future Vulkan SDKs.
 
 ## Further Samples about NVIDIA RTX Mega Geometry
 

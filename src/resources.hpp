@@ -40,6 +40,10 @@
 #include <nvvkglsl/glsl.hpp>
 #include <vk_radix_sort.h>
 
+#if VK_HEADER_VERSION < 309
+#error Update Vulkan SDK >= 1.4.309.0
+#endif
+
 #include "hbao_pass.hpp"
 #include "nvhiz_vk.hpp"
 #include "../shaders/shaderio.h"
