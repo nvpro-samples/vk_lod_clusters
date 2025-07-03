@@ -1,4 +1,7 @@
 # Changelog for vk_lod_clusters
+* 2025-7-3:
+  * Change to `--mappedcache 0` default. Loads cachefiles into system memory for faster access during streaming.
+  * Bugfix loading cache file introduced by last update
 * 2025-6-27
   * Updated `nv_cluster_lod_library` submodule, which has new API & proper vertex limit support.
 * 2025-6-26:

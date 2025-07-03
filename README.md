@@ -334,15 +334,15 @@ In future versions we will try to optimize this scheme a bit further.
 The technology being quite new, we might not have ironed out all issues. If you experience instabilities, please let us know through GitHub Issues.
 You can use the commandline to change some defaults:
 
-* `-renderer 0` starts with rasterization.
-* `-supersample 0` disables the super sampling that otherwise doubles rendering resolution in each dimension. 
-* `-clasallocator 0` disables the more complex gpu-driven allocator when streaming
-* `-gridcopies N` set the number of model copies in the scene.
-* `-gridunique 0` disables the generation of unique geometries for every model copy. Greatly reduces memory consumption by truly instancing everything. By default on to stress streaming.
-* `-streaming 0` disables streaming system and uses preloaded scene (warning this can use a lot of memory, use above `-gridunique 0` to reduce)
-* `-vsync 0` disable vsync. If changing vsync via UI does not work, try to use the driver's *NVIDIA Control Panel* and set `Vulkan/OpenGL present method: native`.
-* `-autoloadcache 0` disables loading scenes from cache file.
-* `-mappedcache 0` disables persistent use of the memory mapped cache file.
+* `--renderer 0` starts with rasterization.
+* `--supersample 0` disables the super sampling that otherwise doubles rendering resolution in each dimension. 
+* `--clasallocator 0` disables the more complex gpu-driven allocator when streaming
+* `--gridcopies N` set the number of model copies in the scene.
+* `--gridunique 0` disables the generation of unique geometries for every model copy. Greatly reduces memory consumption by truly instancing everything. By default on to stress streaming.
+* `--streaming 0` disables streaming system and uses preloaded scene (warning this can use a lot of memory, use above `--gridunique 0` to reduce)
+* `--vsync 0` disable vsync. If changing vsync via UI does not work, try to use the driver's *NVIDIA Control Panel* and set `Vulkan/OpenGL present method: native`.
+* `--autoloadcache 0` disables loading scenes from cache file.
+* `--mappedcache 1` keeps memory mapped cache file persistently, otherwise loads cache to system memory. Useful to save RAM on very large scenes.
 
 ## Limitations
 
@@ -356,7 +356,7 @@ You can use the commandline to change some defaults:
 
 * Implement sorting of streaming requests based on distance of instance. Sorting instances alone is not sufficient.
 * Detecting instances with lowest detail could allow re-using a single persistent lowest-detail BLAS, rather than building one per-instance all the time.
-* Using this LdD system for minification and tessellation for magnification is another use-case we intend to demonstrate in a future sample.
+* Using this LoD system for minification and tessellation for magnification is another use-case we intend to demonstrate in a future sample.
 * Further optimizations to the allocator
 * Ray tracing could use culling information better. Currently there is a simple logic that just lowers the LoD factors when an instance is culled by frustum or HiZ.
 * Improve performance of the library that builds the cluster lod system.

@@ -419,6 +419,7 @@ void Scene::computeClusterStats()
   {
     // override settings
     m_config.clusterTriangles         = 0;
+    m_config.clusterVertices          = 0;
     m_config.clusterGroupSize         = 0;
     m_config.lodLevelDecimationFactor = 0;
 
@@ -427,6 +428,17 @@ void Scene::computeClusterStats()
       GeometryView& geometry = m_geometryViews[g];
 
       m_config.clusterTriangles = std::max(m_config.clusterTriangles, geometry.lodInfo.clusterConfig.maxClusterSize);
+
+      // special case for vertices
+      if(geometry.lodInfo.clusterConfig.maxClusterVertices == ~0 || geometry.lodInfo.clusterConfig.maxClusterVertices == 0)
+      {
+        m_config.clusterVertices = std::max(m_config.clusterVertices, geometry.lodInfo.clusterConfig.maxClusterSize * 3);
+      }
+      else
+      {
+        m_config.clusterVertices = std::max(m_config.clusterVertices, geometry.lodInfo.clusterConfig.maxClusterVertices);
+      }
+
       m_config.clusterGroupSize = std::max(m_config.clusterGroupSize, geometry.lodInfo.groupConfig.maxClusterSize);
       m_config.lodLevelDecimationFactor = std::max(m_config.lodLevelDecimationFactor, geometry.lodInfo.decimationFactor);
     }

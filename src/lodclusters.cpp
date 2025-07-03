@@ -60,7 +60,7 @@ LodClusters::LodClusters(const Info& info)
                                 &m_sceneConfig.autoSaveCache);
   m_info.parameterRegistry->add({"autoloadcache", "automatically load cache file if found. default true"},
                                 &m_sceneConfig.autoLoadCache);
-  m_info.parameterRegistry->add({"mappedcache", "work from memory mapped cache file, otherwise load to sysmem. default true"},
+  m_info.parameterRegistry->add({"mappedcache", "work from memory mapped cache file, otherwise load to sysmem. default false"},
                                 &m_sceneConfig.memoryMappedCache);
   m_info.parameterRegistry->add({"processingonly", "directly terminate app once cache file was saved. default false"},
                                 &m_sceneConfig.processingOnly);

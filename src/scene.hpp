@@ -62,7 +62,7 @@ struct SceneConfig
   bool autoLoadCache = true;
   // when loading from cache file, memory map it,
   // rather than loading it into system RAM.
-  bool memoryMappedCache = true;
+  bool memoryMappedCache = false;
 };
 
 struct SceneGridConfig
