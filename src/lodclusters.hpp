@@ -120,6 +120,7 @@ public:
 
   void onAttach(nvapp::Application* app) override;
   void onDetach() override;
+  void onUIMenu() override;
   void onUIRender() override;
   void onPreRender() override;
   void onRender(VkCommandBuffer cmd) override;

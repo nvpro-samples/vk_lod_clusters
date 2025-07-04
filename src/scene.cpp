@@ -127,9 +127,14 @@ bool Scene::init(const std::filesystem::path& filePath, const SceneConfig& confi
   m_config          = config;
   m_loadedFromCache = false;
 
-  std::string cacheFileName = nvutils::utf8FromPath(m_filePath) + ".nvsngeo";
+  m_cacheFilePath = filePath;
 
-  if(m_config.autoLoadCache && m_cacheFileMapping.open(cacheFileName.c_str()))
+  std::string oldExtension = filePath.extension().string();
+  m_cacheFilePath.replace_extension(oldExtension + ".nvsngeo");
+
+  std::string cacheFileName = nvutils::utf8FromPath(m_cacheFilePath);
+
+  if(m_config.autoLoadCache && m_cacheFileMapping.open(m_cacheFilePath))
   {
     m_cacheFileView.init(m_cacheFileMapping.size(), m_cacheFileMapping.data());
     if(m_cacheFileView.isValid())

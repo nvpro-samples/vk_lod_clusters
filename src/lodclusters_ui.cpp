@@ -26,6 +26,7 @@
 #include <nvgui/sky.hpp>
 #include <nvgui/property_editor.hpp>
 #include <nvgui/window.hpp>
+#include <nvgui/file_dialog.hpp>
 
 #include "lodclusters.hpp"
 
@@ -855,4 +856,58 @@ void LodClusters::onUIRender()
   viewportUI(corner);
   ImGui::End();
 }
+
+void LodClusters::onUIMenu()
+{
+  if(ImGui::BeginMenu("File"))
+  {
+    if(ImGui::MenuItem("Open", "Ctrl+O"))
+    {
+      std::filesystem::path filename =
+          nvgui::windowOpenFileDialog(m_app->getWindowHandle(), "Load glTF", "glTF(.gltf, .glb)|*.gltf;*.glb");
+      if(!filename.empty())
+      {
+        onFileDrop(filename);
+      }
+    }
+    if(m_scene)
+    {
+      if(ImGui::MenuItem("Reload", "Ctrl+R"))
+      {
+        std::filesystem::path filePath = m_scene->getFilePath();
+        onFileDrop(filePath);
+      }
+
+      if(!m_scene->m_loadedFromCache)
+      {
+        if(ImGui::MenuItem("Save Cache", "Ctrl+S"))
+        {
+          saveCacheFile();
+        }
+      }
+
+      if(!m_scene->isMemoryMappedCache() && std::filesystem::exists(m_scene->getCacheFilePath()))
+      {
+        if(ImGui::MenuItem("Delete Cache", "Ctrl+D"))
+        {
+          try
+          {
+            if(std::filesystem::remove(m_scene->getCacheFilePath()))
+            {
+              LOGI("Cache file deleted successfully.\n");
+            }
+          }
+          catch(const std::filesystem::filesystem_error& e)
+          {
+            LOGW("Problem deleting cache file: %s\n", e.what());
+          }
+        }
+      }
+    }
+
+
+    ImGui::EndMenu();
+  }
+}
+
 }  // namespace lodclusters

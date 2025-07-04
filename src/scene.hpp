@@ -159,6 +159,11 @@ public:
 
   void updateSceneGrid(const SceneGridConfig& gridConfig);
 
+  bool isMemoryMappedCache() const { return m_loadedFromCache && m_cacheFileMapping.valid(); }
+
+  const std::filesystem::path& getFilePath() const { return m_filePath; }
+  const std::filesystem::path& getCacheFilePath() const { return m_cacheFilePath; }
+
   SceneConfig m_config;
 
   shaderio::BBox m_bbox;
@@ -329,6 +334,7 @@ private:
   std::vector<GeometryView>    m_geometryViews;
 
   std::filesystem::path m_filePath;
+  std::filesystem::path m_cacheFilePath;
 
   // When loading a scene from a cache file, we can actually
   // directly load all data from the memory mapped file, rather than
