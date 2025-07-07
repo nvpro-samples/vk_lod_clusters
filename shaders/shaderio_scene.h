@@ -194,8 +194,9 @@ struct RenderInstance
   mat4 worldMatrix;
 
   uint32_t geometryID;
+  uint32_t materialID;
   float    maxLodLevelRcp;
-  uint32_t _pad[2];
+  uint32_t packedColor;
 };
 BUFFER_REF_DECLARE_ARRAY(RenderInstances_in, RenderInstance, readonly, 16);
 

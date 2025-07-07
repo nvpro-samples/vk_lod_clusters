@@ -491,7 +491,9 @@ public:
   uint32_t                    m_cycleIndex         = 0;
   size_t                      m_fboChangeID        = ~0;
   glm::vec4                   m_bgColor            = {0.1, 0.13, 0.15, 1.0};
-  bool                        m_supportsClusters   = false;
+
+  bool m_supportsClusters = false;
+  bool m_dumpSpirv        = false;
 
   bool            m_hbaoFullRes = false;
   HbaoPass        m_hbaoPass;

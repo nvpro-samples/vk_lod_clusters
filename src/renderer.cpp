@@ -139,13 +139,15 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
   for(size_t i = 0; i < m_renderInstances.size(); i++)
   {
     shaderio::RenderInstance&  renderInstance = m_renderInstances[i];
-    const uint32_t             geometryID     = scene.m_instances[i].geometryID;
-    const Scene::GeometryView& geometry       = scene.getActiveGeometry(geometryID);
+    const Scene::Instance&     sceneInstance  = scene.m_instances[i];
+    const Scene::GeometryView& geometry       = scene.getActiveGeometry(sceneInstance.geometryID);
 
     renderInstance                = {};
-    renderInstance.worldMatrix    = scene.m_instances[i].matrix;
-    renderInstance.geometryID     = geometryID;
+    renderInstance.worldMatrix    = sceneInstance.matrix;
+    renderInstance.geometryID     = sceneInstance.geometryID;
+    renderInstance.materialID     = sceneInstance.materialID;
     renderInstance.maxLodLevelRcp = 1.0f / float(geometry.lodLevelsCount - 1);
+    renderInstance.packedColor    = glm::packUnorm4x8(sceneInstance.color);
   }
 
   res.createBuffer(m_renderInstanceBuffer, sizeof(shaderio::RenderInstance) * m_renderInstances.size(),

@@ -41,6 +41,8 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"resetstats"}, &m_tweak.autoResetTimers);
   m_info.parameterRegistry->add({"supersample"}, &m_tweak.supersample);
 
+  m_info.parameterRegistry->add({"dumpspirv", "dumps compiled spirv into working directory"}, &m_resources.m_dumpSpirv);
+
   m_info.parameterRegistry->add({"streaming"}, &m_tweak.useStreaming);
   m_info.parameterRegistry->add({"clasallocator"}, &m_streamingConfig.usePersistentClasAllocator);
   m_info.parameterRegistry->add({"gridcopies"}, &m_sceneGridConfig.numCopies);
@@ -51,7 +53,7 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"culling"}, &m_tweak.useCulling);
   m_info.parameterRegistry->add({"instancesorting"}, &m_rendererConfig.useSorting);
   m_info.parameterRegistry->add({"renderclusterbits"}, &m_rendererConfig.numRenderClusterBits);
-  m_info.parameterRegistry->add({"rendertraversalbits"}, &m_rendererConfig.numRenderClusterBits);
+  m_info.parameterRegistry->add({"rendertraversalbits"}, &m_rendererConfig.numTraversalTaskBits);
   m_info.parameterRegistry->add({"hbao"}, &m_tweak.hbaoActive);
   m_info.parameterRegistry->add({"facetshading"}, &m_tweak.facetShading);
   m_info.parameterRegistry->add({"flipwinding"}, &m_rendererConfig.flipWinding);
@@ -329,7 +331,8 @@ void LodClusters::onAttach(nvapp::Application* app)
     m_ui.enumAdd(GUI_SUPERSAMPLE, 1, "none");
     m_ui.enumAdd(GUI_SUPERSAMPLE, 2, "4x");
 
-    m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_NONE, "material");
+    m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_MATERIAL, "material");
+    m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_GREY, "grey");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_CLUSTER, "clusters");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_GROUP, "cluster groups");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_LOD, "lods");
@@ -515,7 +518,8 @@ void LodClusters::handleChanges()
   bool shaderChanged = false;
   if(m_reloadShaders)
   {
-    shaderChanged = true;
+    shaderChanged   = true;
+    m_reloadShaders = false;
   }
 
   bool frameBufferChanged = false;
@@ -569,7 +573,6 @@ void LodClusters::handleChanges()
   m_sceneConfigLast     = m_sceneConfig;
   m_sceneGridConfigLast = m_sceneGridConfig;
 
-
   if(hadChange)
   {
     m_equalFrames = 0;
@@ -615,9 +618,6 @@ void LodClusters::onRender(VkCommandBuffer cmd)
 
     frameConstants.facetShading = m_tweak.facetShading ? 1 : 0;
 
-    // this is set systematically since selection is removed from the class
-    // TODO: might need to remove some code in the shaders.
-    // if(!m_hasSelection)
     {
       frameConstants.visFilterClusterID  = ~0;
       frameConstants.visFilterInstanceID = ~0;
@@ -652,6 +652,10 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     frameConstants.viewMatrixI     = viewI;
     frameConstants.projMatrix      = projection;
     frameConstants.projMatrixI     = glm::inverse(projection);
+
+    glm::mat4 viewNoTrans         = view;
+    viewNoTrans[3]                = {0.0f, 0.0f, 0.0f, 1.0f};
+    frameConstants.skyProjMatrixI = glm::inverse(projection * viewNoTrans);
 
     glm::vec4 hPos   = projection * glm::vec4(1.0f, 1.0f, -frameConstants.farPlane, 1.0f);
     glm::vec2 hCoord = glm::vec2(hPos.x / hPos.w, hPos.y / hPos.w);

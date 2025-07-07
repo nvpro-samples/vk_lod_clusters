@@ -203,7 +203,10 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
   }
   {
     m_queueStates.primary.init(m_device, m_queue.queue, m_queue.familyIndex, 0);
+    NVVK_DBG_NAME(m_queueStates.primary.m_timelineSemaphore);
+
     m_queueStates.transfer.init(m_device, m_queueTransfer.queue, m_queueTransfer.familyIndex, 0);
+    NVVK_DBG_NAME(m_queueStates.transfer.m_timelineSemaphore);
   }
 }
 
@@ -553,13 +556,14 @@ bool Resources::compileShader(shaderc::SpvCompilationResult& compiled,
   compiled = m_glslCompiler.compileFile(filePath, nvvkglsl::getShaderKind(shaderStage), options);
   if(compiled.GetCompilationStatus() == shaderc_compilation_status_success)
   {
-#if defined(_DEBUG) && 0
-    // dump spirv files for improved aftermath debugging
-    std::filesystem::path dumpFile = filePath.filename();
-    dumpFile.replace_extension("spirv");
+    if(m_dumpSpirv)
+    {
+      // dump spirv files for improved aftermath debugging
+      std::filesystem::path dumpFile = filePath.filename();
+      dumpFile.replace_extension("spirv");
 
-    nvutils::dumpSpirv(dumpFile, nvvkglsl::GlslCompiler::getSpirv(compiled), nvvkglsl::GlslCompiler::getSpirvSize(compiled));
-#endif
+      nvutils::dumpSpirv(dumpFile, nvvkglsl::GlslCompiler::getSpirv(compiled), nvvkglsl::GlslCompiler::getSpirvSize(compiled));
+    }
     return true;
   }
   else

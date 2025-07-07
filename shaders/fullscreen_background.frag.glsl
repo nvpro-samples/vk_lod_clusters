@@ -40,7 +40,7 @@ void main()
 {
   vec2 screenPos = ((vec2(gl_FragCoord.xy) / view.viewportf) * 2.0) - 1.0;
   
-  vec4 transformed = view.viewProjMatrixI * vec4(screenPos, 1, 1);
+  vec4 transformed = view.skyProjMatrixI * vec4(screenPos, 1.0,  1);
   vec3 rayDir      = normalize(transformed.xyz);
   
   vec3 skyColor = evalSimpleSky(view.skyParams, rayDir);

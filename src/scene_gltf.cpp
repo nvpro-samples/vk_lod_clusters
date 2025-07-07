@@ -18,7 +18,10 @@
 */
 
 #include <float.h>
+#include <unordered_map>
+#include <string>
 
+#include <fmt/format.h>
 #include <glm/gtc/type_ptr.hpp>
 #include <cgltf.h>
 #include <nvutils/logger.hpp>
@@ -149,6 +152,7 @@ using unique_cgltf_ptr = std::unique_ptr<cgltf_data, decltype(&cgltf_free)>;
 // Traverses the glTF node and any of its children, adding a MeshInstance to
 // the meshSet for each referenced glTF primitive.
 void addInstancesFromNode(std::vector<lodclusters::Scene::Instance>& instances,
+                          const std::vector<size_t>&                 meshToGeometry,
                           const cgltf_data*                          data,
                           const cgltf_node*                          node,
                           const glm::mat4                            parentObjToWorldTransform = glm::mat4(1))
@@ -170,8 +174,28 @@ void addInstancesFromNode(std::vector<lodclusters::Scene::Instance>& instances,
     const ptrdiff_t meshIndex = (node->mesh) - data->meshes;
 
     lodclusters::Scene::Instance instance{};
-    instance.geometryID = uint32_t(meshIndex);
+    instance.geometryID = uint32_t(meshToGeometry[meshIndex]);
     instance.matrix     = nodeObjToWorldTransform;
+
+    const cgltf_material* material = node->mesh->primitives[0].material;
+    if(material)
+    {
+      instance.materialID = uint32_t(material - data->materials);
+      if(material->unlit || material->has_pbr_metallic_roughness)
+      {
+        instance.color.x = material->pbr_metallic_roughness.base_color_factor[0];
+        instance.color.y = material->pbr_metallic_roughness.base_color_factor[1];
+        instance.color.z = material->pbr_metallic_roughness.base_color_factor[2];
+        instance.color.w = material->pbr_metallic_roughness.base_color_factor[3];
+      }
+      else if(material->has_pbr_specular_glossiness)
+      {
+        instance.color.x = material->pbr_specular_glossiness.diffuse_factor[0];
+        instance.color.y = material->pbr_specular_glossiness.diffuse_factor[1];
+        instance.color.z = material->pbr_specular_glossiness.diffuse_factor[2];
+        instance.color.w = material->pbr_specular_glossiness.diffuse_factor[3];
+      }
+    }
 
     instances.push_back(instance);
   }
@@ -180,7 +204,7 @@ void addInstancesFromNode(std::vector<lodclusters::Scene::Instance>& instances,
   const size_t numChildren = node->children_count;
   for(size_t childIdx = 0; childIdx < numChildren; childIdx++)
   {
-    addInstancesFromNode(instances, data, node->children[childIdx], nodeObjToWorldTransform);
+    addInstancesFromNode(instances, meshToGeometry, data, node->children[childIdx], nodeObjToWorldTransform);
   }
 }
 
@@ -246,16 +270,98 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
     return false;
   }
 
-  m_geometryStorages.resize(data->meshes_count);
-  m_geometryViews.resize(data->meshes_count);
+  // glTF doesn't have trivial instancing of meshes with different materials.
+  // We need to detect meshes with identical primitive/accessor setups first,
+  // these become our unique geometries that we can then instance under different
+  // materials as well.
 
-  beginProcessingOnly(data->meshes_count);
+  std::vector<size_t> uniqueMeshes;
+  std::vector<size_t> meshToGeometry(data->meshes_count, -1);
 
-  processingInfo.setupParallelism(data->meshes_count);
+  {
+    std::unordered_map<std::string, size_t> mapUniqueMeshes;
 
-  auto fnLoadAndProcessGeometry = [&](uint64_t meshIdx, uint32_t threadOuterIdx) {
-    const cgltf_mesh gltfMesh = data->meshes[meshIdx];
-    GeometryStorage& geometry = m_geometryStorages[meshIdx];
+    for(size_t meshIndex = 0; meshIndex < data->meshes_count; meshIndex++)
+    {
+      const cgltf_mesh gltfMesh = data->meshes[meshIndex];
+
+      std::string meshIdentifier;
+
+      for(size_t primIdx = 0; primIdx < gltfMesh.primitives_count; primIdx++)
+      {
+        cgltf_primitive* gltfPrim = &gltfMesh.primitives[primIdx];
+
+        if(gltfPrim->type != cgltf_primitive_type_triangles)
+        {
+          continue;
+        }
+
+        if(gltfPrim->attributes_count == 0)
+        {
+          continue;
+        }
+
+        struct MeshAccessors
+        {
+          const void* pos    = nullptr;
+          const void* index  = nullptr;
+          const void* tex    = nullptr;
+          const void* normal = nullptr;
+        } meshAccessors;
+
+        for(size_t attribIdx = 0; attribIdx < gltfPrim->attributes_count; attribIdx++)
+        {
+          const cgltf_attribute& gltfAttrib = gltfPrim->attributes[attribIdx];
+          const cgltf_accessor*  accessor   = gltfAttrib.data;
+
+          if(strcmp(gltfAttrib.name, "POSITION") == 0)
+          {
+            meshAccessors.pos = accessor;
+          }
+          else if(strcmp(gltfAttrib.name, "TEXCOORD_0") == 0)
+          {
+            meshAccessors.tex = accessor;
+          }
+          else if(strcmp(gltfAttrib.name, "NORMAL") == 0)
+          {
+            meshAccessors.normal = accessor;
+          }
+        }
+
+        meshAccessors.index = gltfPrim->indices;
+
+        // just serialize the pointer values as identifier for the mesh
+        meshIdentifier +=
+            fmt::format("{},{},{},{},", meshAccessors.pos, meshAccessors.normal, meshAccessors.index, meshAccessors.tex);
+      }
+
+      // find canonical string in map
+      auto pair = mapUniqueMeshes.try_emplace(meshIdentifier, uniqueMeshes.size());
+      if(pair.second)
+      {
+        meshToGeometry[meshIndex] = uniqueMeshes.size();
+        uniqueMeshes.push_back(meshIndex);
+      }
+      else
+      {
+        meshToGeometry[meshIndex] = pair.first->second;
+      }
+    }
+  }
+
+  m_geometryStorages.resize(uniqueMeshes.size());
+  m_geometryViews.resize(uniqueMeshes.size());
+
+  beginProcessingOnly(uniqueMeshes.size());
+
+  processingInfo.setupParallelism(uniqueMeshes.size());
+
+  auto fnLoadAndProcessGeometry = [&](uint64_t geometryIndex, uint32_t threadOuterIdx) {
+    // map back from unique geometry to gltf mesh
+    size_t meshIndex = uniqueMeshes[geometryIndex];
+
+    const cgltf_mesh gltfMesh = data->meshes[meshIndex];
+    GeometryStorage& geometry = m_geometryStorages[geometryIndex];
     geometry.bbox             = {{FLT_MAX, FLT_MAX, FLT_MAX}, {-FLT_MAX, -FLT_MAX, -FLT_MAX}, 0, 0};
 
     // count triangle and vertices pass
@@ -298,7 +404,7 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
     geometry.lodInfo.inputVertexCount   = verticesCount;
 
     // test if this mesh exists in the cache
-    bool isCached = checkCache(geometry.lodInfo, meshIdx);
+    bool isCached = checkCache(geometry.lodInfo, geometryIndex);
 
     // load vertices & index data
     if(!isCached)
@@ -423,14 +529,14 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
       }
     }
 
-    processGeometry(processingInfo, meshIdx, isCached);
+    processGeometry(processingInfo, geometryIndex, isCached);
 
     processingInfo.logCompletedGeometry();
   };
 
   processingInfo.logBegin();
 
-  nvutils::parallel_batches_pooled<1>(data->meshes_count, fnLoadAndProcessGeometry, processingInfo.numOuterThreads);
+  nvutils::parallel_batches_pooled<1>(uniqueMeshes.size(), fnLoadAndProcessGeometry, processingInfo.numOuterThreads);
 
   processingInfo.logEnd();
 
@@ -441,7 +547,7 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
     const cgltf_scene scene = (data->scene != nullptr) ? (*(data->scene)) : (data->scenes[0]);
     for(size_t nodeIdx = 0; nodeIdx < scene.nodes_count; nodeIdx++)
     {
-      addInstancesFromNode(m_instances, data.get(), scene.nodes[nodeIdx]);
+      addInstancesFromNode(m_instances, meshToGeometry, data.get(), scene.nodes[nodeIdx]);
     }
   }
   else
@@ -450,7 +556,7 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
     {
       if(data->nodes[nodeIdx].parent == nullptr)
       {
-        addInstancesFromNode(m_instances, data.get(), &(data->nodes[nodeIdx]));
+        addInstancesFromNode(m_instances, meshToGeometry, data.get(), &(data->nodes[nodeIdx]));
       }
     }
   }

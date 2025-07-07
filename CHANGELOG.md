@@ -1,4 +1,9 @@
 # Changelog for vk_lod_clusters
+* 2025-7-7:
+  * Fix regression with sky rendering & missing sky UI
+  * Note: `nvpro_core2` must be a version that already includes fixes to `nvutils::IDPool` and `nvvk::BufferSubAllocator` to fix some instabilities during streaming.
+  * Add basic accessor-based detection of unique geometries within gltf meshes.
+  * Add simple colored material import from gltf.
 * 2025-7-4:
   * Add missing file menu entries (lost during framework porting)
   * Add file menu to delete the cache file.

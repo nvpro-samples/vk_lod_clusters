@@ -85,6 +85,8 @@ public:
     glm::mat4      matrix;
     shaderio::BBox bbox;
     uint32_t       geometryID = ~0U;
+    uint32_t       materialID = ~0U;
+    glm::vec4      color{0.8, 0.8, 0.8, 1.0f};
   };
 
   struct GeometryBase

@@ -42,9 +42,27 @@ static uint32_t inline adjustClusterProperty(uint32_t in)
   static_assert(alignof(typ) == alignment || (alignment > alignof(typ) && ((alignment % alignof(typ)) == 0)),          \
                 "Alignment incompatible: " #refname)
 
-#define BUFFER_REF_DECLARE_SIZE(sizename, typ, size) static_assert(sizeof(typ) == size_t(size), "GLSL vs C++ size mismatch: " #typ)
+#define BUFFER_REF_DECLARE_SIZE(sizename, typ, size)                                                                   \
+  static_assert(sizeof(typ) == size_t(size), "GLSL vs C++ size mismatch: " #typ)
 
 #else  // GLSL
+
+uint murmurHash(uint idx)
+{
+  uint m = 0x5bd1e995;
+  uint r = 24;
+
+  uint h = 64684;
+  uint k = idx;
+
+  k *= m;
+  k ^= (k >> r);
+  k *= m;
+  h *= m;
+  h ^= k;
+
+  return h;
+}
 
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int32 : enable
@@ -108,4 +126,4 @@ struct DrawMeshTasksIndirectCommandNV
 #ifdef __cplusplus
 }
 #endif
-#endif // _SHADERIO_CORE_H_
+#endif  // _SHADERIO_CORE_H_

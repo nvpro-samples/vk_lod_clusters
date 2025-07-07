@@ -39,10 +39,6 @@ layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuff
 
 ///////////////////////////////////////////////////
 
-#include "render_shading.glsl"
-
-///////////////////////////////////////////////////
-
 layout(location=0) in Interpolants
 {
   flat uint instanceID;

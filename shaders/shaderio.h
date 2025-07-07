@@ -33,11 +33,12 @@
 
 /////////////////////////////////////////
 
-#define VISUALIZE_NONE 0
-#define VISUALIZE_CLUSTER 1
-#define VISUALIZE_GROUP 2
-#define VISUALIZE_LOD 3
-#define VISUALIZE_TRIANGLE 4
+#define VISUALIZE_MATERIAL 0
+#define VISUALIZE_GREY 1
+#define VISUALIZE_CLUSTER 2
+#define VISUALIZE_GROUP 3
+#define VISUALIZE_LOD 4
+#define VISUALIZE_TRIANGLE 5
 
 #define BBOXES_PER_MESHLET 8
 
@@ -133,6 +134,8 @@ struct FrameConstants
   vec4 viewPos;
   vec4 viewDir;
   vec4 viewPlane;
+
+  mat4 skyProjMatrixI;
 
   ivec2 viewport;
   vec2  viewportf;

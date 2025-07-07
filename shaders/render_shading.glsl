@@ -20,23 +20,6 @@
 
 #extension GL_EXT_fragment_shader_barycentric : enable
 
-uint murmurHash(uint idx)
-{
-  uint m = 0x5bd1e995;
-  uint r = 24;
-
-  uint h = 64684;
-  uint k = idx;
-
-  k *= m;
-  k ^= (k >> r);
-  k *= m;
-  h *= m;
-  h ^= k;
-
-  return h;
-}
-
 // Approximates the batlow color ramp from the scientific color ramps package.
 // Input will be clamped to [0, 1]; output is sRGB.
 vec3 batlow(float t)
@@ -84,7 +67,7 @@ vec3 colorizeID(uint clusterID)
   return vec3(unpackUnorm4x8(murmurHash(clusterID ^ view.colorXor)).xyz * 0.5 + 0.3);
 }
 
-vec3 visualizeColor(uint visData)
+vec3 visualizeColor(uint visData, uint instanceID)
 {
   if(view.visualize == VISUALIZE_CLUSTER || view.visualize == VISUALIZE_GROUP || view.visualize == VISUALIZE_TRIANGLE)
   {
@@ -95,7 +78,12 @@ vec3 visualizeColor(uint visData)
     return vec3(lodMix(uintBitsToFloat(visData))) * 0.7 + 0.2;
     //return vec3(pow(lodMix(uintBitsToFloat(visData)),vec3(8.0))) * 0.8 + 0.1;
   }
-  else {
+  else if (view.visualize == VISUALIZE_MATERIAL)
+  {
+    return pow(unpackUnorm4x8(instances[instanceID].packedColor).xyz, vec3(1.0/2.2));
+  }
+  else
+  {
     return vec3(0.8);
   }
 }
@@ -105,7 +93,7 @@ vec4 shading(uint instanceID, vec3 wPos, vec3 wNormal, uint visData, float overh
   const vec3 sunColor       = vec3(0.99f, 1.f, 0.71f);
   const vec3 skyColor       = view.skyParams.skyColor;
   const vec3 groundColor    = view.skyParams.groundColor;
-  vec3       materialAlbedo = visualizeColor(visData);
+  vec3       materialAlbedo = visualizeColor(visData, instanceID);
   vec4       color          = vec4(0.f);
 
   vec3 normal  = normalize(wNormal.xyz);
@@ -134,8 +122,8 @@ vec4 shading(uint instanceID, vec3 wPos, vec3 wNormal, uint visData, float overh
   }
 
   // Overhead light
-  vec3 overheadLightColor = view.skyParams.lightRadiance;
-  vec3  overheadLighting       = vec3(overheadLightIntensity * overheadLight * overheadLightColor);
+  vec3 overheadLightColor = view.skyParams.sunColor * view.skyParams.sunIntensity;
+  vec3 overheadLighting   = vec3(overheadLightIntensity * overheadLight * overheadLightColor);
   {
     vec3 lightDir = normalize(view.skyParams.sunDirection);
     vec3 reflDir  = normalize(-reflect(lightDir, normal));

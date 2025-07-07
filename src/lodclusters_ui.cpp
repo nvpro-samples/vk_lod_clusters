@@ -681,7 +681,7 @@ void LodClusters::onUIRender()
   {
     if(ImGui::BeginTable("Memory stats", 3, ImGuiTableFlags_RowBg))
     {
-      ImGui::TableSetupColumn("Memory", ImGuiTableColumnFlags_WidthStretch);
+      ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
       ImGui::TableSetupColumn("Actual", ImGuiTableColumnFlags_WidthStretch);
       ImGui::TableSetupColumn("Reserved", ImGuiTableColumnFlags_WidthStretch);
       ImGui::TableHeadersRow();
@@ -769,11 +769,7 @@ void LodClusters::onUIRender()
                     "Mix between flashlight and sun light");
     PE::end();
     ImGui::TextDisabled("Sun & Sky");
-    {
-      PE::begin();
-      nvgui::skySimpleParametersUI(m_frameConfig.frameConstants.skyParams);
-      PE::end();
-    }
+    nvgui::skySimpleParametersUI(m_frameConfig.frameConstants.skyParams);
   }
 
   if(ImGui::CollapsingHeader("Rendering Advanced", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
