@@ -80,7 +80,7 @@ vec3 visualizeColor(uint visData, uint instanceID)
   }
   else if (view.visualize == VISUALIZE_MATERIAL)
   {
-    return pow(unpackUnorm4x8(instances[instanceID].packedColor).xyz, vec3(1.0/2.2));
+    return pow(unpackUnorm4x8(instances[instanceID].packedColor).xyz * 0.95 + 0.05, vec3(1.0/2.2));
   }
   else
   {
