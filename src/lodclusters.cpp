@@ -50,7 +50,7 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"gridunique"}, &m_sceneGridConfig.uniqueGeometriesForCopies);
   m_info.parameterRegistry->add({"clusterconfig"}, (int*)&m_tweak.clusterConfig);
   m_info.parameterRegistry->add({"loderror"}, &m_frameConfig.lodPixelError);
-  m_info.parameterRegistry->add({"culling"}, &m_tweak.useCulling);
+  m_info.parameterRegistry->add({"culling"}, &m_rendererConfig.useCulling);
   m_info.parameterRegistry->add({"instancesorting"}, &m_rendererConfig.useSorting);
   m_info.parameterRegistry->add({"renderclusterbits"}, &m_rendererConfig.numRenderClusterBits);
   m_info.parameterRegistry->add({"rendertraversalbits"}, &m_rendererConfig.numTraversalTaskBits);
@@ -548,7 +548,7 @@ void LodClusters::handleChanges()
   bool rendererChanged = false;
   if(sceneChanged || shaderChanged || renderSceneChanged || tweakChanged(m_tweak.renderer)
      || tweakChanged(m_tweak.useDebugVisualization) || rendererCfgChanged(m_rendererConfig.flipWinding)
-     || rendererCfgChanged(m_rendererConfig.doCulling) || rendererCfgChanged(m_rendererConfig.twoSided)
+     || rendererCfgChanged(m_rendererConfig.useCulling) || rendererCfgChanged(m_rendererConfig.twoSided)
      || rendererCfgChanged(m_rendererConfig.useSorting) || rendererCfgChanged(m_rendererConfig.numRenderClusterBits)
      || rendererCfgChanged(m_rendererConfig.numTraversalTaskBits))
   {

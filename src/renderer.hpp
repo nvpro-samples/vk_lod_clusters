@@ -64,7 +64,7 @@ struct RendererConfig
   bool flipWinding        = false;
   bool twoSided           = false;
   bool useSorting         = false;
-  bool doCulling          = false;
+  bool useCulling         = false;
   bool debugVisualization = true;
 
   // the maximum number of renderable clusters per frame in bits i.e. (1 << number)

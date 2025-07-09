@@ -78,8 +78,6 @@ public:
     int          supersample = 2;
 
     bool facetShading = true;
-
-    bool useCulling   = false;
     bool useStreaming = true;
 
     bool useOrbit              = true;

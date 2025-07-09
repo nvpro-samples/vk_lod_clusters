@@ -119,7 +119,7 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("TARGETS_RASTERIZATION", "0");
   options.AddMacroDefinition("USE_STREAMING", rscene.useStreaming ? "1" : "0");
   options.AddMacroDefinition("USE_SORTING", config.useSorting ? "1" : "0");
-  options.AddMacroDefinition("DO_CULLING", config.doCulling ? "1" : "0");
+  options.AddMacroDefinition("USE_CULLING", config.useCulling ? "1" : "0");
   options.AddMacroDefinition("DEBUG_VISUALIZATION", config.debugVisualization ? "1" : "0");
 
   shaderc::CompileOptions optionsAO = options;

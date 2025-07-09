@@ -1,6 +1,8 @@
 # Changelog for vk_lod_clusters
+* 2025-7-9:
+  * Fix regression of `nvpro_core2` port: culling parameter was not properly hooked up
 * 2025-7-7:
-  * Fix regression with sky rendering & missing sky UI
+  * Fix regression of `nvpro_core2` port: sky light intensity & missing sky UI
   * Note: `nvpro_core2` must be a version that already includes fixes to `nvutils::IDPool` and `nvvk::BufferSubAllocator` to fix some instabilities during streaming.
   * Add basic accessor-based detection of unique geometries within gltf meshes.
   * Add simple colored material import from gltf.
@@ -13,7 +15,7 @@
 * 2025-6-27
   * Updated `nv_cluster_lod_library` submodule, which has new API & proper vertex limit support.
 * 2025-6-26:
-  * Updated to use `nvpro_core2`, as result command-line arguments are now prefixed with `--` rather than just `-`. It is recommended to delete existing /_build or the CMake cache prior building or generating new solutions.
+  * Ported to use `nvpro_core2`, as result command-line arguments are now prefixed with `--` rather than just `-`. It is recommended to delete existing /_build or the CMake cache prior building or generating new solutions.
 * 2025-6-2:
   * Scale traversal lod error internally based on super-sampling. Significantly speeds things up compared to old defaults which caused much more geometry to be loaded and rendered.
   * Skip traversal and directly enqueue lowest detail cluster in `traversal_init.comp.glsl` when only lowest lod is used.
