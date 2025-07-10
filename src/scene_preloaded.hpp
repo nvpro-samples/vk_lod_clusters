@@ -89,6 +89,8 @@ private:
 
   nvvk::BufferTyped<shaderio::Geometry> m_shaderGeometriesBuffer;
 
+  nvvk::Buffer m_clasLowDetailBlasBuffer;
+
   bool initClas();
   void deinitClas();
 };

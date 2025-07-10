@@ -60,6 +60,8 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
     res->createBufferTyped(preloadGeometry.nodes, numNodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     res->createBufferTyped(preloadGeometry.nodeBboxes, numNodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
+    uint32_t numLodLevels = sceneGeometry.lodLevelsCount;
+
     m_geometrySize += preloadGeometry.localTriangles.bufferSize;
     m_geometrySize += preloadGeometry.vertices.bufferSize;
     m_geometrySize += preloadGeometry.clusters.bufferSize;
@@ -92,6 +94,7 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
     shaderGeometry.groupsCount       = uint32_t(numGroups);
     shaderGeometry.preloadedGroups   = preloadGeometry.groups.address;
     shaderGeometry.preloadedClusters = preloadGeometry.clusters.address;
+    shaderGeometry.lodLevelsCount    = uint32_t(numLodLevels);
 
     // lowest detail group must have just a single cluster
     nvcluster_Range lastGroupRange = sceneGeometry.lodMesh.lodLevelGroupRanges.back();
@@ -99,6 +102,7 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
     assert(sceneGeometry.lodMesh.groupClusterRanges[lastGroupRange.offset].count == 1);
 
     shaderGeometry.lowDetailClusterID = sceneGeometry.lodMesh.groupClusterRanges[lastGroupRange.offset].offset;
+    shaderGeometry.lowDetailTriangles = sceneGeometry.lodMesh.clusterTriangleRanges[shaderGeometry.lowDetailClusterID].count;
 
     // basic uploads
 
@@ -216,6 +220,8 @@ void ScenePreloaded::deinit()
     m_resources->m_allocator.destroyBuffer(it.clasData);
   }
 
+  m_resources->m_allocator.destroyBuffer(m_clasLowDetailBlasBuffer);
+
   m_resources->m_allocator.destroyBuffer(m_shaderGeometriesBuffer);
   m_resources = nullptr;
   m_scene     = nullptr;
@@ -240,9 +246,14 @@ bool ScenePreloaded::initClas()
   clusterTriangleInput.maxTotalVertexCount           = m_scene->m_maxPerGeometryVertices;
   clusterTriangleInput.vertexFormat                  = VK_FORMAT_R32G32B32_SFLOAT;
 
-  // for every geometry build clas
+  VkClusterAccelerationStructureClustersBottomLevelInputNV blasInput = {
+      VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_CLUSTERS_BOTTOM_LEVEL_INPUT_NV};
+  // low detail blas has only one cluster per blas
+  blasInput.maxClusterCountPerAccelerationStructure = 1;
+  blasInput.maxTotalClusterCount                    = uint32_t(m_scene->getActiveGeometryCount());
 
-  // get scratch and
+  VkDeviceSize scratchSize = 0;
+  VkDeviceSize blasSize    = 0;
 
   VkAccelerationStructureBuildSizesInfoKHR buildSizesInfo = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
   VkClusterAccelerationStructureInputInfoNV clusterInputInfo = {VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV};
@@ -252,10 +263,20 @@ bool ScenePreloaded::initClas()
   clusterInputInfo.opInput.pTriangleClusters     = &clusterTriangleInput;
   clusterInputInfo.maxAccelerationStructureCount = m_scene->m_maxPerGeometryClusters;
   vkGetClusterAccelerationStructureBuildSizesNV(res->m_device, &clusterInputInfo, &buildSizesInfo);
+  scratchSize = std::max(scratchSize, buildSizesInfo.buildScratchSize);
+
+  VkClusterAccelerationStructureInputInfoNV blasInputInfo = {VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV};
+  blasInputInfo.flags                        = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+  blasInputInfo.opMode                       = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV;
+  blasInputInfo.opType                       = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV;
+  blasInputInfo.opInput.pClustersBottomLevel = &blasInput;
+  blasInputInfo.maxAccelerationStructureCount = uint32_t(m_scene->getActiveGeometryCount());
+  vkGetClusterAccelerationStructureBuildSizesNV(res->m_device, &blasInputInfo, &buildSizesInfo);
+  scratchSize = std::max(scratchSize, buildSizesInfo.buildScratchSize);
+  blasSize    = buildSizesInfo.accelerationStructureSize;
 
   nvvk::Buffer scratchTemp;
-  res->createBuffer(scratchTemp, buildSizesInfo.buildScratchSize,
-                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
+  res->createBuffer(scratchTemp, scratchSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
 
   nvvk::BufferTyped<VkClusterAccelerationStructureBuildTriangleClusterInfoNV> clasBuildInfosHost;
   res->createBufferTyped(clasBuildInfosHost, m_scene->m_maxPerGeometryClusters,
@@ -263,17 +284,27 @@ bool ScenePreloaded::initClas()
                          VMA_MEMORY_USAGE_CPU_ONLY,
                          VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
 
-  nvvk::BufferTyped<uint32_t> clasSizesHost;
-  res->createBufferTyped(clasSizesHost, m_scene->m_maxPerGeometryClusters,
+  nvvk::BufferTyped<VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV> blasBuildInfosHost;
+  res->createBufferTyped(blasBuildInfosHost, m_scene->getActiveGeometryCount(),
+                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
+                         VMA_MEMORY_USAGE_CPU_ONLY,
+                         VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
+
+  nvvk::BufferTyped<uint32_t> buildSizesHost;
+  res->createBufferTyped(buildSizesHost,
+                         std::max(m_scene->m_maxPerGeometryClusters, uint32_t(m_scene->getActiveGeometryCount())),
                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY,
                          VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
-  nvvk::BufferTyped<uint64_t> clasAddressesHost;
-  res->createBufferTyped(clasAddressesHost, m_scene->m_maxPerGeometryClusters,
+  nvvk::BufferTyped<uint64_t> buildAddressesHost;
+  res->createBufferTyped(buildAddressesHost,
+                         std::max(m_scene->m_maxPerGeometryClusters, uint32_t(m_scene->getActiveGeometryCount())),
                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY,
                          VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
 
   VkCommandBuffer cmd;
   VkClusterAccelerationStructureCommandsInfoNV cmdInfo = {VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV};
+
+  // for every geometry build clas
 
   for(size_t g = 0; g < m_scene->getActiveGeometryCount(); g++)
   {
@@ -350,14 +381,14 @@ bool ScenePreloaded::initClas()
 
       VkBufferCopy region = {};
       region.size         = sizeof(uint32_t) * sceneGeometry.totalClustersCount;
-      vkCmdCopyBuffer(cmd, preloadGeometry.clusterClasSizes.buffer, clasSizesHost.buffer, 1, &region);
+      vkCmdCopyBuffer(cmd, preloadGeometry.clusterClasSizes.buffer, buildSizesHost.buffer, 1, &region);
     }
     res->tempSyncSubmit(cmd);
 
     // allocate clas data and setup per-clas offsets
     {
       uint64_t        sumClasSizes = 0;
-      const uint32_t* clasSizes    = clasSizesHost.data();
+      const uint32_t* clasSizes    = buildSizesHost.data();
       for(uint32_t c = 0; c < sceneGeometry.totalClustersCount; c++)
       {
         assert(clasSizes[c] && "clas with invalid size");
@@ -367,7 +398,7 @@ bool ScenePreloaded::initClas()
       res->createBuffer(preloadGeometry.clasData, sumClasSizes, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
 
       uint64_t  clasOffset    = 0;
-      uint64_t* clasAddresses = clasAddressesHost.data();
+      uint64_t* clasAddresses = buildAddressesHost.data();
       for(uint32_t c = 0; c < sceneGeometry.totalClustersCount; c++)
       {
         clasAddresses[c] = preloadGeometry.clasData.address + clasOffset;
@@ -380,7 +411,7 @@ bool ScenePreloaded::initClas()
       // upload addresses
       VkBufferCopy region = {};
       region.size         = sizeof(uint64_t) * sceneGeometry.totalClustersCount;
-      vkCmdCopyBuffer(cmd, clasAddressesHost.buffer, preloadGeometry.clusterClasAddresses.buffer, 1, &region);
+      vkCmdCopyBuffer(cmd, buildAddressesHost.buffer, preloadGeometry.clusterClasAddresses.buffer, 1, &region);
 
       VkMemoryBarrier memBarrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
       memBarrier.srcAccessMask   = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -400,15 +431,65 @@ bool ScenePreloaded::initClas()
     }
     res->tempSyncSubmit(cmd);
 
+
+    {
+      // setup blas build info
+      VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV* blasInfos = blasBuildInfosHost.data();
+      // just a single cluster
+      blasInfos[g].clusterReferencesCount  = 1;
+      blasInfos[g].clusterReferencesStride = uint32_t(sizeof(uint64_t));
+      blasInfos[g].clusterReferences = preloadGeometry.clusterClasAddresses.addressAt(shaderGeometry.lowDetailClusterID);
+    }
+
     m_clasSize += preloadGeometry.clasData.bufferSize;
+  }
+
+  // create low detail blas
+  {
+    res->createBuffer(m_clasLowDetailBlasBuffer, blasSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
+    m_clasOperationsSize += blasSize;
+
+    cmd = res->createTempCmdBuffer();
+
+    cmdInfo.input        = blasInputInfo;
+    cmdInfo.input.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV;
+
+    cmdInfo.dstImplicitData = m_clasLowDetailBlasBuffer.address;
+
+    cmdInfo.srcInfosArray.deviceAddress = blasBuildInfosHost.address;
+    cmdInfo.srcInfosArray.size          = blasBuildInfosHost.bufferSize;
+    cmdInfo.srcInfosArray.stride        = sizeof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV);
+
+    cmdInfo.dstSizesArray.deviceAddress = buildSizesHost.address;
+    cmdInfo.dstSizesArray.size          = buildSizesHost.bufferSize;
+    cmdInfo.dstSizesArray.stride        = sizeof(uint32_t);
+
+    cmdInfo.dstAddressesArray.deviceAddress = buildAddressesHost.address;
+    cmdInfo.dstAddressesArray.size          = buildAddressesHost.bufferSize;
+    cmdInfo.dstAddressesArray.stride        = sizeof(uint64_t);
+
+    vkCmdBuildClusterAccelerationStructureIndirectNV(cmd, &cmdInfo);
+
+    res->tempSyncSubmit(cmd);
+
+    const uint64_t* blasAddresses = buildAddressesHost.data();
+
+    for(size_t g = 0; g < m_scene->getActiveGeometryCount(); g++)
+    {
+      ScenePreloaded::Geometry& preloadGeometry = m_geometries[g];
+      shaderio::Geometry&       shaderGeometry  = m_shaderGeometries[g];
+
+      shaderGeometry.lowDetailBlasAddress = blasAddresses[g];
+    }
   }
 
   m_resources->simpleUploadBuffer(m_shaderGeometriesBuffer, m_shaderGeometries.data());
 
   res->m_allocator.destroyBuffer(scratchTemp);
-  res->m_allocator.destroyBuffer(clasSizesHost);
-  res->m_allocator.destroyBuffer(clasAddressesHost);
+  res->m_allocator.destroyBuffer(buildSizesHost);
+  res->m_allocator.destroyBuffer(buildAddressesHost);
   res->m_allocator.destroyBuffer(clasBuildInfosHost);
+  res->m_allocator.destroyBuffer(blasBuildInfosHost);
 
   return true;
 }
@@ -424,7 +505,10 @@ void ScenePreloaded::deinitClas()
     m_resources->m_allocator.destroyBuffer(preloadGeometry.clasData);
     shaderGeometry.preloadedClusterClasAddresses = 0;
     shaderGeometry.preloadedClusterClasSizes     = 0;
+    shaderGeometry.lowDetailBlasAddress          = 0;
   }
+
+  m_resources->m_allocator.destroyBuffer(m_clasLowDetailBlasBuffer);
 
   m_resources->simpleUploadBuffer(m_shaderGeometriesBuffer, m_shaderGeometries.data());
 

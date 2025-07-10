@@ -431,7 +431,7 @@ private:
 
   void beginProcessingOnly(size_t geometryCount);
   void saveProcessingOnly(ProcessingInfo& processingInfo, size_t geometryIndex);
-  void endProcessingOnly();
+  void endProcessingOnly(bool hadError);
 
   void computeClusterStats();
   void computeHistograms();

@@ -672,6 +672,7 @@ void Scene::buildGeometryClusters(const ProcessingInfo& processingInfo, Geometry
   }
 
   geometry.localVertices.resize(offset);
+  geometry.localVertices.shrink_to_fit();
 
   geometry.lodLevelsCount = uint32_t(geometry.lodMesh.lodLevelGroupRanges.size());
 

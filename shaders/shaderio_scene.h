@@ -162,7 +162,12 @@ struct Geometry
   uint32_t clustersCount;
   uint32_t groupsCount;
   uint32_t nodesCount;
+  uint32_t lodLevelsCount;
+
+  // lowest detail data is always available
+  uint64_t lowDetailBlasAddress;
   uint32_t lowDetailClusterID;
+  uint32_t lowDetailTriangles;
 
   // object space geometry bbox
   BBox bbox;

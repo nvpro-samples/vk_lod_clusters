@@ -140,7 +140,7 @@ void main()
     buildRW.indirectDispatchBlasInsertion.gridZ = 1;
 
     // keep originals for statistics 
-    readback.numRenderedClusters  = numRenderedClusters;
+    readback.numRenderedClusters  += numRenderedClusters; // + because we sometimes use atomicAdd on this directly
     readback.numRenderClusters    = renderClusterCounter;
     readback.numTraversalInfos    = buildRW.traversalInfoWriteCounter;
   }

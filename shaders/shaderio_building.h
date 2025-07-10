@@ -30,6 +30,8 @@ using namespace glm;
 #define INSTANCE_FRUSTUM_BIT 1
 #define INSTANCE_VISIBLE_BIT 2
 
+#define BLAS_BUILD_INDEX_LOWDETAIL (uint(~0))
+
 #endif
 
 // The item descriptor used in the lod hierarchy traversal
@@ -42,8 +44,9 @@ struct TraversalInfo
   uint32_t packedNode;
 };
 #ifndef __cplusplus
-TraversalInfo unpackTraversalInfo(uint64_t packed64) {
-  u32vec2 data = unpack32(packed64);
+TraversalInfo unpackTraversalInfo(uint64_t packed64)
+{
+  u32vec2       data = unpack32(packed64);
   TraversalInfo info;
   info.instanceID = data.x;
   info.packedNode = data.y;
@@ -51,7 +54,7 @@ TraversalInfo unpackTraversalInfo(uint64_t packed64) {
 }
 uint64_t packTraversalInfo(TraversalInfo info)
 {
-  return pack64(u32vec2(info.instanceID,info.packedNode));
+  return pack64(u32vec2(info.instanceID, info.packedNode));
 }
 #endif
 
@@ -80,67 +83,76 @@ BUFFER_REF_DECLARE_ARRAY(BlasBuildInfo_inout, BlasBuildInfo, , 16);
 // Indirect build information for a TLAS instance
 struct TlasInstance
 {
-  mat3x4    worldMatrix;
-  uint32_t  instanceCustomIndex24_mask8;
-  uint32_t  instanceShaderBindingTableRecordOffset24_flags8;
-  uint64_t  blasReference;
+  mat3x4   worldMatrix;
+  uint32_t instanceCustomIndex24_mask8;
+  uint32_t instanceShaderBindingTableRecordOffset24_flags8;
+  uint64_t blasReference;
 };
 BUFFER_REF_DECLARE_ARRAY(TlasInstances_inout, TlasInstance, , 16);
 
+struct InstanceBuildInfo
+{
+  uint clusterReferencesCount;
+  uint blasBuildIndex;  // can be BLAS_BUILD_INDEX_LOWDETAIL
+};
+BUFFER_REF_DECLARE_ARRAY(InstanceBuildInfos_inout, InstanceBuildInfo, , 8);
+
 // The central structure that contains relevant information to
-// perform the runtime lod hierchy traversal and building of 
+// perform the runtime lod hierchy traversal and building of
 // all relevant clusters to be rendered in the current frame.
 // (not optimally packed for cache efficiency but readability)
 struct SceneBuilding
 {
-  mat4  traversalViewMatrix;
+  mat4 traversalViewMatrix;
 
   uint  numRenderInstances;
   uint  maxRenderClusters;
   uint  maxTraversalInfos;
   float errorOverDistanceThreshold;
-  
+
   uint renderClusterCounter;
   int  traversalTaskCounter;
   uint traversalInfoReadCounter;
   uint traversalInfoWriteCounter;
-  
+
   // result of traversal init & scratch for traversal run
   BUFFER_REF(uint64s_coh_volatile) traversalNodeInfos;
   // result of traversal run
   BUFFER_REF(ClusterInfos_inout) renderClusterInfos;
-  
+
   // rasterization related
   //////////////////////////////////////////////////
-  
+
   DrawMeshTasksIndirectCommandNV indirectDrawClusters;
-  
+
   // ray tracing related
   //////////////////////////////////////////////////
-  
+
   DispatchIndirectCommand indirectDispatchBlasInsertion;
-  
+
   uint blasClasCounter;
-  
+  uint blasBuildCounter;
+
   // instance states store culling/visibility related information
   BUFFER_REF(uint32s_inout) instanceStates;
-  
+
   BUFFER_REF(uint32s_inout) instanceSortValues;
   BUFFER_REF(uint32s_inout) instanceSortKeys;
-  
-  BUFFER_REF(TlasInstances_inout) tlasInstances;
-  
+
   // per instance
+  BUFFER_REF(TlasInstances_inout) tlasInstances;
+  BUFFER_REF(InstanceBuildInfos_inout) instanceBuildInfos;
+
   BUFFER_REF(BlasBuildInfo_inout) blasBuildInfos;
   BUFFER_REF(uint32s_inout) blasBuildSizes;
+  BUFFER_REF(uint64s_inout) blasBuildAddresses;
   // split into per-instance regions
   BUFFER_REF(uint64s_inout) blasClusterAddresses;
   uint64_t blasBuildData;
 };
 
 
-
 #ifdef __cplusplus
 }
 #endif
-#endif // _SHADERIO_BUILDING_H_
+#endif  // _SHADERIO_BUILDING_H_

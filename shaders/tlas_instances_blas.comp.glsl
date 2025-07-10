@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -96,40 +96,31 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
 
 ////////////////////////////////////////////
 
-layout(local_size_x=BLAS_INSERT_CLUSTERS_WORKGROUP) in;
+layout(local_size_x=TLAS_INSTANCES_BLAS_WORKGROUP) in;
 
 ////////////////////////////////////////////
 
 void main()
 {
-  uint renderClusterIndex = gl_GlobalInvocationID.x;
+  uint instanceID = gl_GlobalInvocationID.x;
   
-  if (renderClusterIndex < build.renderClusterCounter)
+  if (instanceID < build.numRenderInstances)
   {
-    ClusterInfo cluster       = build.renderClusterInfos.d[renderClusterIndex];
-    uint instanceID           = cluster.instanceID;
-    uint clusterID            = cluster.clusterID;
-  #if USE_STREAMING
-    uint64_t clusterAddress   = streaming.resident.clasAddresses.d[clusterID];
-  #else
-    Geometry geometry         = geometries[instances[instanceID].geometryID];
-    uint64_t clusterAddress   = geometry.preloadedClusterClasAddresses.d[clusterID];
-  #endif
+    InstanceBuildInfo buildInfo = build.instanceBuildInfos.d[instanceID];
+    uint buildIndex = buildInfo.blasBuildIndex;
     
-    uint buildIndex = build.instanceBuildInfos.d[instanceID].blasBuildIndex;
-    
-    uint idx = atomicAdd(build.blasBuildInfos.d[buildIndex].clusterReferencesCount,1);
-    uint64s_inout clusterReferences = uint64s_inout(build.blasBuildInfos.d[buildIndex].clusterReferences);
-    clusterReferences.d[idx] = clusterAddress;
-    
-  #if 1
-    // for statistics
-    #if USE_STREAMING
-      uint numTriangles = Cluster_in(streaming.resident.clusters.d[clusterID]).d.triangleCountMinusOne + 1;
-    #else
-      uint numTriangles = geometry.preloadedClusters.d[clusterID].triangleCountMinusOne + 1;
-    #endif
-    atomicAdd(readback.numRenderedTriangles, numTriangles);
-  #endif
+    if (buildIndex != BLAS_BUILD_INDEX_LOWDETAIL)
+    {
+      build.tlasInstances.d[instanceID].blasReference = build.blasBuildAddresses.d[buildIndex];
+      atomicAdd(readback.blasActualSizes, uint64_t(build.blasBuildSizes.d[buildIndex]));
+    }
   }
+  
+#if 1
+  // stats
+  if (instanceID == 0)
+  {
+    readback.numBlasBuilds = build.blasBuildCounter;
+  }
+#endif
 }

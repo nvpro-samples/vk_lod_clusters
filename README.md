@@ -88,14 +88,15 @@ Use _"Traversal"_ settings within the UI to influence it.
 
 Relevant files to traversal in their usage order:
 * [shaders/shaderio_building.h](/shaders/shaderio_building.h): All data structures related to traversal are stored in `SceneBuilding`
-* [shaders/traversal_init.comp.glsl](/shaders/traversal_init.comp.glsl): Seeds the LoD root nodes of instances for traversal into `SceneBuilding::traversalNodeInfos`. Implements a shortcut to directly insert the low detail cluster into `SceneBuilding::renderClusterInfos` if only the furthest LoD would be traversed.
+* [shaders/traversal_init.comp.glsl](/shaders/traversal_init.comp.glsl): Seeds the LoD root nodes of instances for traversal into `SceneBuilding::traversalNodeInfos`. Implements a shortcut to directly insert the low detail cluster into `SceneBuilding::renderClusterInfos` if only the furthest LoD would be traversed (also skips BLAS building for ray tracing).
 * [shaders/traversal_run.comp.glsl](/shaders/traversal_run.comp.glsl): Performs the hierarchical LoD traversal using a persistent kernel. Outputs the list of render clusters `SceneBuilding::renderClusterInfos`.
 * [shaders/build_setup.comp.glsl](/shaders/build_setup.comp.glsl): Simple compute shader that is used to do basic operations in preparation of other kernels. Often clamping results to stay within limits.
-* [shaders/blas_setup_insertion.comp.glsl](/shaders/blas_setup_insertion.comp.glsl): Sets up the per-BLAS range for the cluster references based on how many clusters each BLAS needs (which traversal computed as well).
+* [shaders/blas_setup_insertion.comp.glsl](/shaders/blas_setup_insertion.comp.glsl): Sets up the per-BLAS range for the cluster references based on how many clusters each BLAS needs (which traversal computed as well). This also determines how many BLAS are built at all.
 * [shaders/blas_clusters_insert.comp.glsl](/shaders/blas_clusters_insert.comp.glsl): Fills the per-BLAS cluster references (`SceneBuilding::blasBuildInfos`) from the render cluster list. The actual BLAS build is triggered in `RendererRayTraceClustersLod::render` (look for "BLAS Build").
+* [shaders/tlas_instances_blas.comp.glsl](/shaders/tlas_instances_blas.comp.glsl): After BLAS building assigns the built BLAS addresses to the TLAS instance descriptors prior building the TLAS.
 
 **Rasterization:**
-Does not need the BLAS build steps and can render directly from `SceneBuilding::renderClusterInfos`.
+Does not need the BLAS and TLAS build steps and can render directly from `SceneBuilding::renderClusterInfos`.
 Frustum and occlusion culling can be done to reduce the number of rendered clusters during traversal.
 * [shaders/render_raster_clusters.mesh.glsl](/shaders/render_raster_clusters.mesh.glsl): Mesh shader to render a cluster.
 * [shaders/render_raster.frag.glsl](/shaders/render_raster.frag.glsl)
@@ -355,11 +356,9 @@ You can use the commandline to change some defaults:
 ## Future Improvements
 
 * Implement sorting of streaming requests based on distance of instance. Sorting instances alone is not sufficient.
-* Detecting instances with lowest detail could allow re-using a single persistent lowest-detail BLAS, rather than building one per-instance all the time.
-* Using this LoD system for minification and tessellation for magnification is another use-case we intend to demonstrate in a future sample.
-* Further optimizations to the allocator
+* Further optimizations to the CLAS allocator
 * Ray tracing could use culling information better. Currently there is a simple logic that just lowers the LoD factors when an instance is culled by frustum or HiZ.
-* Improve performance of the library that builds the cluster lod system.
+* Ray tracing could reduce number of per-instance BLAS build further. Ray tracing is less sensitive to sub-pixel triangles, so less accurate LoD decision is needed. Needs to be balanced with the risk of more visible LoD popping.
 * Allowing the use of a compute shader to do rasterization of smaller/non-clipped triangles.
 * EXT_mesh_shader support
 

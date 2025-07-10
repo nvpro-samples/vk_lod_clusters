@@ -97,14 +97,18 @@ void main()
   
   if (instanceID < build.numRenderInstances)
   {
-    uint referencesCount  = build.blasBuildInfos.d[instanceID].clusterReferencesCount;
-    uint referencesOffset = atomicAdd(buildRW.blasClasCounter, referencesCount);
-    // reset count for insertion pass
-    build.blasBuildInfos.d[instanceID].clusterReferencesCount  = 0;
-    build.blasBuildInfos.d[instanceID].clusterReferencesStride = 8;
-    build.blasBuildInfos.d[instanceID].clusterReferences       = uint64_t(buildRW.blasClusterAddresses) + uint64_t(referencesOffset * 8);
-    
-    // sum up last frame's result for statistics
-    atomicAdd(readback.blasActualSizes, uint64_t(build.blasBuildSizes.d[instanceID]));
+    uint referencesCount  = build.instanceBuildInfos.d[instanceID].clusterReferencesCount;
+    if (referencesCount > 0)
+    {
+      uint referencesOffset = atomicAdd(buildRW.blasClasCounter, referencesCount);
+      uint buildOffset      = atomicAdd(buildRW.blasBuildCounter, 1);
+      
+      // reset count for insertion pass
+      build.blasBuildInfos.d[buildOffset].clusterReferencesCount  = 0;
+      build.blasBuildInfos.d[buildOffset].clusterReferencesStride = 8;
+      build.blasBuildInfos.d[buildOffset].clusterReferences       = uint64_t(buildRW.blasClusterAddresses) + uint64_t(referencesOffset * 8);
+      
+      build.instanceBuildInfos.d[instanceID].blasBuildIndex = buildOffset;
+    }
   }
 }

@@ -369,6 +369,7 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
                   persistentGeometry.lowDetailGroupsData.bufferSize);
 
     shaderGeometry.lowDetailClusterID = rgroup->clusterResidentID;
+    shaderGeometry.lowDetailTriangles = sceneGeometry.lodMesh.clusterTriangleRanges[lastGroupRange.offset].count;
   }
 
   // this will set all addresses to invalid, except lowest detail geometry group, which is persistently loaded.
@@ -1623,29 +1624,54 @@ bool SceneStreaming::initClas()
   }
 
   {
-    uint32_t                        loGroupsCount   = 0;
-    uint32_t                        loClustersCount = 0;
+    uint32_t                        loGroupsCount           = 0;
+    uint32_t                        loClustersCount         = 0;
+    uint32_t                        loMaxGroupClustersCount = 0;
     const StreamingResident::Group* groups =
-        m_resident.initClas(res, m_config, m_shaderData.resident, loGroupsCount, loClustersCount);
+        m_resident.initClas(res, m_config, m_shaderData.resident, loGroupsCount, loClustersCount, loMaxGroupClustersCount);
+
+    assert(loGroupsCount == uint32_t(m_scene->getActiveGeometryCount()));
 
     m_clasOperationsSize += m_resident.getClasOperationsSize();
 
+    size_t scratchSize = 0;
+    size_t blasSize    = 0;
+
     VkAccelerationStructureBuildSizesInfoKHR buildSizesInfo = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
-    VkClusterAccelerationStructureInputInfoNV clasInput = {VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV};
-    clasInput.maxAccelerationStructureCount   = loClustersCount;
-    clasInput.opType                          = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV;
-    clasInput.opMode                          = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV;
-    clasInput.opInput.pTriangleClusters       = &m_clasTriangleInput;
-    m_clasTriangleInput.maxTotalTriangleCount = m_scene->m_maxClusterTriangles * loClustersCount;
-    m_clasTriangleInput.maxTotalVertexCount   = m_scene->m_maxClusterVertices * loClustersCount;
-    vkGetClusterAccelerationStructureBuildSizesNV(res.m_device, &clasInput, &buildSizesInfo);
-    size_t buildScratchSize = buildSizesInfo.buildScratchSize;
-    clasInput.opMode        = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_COMPUTE_SIZES_NV;
-    vkGetClusterAccelerationStructureBuildSizesNV(res.m_device, &clasInput, &buildSizesInfo);
-    size_t sizeScratchSize = buildSizesInfo.buildScratchSize;
+    VkClusterAccelerationStructureInputInfoNV clasInputInfo = {VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV};
+    clasInputInfo.maxAccelerationStructureCount = loClustersCount;
+    clasInputInfo.opType                        = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV;
+    clasInputInfo.opMode                        = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV;
+    clasInputInfo.opInput.pTriangleClusters     = &m_clasTriangleInput;
+    m_clasTriangleInput.maxTotalTriangleCount   = m_scene->m_maxClusterTriangles * loClustersCount;
+    m_clasTriangleInput.maxTotalVertexCount     = m_scene->m_maxClusterVertices * loClustersCount;
+    vkGetClusterAccelerationStructureBuildSizesNV(res.m_device, &clasInputInfo, &buildSizesInfo);
+    scratchSize = std::max(scratchSize, buildSizesInfo.buildScratchSize);
+
+    clasInputInfo.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_COMPUTE_SIZES_NV;
+    vkGetClusterAccelerationStructureBuildSizesNV(res.m_device, &clasInputInfo, &buildSizesInfo);
+    scratchSize = std::max(scratchSize, buildSizesInfo.buildScratchSize);
+
+
+    VkClusterAccelerationStructureClustersBottomLevelInputNV blasInput = {
+        VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_CLUSTERS_BOTTOM_LEVEL_INPUT_NV};
+    // low detail blas has only one cluster per blas
+    blasInput.maxClusterCountPerAccelerationStructure = loMaxGroupClustersCount;
+    blasInput.maxTotalClusterCount                    = loClustersCount;
+
+    VkClusterAccelerationStructureInputInfoNV blasInputInfo = {VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV};
+    blasInputInfo.flags  = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    blasInputInfo.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV;
+    blasInputInfo.opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV;
+    blasInputInfo.opInput.pClustersBottomLevel  = &blasInput;
+    blasInputInfo.maxAccelerationStructureCount = loGroupsCount;
+    vkGetClusterAccelerationStructureBuildSizesNV(res.m_device, &blasInputInfo, &buildSizesInfo);
+    scratchSize = std::max(scratchSize, buildSizesInfo.buildScratchSize);
+    blasSize    = buildSizesInfo.accelerationStructureSize;
+
 
     nvvk::Buffer scratchTemp;
-    res.createBuffer(scratchTemp, std::max(buildScratchSize, sizeScratchSize),
+    res.createBuffer(scratchTemp, scratchSize,
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
 
     nvvk::BufferTyped<VkClusterAccelerationStructureBuildTriangleClusterInfoNV> clasBuildInfosHost;
@@ -1653,18 +1679,25 @@ bool SceneStreaming::initClas()
                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
                           VMA_MEMORY_USAGE_CPU_ONLY, VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
 
-    nvvk::BufferTyped<uint32_t> clasSizesHost;
-    res.createBufferTyped(clasSizesHost, loClustersCount,
+    nvvk::BufferTyped<VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV> blasBuildInfosHost;
+    res.createBufferTyped(blasBuildInfosHost, loGroupsCount,
+                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
+                          VMA_MEMORY_USAGE_CPU_ONLY,
+                          VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
+
+    nvvk::BufferTyped<uint32_t> buildSizesHost;
+    res.createBufferTyped(buildSizesHost, std::max(loClustersCount, loGroupsCount),
                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY,
                           VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
-    nvvk::BufferTyped<uint64_t> clasAddressesHost;
-    res.createBufferTyped(clasAddressesHost, loClustersCount,
+    nvvk::BufferTyped<uint64_t> buildAddressesHost;
+    res.createBufferTyped(buildAddressesHost, std::max(loClustersCount, loGroupsCount),
                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY,
                           VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
 
 
-    uint32_t                                                  clusterOffset  = 0;
-    VkClusterAccelerationStructureBuildTriangleClusterInfoNV* clasBuildInfos = clasBuildInfosHost.data();
+    uint32_t                                                      clusterOffset  = 0;
+    VkClusterAccelerationStructureBuildTriangleClusterInfoNV*     clasBuildInfos = clasBuildInfosHost.data();
+    VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV* blasBuildInfos = blasBuildInfosHost.data();
 
     // prepare build of clusters
     for(uint32_t g = 0; g < loGroupsCount; g++)
@@ -1676,6 +1709,10 @@ bool SceneStreaming::initClas()
       getGroupDataOffsets(sceneGeometry, residentGroup.geometryGroup, dataOffsets);
 
       nvcluster_Range groupRange = sceneGeometry.lodMesh.groupClusterRanges[residentGroup.geometryGroup.groupID];
+
+      blasBuildInfos[g].clusterReferencesCount  = residentGroup.clusterCount;
+      blasBuildInfos[g].clusterReferencesStride = sizeof(uint64_t);
+      blasBuildInfos[g].clusterReferences = m_shaderData.resident.clasAddresses + sizeof(uint64_t) * clusterOffset;
 
       for(uint32_t c = 0; c < residentGroup.clusterCount; c++)
       {
@@ -1713,7 +1750,7 @@ bool SceneStreaming::initClas()
 
     // first run is gather sizes
 
-    cmdInfo.input        = clasInput;
+    cmdInfo.input        = clasInputInfo;
     cmdInfo.input.opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_TRIANGLE_CLUSTER_NV;
     cmdInfo.input.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_COMPUTE_SIZES_NV;
 
@@ -1721,8 +1758,8 @@ bool SceneStreaming::initClas()
     cmdInfo.srcInfosArray.size          = clasBuildInfosHost.bufferSize;
     cmdInfo.srcInfosArray.stride        = sizeof(shaderio::ClasBuildInfo);
 
-    cmdInfo.dstSizesArray.deviceAddress = clasSizesHost.address;
-    cmdInfo.dstSizesArray.size          = clasSizesHost.bufferSize;
+    cmdInfo.dstSizesArray.deviceAddress = buildSizesHost.address;
+    cmdInfo.dstSizesArray.size          = buildSizesHost.bufferSize;
     cmdInfo.dstSizesArray.stride        = sizeof(uint32_t);
 
     VkCommandBuffer cmd = res.createTempCmdBuffer();
@@ -1732,19 +1769,18 @@ bool SceneStreaming::initClas()
     // compute size, storage of lo-res geometry and destination addresses etc.
 
     size_t          clasSize         = 0;
-    const uint32_t* clasSizesMapping = clasSizesHost.data();
+    const uint32_t* clasSizesMapping = buildSizesHost.data();
     for(uint32_t c = 0; c < loClustersCount; c++)
     {
       clasSize += clasSizesMapping[c];
     }
-
 
     res.createBuffer(m_clasLowDetailBuffer, clasSize,
                      VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
     m_clasLowDetailSize = clasSize;
 
     clasSize                       = 0;
-    uint64_t* clasAddressesMapping = clasAddressesHost.data();
+    uint64_t* clasAddressesMapping = buildAddressesHost.data();
     for(uint32_t c = 0; c < loClustersCount; c++)
     {
       clasAddressesMapping[c] = m_clasLowDetailBuffer.address + clasSize;
@@ -1755,8 +1791,8 @@ bool SceneStreaming::initClas()
 
     cmdInfo.input.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV;
 
-    cmdInfo.dstAddressesArray.deviceAddress = clasAddressesHost.address;
-    cmdInfo.dstAddressesArray.size          = clasAddressesHost.bufferSize;
+    cmdInfo.dstAddressesArray.deviceAddress = buildAddressesHost.address;
+    cmdInfo.dstAddressesArray.size          = buildAddressesHost.bufferSize;
     cmdInfo.dstAddressesArray.stride        = sizeof(uint64_t);
 
     cmd = res.createTempCmdBuffer();
@@ -1769,27 +1805,69 @@ bool SceneStreaming::initClas()
     VkBufferCopy region;
     region.srcOffset = 0;
     region.dstOffset = m_shaderData.resident.clasSizes - residentClasBuffer.address;
-    region.size      = clasSizesHost.bufferSize;
+    region.size      = buildSizesHost.bufferSize;
 
-    vkCmdCopyBuffer(cmd, clasSizesHost.buffer, residentClasBuffer.buffer, 1, &region);
+    vkCmdCopyBuffer(cmd, buildSizesHost.buffer, residentClasBuffer.buffer, 1, &region);
 
     region.srcOffset = 0;
     region.dstOffset = m_shaderData.resident.clasAddresses - residentClasBuffer.address;
-    region.size      = clasAddressesHost.bufferSize;
+    region.size      = buildAddressesHost.bufferSize;
 
-    vkCmdCopyBuffer(cmd, clasAddressesHost.buffer, residentClasBuffer.buffer, 1, &region);
+    vkCmdCopyBuffer(cmd, buildAddressesHost.buffer, residentClasBuffer.buffer, 1, &region);
 
     if(m_config.usePersistentClasAllocator)
     {
       m_clasAllocator.cmdReset(cmd);
     }
 
+    {
+      // barrier
+      nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                             VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR);
+
+      // build low detail blas, one per low detail group
+      res.createBuffer(m_clasLowDetailBlasBuffer, blasSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
+      m_clasOperationsSize += blasSize;
+
+      cmdInfo.input        = blasInputInfo;
+      cmdInfo.input.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV;
+
+      cmdInfo.dstImplicitData = m_clasLowDetailBlasBuffer.address;
+
+      cmdInfo.srcInfosArray.deviceAddress = blasBuildInfosHost.address;
+      cmdInfo.srcInfosArray.size          = blasBuildInfosHost.bufferSize;
+      cmdInfo.srcInfosArray.stride        = sizeof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV);
+
+      cmdInfo.dstSizesArray.deviceAddress = buildSizesHost.address;
+      cmdInfo.dstSizesArray.size          = buildSizesHost.bufferSize;
+      cmdInfo.dstSizesArray.stride        = sizeof(uint32_t);
+
+      cmdInfo.dstAddressesArray.deviceAddress = buildAddressesHost.address;
+      cmdInfo.dstAddressesArray.size          = buildAddressesHost.bufferSize;
+      cmdInfo.dstAddressesArray.stride        = sizeof(uint64_t);
+
+      vkCmdBuildClusterAccelerationStructureIndirectNV(cmd, &cmdInfo);
+    }
+
     res.tempSyncSubmit(cmd);
 
+    const uint64_t* blasAddresses = buildAddressesHost.data();
+
+    for(uint32_t g = 0; g < loGroupsCount; g++)
+    {
+      const StreamingResident::Group& residentGroup  = groups[g];
+      shaderio::Geometry&             shaderGeometry = m_shaderGeometries[residentGroup.geometryGroup.geometryID];
+
+      shaderGeometry.lowDetailBlasAddress = blasAddresses[g];
+    }
+
+    res.simpleUploadBuffer(m_shaderGeometriesBuffer, m_shaderGeometries.data());
+
     res.m_allocator.destroyBuffer(scratchTemp);
-    res.m_allocator.destroyBuffer(clasSizesHost);
-    res.m_allocator.destroyBuffer(clasAddressesHost);
+    res.m_allocator.destroyBuffer(buildSizesHost);
+    res.m_allocator.destroyBuffer(buildAddressesHost);
     res.m_allocator.destroyBuffer(clasBuildInfosHost);
+    res.m_allocator.destroyBuffer(blasBuildInfosHost);
   }
 
   return true;
@@ -1811,7 +1889,14 @@ void SceneStreaming::deinitClas()
   m_shaderData.clasAllocator = {};
 
   res.m_allocator.destroyBuffer(m_clasLowDetailBuffer);
+  res.m_allocator.destroyBuffer(m_clasLowDetailBlasBuffer);
   m_stats.reservedClasBytes = 0;
+
+  for(auto& shaderGeometry : m_shaderGeometries)
+  {
+    shaderGeometry.lowDetailBlasAddress = 0;
+  }
+  res.simpleUploadBuffer(m_shaderGeometriesBuffer, m_shaderGeometries.data());
 
   m_clasOperationsSize      = 0;
   m_clasLowDetailSize       = 0;

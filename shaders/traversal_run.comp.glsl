@@ -407,7 +407,7 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
     // this will help us determine the list length for each blas.
     // The `blas_setup_insertion.comp.glsl` kernel then sub-allocates space for the lists
     // based on this counter.
-    atomicAdd(build.blasBuildInfos.d[traversalInfo.instanceID].clusterReferencesCount, 1);
+    atomicAdd(build.instanceBuildInfos.d[traversalInfo.instanceID].clusterReferencesCount, 1);
     // the render list we write below is filled in an unsorted manner with clusters
     // from different instances. We later use the `blas_insert_clusters.comp.glsl` kernel to build
     // the list for each blas.

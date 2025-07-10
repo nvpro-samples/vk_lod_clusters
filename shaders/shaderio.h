@@ -77,6 +77,7 @@
 #define TRAVERSAL_RUN_WORKGROUP 64
 #define BLAS_SETUP_INSERTION_WORKGROUP 128
 #define BLAS_INSERT_CLUSTERS_WORKGROUP 128
+#define TLAS_INSTANCES_BLAS_WORKGROUP 128
 
 // must be power of 2
 #define STREAM_UPDATE_SCENE_WORKGROUP 64
@@ -198,6 +199,8 @@ struct Readback
   uint numTraversalInfos;
   uint numRenderedClusters;
   uint numRenderedTriangles;
+  uint numBlasBuilds;
+  uint _pad;
 
   uint64_t blasActualSizes;
 

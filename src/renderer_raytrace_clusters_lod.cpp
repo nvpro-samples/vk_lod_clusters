@@ -60,6 +60,7 @@ private:
 
     shaderc::SpvCompilationResult computeBlasInsertClusters;
     shaderc::SpvCompilationResult computeBlasSetupInsertion;
+    shaderc::SpvCompilationResult computeTlasInstancesBlas;
   };
 
   struct Pipelines
@@ -73,6 +74,7 @@ private:
 
     VkPipeline computeBlasInsertClusters = nullptr;
     VkPipeline computeBlasSetupInsertion = nullptr;
+    VkPipeline computeTlasInstancesBlas  = nullptr;
   };
 
   RendererConfig m_config;
@@ -137,6 +139,7 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   res.compileShader(m_shaders.computeBuildSetup, VK_SHADER_STAGE_COMPUTE_BIT, "build_setup.comp.glsl", &options);
   res.compileShader(m_shaders.computeBlasInsertClusters, VK_SHADER_STAGE_COMPUTE_BIT, "blas_clusters_insert.comp.glsl", &options);
   res.compileShader(m_shaders.computeBlasSetupInsertion, VK_SHADER_STAGE_COMPUTE_BIT, "blas_setup_insertion.comp.glsl", &options);
+  res.compileShader(m_shaders.computeTlasInstancesBlas, VK_SHADER_STAGE_COMPUTE_BIT, "tlas_instances_blas.comp.glsl", &options);
 
   if(!res.verifyShaders(m_shaders))
   {
@@ -223,6 +226,7 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
 
     m_sceneBuildShaderio.instanceStates = mem.append(sizeof(uint32_t) * m_renderInstances.size(), 4);
     m_sceneBuildShaderio.blasBuildInfos = mem.append(sizeof(shaderio::BlasBuildInfo) * m_renderInstances.size(), 16);
+    m_sceneBuildShaderio.instanceBuildInfos = mem.append(sizeof(shaderio::InstanceBuildInfo) * m_renderInstances.size(), 8);
 
     if(config.useSorting)
     {
@@ -233,7 +237,9 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
       mem.splitOverlap();
     }
 
-    m_sceneBuildShaderio.blasBuildSizes = mem.append(sizeof(uint32_t) * m_renderInstances.size(), 4);
+    m_sceneBuildShaderio.blasBuildSizes     = mem.append(sizeof(uint32_t) * m_renderInstances.size(), 4);
+    m_sceneBuildShaderio.blasBuildAddresses = mem.append(sizeof(uint64_t) * m_renderInstances.size(), 8);
+
     m_sceneBuildShaderio.blasClusterAddresses = mem.append(sizeof(uint64_t) * m_sceneBuildShaderio.maxRenderClusters, 8);
 
     if(config.useSorting)
@@ -249,9 +255,11 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     m_sceneBuildShaderio.instanceStates += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.blasBuildInfos += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.blasBuildSizes += m_sceneDataBuffer.address;
+    m_sceneBuildShaderio.blasBuildAddresses += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.blasClusterAddresses += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.instanceSortKeys += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.instanceSortValues += m_sceneDataBuffer.address;
+    m_sceneBuildShaderio.instanceBuildInfos += m_sceneDataBuffer.address;
 
 
     res.createBuffer(m_sceneTraversalBuffer, sizeof(uint64_t) * m_sceneBuildShaderio.maxTraversalInfos,
@@ -349,6 +357,9 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
 
     shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeBlasSetupInsertion);
     vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeBlasSetupInsertion);
+
+    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeTlasInstancesBlas);
+    vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTlasInstancesBlas);
   }
 
   return true;
@@ -526,10 +537,9 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     inputs.flags                         = m_config.clusterBlasFlags;
 
     // we feed the generated blas addresses directly into the ray instances
-    cmdInfo.dstAddressesArray.deviceAddress =
-        m_tlasInstancesBuffer.address + offsetof(VkAccelerationStructureInstanceKHR, accelerationStructureReference);
-    cmdInfo.dstAddressesArray.size   = m_tlasInstancesBuffer.bufferSize;
-    cmdInfo.dstAddressesArray.stride = sizeof(VkAccelerationStructureInstanceKHR);
+    cmdInfo.dstAddressesArray.deviceAddress = m_sceneBuildShaderio.blasBuildAddresses;
+    cmdInfo.dstAddressesArray.size          = sizeof(uint64_t) * m_renderInstances.size();
+    cmdInfo.dstAddressesArray.stride        = sizeof(uint64_t);
 
     // for statistics we keep track of blas sizes
     cmdInfo.dstSizesArray.deviceAddress = m_sceneBuildShaderio.blasBuildSizes;
@@ -544,15 +554,30 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     // in implicit mode we provide one big chunk from which outputs are sub-allocated
     cmdInfo.dstImplicitData = m_sceneBlasDataBuffer.address;
 
+    // we may actually build less BLAS than instances, due pre-build low detail blas or recycling
+    cmdInfo.srcInfosCount = m_sceneBuildBuffer.address + offsetof(shaderio::SceneBuilding, blasBuildCounter);
+
     cmdInfo.scratchData = m_scratchBuffer.address;
     cmdInfo.input       = inputs;
 
     vkCmdBuildClusterAccelerationStructureIndirectNV(cmd, &cmdInfo);
 
     memBarrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
-    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-                         VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, 0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+  }
+
+  {
+    auto timerSection = profiler.cmdFrameSection(cmd, "Tlas Preparation");
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTlasInstancesBlas);
+    vkCmdDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TLAS_INSTANCES_BLAS_WORKGROUP), 1, 1);
+
+    memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                         0, 1, &memBarrier, 0, nullptr, 0, nullptr);
   }
 
   {

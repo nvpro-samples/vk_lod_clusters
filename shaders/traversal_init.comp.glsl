@@ -159,10 +159,24 @@ void main()
     if (status == 0) errorScale = 10.0;
   #endif
   
+    mat4   transform = build.traversalViewMatrix * worldMatrix;
+  
     // if there is no need to traverse the pen ultimate lod
     // then just insert the last lod node's cluster directly
-    if (!traverseChild(mat4x3(build.traversalViewMatrix * worldMatrix), uniformScale, traversalMetric, errorScale))
+    if (!traverseChild(mat4x3(transform), uniformScale, traversalMetric, errorScale))
     {
+    
+    #if TARGETS_RAY_TRACING
+      // we don't need to add the cluster because we always add it
+      // implictly through the use of the low detail BLAS.
+      build.tlasInstances.d[instanceID].blasReference = geometry.lowDetailBlasAddress;
+      
+      #if 1
+        atomicAdd(readback.numRenderedTriangles, geometry.lowDetailTriangles);
+        atomicAdd(readback.numRenderedClusters, 1);
+      #endif
+      
+    #else
       // lowest lod is guaranteed to have only one cluster
       
       uvec4 voteClusters = subgroupBallot(true); 
@@ -183,6 +197,7 @@ void main()
         clusterInfo.clusterID  = geometry.lowDetailClusterID;
         build.renderClusterInfos.d[offsetClusters] = clusterInfo;
       }
+    #endif
       
       // by adding the cluster, we can skip adding the node
       addNode = false;
@@ -214,11 +229,12 @@ void main()
     build.traversalNodeInfos.d[offsetNodes] = packTraversalInfo(traversalInfo);
   }
 
-  #if TARGETS_RAY_TRACING
+
   if (instanceID == instanceLoad) {
     build.instanceStates.d[instanceID] = status;
-    build.blasBuildInfos.d[instanceID].clusterReferencesCount = (!doNode || addNode) ? 0 : 1;
-    build.blasBuildInfos.d[instanceID].clusterReferencesStride = 8;
-  }
+  #if TARGETS_RAY_TRACING
+    build.instanceBuildInfos.d[instanceID].clusterReferencesCount = 0;
+    build.instanceBuildInfos.d[instanceID].blasBuildIndex         = BLAS_BUILD_INDEX_LOWDETAIL;
   #endif
+  }
 }

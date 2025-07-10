@@ -189,7 +189,8 @@ const StreamingResident::Group* StreamingResident::initClas(Resources&          
                                                             const StreamingConfig&       config,
                                                             shaderio::StreamingResident& shaderData,
                                                             uint32_t&                    loGroupsCount,
-                                                            uint32_t&                    loClustersCount)
+                                                            uint32_t&                    loClustersCount,
+                                                            uint32_t&                    loMaxGroupClustersCount)
 {
   m_maxClasBytes = config.maxClasMegaBytes * 1024 * 1024;
 
@@ -223,8 +224,9 @@ const StreamingResident::Group* StreamingResident::initClas(Resources&          
 
   shaderData = m_shaderData;
 
-  loGroupsCount   = m_lowDetailGroupsCount;
-  loClustersCount = m_lowDetailClustersCount;
+  loGroupsCount           = m_lowDetailGroupsCount;
+  loClustersCount         = m_lowDetailClustersCount;
+  loMaxGroupClustersCount = m_lowDetailMaxGroupClusters;
 
   return m_groups.data();
 }
@@ -285,8 +287,9 @@ void StreamingResident::uploadInitialState(Resources::BatchedUploader& uploader,
 {
   // all groups and clusters added so far are part of the persistent low detail state
 
-  m_lowDetailGroupsCount   = m_activeGroupsCount;
-  m_lowDetailClustersCount = m_activeClustersCount;
+  m_lowDetailGroupsCount      = m_activeGroupsCount;
+  m_lowDetailClustersCount    = m_activeClustersCount;
+  m_lowDetailMaxGroupClusters = 0;
 
   // for debugging (see STREAMING_DEBUG_ADDRESSES) set this to m_maxGroups, otherwise m_loGroupsCount
   uint32_t updatedActiveGroups = m_lowDetailGroupsCount;
@@ -315,6 +318,7 @@ void StreamingResident::uploadInitialState(Resources::BatchedUploader& uploader,
     {
       shaderClusters[group.clusterResidentID + c] = group.deviceAddress + sizeof(shaderio::Group) + sizeof(shaderio::Cluster) * c;
     }
+    m_lowDetailMaxGroupClusters = std::max(m_lowDetailMaxGroupClusters, group.clusterCount);
   }
 #if STREAMING_DEBUG_ADDRESSES
   // for debugging purposes pre-fill with invalid

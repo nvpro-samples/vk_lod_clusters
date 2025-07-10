@@ -345,7 +345,7 @@ void LodClusters::onUIRender()
   if(ImGui::CollapsingHeader("Traversal"))
   {
     PE::begin("##TraversalSpecifics");
-    PE::InputIntClamped("Max rendered clusters (bits)", (int*)&m_rendererConfig.numRenderClusterBits, 16, 25, 1, 1,
+    PE::InputIntClamped("Max render clusters (bits)", (int*)&m_rendererConfig.numRenderClusterBits, 16, 25, 1, 1,
                         ImGuiInputTextFlags_EnterReturnsTrue);
     PE::InputIntClamped("Max traversal tasks (bits)", (int*)&m_rendererConfig.numTraversalTaskBits, 16, 25, 1, 1,
                         ImGuiInputTextFlags_EnterReturnsTrue);
@@ -372,11 +372,18 @@ void LodClusters::onUIRender()
                          formatMetric(readback.numTraversalInfos).c_str());
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
-      ImGui::Text("Rendered clusters");
+      ImGui::Text("Render list clusters");
       ImGui::TableNextColumn();
       ImGui::TextColored(pct.pctRender > 100 ? warn_color : text_color, "%d (%d%%)", readback.numRenderClusters, pct.pctRender);
       ImGui::TableNextColumn();
       ImGui::TextColored(pct.pctRender > 100 ? warn_color : text_color, "%s", formatMetric(readback.numRenderClusters).c_str());
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::Text("Rendered clusters");
+      ImGui::TableNextColumn();
+      ImGui::Text("%d", readback.numRenderedClusters);
+      ImGui::TableNextColumn();
+      ImGui::Text("%s", formatMetric(readback.numRenderedClusters).c_str());
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
       ImGui::Text("Rendered triangles");
@@ -398,6 +405,13 @@ void LodClusters::onUIRender()
       }
       ImGui::TableNextColumn();
       ImGui::Text("%s", "");
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::Text("Built BLAS");
+      ImGui::TableNextColumn();
+      ImGui::Text("%d", readback.numBlasBuilds);
+      ImGui::TableNextColumn();
+      ImGui::Text("%s", formatMetric(readback.numBlasBuilds).c_str());
       ImGui::EndTable();
     }
   }
@@ -809,35 +823,55 @@ void LodClusters::onUIRender()
     ImGui::Checkbox("hex", &debugHex);
     ImGui::SameLine();
     ImGui::Checkbox("all", &debugAll);
-    ImGui::SameLine();
-    bool     doPrint = ImGui::Button("print");
-    uint32_t count   = debugAll ? 64 : 32;
-    if(debugFloat)
+    //ImGui::SameLine();
+    //bool     doPrint = ImGui::Button("print");
+    uint32_t count = debugAll ? 64 : 32;
+
+    if(ImGui::BeginTable("##Debug", 4, ImGuiTableFlags_BordersOuter))
     {
+      ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 32);
+      ImGui::TableSetupColumn("A", ImGuiTableColumnFlags_WidthStretch);
+      ImGui::TableSetupColumn("B", ImGuiTableColumnFlags_WidthStretch);
+      ImGui::TableSetupColumn("C", ImGuiTableColumnFlags_WidthStretch);
+      ImGui::TableHeadersRow();
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
       for(uint32_t i = 0; i < count; i++)
       {
-        ImGui::Text("%2d: %f %f %f", i, *(float*)&readback.debugA[i], *(float*)&readback.debugB[i], *(float*)&readback.debugC[i]);
-        if(doPrint)
-          LOGI("%2d; %f; %f; %f;\n", i, *(float*)&readback.debugA[i], *(float*)&readback.debugB[i], *(float*)&readback.debugC[i]);
+        ImGui::Text("%2d", i);
+        if(debugFloat)
+        {
+          ImGui::TableNextColumn();
+          ImGui::Text("%f", *(float*)&readback.debugA[i]);
+          ImGui::TableNextColumn();
+          ImGui::Text("%f", *(float*)&readback.debugB[i]);
+          ImGui::TableNextColumn();
+          ImGui::Text("%f", *(float*)&readback.debugC[i]);
+        }
+        else if(debugHex)
+        {
+          ImGui::TableNextColumn();
+          ImGui::Text("%X", readback.debugA[i]);
+          ImGui::TableNextColumn();
+          ImGui::Text("%X", readback.debugB[i]);
+          ImGui::TableNextColumn();
+          ImGui::Text("%X", readback.debugC[i]);
+        }
+        else
+        {
+          ImGui::TableNextColumn();
+          ImGui::Text("%d", readback.debugA[i]);
+          ImGui::TableNextColumn();
+          ImGui::Text("%d", readback.debugB[i]);
+          ImGui::TableNextColumn();
+          ImGui::Text("%d", readback.debugC[i]);
+        }
+
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
       }
-    }
-    else if(debugHex)
-    {
-      for(uint32_t i = 0; i < count; i++)
-      {
-        ImGui::Text("%2d: %8X %8X %8X", i, readback.debugA[i], readback.debugB[i], readback.debugC[i]);
-        if(doPrint)
-          LOGI("%2d; %8X; %8X; %8X;\n", i, readback.debugA[i], readback.debugB[i], readback.debugC[i]);
-      }
-    }
-    else
-    {
-      for(uint32_t i = 0; i < count; i++)
-      {
-        ImGui::Text("%2d: %10u %10u %10u", i, readback.debugA[i], readback.debugB[i], readback.debugC[i]);
-        if(doPrint)
-          LOGI("%2d; %10u; %10u; %10u;\n", i, readback.debugA[i], readback.debugB[i], readback.debugC[i]);
-      }
+
+      ImGui::EndTable();
     }
   }
   ImGui::End();

@@ -253,6 +253,8 @@ private:
   nvvk::Buffer m_clasLowDetailBuffer;
   size_t       m_clasLowDetailSize;
 
+  nvvk::Buffer m_clasLowDetailBlasBuffer;
+
   // max size of a clas can have
   size_t m_clasSingleMaxSize;
   // max storage size of all newly clas built in a frame

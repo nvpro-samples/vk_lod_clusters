@@ -1,4 +1,8 @@
 # Changelog for vk_lod_clusters
+* 2025-7-10:
+  * Reduce number of BLAS builds by introducing a per-geometry `lowDetailBlas` that is built once at scene preparation time.
+    A new compute shader step was added [shaders/tlas_instances_blas.comp.glsl](/shaders/tlas_instances_blas.comp.glsl) and
+    the number of BLAS build operations is now sourced indirectly from the GPU.
 * 2025-7-9:
   * Fix regression of `nvpro_core2` port: culling parameter was not properly hooked up
 * 2025-7-7:

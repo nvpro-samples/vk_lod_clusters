@@ -205,7 +205,8 @@ public:
                         const StreamingConfig&       config,
                         shaderio::StreamingResident& shaderData,
                         uint32_t&                    loGroupsCount,
-                        uint32_t&                    loClustersCount);
+                        uint32_t&                    loClustersCount,
+                        uint32_t&                    loMaxGroupClustersCount);
   void         deinitClas(Resources& res);
   void         deinit(Resources& res);
   void         reset(shaderio::StreamingResident& shaderData);
@@ -279,6 +280,7 @@ private:
 
   uint32_t m_lowDetailGroupsCount;
   uint32_t m_lowDetailClustersCount;
+  uint32_t m_lowDetailMaxGroupClusters;
 
   uint32_t m_activeGroupsCount;
   uint32_t m_activeClustersCount;

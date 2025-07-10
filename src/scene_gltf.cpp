@@ -540,7 +540,18 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
 
   processingInfo.logEnd();
 
-  endProcessingOnly();
+  bool notCompleted = processingInfo.progressGeometriesCompleted != uniqueMeshes.size();
+  if(notCompleted)
+  {
+    LOGW("Error in processing geometries, completed / required mismatch\nTry using `--processingonly 1`\n");
+  }
+
+  endProcessingOnly(notCompleted);
+
+  if(notCompleted)
+  {
+    return false;
+  }
 
   if(data->scenes_count > 0)
   {

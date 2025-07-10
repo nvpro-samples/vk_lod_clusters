@@ -408,18 +408,30 @@ void Scene::saveProcessingOnly(ProcessingInfo& processingInfo, size_t geometryIn
   m_geometryStorages[geometryIndex] = {};
 }
 
-void Scene::endProcessingOnly()
+void Scene::endProcessingOnly(bool hadError)
 {
   if(!m_processingOnlyFile)
     return;
 
-  std::string outFilename = nvutils::utf8FromPath(m_filePath) + ".nvsngeo";
-
-  fwrite(m_processingOnlyGeometryOffsets.data(), m_processingOnlyGeometryOffsets.size() * sizeof(uint64_t), 1, m_processingOnlyFile);
+  if(!hadError)
+  {
+    fwrite(m_processingOnlyGeometryOffsets.data(), m_processingOnlyGeometryOffsets.size() * sizeof(uint64_t), 1, m_processingOnlyFile);
+  }
 
   fclose(m_processingOnlyFile);
 
-  LOGI("Scene::endProcessOnlySave finished to save file %s\n", outFilename.c_str());
+  std::string outFilename = nvutils::utf8FromPath(m_cacheFilePath);
+
+  if(hadError)
+  {
+    std::filesystem::remove(m_cacheFilePath);
+
+    LOGI("Scene::endProcessOnlySave had error, deleted %s\n", outFilename.c_str());
+  }
+  else
+  {
+    LOGI("Scene::endProcessOnlySave finished to save file %s\n", outFilename.c_str());
+  }
 
   exit(0);
 }
