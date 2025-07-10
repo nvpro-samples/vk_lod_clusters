@@ -554,6 +554,17 @@ void Scene::buildGeometryClusters(const ProcessingInfo& processingInfo, Geometry
     std::exit(-1);
   }
 
+  // vectors are resized at end of lod processing,
+  // but might still occupy a lot of memory
+  geometry.lodMesh.triangleVertices.shrink_to_fit();
+  geometry.lodMesh.clusterTriangleRanges.shrink_to_fit();
+  geometry.lodMesh.clusterGeneratingGroups.shrink_to_fit();
+  geometry.lodMesh.clusterBoundingSpheres.shrink_to_fit();
+  geometry.lodMesh.groupQuadricErrors.shrink_to_fit();
+  geometry.lodMesh.groupClusterRanges.shrink_to_fit();
+  geometry.lodMesh.lodLevelGroupRanges.shrink_to_fit();
+
+
   nvclusterlod_HierarchyInput hierarchyInput = {};
   hierarchyInput.clusterCount                = uint32_t(geometry.lodMesh.clusterBoundingSpheres.size());
   hierarchyInput.clusterBoundingSpheres      = geometry.lodMesh.clusterBoundingSpheres.data();
@@ -577,6 +588,12 @@ void Scene::buildGeometryClusters(const ProcessingInfo& processingInfo, Geometry
     LOGE("nvclusterlod::generateLodHierarchy failed: %d\n", result);
     std::exit(-1);
   }
+
+  // vectors are resized at end of lod processing,
+  // but might still occupy a lot of memory
+  geometry.lodHierarchy.nodes.shrink_to_fit();
+  geometry.lodHierarchy.groupCumulativeBoundingSpheres.shrink_to_fit();
+  geometry.lodHierarchy.groupCumulativeQuadricError.shrink_to_fit();
 
   // build localized index buffers
 
@@ -864,13 +881,9 @@ void Scene::computeHistograms()
 
 void Scene::buildGeometryClusterStrips(ProcessingInfo& processingInfo, GeometryStorage& geometry)
 {
-  std::vector<std::vector<uint32_t>> threadIndices(processingInfo.numInnerThreads);
-
-  uint32_t numMaxTriangles = m_config.clusterTriangles;
-  for(uint32_t t = 0; t < processingInfo.numInnerThreads; t++)
-  {
-    threadIndices[t].resize(numMaxTriangles * 3 + numMaxTriangles * 3 + meshopt_stripifyBound(numMaxTriangles * 3));
-  }
+  uint32_t numMaxTriangles  = m_config.clusterTriangles;
+  uint32_t numThreadIndices = numMaxTriangles * 3 + numMaxTriangles * 3 + meshopt_stripifyBound(numMaxTriangles * 3);
+  std::vector<uint32_t> threadIndices(processingInfo.numInnerThreads * numThreadIndices);
 
   std::atomic_uint32_t numStrips = 0;
 
@@ -882,7 +895,7 @@ void Scene::buildGeometryClusterStrips(ProcessingInfo& processingInfo, GeometryS
         nvcluster_Range triangleRange = geometry.lodMesh.clusterTriangleRanges[idx];
         nvcluster_Range vertexRange   = geometry.clusterVertexRanges[idx];
 
-        uint32_t* meshletIndices      = threadIndices[threadInnerIdx].data();
+        uint32_t* meshletIndices      = &threadIndices[threadInnerIdx * numThreadIndices];
         uint32_t* meshletOptim        = meshletIndices + triangleRange.count * 3;
         uint32_t* meshletStripIndices = meshletOptim + triangleRange.count * 3;
 
@@ -927,6 +940,7 @@ void Scene::buildGeometryClusterVertices(const ProcessingInfo& processingInfo, G
   std::vector<glm::vec4> oldVerticesData = std::move(geometry.vertices);
 
   geometry.vertices.resize(geometry.localVertices.size());
+  geometry.vertices.shrink_to_fit();
 
   const glm::vec4* oldVertices          = oldVerticesData.data();
   glm::vec4*       newVertices          = geometry.vertices.data();
