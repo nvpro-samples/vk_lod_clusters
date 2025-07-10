@@ -22,10 +22,11 @@
   Shader Description
   ==================
   
-  This compute shader inserts the CLAS clusters that should be rendered
-  into the cluster references list for each instance's BLAS.
+  This compute shader assigns the blasReference address to each
+  tlas instance description prior updating the tlas and after
+  the per-frame blas were built.
 
-  A single thread represents one CLAS
+  A single thread represents one instance
 */
 
 #version 460
@@ -112,7 +113,10 @@ void main()
     if (buildIndex != BLAS_BUILD_INDEX_LOWDETAIL)
     {
       build.tlasInstances.d[instanceID].blasReference = build.blasBuildAddresses.d[buildIndex];
+    #if 1
+      // stats
       atomicAdd(readback.blasActualSizes, uint64_t(build.blasBuildSizes.d[buildIndex]));
+    #endif
     }
   }
   
