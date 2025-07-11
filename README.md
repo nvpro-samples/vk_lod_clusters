@@ -350,8 +350,7 @@ You can use the commandline to change some defaults:
 * The `ClusterID` can only be accessed in shaders using  `gl_ClusterIDNV` after enabling `VkRayTracingPipelineClusterAccelerationStructureCreateInfoNV::allowClusterAccelerationStructure` for that pipeline.
   We use `GL_EXT_spirv_intrinsics` rather than dedicated GLSL extension support that may come at a later time.
 * Few error checks are performed on out of memory situations, which can happen on higher _"render copies"_ values, or the complexity of the loaded scene
-* If the cluster library generates clusters > 256 vertices, scene loading will fail. This should be addressed in future versions.
-* The number of threads used in the persistent kernel is basd on a crude heuristic for now and was not evaluated to be the optimal amount.
+* The number of threads used in the persistent kernel is based on a crude heuristic for now and was not evaluated to be the optimal amount.
 
 ## Future Improvements
 
@@ -394,14 +393,14 @@ We prepared two more scenes to play with. They are based on models from [https:/
 - [threedscans_animals](http://developer.download.nvidia.com/ProGraphics/nvpro-samples/threedscans_animals.zip)
   - 7.9 M Triangles
   - ~ 1.4 GB preloaded memory
-  - 290 MB zip
+  - 128 MB zip 2025/7/11 (original was 290 MB zip, slow to load)
 - [threedscans_statues](http://developer.download.nvidia.com/ProGraphics/nvpro-samples/threedscans_statues.zip)
   - 6.9 M Triangles
   - ~ 1.3 GB preloaded memory
-  - 280 MB zip
+  - 116 MB zip 2025/7/11 (original was 280 MB zip, slow to load)
 
-These models can take minutes to load, due to the processing into the cluster lod system, even on systems with many CPU cores.
-We recommend making use of _"File > Save Cache"_ menu entry to store the results of the initial processing next to the original files.
+On a "AMD Ryzen 9 7950X 16-Core Processor" processing time for `threedscans_animals` took around 11 seconds (5 unique geometries). That scene has few geometries and many triangles per geometry. Due to the few geometries the heuristic chose "inner" parallelism within operations for a single geometry at a time. Scenes with many objects will typically use "outer" parallelism over the unique geometries and tend to be processed faster overall.
+We recommend making use of _"File > Save Cache"_ menu entry to store the results of the initial processing next to the original files, or launching with `--autosavecache 1`.
 
 ## Third Party
 

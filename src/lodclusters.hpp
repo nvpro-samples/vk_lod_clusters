@@ -72,7 +72,7 @@ public:
 
   struct Tweak
   {
-    ClusterConfig clusterConfig = CLUSTER_64T_192V;
+    ClusterConfig clusterConfig = CLUSTER_128T_128V;
 
     RendererType renderer    = RENDERER_RAYTRACE_CLUSTERS_LOD;
     int          supersample = 2;

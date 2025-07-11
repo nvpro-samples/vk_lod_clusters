@@ -688,6 +688,13 @@ void LodClusters::onUIRender()
       ImGui::Text("%s", formatMetric(m_scene->m_instances.size()).c_str());
       ImGui::TableNextColumn();
       ImGui::Text("%s", formatMetric(m_scene->m_originalInstanceCount).c_str());
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::Text("Geometries");
+      ImGui::TableNextColumn();
+      ImGui::Text("%s", formatMetric(m_scene->getActiveGeometryCount()).c_str());
+      ImGui::TableNextColumn();
+      ImGui::Text("%s", formatMetric(m_scene->m_originalGeometryCount).c_str());
       ImGui::EndTable();
     }
   }
