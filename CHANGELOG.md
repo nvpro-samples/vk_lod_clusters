@@ -1,4 +1,6 @@
 # Changelog for vk_lod_clusters
+* 2025-7-14:
+  * Improve streaming request and unload logic. The logic was moved after ensuring a positive node traversal decision. Otherwise too many false positives were generated.
 * 2025-7-11:
   * The downloadable extra scenes `threedscans_animals` and `threedscans_statues` were updated. By accident they were stored with independent triangles which increased storage and processing time unnecessarily.
   * Change default cluster config to 128 triangles 128 vertices (more common).

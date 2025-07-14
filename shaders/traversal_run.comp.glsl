@@ -250,66 +250,15 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   #endif
     // prepare to enqueue this child node later, if metric evaluates properly
     traversalInfo.packedNode = childNode.packed;
-    
-  #if USE_STREAMING
-    // when streaming we might need to bail out here, if the group isn't resident
-    bool isGroup    = PACKED_GET(traversalInfo.packedNode, Node_packed_isGroup) != 0;
-    uint groupIndex = PACKED_GET(traversalInfo.packedNode, Node_packed_groupIndex);
-    
-    // streamingGroupAddresses[groupIndex] encodes two things:
-    //
-    //   if the address is <  STREAMING_INVALID_ADDRESS_START:
-    //      then it's valid and the group is resident and we can dereference it.
-    //   if the address is >= STREAMING_INVALID_ADDRESS_START:
-    //      then it then the group is not resident and the lower bits encode the frame 
-    //      index when the group was requested last.
-    if (isValid && isGroup)
-    {
-      // This address read is cached, which is fine as during traversal we only care if an address was invalid and
-      // traversal alone cannot change the residency.
-      // Even if we manipulate it later via the atomicMax, it still remains "invalid" given the number will remain higher.
-      uint64_t groupAddress = geometry.streamingGroupAddresses.d[groupIndex];
-      
-      if (groupAddress >= STREAMING_INVALID_ADDRESS_START) {
-        // not streamed in yet, cannot process this group.
-        isValid = false;
-        
-        // This operation is uncached, since we use it to test if a request was made within this frame to the same address already.
-        // requestFrameIndex is always >= STREAMING_INVALID_ADDRESS_START
-        uint64_t lastRequestFrameIndex = atomicMax(geometry.streamingGroupAddresses.d[groupIndex], streaming.request.frameIndex);
-        
-        // we haven't made the request this frame, so trigger it
-        bool triggerRequest = lastRequestFrameIndex != streaming.request.frameIndex;
-        
-        uvec4 voteRequested  = subgroupBallot(triggerRequest);
-        uint  countRequested = subgroupBallotBitCount(voteRequested);
-        uint offsetRequested = 0;
-        if (subgroupElect()) {
-          offsetRequested = atomicAdd(streamingRW.request.loadCounter, countRequested);
-        }
-        offsetRequested = subgroupBroadcastFirst(offsetRequested);
-        offsetRequested += subgroupBallotExclusiveBitCount(voteRequested);
-        
-        if (triggerRequest && offsetRequested <= streaming.request.maxLoads) {
-          // while streaming data is based on geometry 
-          streaming.request.loadGeometryGroups.d[offsetRequested] = uvec2(geometryID, groupIndex);
-        }
-      }
-      else {
-        Group group = Group_in(groupAddress).d;
-        // reset streaming age for everything that is accessed
-        streaming.resident.groups.d[group.residentID].age = 0;
-      }
-    }
-  #endif
   }
   else {
     uint clusterIndex = taskSubID;
     uint groupIndex   = PACKED_GET(traversalInfo.packedNode, Node_packed_groupIndex);
   #if USE_STREAMING
-    // The branch within the node logic a few lines above ensured that this pointer is valid
+    // The later `if (traverseNode)` branch ensured that this pointer is valid
     // and we never traverse to a group that isn't resident.
     Group group = Group_in(geometry.streamingGroupAddresses.d[groupIndex]).d;
+    streaming.resident.groups.d[group.residentID].age = 0;
   #else
     // can directly access the group
     Group group = geometry.preloadedGroups.d[groupIndex];
@@ -364,6 +313,56 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   bool traverse      = traverseChild(mat4x3(build.traversalViewMatrix * worldMatrix), uniformScale, traversalMetric, errorScale);
   bool traverseNode  = isValid && isNode && traverse;    // nodes test if we can descend
   bool renderCluster = isValid && !isNode && (!traverse || forceCluster);  // clusters test opposite, if we cannot descend further
+  
+#if USE_STREAMING
+  if (traverseNode)
+  {
+    // when streaming we might need to bail out here, if the child group isn't resident
+    bool isGroup    = PACKED_GET(traversalInfo.packedNode, Node_packed_isGroup) != 0;
+    uint groupIndex = PACKED_GET(traversalInfo.packedNode, Node_packed_groupIndex);
+    
+    // streamingGroupAddresses[groupIndex] encodes two things:
+    //
+    //   if the address is <  STREAMING_INVALID_ADDRESS_START:
+    //      then it's valid and the group is resident and we can dereference it.
+    //   if the address is >= STREAMING_INVALID_ADDRESS_START:
+    //      then it then the group is not resident and the lower bits encode the frame 
+    //      index when the group was requested last.
+    if (isGroup)
+    {
+      // This address read is cached, which is fine as during traversal we only care if an address was invalid and
+      // traversal alone cannot change the residency.
+      // Even if we manipulate it later via the atomicMax, it still remains "invalid" given the number will remain higher.
+      uint64_t groupAddress = geometry.streamingGroupAddresses.d[groupIndex];
+      
+      if (groupAddress >= STREAMING_INVALID_ADDRESS_START) {
+        // not streamed in yet, cannot process this group.
+        traverseNode = false;
+        
+        // This operation is uncached, since we use it to test if a request was made within this frame to the same address already.
+        // requestFrameIndex is always >= STREAMING_INVALID_ADDRESS_START
+        uint64_t lastRequestFrameIndex = atomicMax(geometry.streamingGroupAddresses.d[groupIndex], streaming.request.frameIndex);
+        
+        // we haven't made the request this frame, so trigger it
+        bool triggerRequest = lastRequestFrameIndex != streaming.request.frameIndex;
+        
+        uvec4 voteRequested  = subgroupBallot(triggerRequest);
+        uint  countRequested = subgroupBallotBitCount(voteRequested);
+        uint offsetRequested = 0;
+        if (subgroupElect()) {
+          offsetRequested = atomicAdd(streamingRW.request.loadCounter, countRequested);
+        }
+        offsetRequested = subgroupBroadcastFirst(offsetRequested);
+        offsetRequested += subgroupBallotExclusiveBitCount(voteRequested);
+        
+        if (triggerRequest && offsetRequested <= streaming.request.maxLoads) {
+          // while streaming data is based on geometry 
+          streaming.request.loadGeometryGroups.d[offsetRequested] = uvec2(geometryID, groupIndex);
+        }
+      }
+    }
+  }
+#endif
   
   // nodes will enqueue their children again (producer)
   // groups will write out the clusters for rendering
