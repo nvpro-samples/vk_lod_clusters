@@ -251,6 +251,8 @@ void computeDefaultBasis(const vec3 z, out vec3 x, out vec3 y)
 #endif
 float ambientOcclusion(vec3 wPos, vec3 wNormal, uint32_t sampleCount, float radius)
 {
+  if (sampleCount == 0) return 1.0f;
+
   uint32_t seed = wangHash(gl_LaunchIDEXT.x) ^ wangHash(gl_LaunchIDEXT.y);
   vec3     z    = wNormal;
   vec3     x, y;

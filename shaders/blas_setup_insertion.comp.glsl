@@ -106,7 +106,7 @@ void main()
       // reset count for insertion pass
       build.blasBuildInfos.d[buildOffset].clusterReferencesCount  = 0;
       build.blasBuildInfos.d[buildOffset].clusterReferencesStride = 8;
-      build.blasBuildInfos.d[buildOffset].clusterReferences       = uint64_t(buildRW.blasClusterAddresses) + uint64_t(referencesOffset * 8);
+      build.blasBuildInfos.d[buildOffset].clusterReferences       = uint64_t(build.blasClusterAddresses) + uint64_t(referencesOffset * 8);
       
       build.instanceBuildInfos.d[instanceID].blasBuildIndex = buildOffset;
     }

@@ -136,8 +136,6 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     m_sceneBuildShaderio.renderClusterInfos =
         mem.append(sizeof(shaderio::ClusterInfo) * m_sceneBuildShaderio.maxRenderClusters, 8);
 
-    m_sceneBuildShaderio.instanceStates = mem.append(sizeof(uint32_t) * m_renderInstances.size(), 4);
-
     if(config.useSorting)
     {
       m_sceneBuildShaderio.instanceSortKeys   = mem.append(sizeof(uint32_t) * m_renderInstances.size(), 4);
@@ -148,7 +146,6 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     m_resourceReservedUsage.operationsMemBytes += m_sceneDataBuffer.bufferSize;
 
     m_sceneBuildShaderio.renderClusterInfos += m_sceneDataBuffer.address;
-    m_sceneBuildShaderio.instanceStates += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.instanceSortKeys += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.instanceSortValues += m_sceneDataBuffer.address;
 

@@ -216,7 +216,7 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
 
     memset(&m_sceneBuildShaderio, 0, sizeof(m_sceneBuildShaderio));
     m_sceneBuildShaderio.numRenderInstances = uint32_t(m_renderInstances.size());
-    m_sceneBuildShaderio.maxRenderClusters  = uint32_t(1u << config.numRenderClusterBits);
+    m_sceneBuildShaderio.maxRenderClusters  = m_maxRenderClusters;
     m_sceneBuildShaderio.maxTraversalInfos  = uint32_t(1u << config.numTraversalTaskBits);
     m_sceneBuildShaderio.tlasInstances      = m_tlasInstancesBuffer.address;
 
@@ -665,8 +665,8 @@ bool RendererRayTraceClustersLod::initRayTracingBlas(Resources& res, RenderScene
   // Just using m_hiPerGeometryClusters here is problematic, as the intermediate state
   // of a continuous lod can yield higher numbers (especially when streaming may temporarily cause overlapping of different levels).
   // Therefore, we use the highest sum of all clusters across all lod levels.
-  m_blasInput.maxClusterCountPerAccelerationStructure = rscene.scene->m_maxPerGeometryClusters;
-  m_blasInput.maxTotalClusterCount                    = m_maxRenderClusters;
+  m_blasInput.maxClusterCountPerAccelerationStructure = std::min(rscene.scene->m_maxPerGeometryClusters, m_maxRenderClusters);
+  m_blasInput.maxTotalClusterCount = m_maxRenderClusters;
 
   VkClusterAccelerationStructureInputInfoNV inputs = {VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV};
   inputs.maxAccelerationStructureCount             = numInstances;

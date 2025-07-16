@@ -110,7 +110,10 @@ void main()
     InstanceBuildInfo buildInfo = build.instanceBuildInfos.d[instanceID];
     uint buildIndex = buildInfo.blasBuildIndex;
     
-    if (buildIndex != BLAS_BUILD_INDEX_LOWDETAIL)
+    // By default tlasInstances are set to low detail blas,
+    // override when applicable.
+    
+    if (buildInfo.clusterReferencesCount > 0)
     {
       build.tlasInstances.d[instanceID].blasReference = build.blasBuildAddresses.d[buildIndex];
     #if 1

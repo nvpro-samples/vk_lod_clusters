@@ -345,9 +345,9 @@ void LodClusters::onUIRender()
   if(ImGui::CollapsingHeader("Traversal"))
   {
     PE::begin("##TraversalSpecifics");
-    PE::InputIntClamped("Max render clusters (bits)", (int*)&m_rendererConfig.numRenderClusterBits, 16, 25, 1, 1,
+    PE::InputIntClamped("Max render clusters (bits)", (int*)&m_rendererConfig.numRenderClusterBits, 8, 25, 1, 1,
                         ImGuiInputTextFlags_EnterReturnsTrue);
-    PE::InputIntClamped("Max traversal tasks (bits)", (int*)&m_rendererConfig.numTraversalTaskBits, 16, 25, 1, 1,
+    PE::InputIntClamped("Max traversal tasks (bits)", (int*)&m_rendererConfig.numTraversalTaskBits, 8, 25, 1, 1,
                         ImGuiInputTextFlags_EnterReturnsTrue);
     PE::Checkbox("Instance Sorting", &m_rendererConfig.useSorting);
     PE::Checkbox("Culling (Occlusion & Frustum)", &m_rendererConfig.useCulling);

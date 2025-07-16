@@ -1,4 +1,6 @@
 # Changelog for vk_lod_clusters
+* 2025-7-16:
+  * Bugfix crash for ray tracing when not all tlas instances had a valid blas. This could have happened when we ran out of renderable clusters. The fix ensures the use of the low detail blas.
 * 2025-7-14:
   * Improve streaming request and unload logic. The logic was moved after ensuring a positive node traversal decision. Otherwise too many false positives were generated.
 * 2025-7-11:

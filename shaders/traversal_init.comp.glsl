@@ -167,11 +167,11 @@ void main()
     {
     
     #if TARGETS_RAY_TRACING
-      // we don't need to add the cluster because we always add it
+      // we don't need to add a cluster because we always add it
       // implictly through the use of the low detail BLAS.
-      build.tlasInstances.d[instanceID].blasReference = geometry.lowDetailBlasAddress;
       
       #if 1
+        // stats
         atomicAdd(readback.numRenderedTriangles, geometry.lowDetailTriangles);
         atomicAdd(readback.numRenderedClusters, 1);
       #endif
@@ -229,12 +229,12 @@ void main()
     build.traversalNodeInfos.d[offsetNodes] = packTraversalInfo(traversalInfo);
   }
 
-
-  if (instanceID == instanceLoad) {
+#if TARGETS_RAY_TRACING
+  if (isValid) {
     build.instanceStates.d[instanceID] = status;
-  #if TARGETS_RAY_TRACING
     build.instanceBuildInfos.d[instanceID].clusterReferencesCount = 0;
     build.instanceBuildInfos.d[instanceID].blasBuildIndex         = BLAS_BUILD_INDEX_LOWDETAIL;
-  #endif
+    build.tlasInstances.d[instanceID].blasReference               = geometry.lowDetailBlasAddress;
   }
+#endif
 }
