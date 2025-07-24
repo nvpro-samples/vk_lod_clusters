@@ -159,7 +159,9 @@ In this [sample scene](https://grabcad.com/library/lego-ideas-tree-house-21318-1
 
 ![rendering of a scene made of lego bricks](blas_sharing_scene.jpg)
 
-Looking at the various statistics we can see that the overall frame time is greatly reduced from `5.9` to `1.6` milliseconds due to the very high reduction of BLAS builds. This also lowers the BLAS memory from `120 MB` to `7 MB`. Last but not least the required traversal tasks as well as render list usage 
+Looking at the various statistics we can see that the overall frame time is greatly reduced from `5.9` to `1.6` milliseconds due to the very high reduction of BLAS builds. This also lowers the BLAS memory from `120 MB` to `7 MB`. Last but not least the required traversal tasks as well as render list usage is reduced by a factor of ten or more.
+
+While in this particular scene the render time is also a little bit less, because of the improved cache hits on a smaller set of BLASes, other scenes can see an increase in trace time. A small increase is more commonly expected, as the shared BLAS will cause objects afar to use more detail than necessary. This can be mitigated by introducing more than just one shared BLAS for different LoD levels.
 
 ![statistics of the rendered sample scene](blas_sharing_results.png)
 
