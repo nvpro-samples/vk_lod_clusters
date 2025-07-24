@@ -150,10 +150,12 @@ void main()
     {
       // seed all available for first frame
       uint clasAllocatedMaxSizedLeft = streaming.clasAllocator.sectorMaxAllocationSized * streaming.clasAllocator.sectorCount;
-      streaming.clasAllocator.stats.d.allocatedSize = 0;
-      streaming.clasAllocator.stats.d.wastedSize    = streaming.clasAllocator.baseWastedSize << streaming.clasAllocator.granularityByteShift;
       streaming.resident.clasAllocatedMaxSizedLeft.d[0] = clasAllocatedMaxSizedLeft;
       streamingRW.request.clasAllocatedMaxSizedLeft     = clasAllocatedMaxSizedLeft;
+    #if USE_MEMORY_STATS
+      streaming.clasAllocator.stats.d.allocatedSize = 0;
+      streaming.clasAllocator.stats.d.wastedSize    = streaming.clasAllocator.baseWastedSize << streaming.clasAllocator.granularityByteShift;
+    #endif
     }
     else {
       // persistent allocator for clas memory management
@@ -168,8 +170,9 @@ void main()
         streamingRW.request.clasAllocatedMaxSizedLeft = streaming.resident.clasAllocatedMaxSizedLeft.d[0];
       }
     }
-    
+  #if USE_MEMORY_STATS
     streamingRW.request.clasAllocatedUsedSize   = streaming.clasAllocator.stats.d.allocatedSize;
     streamingRW.request.clasAllocatedWastedSize = streaming.clasAllocator.stats.d.wastedSize;
+  #endif
   }
 }

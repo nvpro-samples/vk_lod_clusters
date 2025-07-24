@@ -111,7 +111,7 @@ void main()
   else if (push.setup == BUILD_SETUP_DRAW)
   {
     // during traversal_run we might overshoot visibleClusterCounter  
-    uint renderClusterCounter  = buildRW.renderClusterCounter;
+    uint renderClusterCounter = buildRW.renderClusterCounter;
     
     // set drawindirect for actual rendered clusters
     uint numRenderedClusters = min(renderClusterCounter, build.maxRenderClusters);
@@ -119,17 +119,20 @@ void main()
     buildRW.indirectDrawClusters.count = numRenderedClusters;
     buildRW.indirectDrawClusters.first = 0;
 
-    // keep originals for statistics 
-    readback.numRenderedClusters  = numRenderedClusters;
+    // keep originals for array size warnings 
     readback.numRenderClusters    = renderClusterCounter;
     readback.numTraversalInfos    = buildRW.traversalInfoWriteCounter;
+
+  #if USE_RENDER_STATS
+    readback.numRenderedClusters  = numRenderedClusters;
+  #endif
   }
 #endif
 #if TARGETS_RAY_TRACING
   else if (push.setup == BUILD_SETUP_BLAS_INSERTION)
   {
-      // during traversal_run we might overshoot visibleClusterCounter  
-    uint renderClusterCounter  = buildRW.renderClusterCounter;
+    // during traversal_run we might overshoot visibleClusterCounter  
+    uint renderClusterCounter = buildRW.renderClusterCounter;
     
     // set drawindirect for actual rendered clusters
     uint numRenderedClusters = min(renderClusterCounter, build.maxRenderClusters);
@@ -139,10 +142,13 @@ void main()
     buildRW.indirectDispatchBlasInsertion.gridY = 1;
     buildRW.indirectDispatchBlasInsertion.gridZ = 1;
 
-    // keep originals for statistics 
-    readback.numRenderedClusters  += numRenderedClusters; // + because we sometimes use atomicAdd on this directly
+    // keep originals for array size warnings 
     readback.numRenderClusters    = renderClusterCounter;
     readback.numTraversalInfos    = buildRW.traversalInfoWriteCounter;
+
+  #if USE_STATS
+    readback.numRenderedClusters  += numRenderedClusters; // + because we sometimes use atomicAdd on this directly
+  #endif
   }
 #endif
 }

@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -22,12 +22,18 @@
   Shader Description
   ==================
   
+  Only for ray tracing and USE_BLAS_SHARING
+  
   This compute shader initializes the traversal queue with the 
   root nodes of the lod hierarchy of rendered instances.
+  
+  Not all instances will require this, as some instances
+  may use the BLAS of another instance.
+  
+  Compared to the regular `traversal_init.comp.glsl`, some work
+  was already done in `instance_classify_lod.comp.glsl`
 
   A thread represents one instance.
-
-  NOT compatible with USE_BLAS_SHARING, see `traversal_init_blas_sharing.comp.glsl`
 */
 
 #version 460
@@ -114,93 +120,55 @@ void main()
   uint geometryID = instance.geometryID;
   Geometry geometry = geometries[geometryID];
   
-  uint blasBuildIndex = BLAS_BUILD_INDEX_LOWDETAIL;
+  // by default all instances use the lowest detail blas as fallback
+  uint blasBuildIndex = BLAS_BUILD_INDEX_LOWDETAIL;  
   
-  vec4 clipMin;
-  vec4 clipMax;
-  bool clipValid;
+  // intance lod range
+  // computed in `instance_classify_lod.comp.glsl`
+  InstanceBuildInfo instanceInfo = build.instanceBuildInfos.d[instanceLoad];
+  uint instanceLevelMin          = instanceInfo.lodLevelMin;
+  uint instanceLevelMax          = instanceInfo.lodLevelMax;
   
-  bool inFrustum = intersectFrustum(geometry.bbox.lo, geometry.bbox.hi, instance.worldMatrix, clipMin, clipMax, clipValid);
-  bool isVisible = inFrustum && (!clipValid || (intersectSize(clipMin, clipMax) && intersectHiz(clipMin, clipMax)));
+  // geometry's pick for the shared blas lod level
+  // computed in `geometry_blas_sharing.comp.glsl`
+  uint shareLevelMin   = build.geometryBuildInfos.d[geometryID].shareLevelMin;
+  uint shareLevelMax   = build.geometryBuildInfos.d[geometryID].shareLevelMax;
+  uint shareInstanceID = build.geometryBuildInfos.d[geometryID].shareInstanceID;
   
-  uint visibilityState = isVisible ? INSTANCE_VISIBLE_BIT : 0;
+  // When we need to build a BLAS for this instance, we need to add it's root node
+  // to the traversal queue. Building the BLAS however isn't always required,
+  // which the following logic shows.
   
-  bool isRenderable = isValid
-  #if USE_CULLING && TARGETS_RASTERIZATION
-    && isVisible
-  #endif
-    ;
-    
-  bool traverseRootNode = isRenderable;
-
-  if (isRenderable)
+  bool traverseRootNode = false;
+  if (isValid)
   {
-    // We test if we are only using the furthest lod.
-    // If that is true, then we can skip lod traversal completely and
-    // straight enqueue the lowest detail cluster directly.    
-    
-    uint rootNodePacked = geometry.nodes.d[0].packed;
-    
-    uint childOffset        = PACKED_GET(rootNodePacked, Node_packed_nodeChildOffset);
-    uint childCountMinusOne = PACKED_GET(rootNodePacked, Node_packed_nodeChildCountMinusOne);
-    
-    // test if the second to last lod needs to be traversed
-    uint childNodeIndex     = (childCountMinusOne > 1 ? (childCountMinusOne - 1) : 0);
-    Node childNode          = geometry.nodes.d[childOffset + childNodeIndex];
-    TraversalMetric traversalMetric = childNode.traversalMetric;
-  
-    mat4  worldMatrix  = instances[instanceID].worldMatrix;
-    float uniformScale = computeUniformScale(worldMatrix);
-    float errorScale   = 1.0;
-  #if USE_CULLING && TARGETS_RAY_TRACING
-    if (visibilityState == 0) errorScale = build.culledErrorScale;
-  #endif
-  
-    mat4 transform = build.traversalViewMatrix * worldMatrix;
-  
-    // if there is no need to traverse the pen ultimate lod level,
-    // then just insert the last lod level node's cluster directly
-    if (!testForTraversal(mat4x3(transform), uniformScale, traversalMetric, errorScale))
-    {
-    
-    #if TARGETS_RAY_TRACING
-      // we don't need to add a cluster because we always add it
-      // implictly through the use of the low detail BLAS.
-      
-      #if USE_RENDER_STATS
-        atomicAdd(readback.numRenderedTriangles, geometry.lowDetailTriangles);
-        atomicAdd(readback.numRenderedClusters, 1);
-      #endif
-      
-    #elif TARGETS_RASTERIZATION
-      // lowest detail lod is guaranteed to have only one cluster
-      
-      uvec4 voteClusters = subgroupBallot(true); 
-      
-      uint offsetClusters = 0;
-      if (subgroupElect())
-      {
-        offsetClusters = atomicAdd(buildRW.renderClusterCounter, int(subgroupBallotBitCount(voteClusters)));
-      }
-  
-      offsetClusters = subgroupBroadcastFirst(offsetClusters);  
-      offsetClusters += subgroupBallotExclusiveBitCount(voteClusters);
-      
-      if (offsetClusters < build.maxRenderClusters)
-      {
-        ClusterInfo clusterInfo;
-        clusterInfo.instanceID = instanceID;
-        clusterInfo.clusterID  = geometry.lowDetailClusterID;
-        build.renderClusterInfos.d[offsetClusters] = clusterInfo;
-      }
-    #endif
-      
-      // we can skip adding the node for traversal
+    if (instanceLevelMin == uint(instanceInfo.geometryLodLevelMax)) {
+      // no need, lowest detail BLAS is used
       traverseRootNode = false;
     }
-  }
+    else if (shareInstanceID == instanceID) {
+      // one of the instances becomes the one shared by all others
+      
+      // we want to traverse this instance
+      traverseRootNode = true;
 
-  uvec4 voteNodes = subgroupBallot(traverseRootNode);  
+    #if USE_RENDER_STATS
+      build.instanceBuildInfos.d[instanceLoad].instanceUseCount = build.geometryBuildInfos.d[geometryID].shareUseCount + 1;
+    #endif
+    }
+    else if (instanceLevelMin >= shareLevelMax) {
+      // don't add, use shareInstance's blas instead
+      blasBuildIndex = build.geometryBuildInfos.d[geometryID].shareInstanceID | BLAS_BUILD_INDEX_SHARE_BIT;
+      
+      traverseRootNode = false;
+    }
+    else {
+      // we are not sharing anything, build a regular per-instance traversal
+      traverseRootNode = true;
+    }
+  }
+    
+  uvec4 voteNodes = subgroupBallot(traverseRootNode);
   
   uint offsetNodes = 0;
   if (subgroupElect())
@@ -222,12 +190,8 @@ void main()
     build.traversalNodeInfos.d[offsetNodes] = packTraversalInfo(traversalInfo);
   }
 
-#if TARGETS_RAY_TRACING
-  if (isValid) {
-    build.instanceVisibility.d[instanceID]                        = uint8_t(visibilityState);  
+  if (isValid) {  
     build.instanceBuildInfos.d[instanceID].clusterReferencesCount = 0;
     build.instanceBuildInfos.d[instanceID].blasBuildIndex         = blasBuildIndex;
-    build.tlasInstances.d[instanceID].blasReference               = geometry.lowDetailBlasAddress;
   }
-#endif
 }

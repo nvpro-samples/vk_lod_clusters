@@ -318,7 +318,7 @@ void StreamingResident::uploadInitialState(Resources::BatchedUploader& uploader,
     {
       shaderClusters[group.clusterResidentID + c] = group.deviceAddress + sizeof(shaderio::Group) + sizeof(shaderio::Cluster) * c;
     }
-    m_lowDetailMaxGroupClusters = std::max(m_lowDetailMaxGroupClusters, group.clusterCount);
+    m_lowDetailMaxGroupClusters = std::max(m_lowDetailMaxGroupClusters, uint32_t(group.clusterCount));
   }
 #if STREAMING_DEBUG_ADDRESSES
   // for debugging purposes pre-fill with invalid
@@ -602,9 +602,16 @@ void StreamingUpdates::init(Resources& res, const StreamingConfig& config, uint3
   uint32_t loadRequests   = nvutils::align_up(config.maxPerFrameLoadRequests, groupCountAlignment);
   uint32_t unloadRequests = nvutils::align_up(config.maxPerFrameUnloadRequests, groupCountAlignment);
 
+  static_assert(sizeof(shaderio::StreamingPatch) / sizeof(shaderio::StreamingGeometryPatch) == 2);
+
   m_shaderData                        = {};
   m_shaderData.patchGroupsCount       = loadRequests + unloadRequests;
   m_shaderData.patchUnloadGroupsCount = unloadRequests;
+#if STREAMING_GEOMETRY_LOD_LEVEL_TRACKING
+  m_shaderData.patchGeometriesCount = (loadRequests + unloadRequests + 1) / 2;
+#endif
+
+  uint32_t framePatchCount = m_shaderData.patchGroupsCount + m_shaderData.patchGeometriesCount;
 
   m_unloadHandles = {};
   m_unloadHandles.resize(unloadRequests * STREAMING_MAX_ACTIVE_TASKS);
@@ -616,22 +623,26 @@ void StreamingUpdates::init(Resources& res, const StreamingConfig& config, uint3
     sharingQueueFamilies.push_back(res.m_queueStates.transfer.m_familyIndex);
   }
 
-  res.createBufferTyped(m_patchesBuffer, m_shaderData.patchGroupsCount * STREAMING_MAX_ACTIVE_TASKS,
-                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0, 0, sharingQueueFamilies);
+  res.createBufferTyped(m_patchesBuffer, framePatchCount * STREAMING_MAX_ACTIVE_TASKS, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                        VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0, 0, sharingQueueFamilies);
 
 
-  res.createBufferTyped(m_patchesHostBuffer, m_shaderData.patchGroupsCount * STREAMING_MAX_ACTIVE_TASKS,
-                        VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY,
-                        VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
+  res.createBufferTyped(m_patchesHostBuffer, framePatchCount * STREAMING_MAX_ACTIVE_TASKS, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                        VMA_MEMORY_USAGE_CPU_ONLY, VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
 
   m_shaderData.patches = m_patchesBuffer.address;
 
   for(uint32_t c = 0; c < STREAMING_MAX_ACTIVE_TASKS; c++)
   {
     StreamingUpdates::TaskInfo& task = m_taskInfos[c];
-    task.unloadPatches               = m_patchesHostBuffer.data() + m_shaderData.patchGroupsCount * c;
-    task.loadPatches                 = task.unloadPatches + m_shaderData.patchUnloadGroupsCount;
-    task.unloadHandles               = m_unloadHandles.data() + unloadRequests * c;
+    task.unloadPatches               = m_patchesHostBuffer.data() + framePatchCount * c;
+    task.loadPatches                 = task.unloadPatches + unloadRequests;
+#if STREAMING_GEOMETRY_LOD_LEVEL_TRACKING
+    task.geometryPatches = reinterpret_cast<shaderio::StreamingGeometryPatch*>(task.loadPatches + loadRequests);
+#else
+    task.geometryPatches = nullptr;
+#endif
+    task.unloadHandles = m_unloadHandles.data() + unloadRequests * c;
   }
 }
 
@@ -710,6 +721,7 @@ lodclusters::StreamingUpdates::TaskInfo& StreamingUpdates::getNewTask(uint32_t t
   TaskInfo& task                = m_taskInfos[taskIndex];
   task.loadCount                = 0;
   task.unloadCount              = 0;
+  task.geometryPatchCount       = 0;
   task.newClusterCount          = 0;
   task.loadActiveGroupsOffset   = ~0;
   task.loadActiveClustersOffset = ~0;
@@ -727,17 +739,26 @@ size_t StreamingUpdates::cmdUploadTask(VkCommandBuffer cmd, uint32_t taskIndex)
   size_t transferSize = 0;
 
   // copy from host buffer to device
-  VkBufferCopy regions[2];
+  VkBufferCopy regions[3];
   uint32_t     regionCount = 0;
 
-  regions[0].srcOffset = sizeof(shaderio::StreamingPatch) * m_shaderData.patchGroupsCount * taskIndex;
-  regions[0].dstOffset = sizeof(shaderio::StreamingPatch) * m_shaderData.patchGroupsCount * taskIndex;
+  uint32_t framePatchCount = m_shaderData.patchGroupsCount + m_shaderData.patchGeometriesCount;
+
+  regions[0].srcOffset = sizeof(shaderio::StreamingPatch) * framePatchCount * taskIndex;
+  regions[1].srcOffset = sizeof(shaderio::StreamingPatch) * framePatchCount * taskIndex;
+  regions[2].srcOffset = sizeof(shaderio::StreamingPatch) * framePatchCount * taskIndex;
+
+  regions[0].dstOffset = sizeof(shaderio::StreamingPatch) * framePatchCount * taskIndex;
 
   if(task.unloadCount)
   {
-    regions[0].size = sizeof(shaderio::StreamingPatch) * (task.unloadCount);
-    regions[1]      = regions[0];
-    regions[1].dstOffset += regions[0].size;
+    // size of loads
+    regions[regionCount].size = sizeof(shaderio::StreamingPatch) * (task.unloadCount);
+    // unload at start on host
+    regions[regionCount].srcOffset += 0;
+
+    // append next region after ourselves
+    regions[regionCount + 1].dstOffset = regions[regionCount].dstOffset + regions[regionCount].size;
 
     transferSize += regions[0].size;
 
@@ -746,14 +767,30 @@ size_t StreamingUpdates::cmdUploadTask(VkCommandBuffer cmd, uint32_t taskIndex)
 
   if(task.loadCount)
   {
+    // size of unloads
     regions[regionCount].size = sizeof(shaderio::StreamingPatch) * (task.loadCount);
+    // load after unload on host
     regions[regionCount].srcOffset += sizeof(shaderio::StreamingPatch) * m_shaderData.patchUnloadGroupsCount;
+
+    // append next region after ourselves
+    regions[regionCount + 1].dstOffset = regions[regionCount].dstOffset + regions[regionCount].size;
 
     transferSize += regions[regionCount].size;
 
     regionCount++;
   }
+#if STREAMING_GEOMETRY_LOD_LEVEL_TRACKING
+  if(task.geometryPatchCount)
+  {
+    regions[regionCount].size = sizeof(shaderio::StreamingGeometryPatch) * (task.geometryPatchCount);
+    // geometry after unload and load on host
+    regions[regionCount].srcOffset += sizeof(shaderio::StreamingPatch) * m_shaderData.patchGroupsCount;
 
+    transferSize += regions[regionCount].size;
+
+    regionCount++;
+  }
+#endif
   if(regionCount)
   {
     vkCmdCopyBuffer(cmd, m_patchesHostBuffer.buffer, m_patchesBuffer.buffer, regionCount, regions);
@@ -768,18 +805,22 @@ size_t StreamingUpdates::cmdUploadTask(VkCommandBuffer cmd, uint32_t taskIndex)
 
 void StreamingUpdates::applyTask(shaderio::StreamingUpdate& shaderData, uint32_t taskIndex, uint32_t frameIndex)
 {
+  uint32_t framePatchCount = m_shaderData.patchGroupsCount + m_shaderData.patchGeometriesCount;
+
   const TaskInfo& task = m_taskInfos[taskIndex];
   // keep basics
   shaderData = m_shaderData;
   // override counts
   shaderData.patchGroupsCount       = task.loadCount + task.unloadCount;
   shaderData.patchUnloadGroupsCount = task.unloadCount;
+  shaderData.patchGeometriesCount   = task.geometryPatchCount;
   shaderData.newClasCount           = task.newClusterCount;
 
   // adjust pointer offset
-  shaderData.patches += sizeof(shaderio::StreamingPatch) * m_shaderData.patchGroupsCount * taskIndex;
-  shaderData.taskIndex                = taskIndex;
-  shaderData.frameIndex               = frameIndex;
+  shaderData.patches += sizeof(shaderio::StreamingPatch) * framePatchCount * taskIndex;
+  shaderData.geometryPatches = shaderData.patches + sizeof(shaderio::StreamingPatch) * shaderData.patchGroupsCount;
+  shaderData.taskIndex       = taskIndex;
+  shaderData.frameIndex      = frameIndex;
   shaderData.loadActiveGroupsOffset   = task.loadActiveGroupsOffset;
   shaderData.loadActiveClustersOffset = task.loadActiveClustersOffset;
 

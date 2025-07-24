@@ -47,6 +47,8 @@ The full logic of the renderers is implemented in:
 * [renderer_raster_clusters_lod.cpp](/src/renderer_raster_clusters_lod.cpp): Rasterization using `VK_NV_mesh_shader`
 * [renderer_raytrace_clusters_lod.cpp](/src/renderer_raytrace_clusters_lod.cpp): Ray tracing using `VK_NV_cluster_acceleration_structure`. Enabled by default if available.
 
+The sample also showcases a ray tracing specific optimization for [BLAS Sharing](docs/blas_sharing.md).
+
 ### Model processing
 
 This sample is using [nv_cluster_lod_builder](https://github.com/nvpro-samples/nv_cluster_lod_builder) for generating the clusters and 
@@ -57,20 +59,19 @@ to extract from it. All key processing steps are within `Scene:processGeometry(.
 
 In the UI you can influence the size of clusters and the LoD grouping of them in _"Clusters & LoDs generation"_.
 
-At the time of writing the library does not support respecting the cluster vertex limit, so after processing this value might be increased over what
-was selected in the ui. And if the upper limit of 256 is exceeded, the application will fail to load the scene for now.
-
-> :warning: The processing of larger scenes can take minutes, even on CPUs with many cores. You may want to use _"File > Save Cache"_ after
-> the processing is completed. It will try to store the result of the cluster and lod building in a simple uncompressed binary file next to the original input file.
-> You can check the log/console output if errors occurred. Through the `--autosavecache 1` command-line option you can enable auto-saving.
+> [!WARNING]
+> The processing of larger scenes can take a while, even on CPUs with many cores. Therefore the application will save
+> a cache file of the results automatically. This file is a simple memory mappable binary file that can take a lot of space
+> and is placed next to the original file with a `.nvsngeo` file ending.
+> If disk space is a concern use `--autosavecache 0` to avoid the automatic storage.
 >
-> With the `--processingonly 1` command-line option you can reduce peak memory consumption during processing of scenes with many geometries.
+> With the `--processingonly 1` command-line option one can reduce peak memory consumption during processing of scenes with many geometries.
 > In this mode saving to the cache file is interleaved with the processing and resources are deallocated immediately once saved.
 > At the end of the processing the app closes automatically.
 >
-> When a cached result file is found next to the input model, its results are taken, and the cluster and lod settings are immutable in the UI.
-> 
-> Be aware, there are currently not a lot of compatibility checks for these cache files, therefore we recommend deleting if changes were made to the original input mesh.
+> If system memory usage after loading a cached file is a concern, then `--mappedcache 1` can be used to load data through memory mapping directly. However, we still have to improve the streaming logic a bit to avoid IO related hitches.
+>
+> Be aware, there are currently only few compatibility checks for these cache files, therefore we recommend deleting if changes were made to the original input mesh.
 
 ### Runtime Rendering Operations
 
@@ -93,7 +94,7 @@ Relevant files to traversal in their usage order:
 * [shaders/build_setup.comp.glsl](/shaders/build_setup.comp.glsl): Simple compute shader that is used to do basic operations in preparation of other kernels. Often clamping results to stay within limits.
 * [shaders/blas_setup_insertion.comp.glsl](/shaders/blas_setup_insertion.comp.glsl): Sets up the per-BLAS range for the cluster references based on how many clusters each BLAS needs (which traversal computed as well). This also determines how many BLAS are built at all.
 * [shaders/blas_clusters_insert.comp.glsl](/shaders/blas_clusters_insert.comp.glsl): Fills the per-BLAS cluster references (`SceneBuilding::blasBuildInfos`) from the render cluster list. The actual BLAS build is triggered in `RendererRayTraceClustersLod::render` (look for "BLAS Build").
-* [shaders/tlas_instances_blas.comp.glsl](/shaders/tlas_instances_blas.comp.glsl): After BLAS building assigns the built BLAS addresses to the TLAS instance descriptors prior building the TLAS.
+* [shaders/instances_assign_blas.comp.glsl](/shaders/instances_assign_blas.comp.glsl): After BLAS building assigns the built BLAS addresses to the TLAS instance descriptors prior building the TLAS.
 
 **Rasterization:**
 Does not need the BLAS and TLAS build steps and can render directly from `SceneBuilding::renderClusterInfos`.
@@ -104,11 +105,24 @@ Frustum and occlusion culling can be done to reduce the number of rendered clust
 **Ray Tracing:**
 After the BLAS are built, also runs the TLAS build or update and then traces rays.
 Frustum and occlusion culling only influence the LoD factors per-instance through a simple heuristic. Ray tracing will render more clusters even with culling than raster.
+
+![image showcasing the mirror box effect, a reflective box is placed into a scene of animal statues](docs/mirror_box.jpg)
+
+Use the "Mirror Box" effect (double right-click or M key) to investigate the impact on geometry that is outside the frustum or
+otherwise occluded.
+
 * [shaders/render_raytrace_clusters.rchit.glsl](/shaders/render_raytrace_clusters.rchit.glsl): Hit shader that handles shading of a hit on a cluster. There is only cluster geometry in this sample to be hit.
 * [shaders/render_raytrace.rgen.glsl](/shaders/render_raytrace.rgen.glsl)
 * [shaders/render_raytrace.rmiss.glsl](/shaders/render_raytrace.rmiss.glsl)
 
+The ray tracing code path can optimize the number of BLAS builds through _"BLAS sharing"_, which allows instances to use the BLAS
+from another instance.
+
+Please have a look at the [BLAS Sharing description](docs/blas_sharing.md).
+
 The occlusion culling is kept basic, testing the footprint of the bounding box against the appropriate mip-level of last frame's HiZ buffer and last frame's matrices. This can cause artifacts on faster motion.
+
+
 
 ### Streaming Operations
 
@@ -344,6 +358,7 @@ You can use the commandline to change some defaults:
 * `--vsync 0` disable vsync. If changing vsync via UI does not work, try to use the driver's *NVIDIA Control Panel* and set `Vulkan/OpenGL present method: native`.
 * `--autoloadcache 0` disables loading scenes from cache file.
 * `--mappedcache 1` keeps memory mapped cache file persistently, otherwise loads cache to system memory. Useful to save RAM on very large scenes.
+* `--autosavecache 0` disables saving the cache file.
 
 ## Limitations
 
@@ -354,10 +369,10 @@ You can use the commandline to change some defaults:
 
 ## Future Improvements
 
+* Better streaming behavior when a memory mapped cache is used.
 * Implement sorting of streaming requests based on distance of instance. Sorting instances alone is not sufficient.
+* Further improvements to BLAS sharing.
 * Further optimizations to the CLAS allocator
-* Ray tracing could use culling information better. Currently there is a simple logic that just lowers the LoD factors when an instance is culled by frustum or HiZ.
-* Ray tracing could reduce number of per-instance BLAS build further. Ray tracing is less sensitive to sub-pixel triangles, so less accurate LoD decision is needed. Needs to be balanced with the risk of more visible LoD popping.
 * Allowing the use of a compute shader to do rasterization of smaller/non-clipped triangles.
 * EXT_mesh_shader support
 
@@ -373,8 +388,10 @@ We recommend starting with a `Release` build, as the `Debug` build has a lot mor
 
 The cmake setup will download the `Stanford Bunny` glTF 2.0 model that serves as default scene.
 
-It will also look for [`nvpro_core2`](https://github.com/nvpro-samples/nvpro_core2) either as subdirectory of the current project directory, or up to two levels above. If it is not found, it will automatically download the git repo into `/build/_deps`.
-Note, that the repository of `nvpro_core2` needs to be updated manually in case the sample is updated manually, as version mismatches could occur over time.
+It will also look for [`nvpro_core2`](https://github.com/nvpro-samples/nvpro_core2) either as subdirectory of the current project directory, or up to two levels above. If it is not found, it will automatically download the git repo into .
+
+> [!IMPORTANT]
+> Note, that the repository of `nvpro_core2` needs to be updated manually, when the sample is updated manually, as version mismatches could occur over time. Either run the appropriate git commands or delete `/build/_deps/nvpro_core2`.
 
 ## Further Samples about NVIDIA RTX Mega Geometry
 
@@ -400,7 +417,7 @@ We prepared two more scenes to play with. They are based on models from [https:/
   - 116 MB zip 2025/7/11 (original was 280 MB zip, slow to load)
 
 On a "AMD Ryzen 9 7950X 16-Core Processor" processing time for `threedscans_animals` took around 11 seconds (5 unique geometries). That scene has few geometries and many triangles per geometry. Due to the few geometries the heuristic chose "inner" parallelism within operations for a single geometry at a time. Scenes with many objects will typically use "outer" parallelism over the unique geometries and tend to be processed faster overall.
-We recommend making use of _"File > Save Cache"_ menu entry to store the results of the initial processing next to the original files, or launching with `--autosavecache 1`.
+By default the application now stores a cache file of the last processing (`--autosavecache 1`).
 
 ## Third Party
 

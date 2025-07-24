@@ -85,7 +85,8 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
   options.AddMacroDefinition("USE_STREAMING", rscene.useStreaming ? "1" : "0");
   options.AddMacroDefinition("USE_SORTING", config.useSorting ? "1" : "0");
   options.AddMacroDefinition("USE_CULLING", config.useCulling ? "1" : "0");
-  options.AddMacroDefinition("DEBUG_VISUALIZATION", config.debugVisualization ? "1" : "0");
+  options.AddMacroDefinition("USE_RENDER_STATS", config.useRenderStats ? "1" : "0");
+  options.AddMacroDefinition("DEBUG_VISUALIZATION", config.useDebugVisualization ? "1" : "0");
   options.AddMacroDefinition("MESHSHADER_WORKGROUP_SIZE", "32");
 
   res.compileShader(m_shaders.graphicsMesh, VK_SHADER_STAGE_MESH_BIT_NV, "render_raster_clusters.mesh.glsl", &options);
@@ -120,12 +121,12 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
   initBasics(res, rscene, config);
 
   m_resourceReservedUsage.geometryMemBytes   = rscene.getGeometrySize(true);
-  m_resourceReservedUsage.operationsMemBytes = rscene.getOperationsSize();
+  m_resourceReservedUsage.operationsMemBytes = logMemoryUsage(rscene.getOperationsSize(), "operations", "rscene total");
 
   {
     res.createBuffer(m_sceneBuildBuffer, sizeof(shaderio::SceneBuilding),
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
-    m_resourceReservedUsage.operationsMemBytes += m_sceneBuildBuffer.bufferSize;
+    m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sceneBuildBuffer.bufferSize, "operations", "build shaderio");
 
     memset(&m_sceneBuildShaderio, 0, sizeof(m_sceneBuildShaderio));
     m_sceneBuildShaderio.numRenderInstances = uint32_t(m_renderInstances.size());
@@ -143,7 +144,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     }
 
     res.createBuffer(m_sceneDataBuffer, mem.getSize(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    m_resourceReservedUsage.operationsMemBytes += m_sceneDataBuffer.bufferSize;
+    m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sceneDataBuffer.bufferSize, "operations", "build data");
 
     m_sceneBuildShaderio.renderClusterInfos += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.instanceSortKeys += m_sceneDataBuffer.address;
@@ -151,7 +152,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
 
     res.createBuffer(m_sceneTraversalBuffer, sizeof(uint64_t) * m_sceneBuildShaderio.maxTraversalInfos,
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    m_resourceReservedUsage.operationsMemBytes += m_sceneTraversalBuffer.bufferSize;
+    m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sceneTraversalBuffer.bufferSize, "operations", "build traversal");
 
     m_sceneBuildShaderio.traversalNodeInfos = m_sceneTraversalBuffer.address;
   }
@@ -277,31 +278,30 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
     rscene.sceneStreaming.cmdPreTraversal(cmd, 0, profiler);
   }
 
-  if(m_config.useSorting)
   {
-    auto timerSection = profiler.cmdFrameSection(cmd, "Traversal Instance Sort");
+    auto timerSection = profiler.cmdFrameSection(cmd, "Traversal Preparation");
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.sets.data(), 0, nullptr);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalPresort);
-    vkCmdDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TRAVERSAL_PRESORT_WORKGROUP), 1, 1);
 
-    memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
-                         &memBarrier, 0, nullptr, 0, nullptr);
+    if(m_config.useSorting)
+    {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalPresort);
+      vkCmdDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TRAVERSAL_PRESORT_WORKGROUP), 1, 1);
 
-    vrdxCmdSortKeyValue(cmd, res.m_vrdxSorter, m_sceneBuildShaderio.numRenderInstances, m_sceneDataBuffer.buffer,
-                        m_sceneBuildShaderio.instanceSortKeys - m_sceneDataBuffer.address, m_sceneDataBuffer.buffer,
-                        m_sceneBuildShaderio.instanceSortValues - m_sceneDataBuffer.address, m_sortingAuxBuffer.buffer,
-                        0, nullptr, 0);
+      memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                           &memBarrier, 0, nullptr, 0, nullptr);
 
-    memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
-                         &memBarrier, 0, nullptr, 0, nullptr);
-  }
+      vrdxCmdSortKeyValue(cmd, res.m_vrdxSorter, m_sceneBuildShaderio.numRenderInstances, m_sceneDataBuffer.buffer,
+                          m_sceneBuildShaderio.instanceSortKeys - m_sceneDataBuffer.address, m_sceneDataBuffer.buffer,
+                          m_sceneBuildShaderio.instanceSortValues - m_sceneDataBuffer.address,
+                          m_sortingAuxBuffer.buffer, 0, nullptr, 0);
 
-  {
-    auto timerSection = profiler.cmdFrameSection(cmd, "Traversal Init");
+      memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                           &memBarrier, 0, nullptr, 0, nullptr);
+    }
 
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.sets.data(), 0, nullptr);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalInit);

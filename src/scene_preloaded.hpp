@@ -68,6 +68,8 @@ private:
     nvvk::BufferTyped<uint32_t>          clusterGeneratingGroups;
     nvvk::BufferTyped<shaderio::BBox>    clusterBboxes;
 
+    nvvk::BufferTyped<shaderio::LodLevel> lodLevels;
+
     // for ray tracing
     nvvk::BufferTyped<uint64_t> clusterClasAddresses;
     nvvk::BufferTyped<uint32_t> clusterClasSizes;

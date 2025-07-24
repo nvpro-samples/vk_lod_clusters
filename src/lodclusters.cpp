@@ -40,6 +40,7 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"verbose"}, &g_verbose, true);
   m_info.parameterRegistry->add({"resetstats"}, &m_tweak.autoResetTimers);
   m_info.parameterRegistry->add({"supersample"}, &m_tweak.supersample);
+  m_info.parameterRegistry->add({"debugui"}, &m_showDebugUI);
 
   m_info.parameterRegistry->add({"dumpspirv", "dumps compiled spirv into working directory"}, &m_resources.m_dumpSpirv);
 
@@ -50,15 +51,25 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"gridunique"}, &m_sceneGridConfig.uniqueGeometriesForCopies);
   m_info.parameterRegistry->add({"clusterconfig"}, (int*)&m_tweak.clusterConfig);
   m_info.parameterRegistry->add({"loderror"}, &m_frameConfig.lodPixelError);
+  m_info.parameterRegistry->add({"cullederrorscale"}, &m_frameConfig.culledErrorScale);
   m_info.parameterRegistry->add({"culling"}, &m_rendererConfig.useCulling);
+  m_info.parameterRegistry->add({"blassharing"}, &m_rendererConfig.useBlasSharing);
+  m_info.parameterRegistry->add({"sharingmininstances"}, &m_frameConfig.sharingMinInstances);
+  m_info.parameterRegistry->add({"sharingpushculled"}, &m_frameConfig.sharingPushCulled);
+  m_info.parameterRegistry->add({"sharingminlevel"}, &m_frameConfig.sharingMinLevel);
+  m_info.parameterRegistry->add({"sharingtolerancelevel"}, &m_frameConfig.sharingToleranceLevel);
   m_info.parameterRegistry->add({"instancesorting"}, &m_rendererConfig.useSorting);
   m_info.parameterRegistry->add({"renderclusterbits"}, &m_rendererConfig.numRenderClusterBits);
   m_info.parameterRegistry->add({"rendertraversalbits"}, &m_rendererConfig.numTraversalTaskBits);
+  m_info.parameterRegistry->add({"visualize"}, &m_frameConfig.visualize);
+  m_info.parameterRegistry->add({"renderstats"}, &m_rendererConfig.useRenderStats);
   m_info.parameterRegistry->add({"hbao"}, &m_tweak.hbaoActive);
   m_info.parameterRegistry->add({"facetshading"}, &m_tweak.facetShading);
   m_info.parameterRegistry->add({"flipwinding"}, &m_rendererConfig.flipWinding);
   m_info.parameterRegistry->add({"twosided"}, &m_rendererConfig.twoSided);
-  m_info.parameterRegistry->add({"autosavecache", "automatically store cache file for loaded scene. default false"},
+  m_info.parameterRegistry->add({"autosharing", "automatically set blas sharing based on scene's instancing usage. default true"},
+                                &m_tweak.autoSharing);
+  m_info.parameterRegistry->add({"autosavecache", "automatically store cache file for loaded scene. default true"},
                                 &m_sceneConfig.autoSaveCache);
   m_info.parameterRegistry->add({"autoloadcache", "automatically load cache file if found. default true"},
                                 &m_sceneConfig.autoLoadCache);
@@ -70,13 +81,6 @@ LodClusters::LodClusters(const Info& info)
                                 &m_sceneConfig.processingThreadsPct);
 
   m_frameConfig.frameConstants                         = {};
-  m_frameConfig.frameConstants.ambientOcclusionSamples = 1;
-  m_frameConfig.frameConstants.facetShading            = 1;
-  m_frameConfig.frameConstants.doShadow                = 1;
-  m_frameConfig.frameConstants.ambientOcclusionRadius  = 0.1f;
-
-  m_frameConfig.frameConstants                         = {};
-  m_frameConfig.frameConstants                         = {};
   m_frameConfig.frameConstants.wireThickness           = 2.f;
   m_frameConfig.frameConstants.wireSmoothing           = 1.f;
   m_frameConfig.frameConstants.wireColor               = {118.f / 255.f, 185.f / 255.f, 0.f};
@@ -87,13 +91,14 @@ LodClusters::LodClusters(const Info& info)
   m_frameConfig.frameConstants.doShadow                = 1;
   m_frameConfig.frameConstants.doWireframe             = 0;
   m_frameConfig.frameConstants.ambientOcclusionRadius  = 0.1f;
-  m_frameConfig.frameConstants.ambientOcclusionSamples = 16;
+  m_frameConfig.frameConstants.ambientOcclusionSamples = 2;
   m_frameConfig.frameConstants.visualize               = VISUALIZE_LOD;
+  m_frameConfig.frameConstants.facetShading            = 1;
 
   m_frameConfig.frameConstants.lightMixer = 0.5f;
   m_frameConfig.frameConstants.skyParams  = {};
 }
-bool LodClusters::initScene(const std::filesystem::path& filePath)
+bool LodClusters::initScene(const std::filesystem::path& filePath, bool configChange)
 {
   deinitScene();
 
@@ -104,17 +109,18 @@ bool LodClusters::initScene(const std::filesystem::path& filePath)
     LOGI("Loading scene %s\n", fileName.c_str());
 
     m_scene = std::make_unique<Scene>();
-    if(!m_scene->init(filePath, m_sceneConfig))
+    if(!m_scene->init(filePath, m_sceneConfig, configChange))
     {
       m_scene = nullptr;
       LOGW("Loading scene failed\n");
     }
     else
     {
-      adjustSceneClusterConfig();
+      findSceneClusterConfig();
 
       m_scene->updateSceneGrid(m_sceneGridConfig);
       m_sceneGridConfigLast = m_sceneGridConfig;
+      updatedSceneGrid();
     }
 
     m_sceneFilePath = filePath;
@@ -267,11 +273,19 @@ void LodClusters::postInitNewScene()
 {
   assert(m_scene);
 
-  float     sceneDimension = glm::length(m_scene->m_bbox.hi - m_scene->m_bbox.lo);
+  glm::vec3 extent         = m_scene->m_bbox.hi - m_scene->m_bbox.lo;
   glm::vec3 center         = (m_scene->m_bbox.hi + m_scene->m_bbox.lo) * 0.5f;
+  float     sceneDimension = glm::length(extent);
 
   m_frameConfig.frameConstants.wLightPos = center + sceneDimension;
   m_frameConfig.frameConstants.sceneSize = glm::length(m_scene->m_bbox.hi - m_scene->m_bbox.lo);
+
+  m_tweak.hbaoRadius = m_scene->m_isBig ? 0.001f : 0.05f;
+
+  float mirrorBoxSize = sceneDimension * 0.25f;
+
+  m_frameConfig.frameConstants.wMirrorBox =
+      glm::vec4(m_scene->m_bbox.lo.x - sceneDimension, center.y, m_scene->m_bbox.lo.z - sceneDimension, sceneDimension);
 
   setSceneCamera(m_sceneFilePath);
 
@@ -337,6 +351,7 @@ void LodClusters::onAttach(nvapp::Application* app)
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_GROUP, "cluster groups");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_LOD, "lods");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_TRIANGLE, "triangles");
+    m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_BLAS, "blas");
   }
 
   // Initialize core components
@@ -367,6 +382,9 @@ void LodClusters::onAttach(nvapp::Application* app)
 
     m_sceneFilePath = nvutils::findFile("bunny_v2/bunny.gltf", defaultSearchPaths);
 
+    // enforce unique geometries in the sample scene
+    m_sceneGridConfig.uniqueGeometriesForCopies = true;
+
     if(m_sceneGridConfig.numCopies == 1)
     {
       if(m_resources.getDeviceLocalHeapSize() >= 8ull * 1024 * 1024 * 1024)
@@ -391,7 +409,7 @@ void LodClusters::onAttach(nvapp::Application* app)
     m_streamingConfig.maxGeometryMegaBytes = 1 * 1024;
   }
 
-  if(initScene(m_sceneFilePath))
+  if(initScene(m_sceneFilePath, false))
   {
     postInitNewScene();
     initRenderer(m_tweak.renderer);
@@ -429,13 +447,13 @@ void LodClusters::onFileDrop(const std::filesystem::path& filePath)
 {
   // reset grid parameter (in case scene is too large to be replicated)
   m_sceneGridConfig.numCopies = 1;
-  //
+
   if(filePath.empty())
     return;
   LOGI("Loading model: %s\n", nvutils::utf8FromPath(filePath).c_str());
   deinitRenderer();
 
-  if(initScene(filePath))
+  if(initScene(filePath, false))
   {
     postInitNewScene();
     initRenderer(m_tweak.renderer);
@@ -451,30 +469,17 @@ const LodClusters::ClusterInfo LodClusters::s_clusterInfos[NUM_CLUSTER_CONFIGS] 
     {256, 256, CLUSTER_256T_256V},
 };
 
-void LodClusters::adjustSceneClusterConfig()
+void LodClusters::findSceneClusterConfig()
 {
-#if 0
-  m_scene->m_clusterTriangleHistogram.resize(entry.tris + 1);
-  m_scene->m_clusterVertexHistogram.resize(entry.verts + 1);
-
   for(uint32_t i = 0; i < NUM_CLUSTER_CONFIGS; i++)
   {
     const ClusterInfo& entry = s_clusterInfos[i];
-    if(m_scene->m_maxClusterTriangles <= entry.tris && m_scene->m_maxClusterVertices <= entry.verts)
+    if(m_scene->m_config.clusterTriangles <= entry.tris && m_scene->m_config.clusterVertices <= entry.verts)
     {
       m_tweak.clusterConfig = entry.cfg;
-
-      m_scene->m_config.clusterTriangles = entry.tris;
-      m_sceneConfig.clusterTriangles     = entry.tris;
-      m_sceneConfigLast.clusterTriangles = entry.tris;
-
-      m_scene->m_config.clusterVertices = entry.verts;
-      m_sceneConfig.clusterVertices     = entry.verts;
-      m_sceneConfigLast.clusterVertices = entry.verts;
       return;
     }
   }
-#endif
 }
 
 void LodClusters::updatedClusterConfig()
@@ -490,11 +495,39 @@ void LodClusters::updatedClusterConfig()
   }
 }
 
+void LodClusters::updatedSceneGrid()
+{
+  {
+    glm::vec3 gridExtent = m_scene->m_gridBbox.hi - m_scene->m_gridBbox.lo;
+    float     gridRadius = glm::length(gridExtent) * 0.5f;
+
+    glm::vec3 modelExtent = m_scene->m_bbox.hi - m_scene->m_bbox.lo;
+    float     modelRadius = glm::length(modelExtent) * 0.5f;
+
+    bool bigScene = m_scene->m_isBig;
+
+    m_info.cameraManipulator->setSpeed(modelRadius * (bigScene ? 0.0025f : 0.25f));
+    m_info.cameraManipulator->setClipPlanes(
+        glm::vec2((bigScene ? 0.0001f : 0.01F) * modelRadius,
+                  bigScene ? gridRadius * 1.2f : std::max(50.0f * modelRadius, gridRadius * 1.2f)));
+  }
+
+  if(m_tweak.autoSharing)
+  {
+    m_rendererConfig.useBlasSharing = (m_scene->m_instances.size() > m_scene->getActiveGeometryCount() * 3);
+  }
+}
+
 void LodClusters::handleChanges()
 {
   if(m_tweak.clusterConfig != m_tweakLast.clusterConfig)
   {
     updatedClusterConfig();
+  }
+
+  if(m_rendererConfig.useBlasSharing && m_scene && m_scene->m_instances.size() > (1 << 27))
+  {
+    m_rendererConfig.useBlasSharing = false;
   }
 
   bool sceneChanged = false;
@@ -503,7 +536,7 @@ void LodClusters::handleChanges()
     sceneChanged = true;
 
     deinitRenderer();
-    initScene(m_sceneFilePath);
+    initScene(m_sceneFilePath, true);
   }
 
   bool sceneGridChanged = false;
@@ -513,6 +546,7 @@ void LodClusters::handleChanges()
 
     deinitRenderer();
     m_scene->updateSceneGrid(m_sceneGridConfig);
+    updatedSceneGrid();
   }
 
   bool shaderChanged = false;
@@ -547,10 +581,11 @@ void LodClusters::handleChanges()
 
   bool rendererChanged = false;
   if(sceneChanged || shaderChanged || renderSceneChanged || tweakChanged(m_tweak.renderer)
-     || tweakChanged(m_tweak.useDebugVisualization) || rendererCfgChanged(m_rendererConfig.flipWinding)
+     || rendererCfgChanged(m_rendererConfig.flipWinding) || rendererCfgChanged(m_rendererConfig.useDebugVisualization)
      || rendererCfgChanged(m_rendererConfig.useCulling) || rendererCfgChanged(m_rendererConfig.twoSided)
      || rendererCfgChanged(m_rendererConfig.useSorting) || rendererCfgChanged(m_rendererConfig.numRenderClusterBits)
-     || rendererCfgChanged(m_rendererConfig.numTraversalTaskBits))
+     || rendererCfgChanged(m_rendererConfig.numTraversalTaskBits) || rendererCfgChanged(m_rendererConfig.useBlasSharing)
+     || rendererCfgChanged(m_rendererConfig.useRenderStats))
   {
     rendererChanged = true;
 
@@ -617,6 +652,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     uint32_t renderHeight = height * m_tweak.supersample;
 
     frameConstants.facetShading = m_tweak.facetShading ? 1 : 0;
+    frameConstants.visualize    = m_frameConfig.visualize;
 
     {
       frameConstants.visFilterClusterID  = ~0;
@@ -751,11 +787,11 @@ void LodClusters::setSceneCamera(const std::filesystem::path& filePath)
 {
   nvgui::SetCameraJsonFile(filePath);
 
-  glm::vec3 extent = m_scene->m_bbox.hi - m_scene->m_bbox.lo;
-  float     radius = glm::length(extent) * 0.5f;
-  glm::vec3 center = (m_scene->m_bbox.hi + m_scene->m_bbox.lo) * 0.5f;
+  glm::vec3 modelExtent = m_scene->m_bbox.hi - m_scene->m_bbox.lo;
+  float     modelRadius = glm::length(modelExtent) * 0.5f;
+  glm::vec3 modelCenter = (m_scene->m_bbox.hi + m_scene->m_bbox.lo) * 0.5f;
 
-  bool bigScene = m_scene->m_originalInstanceCount > 1000;
+  bool bigScene = m_scene->m_isBig;
 
   if(!m_scene->m_cameras.empty())
   {
@@ -764,7 +800,7 @@ void LodClusters::setSceneCamera(const std::filesystem::path& filePath)
 
 
     c.eye              = glm::vec3(c.worldMatrix[3]);
-    float     distance = glm::length(center - c.eye);
+    float     distance = glm::length(modelCenter - c.eye);
     glm::mat3 rotMat   = glm::mat3(c.worldMatrix);
     c.center           = {0, 0, -distance};
     c.center           = c.eye + (rotMat * c.center);
@@ -776,7 +812,7 @@ void LodClusters::setSceneCamera(const std::filesystem::path& filePath)
     for(auto& cam : m_scene->m_cameras)
     {
       cam.eye            = glm::vec3(cam.worldMatrix[3]);
-      float     distance = glm::length(center - cam.eye);
+      float     distance = glm::length(modelCenter - cam.eye);
       glm::mat3 rotMat   = glm::mat3(cam.worldMatrix);
       cam.center         = {0, 0, -distance};
       cam.center         = cam.eye + (rotMat * cam.center);
@@ -791,19 +827,8 @@ void LodClusters::setSceneCamera(const std::filesystem::path& filePath)
     glm::vec3 up  = {0, 1, 0};
     glm::vec3 dir = {1.0f, bigScene ? 0.33f : 0.75f, 1.0f};
 
-    m_info.cameraManipulator->setLookat(center + dir * (radius * (bigScene ? 0.5f : 1.f)), center, up);
+    m_info.cameraManipulator->setLookat(modelCenter + dir * (modelRadius * (bigScene ? 0.5f : 1.f)), modelCenter, up);
     nvgui::SetHomeCamera(m_info.cameraManipulator->getCamera());
-  }
-
-  if(bigScene)
-  {
-    m_info.cameraManipulator->setSpeed(radius * 0.02f);
-    m_info.cameraManipulator->setClipPlanes(glm::vec2(0.0001F * radius, 2.0F * radius));
-  }
-  else
-  {
-    m_info.cameraManipulator->setSpeed(radius * 2.0f);
-    m_info.cameraManipulator->setClipPlanes(glm::vec2(0.01F * radius, 100.0F * radius));
   }
 }
 

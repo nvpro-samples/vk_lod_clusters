@@ -37,6 +37,7 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
   VkDeviceSize sizeLimit           = (res->getDeviceLocalHeapSize() * 1000) / 800;
   VkDeviceSize clusterGeometrySize = 0;
 
+  uint32_t instancesOffset = 0;
   for(size_t geometryIndex = 0; geometryIndex < scene->getActiveGeometryCount(); geometryIndex++)
   {
     shaderio::Geometry&        shaderGeometry  = m_shaderGeometries[geometryIndex];
@@ -61,6 +62,8 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
     res->createBufferTyped(preloadGeometry.nodeBboxes, numNodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
     uint32_t numLodLevels = sceneGeometry.lodLevelsCount;
+    res->createBufferTyped(preloadGeometry.lodLevels, numLodLevels, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+
 
     m_geometrySize += preloadGeometry.localTriangles.bufferSize;
     m_geometrySize += preloadGeometry.vertices.bufferSize;
@@ -87,14 +90,17 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
     // setup shaderio
     shaderGeometry                   = {};
     shaderGeometry.bbox              = sceneGeometry.bbox;
-    shaderGeometry.clustersCount     = sceneGeometry.totalClustersCount;
-    shaderGeometry.nodesCount        = uint32_t(numNodes);
     shaderGeometry.nodes             = preloadGeometry.nodes.address;
     shaderGeometry.nodeBboxes        = preloadGeometry.nodeBboxes.address;
-    shaderGeometry.groupsCount       = uint32_t(numGroups);
     shaderGeometry.preloadedGroups   = preloadGeometry.groups.address;
     shaderGeometry.preloadedClusters = preloadGeometry.clusters.address;
     shaderGeometry.lodLevelsCount    = uint32_t(numLodLevels);
+    shaderGeometry.lodLevels         = preloadGeometry.lodLevels.address;
+    shaderGeometry.lodsCompletedMask = (1 << shaderGeometry.lodLevelsCount) - 1;
+    shaderGeometry.instancesCount    = sceneGeometry.instanceReferenceCount * scene->getGeometryInstanceFactor();
+    shaderGeometry.instancesOffset   = instancesOffset;
+
+    instancesOffset += shaderGeometry.instancesCount;
 
     // lowest detail group must have just a single cluster
     nvcluster_Range lastGroupRange = sceneGeometry.lodMesh.lodLevelGroupRanges.back();
@@ -114,6 +120,8 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
 
     uploader.uploadBuffer(preloadGeometry.clusterBboxes, sceneGeometry.clusterBboxes.data());
     uploader.uploadBuffer(preloadGeometry.clusterGeneratingGroups, sceneGeometry.lodMesh.clusterGeneratingGroups.data());
+
+    uploader.uploadBuffer(preloadGeometry.lodLevels, sceneGeometry.lodLevels.data());
 
     // clusters and groups need to be filled manually
 
@@ -175,7 +183,7 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
   }
 
   res->createBufferTyped(m_shaderGeometriesBuffer, scene->getActiveGeometryCount(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-  m_operationsSize += m_shaderGeometriesBuffer.bufferSize;
+  m_operationsSize += logMemoryUsage(m_shaderGeometriesBuffer.bufferSize, "operations", "preloaded geo buffer");
 
   uploader.uploadBuffer(m_shaderGeometriesBuffer, m_shaderGeometries.data());
   uploader.flush();
@@ -217,6 +225,7 @@ void ScenePreloaded::deinit()
     m_resources->m_allocator.destroyBuffer(it.groups);
     m_resources->m_allocator.destroyBuffer(it.nodes);
     m_resources->m_allocator.destroyBuffer(it.nodeBboxes);
+    m_resources->m_allocator.destroyBuffer(it.lodLevels);
     m_resources->m_allocator.destroyBuffer(it.clasData);
   }
 
@@ -444,10 +453,12 @@ bool ScenePreloaded::initClas()
     m_clasSize += preloadGeometry.clasData.bufferSize;
   }
 
+  logMemoryUsage(m_clasOperationsSize, "operations", "preloaded clas");
+
   // create low detail blas
   {
     res->createBuffer(m_clasLowDetailBlasBuffer, blasSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
-    m_clasOperationsSize += blasSize;
+    m_clasOperationsSize += logMemoryUsage(blasSize, "operations", "preloaded clas lowdetail blas");
 
     cmd = res->createTempCmdBuffer();
 

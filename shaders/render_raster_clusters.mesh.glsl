@@ -141,8 +141,9 @@ void main()
 
   if (gl_LocalInvocationID.x == 0) {
     gl_PrimitiveCountNV = triMax + 1;
-    // just for stats
+  #if USE_RENDER_STATS
     atomicAdd(readback.numRenderedTriangles, uint(triMax + 1));
+  #endif
   }
 
   vec4s_in  oVertices      = vec4s_in(cluster.vertices);

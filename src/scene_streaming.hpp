@@ -200,10 +200,15 @@ private:
 
   struct PersistentGeometry
   {
-    nvvk::BufferTyped<shaderio::Node> nodes;
-    nvvk::BufferTyped<shaderio::BBox> nodeBboxes;
-    nvvk::BufferTyped<uint64_t>       groupAddresses;
-    nvvk::Buffer                      lowDetailGroupsData;
+    nvvk::BufferTyped<shaderio::Node>     nodes;
+    nvvk::BufferTyped<shaderio::BBox>     nodeBboxes;
+    nvvk::BufferTyped<shaderio::LodLevel> lodLevels;
+    nvvk::BufferTyped<uint64_t>           groupAddresses;
+    nvvk::Buffer                          lowDetailGroupsData;
+    uint32_t                              lodLevelsCount                                = 0;
+    uint32_t                              lodLoadedGroupsCount[SHADERIO_MAX_LOD_LEVELS] = {};
+    uint32_t                              lodGroupsCount[SHADERIO_MAX_LOD_LEVELS]       = {};
+    uint32_t                              lastUpdateFrame                               = 0;
   };
 
   std::vector<PersistentGeometry>       m_persistentGeometries;

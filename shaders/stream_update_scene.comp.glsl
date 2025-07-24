@@ -100,14 +100,14 @@ void main()
   
   if (threadID < streaming.update.patchGroupsCount)
   {
-  #if STREAMING_DEBUG_ADDRESSES
+    uint oldLevel = 0;
     uint oldResidentID = 0;
     if (threadID < streaming.update.patchUnloadGroupsCount)
     {
       Group group = Group_in(geometries[spatch.geometryID].streamingGroupAddresses.d[spatch.groupIndex]).d;
       oldResidentID = group.residentID;
+      oldLevel = group.lodLevel;
     }
-  #endif
     
     geometries[spatch.geometryID].streamingGroupAddresses.d[spatch.groupIndex] = spatch.groupAddress;
     
@@ -115,7 +115,7 @@ void main()
     {
     #if STREAMING_DEBUG_ADDRESSES
       streaming.resident.groups.d[oldResidentID].group = Group_in(STREAMING_INVALID_ADDRESS_START);
-    #endif
+    #endif      
     }
     else
     {
@@ -184,5 +184,12 @@ void main()
       }
     }
   }
+#if STREAMING_GEOMETRY_LOD_LEVEL_TRACKING
+  if (threadID < streaming.update.patchGeometriesCount)
+  {
+    StreamingGeometryPatch sgpatch = streaming.update.geometryPatches.d[threadID];
+    geometries[sgpatch.geometryID].lodsCompletedMask = sgpatch.lodsCompletedMask;
+  }
+#endif
 }
 

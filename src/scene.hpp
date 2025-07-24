@@ -57,7 +57,7 @@ struct SceneConfig
   bool processingOnly = false;
 
   // save cache file after load automatically
-  bool autoSaveCache = false;
+  bool autoSaveCache = true;
   // try load from cache file if file was found
   bool autoLoadCache = true;
   // when loading from cache file, memory map it,
@@ -70,11 +70,13 @@ struct SceneGridConfig
   // when set to true each new set of instance on the grid gets
   // its own unique set of geometries. This stresses the streaming system
   // and memory consumption a lot more.
-  bool      uniqueGeometriesForCopies = true;
+  bool      uniqueGeometriesForCopies = false;
   uint32_t  numCopies                 = 1;
   uint32_t  gridBits                  = 13;
   glm::vec3 refShift                  = {1.0f, 1.0f, 1.0f};
   float     snapAngle                 = 0;
+  float     minScale                  = 1.0f;
+  float     maxScale                  = 1.0f;
 };
 
 class Scene
@@ -109,6 +111,8 @@ public:
     shaderio::BBox bbox{};
 
     nvclusterlod::LodGeometryInfo lodInfo;
+
+    uint32_t instanceReferenceCount{};
   };
 
   // not fully leveraged yet, but preparation to have a readonly view on
@@ -123,7 +127,8 @@ public:
     std::span<const shaderio::BBox>  clusterBboxes;
     std::span<const uint8_t>         groupLodLevels;
 
-    std::span<const shaderio::BBox> nodeBboxes;
+    std::span<const shaderio::BBox>     nodeBboxes;
+    std::span<const shaderio::LodLevel> lodLevels;
 
     nvclusterlod::LodMeshView      lodMesh;
     nvclusterlod::LodHierarchyView lodHierarchy;
@@ -139,6 +144,7 @@ public:
       cachedSize += nvclusterlod::detail::getCachedSize(clusterBboxes);
       cachedSize += nvclusterlod::detail::getCachedSize(groupLodLevels);
       cachedSize += nvclusterlod::detail::getCachedSize(nodeBboxes);
+      cachedSize += nvclusterlod::detail::getCachedSize(lodLevels);
       cachedSize += nvclusterlod::getCachedSize(lodMesh);
       cachedSize += nvclusterlod::getCachedSize(lodHierarchy);
 
@@ -155,7 +161,7 @@ public:
     float     fovy;
   };
 
-  bool init(const std::filesystem::path& filePath, const SceneConfig& config);
+  bool init(const std::filesystem::path& filePath, const SceneConfig& config, bool skipCache);
   bool saveCache() const;
   void deinit();
 
@@ -166,9 +172,11 @@ public:
   const std::filesystem::path& getFilePath() const { return m_filePath; }
   const std::filesystem::path& getCacheFilePath() const { return m_cacheFilePath; }
 
-  SceneConfig m_config;
+  SceneConfig     m_config;
+  SceneGridConfig m_gridConfig;
 
   shaderio::BBox m_bbox;
+  shaderio::BBox m_gridBbox;
 
   std::vector<Instance> m_instances;
   std::vector<Camera>   m_cameras;
@@ -178,11 +186,19 @@ public:
   const GeometryView& getActiveGeometry(size_t idx) const { return m_geometryViews[idx % m_originalGeometryCount]; }
   size_t              getActiveGeometryCount() const { return m_activeGeometryCount; }
 
+  uint32_t getGeometryInstanceFactor() const
+  {
+    return m_gridConfig.uniqueGeometriesForCopies ? 1u : uint32_t(m_instances.size() / m_originalInstanceCount);
+  }
+
+  bool m_isBig = false;
+
   uint32_t m_maxClusterTriangles       = 0;
   uint32_t m_maxClusterVertices        = 0;
   uint32_t m_maxPerGeometryClusters    = 0;
   uint32_t m_maxPerGeometryTriangles   = 0;
   uint32_t m_maxPerGeometryVertices    = 0;
+  uint32_t m_maxLodLevelsCount         = 0;
   uint32_t m_hiPerGeometryClusters     = 0;
   uint32_t m_hiPerGeometryTriangles    = 0;
   uint32_t m_hiPerGeometryVertices     = 0;
@@ -196,11 +212,13 @@ public:
   std::vector<uint32_t> m_clusterVertexHistogram;
   std::vector<uint32_t> m_groupClusterHistogram;
   std::vector<uint32_t> m_nodeChildrenHistogram;
+  std::vector<uint32_t> m_lodLevelsHistogram;
 
   uint32_t m_clusterTriangleHistogramMax;
   uint32_t m_clusterVertexHistogramMax;
   uint32_t m_groupClusterHistogramMax;
   uint32_t m_nodeChildrenHistogramMax;
+  uint32_t m_lodLevelsHistogramMax;
 
   bool m_loadedFromCache = false;
 
@@ -230,9 +248,10 @@ private:
     std::vector<shaderio::BBox>  clusterBboxes;
     std::vector<uint8_t>         groupLodLevels;
 
-    nvclusterlod::LodMesh       lodMesh;
-    nvclusterlod::LodHierarchy  lodHierarchy;
-    std::vector<shaderio::BBox> nodeBboxes;
+    std::vector<shaderio::LodLevel> lodLevels;
+    nvclusterlod::LodMesh           lodMesh;
+    nvclusterlod::LodHierarchy      lodHierarchy;
+    std::vector<shaderio::BBox>     nodeBboxes;
   };
 
   class CacheHeader
@@ -260,7 +279,7 @@ private:
     struct Header
     {
       uint64_t magic          = 0x006f65676e73766eULL;  // nvsngeo
-      uint32_t geoVersion     = 4;
+      uint32_t geoVersion     = 5;
       uint32_t structSize     = uint32_t(sizeof(GeometryView));
       uint32_t lodVersion     = NVCLUSTERLOD_VERSION;
       uint32_t clusterVersion = NVCLUSTER_VERSION;

@@ -63,23 +63,27 @@ using namespace glm;
 // the minimum allocation will use 32 bits, which can only straddle across two u32 values
 #define STREAMING_ALLOCATOR_MIN_SIZE 32
 
+// Tracks whether a geometry lod level is loaded completely
+#define STREAMING_GEOMETRY_LOD_LEVEL_TRACKING 0
+
 /////////////////////////////////////////
 
 struct StreamingRequest
 {
-  uint     maxLoads;
-  uint     maxUnloads;
-  uint     loadCounter;
-  uint     unloadCounter;
+  uint maxLoads;
+  uint maxUnloads;
+  uint loadCounter;
+  uint unloadCounter;
 #ifdef __cplusplus
-  union {
+  union
+  {
     uint64_t frameIndex;
     uint32_t frameIndexU32[2];
   };
 #else
   uint64_t frameIndex;  // already embeds STREAMING_INVALID_ADDRESS_START
 #endif
-  
+
   // for compaction based clas management
   uint64_t clasCompactionUsedSize;
   uint     clasCompactionCount;
@@ -87,15 +91,15 @@ struct StreamingRequest
   uint     clasAllocatedMaxSizedLeft;
   uint64_t clasAllocatedUsedSize;
   uint64_t clasAllocatedWastedSize;
-  
-  uint     taskIndex;
-  uint     errorUpdate;
-  uint     errorAgeFilter;
-  uint     errorClasNotFound;
-  uint     errorClasList;
-  uint     errorClasAlloc;
-  uint     errorClasDealloc;
-   int     errorClasUsedVsAlloc;
+
+  uint taskIndex;
+  uint errorUpdate;
+  uint errorAgeFilter;
+  uint errorClasNotFound;
+  uint errorClasList;
+  uint errorClasAlloc;
+  uint errorClasDealloc;
+  int  errorClasUsedVsAlloc;
 
   BUFFER_REF(uvec2s_inout) loadGeometryGroups;
   BUFFER_REF(uvec2s_inout) unloadGeometryGroups;
@@ -145,12 +149,23 @@ struct StreamingPatch
 };
 BUFFER_REF_DECLARE_ARRAY(StreamingPatchs_in, StreamingPatch, , 16);
 
+struct StreamingGeometryPatch
+{
+  uint32_t geometryID;
+  uint32_t lodsCompletedMask;
+};
+BUFFER_REF_DECLARE_ARRAY(StreamingGeometryPatchs_in, StreamingGeometryPatch, , 8);
+
 struct StreamingUpdate
 {
   // unload operations are before load operations
   uint patchUnloadGroupsCount;
   // total operations
   uint patchGroupsCount;
+
+  // geometry patch count
+  uint patchGeometriesCount;
+  uint _pad;
 
   // all newly loaded groups have linear positions in the
   // compacted list of active groups starting with this value
@@ -163,13 +178,15 @@ struct StreamingUpdate
   // loaded come first, then unloaded
   BUFFER_REF(StreamingPatchs_in) patches;
 
-
   // newly loaded group clusters fill these
   BUFFER_REF(ClasBuildInfos_inout) newClasBuilds;
   BUFFER_REF(uint32s_inout) newClasResidentIDs;
   BUFFER_REF(uint32s_inout) newClasSizes;
   BUFFER_REF(uint64s_inout) newClasAddresses;
   uint32_t newClasCount;
+
+  // gometry state handling
+  BUFFER_REF(StreamingGeometryPatchs_in) geometryPatches;
 
   // compaction
   uint32_t moveClasCounter;
@@ -209,7 +226,7 @@ struct StreamingResident
   BUFFER_REF(StreamingGroup_inout) groups;
 
   // only if persistent clas allocator is used
-  BUFFER_REF(uvec2s_inout)  groupClasSizes;
+  BUFFER_REF(uvec2s_inout) groupClasSizes;
 
   BUFFER_REF(uint64s_inout) clusters;
   BUFFER_REF(uint64s_inout) clasAddresses;
@@ -219,7 +236,7 @@ struct StreamingResident
   uint64_t clasMaxSize;
 
   // single element address for persistent information storage
-  // we read from these values when no load/unloads are performed per frame 
+  // we read from these values when no load/unloads are performed per frame
   //
   // for compaction based clas management
   BUFFER_REF(uint64s_inout) clasCompactionUsedSize;
@@ -239,7 +256,7 @@ struct AllocatorRange
   uint32_t offset;
 };
 BUFFER_REF_DECLARE_ARRAY(AllocatorRange_inout, AllocatorRange, , 8);
-struct AllocatorStats 
+struct AllocatorStats
 {
   int64_t allocatedSize;
   int64_t wastedSize;
@@ -250,22 +267,22 @@ BUFFER_REF_DECLARE(AllocatorStats_inout, AllocatorStats, , 8);
 struct StreamingAllocator
 {
   uint freeGapsCounter;
-  uint granularityByteShift; // size of one unit in (1 << shift) bytes
-  uint maxAllocationSize;    // not in bytes but units
+  uint granularityByteShift;  // size of one unit in (1 << shift) bytes
+  uint maxAllocationSize;     // not in bytes but units
   uint sectorCount;
   uint sectorMaxAllocationSized;
   uint sectorSizeShift;
   uint baseWastedSize;
   uint usedBitsCount;
-  
+
   DispatchIndirectCommand dispatchFreeGapsInsert;
 
-  BUFFER_REF(uint32s_inout)        freeGapsPos;
-  BUFFER_REF(uint16s_inout)        freeGapsSize;
-  BUFFER_REF(uint32s_inout)        freeGapsPosBinned;
+  BUFFER_REF(uint32s_inout) freeGapsPos;
+  BUFFER_REF(uint16s_inout) freeGapsSize;
+  BUFFER_REF(uint32s_inout) freeGapsPosBinned;
   BUFFER_REF(AllocatorRange_inout) freeSizeRanges;
-  BUFFER_REF(uint32s_inout)        usedBits;
-  BUFFER_REF(uint32s_inout)        usedSectorBits;
+  BUFFER_REF(uint32s_inout) usedBits;
+  BUFFER_REF(uint32s_inout) usedSectorBits;
   BUFFER_REF(AllocatorStats_inout) stats;
 };
 

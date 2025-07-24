@@ -60,7 +60,10 @@ private:
 
     shaderc::SpvCompilationResult computeBlasInsertClusters;
     shaderc::SpvCompilationResult computeBlasSetupInsertion;
-    shaderc::SpvCompilationResult computeTlasInstancesBlas;
+
+    shaderc::SpvCompilationResult computeInstanceAssignBlas;
+    shaderc::SpvCompilationResult computeInstanceClassifyLod;
+    shaderc::SpvCompilationResult computeGeometryBlasSharing;
   };
 
   struct Pipelines
@@ -72,9 +75,11 @@ private:
     VkPipeline computeTraversalRun     = nullptr;
     VkPipeline computeBuildSetup       = nullptr;
 
-    VkPipeline computeBlasInsertClusters = nullptr;
-    VkPipeline computeBlasSetupInsertion = nullptr;
-    VkPipeline computeTlasInstancesBlas  = nullptr;
+    VkPipeline computeBlasInsertClusters  = nullptr;
+    VkPipeline computeBlasSetupInsertion  = nullptr;
+    VkPipeline computeInstanceAssignBlas  = nullptr;
+    VkPipeline computeInstanceClassifyLod = nullptr;
+    VkPipeline computeGeometryBlasSharing = nullptr;
   };
 
   RendererConfig m_config;
@@ -98,6 +103,7 @@ private:
   nvvk::Buffer            m_sceneDataBuffer;
   nvvk::LargeBuffer       m_sceneBlasDataBuffer;
   nvvk::Buffer            m_sceneTraversalBuffer;
+  nvvk::Buffer            m_sceneGeometryHistogramBuffer;
   shaderio::SceneBuilding m_sceneBuildShaderio;
 
   VkClusterAccelerationStructureClustersBottomLevelInputNV m_blasInput{};
@@ -122,7 +128,9 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("USE_STREAMING", rscene.useStreaming ? "1" : "0");
   options.AddMacroDefinition("USE_SORTING", config.useSorting ? "1" : "0");
   options.AddMacroDefinition("USE_CULLING", config.useCulling ? "1" : "0");
-  options.AddMacroDefinition("DEBUG_VISUALIZATION", config.debugVisualization ? "1" : "0");
+  options.AddMacroDefinition("USE_BLAS_SHARING", config.useBlasSharing ? "1" : "0");
+  options.AddMacroDefinition("USE_RENDER_STATS", config.useRenderStats ? "1" : "0");
+  options.AddMacroDefinition("DEBUG_VISUALIZATION", config.useDebugVisualization ? "1" : "0");
 
   shaderc::CompileOptions optionsAO = options;
   options.AddMacroDefinition("RAYTRACING_PAYLOAD_INDEX", "0");
@@ -133,13 +141,31 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   res.compileShader(m_shaders.rayMiss, VK_SHADER_STAGE_MISS_BIT_KHR, "render_raytrace.rmiss.glsl", &options);
   res.compileShader(m_shaders.rayMissAO, VK_SHADER_STAGE_MISS_BIT_KHR, "render_raytrace.rmiss.glsl", &optionsAO);
 
-  res.compileShader(m_shaders.computeTraversalPresort, VK_SHADER_STAGE_COMPUTE_BIT, "traversal_presort.comp.glsl", &options);
-  res.compileShader(m_shaders.computeTraversalInit, VK_SHADER_STAGE_COMPUTE_BIT, "traversal_init.comp.glsl", &options);
+  if(m_config.useSorting)
+  {
+    res.compileShader(m_shaders.computeTraversalPresort, VK_SHADER_STAGE_COMPUTE_BIT, "traversal_presort.comp.glsl", &options);
+  }
+
+  if(m_config.useBlasSharing)
+  {
+    res.compileShader(m_shaders.computeTraversalInit, VK_SHADER_STAGE_COMPUTE_BIT, "traversal_init_blas_sharing.comp.glsl", &options);
+  }
+  else
+  {
+    res.compileShader(m_shaders.computeTraversalInit, VK_SHADER_STAGE_COMPUTE_BIT, "traversal_init.comp.glsl", &options);
+  }
+
   res.compileShader(m_shaders.computeTraversalRun, VK_SHADER_STAGE_COMPUTE_BIT, "traversal_run.comp.glsl", &options);
   res.compileShader(m_shaders.computeBuildSetup, VK_SHADER_STAGE_COMPUTE_BIT, "build_setup.comp.glsl", &options);
   res.compileShader(m_shaders.computeBlasInsertClusters, VK_SHADER_STAGE_COMPUTE_BIT, "blas_clusters_insert.comp.glsl", &options);
   res.compileShader(m_shaders.computeBlasSetupInsertion, VK_SHADER_STAGE_COMPUTE_BIT, "blas_setup_insertion.comp.glsl", &options);
-  res.compileShader(m_shaders.computeTlasInstancesBlas, VK_SHADER_STAGE_COMPUTE_BIT, "tlas_instances_blas.comp.glsl", &options);
+  res.compileShader(m_shaders.computeInstanceAssignBlas, VK_SHADER_STAGE_COMPUTE_BIT, "instance_assign_blas.comp.glsl", &options);
+
+  if(m_config.useBlasSharing)
+  {
+    res.compileShader(m_shaders.computeInstanceClassifyLod, VK_SHADER_STAGE_COMPUTE_BIT, "instance_classify_lod.comp.glsl", &options);
+    res.compileShader(m_shaders.computeGeometryBlasSharing, VK_SHADER_STAGE_COMPUTE_BIT, "geometry_blas_sharing.comp.glsl", &options);
+  }
 
   if(!res.verifyShaders(m_shaders))
   {
@@ -171,7 +197,7 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
 
   m_resourceReservedUsage.geometryMemBytes   = rscene.getGeometrySize(true);
   m_resourceReservedUsage.rtClasMemBytes     = rscene.getClasSize(true);
-  m_resourceReservedUsage.operationsMemBytes = rscene.getOperationsSize();
+  m_resourceReservedUsage.operationsMemBytes = logMemoryUsage(rscene.getOperationsSize(), "operations", "rscene total");
 
   {
     // get ray tracing properties
@@ -199,7 +225,7 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     // streaming also stores newly built clas in scratch
     res.createBuffer(m_scratchBuffer, scratchSize,
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
-    m_resourceReservedUsage.operationsMemBytes += m_scratchBuffer.bufferSize;
+    m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_scratchBuffer.bufferSize, "operations", "rt scratch");
 
     // Update tlas build information
     m_tlasBuildInfo.srcAccelerationStructure  = VK_NULL_HANDLE;
@@ -212,21 +238,28 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
   {
     res.createBuffer(m_sceneBuildBuffer, sizeof(shaderio::SceneBuilding),
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
-    m_resourceReservedUsage.operationsMemBytes += m_sceneBuildBuffer.bufferSize;
+    m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sceneBuildBuffer.bufferSize, "operations", "build shaderio");
 
     memset(&m_sceneBuildShaderio, 0, sizeof(m_sceneBuildShaderio));
     m_sceneBuildShaderio.numRenderInstances = uint32_t(m_renderInstances.size());
     m_sceneBuildShaderio.maxRenderClusters  = m_maxRenderClusters;
     m_sceneBuildShaderio.maxTraversalInfos  = uint32_t(1u << config.numTraversalTaskBits);
     m_sceneBuildShaderio.tlasInstances      = m_tlasInstancesBuffer.address;
+    m_sceneBuildShaderio.numGeometries      = uint32_t(rscene.scene->getActiveGeometryCount());
 
     BufferRanges mem = {};
     m_sceneBuildShaderio.renderClusterInfos =
         mem.append(sizeof(shaderio::ClusterInfo) * m_sceneBuildShaderio.maxRenderClusters, 8);
 
-    m_sceneBuildShaderio.instanceStates = mem.append(sizeof(uint32_t) * m_renderInstances.size(), 4);
+    m_sceneBuildShaderio.instanceVisibility = mem.append(sizeof(uint8_t) * m_renderInstances.size(), 4);
     m_sceneBuildShaderio.blasBuildInfos = mem.append(sizeof(shaderio::BlasBuildInfo) * m_renderInstances.size(), 16);
-    m_sceneBuildShaderio.instanceBuildInfos = mem.append(sizeof(shaderio::InstanceBuildInfo) * m_renderInstances.size(), 8);
+    m_sceneBuildShaderio.instanceBuildInfos = mem.append(sizeof(shaderio::InstanceBuildInfo) * m_renderInstances.size(), 16);
+
+    if(config.useBlasSharing)
+    {
+      m_sceneBuildShaderio.geometryBuildInfos =
+          mem.append(sizeof(shaderio::GeometryBuildInfo) * m_sceneBuildShaderio.numGeometries, 16);
+    }
 
     if(config.useSorting)
     {
@@ -249,10 +282,10 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
 
     res.createBuffer(m_sceneDataBuffer, mem.getSize(),
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
-    m_resourceReservedUsage.operationsMemBytes += m_sceneDataBuffer.bufferSize;
+    m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sceneDataBuffer.bufferSize, "operations", "build data");
 
     m_sceneBuildShaderio.renderClusterInfos += m_sceneDataBuffer.address;
-    m_sceneBuildShaderio.instanceStates += m_sceneDataBuffer.address;
+    m_sceneBuildShaderio.instanceVisibility += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.blasBuildInfos += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.blasBuildSizes += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.blasBuildAddresses += m_sceneDataBuffer.address;
@@ -260,17 +293,28 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     m_sceneBuildShaderio.instanceSortKeys += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.instanceSortValues += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.instanceBuildInfos += m_sceneDataBuffer.address;
+    m_sceneBuildShaderio.geometryBuildInfos += m_sceneDataBuffer.address;
 
 
     res.createBuffer(m_sceneTraversalBuffer, sizeof(uint64_t) * m_sceneBuildShaderio.maxTraversalInfos,
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    m_resourceReservedUsage.operationsMemBytes += m_sceneTraversalBuffer.bufferSize;
+    m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sceneTraversalBuffer.bufferSize, "operations", "build traversal");
 
     m_sceneBuildShaderio.traversalNodeInfos = m_sceneTraversalBuffer.address;
 
     res.createLargeBuffer(m_sceneBlasDataBuffer, m_blasDataSize,
                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
     m_resourceReservedUsage.rtBlasMemBytes += m_blasDataSize;
+
+    if(m_config.useBlasSharing)
+    {
+      res.createBuffer(m_sceneGeometryHistogramBuffer, sizeof(shaderio::GeometryBuildHistogram) * m_sceneBuildShaderio.numGeometries,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+      m_resourceReservedUsage.operationsMemBytes +=
+          logMemoryUsage(m_sceneGeometryHistogramBuffer.bufferSize, "operations", "build geo");
+
+      m_sceneBuildShaderio.geometryHistograms = m_sceneGeometryHistogramBuffer.address;
+    }
   }
 
   // use a single common descriptor set for all operations
@@ -358,8 +402,17 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeBlasSetupInsertion);
     vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeBlasSetupInsertion);
 
-    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeTlasInstancesBlas);
-    vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTlasInstancesBlas);
+    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeInstanceAssignBlas);
+    vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeInstanceAssignBlas);
+
+    if(config.useBlasSharing)
+    {
+      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeInstanceClassifyLod);
+      vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeInstanceClassifyLod);
+
+      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeGeometryBlasSharing);
+      vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeGeometryBlasSharing);
+    }
   }
 
   return true;
@@ -376,15 +429,27 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
 
   m_sceneBuildShaderio.traversalViewMatrix =
       frame.freezeCulling ? frame.frameConstantsLast.viewMatrix : frame.frameConstants.viewMatrix;
+
   m_sceneBuildShaderio.errorOverDistanceThreshold =
       nvclusterlodErrorOverDistance(frame.lodPixelError * float(frame.frameConstants.supersample),
                                     frame.frameConstants.fov, frame.frameConstants.viewportf.y);
+
+  m_sceneBuildShaderio.culledErrorScale      = std::max(1.0f, frame.culledErrorScale);
+  m_sceneBuildShaderio.sharingMinInstances   = frame.sharingMinInstances;
+  m_sceneBuildShaderio.sharingPushCulled     = frame.sharingPushCulled;
+  m_sceneBuildShaderio.sharingToleranceLevel = std::max(1u, frame.sharingToleranceLevel);
+  m_sceneBuildShaderio.sharingMinLevel       = frame.sharingMinLevel;
 
   vkCmdUpdateBuffer(cmd, res.m_commonBuffers.frameConstants.buffer, 0, sizeof(shaderio::FrameConstants) * 2,
                     (const uint32_t*)&frame.frameConstants);
   vkCmdUpdateBuffer(cmd, m_sceneBuildBuffer.buffer, 0, sizeof(shaderio::SceneBuilding), (const uint32_t*)&m_sceneBuildShaderio);
   vkCmdFillBuffer(cmd, res.m_commonBuffers.readBack.buffer, 0, sizeof(shaderio::Readback), 0);
   vkCmdFillBuffer(cmd, m_sceneTraversalBuffer.buffer, 0, m_sceneTraversalBuffer.bufferSize, ~0);
+
+  if(m_config.useBlasSharing)
+  {
+    vkCmdFillBuffer(cmd, m_sceneGeometryHistogramBuffer.buffer, 0, m_sceneGeometryHistogramBuffer.bufferSize, 0);
+  }
 
   if(rscene.useStreaming)
   {
@@ -405,31 +470,50 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     rscene.sceneStreaming.cmdPreTraversal(cmd, m_scratchBuffer.address, profiler);
   }
 
-  if(m_config.useSorting)
+
   {
-    auto timerSection = profiler.cmdFrameSection(cmd, "Traversal Instance Sort");
+    auto timerSection = profiler.cmdFrameSection(cmd, "Traversal Preparation");
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.sets.data(), 0, nullptr);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalPresort);
-    vkCmdDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TRAVERSAL_PRESORT_WORKGROUP), 1, 1);
 
-    memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
-                         &memBarrier, 0, nullptr, 0, nullptr);
+    if(m_config.useSorting)
+    {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalPresort);
+      vkCmdDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TRAVERSAL_PRESORT_WORKGROUP), 1, 1);
 
-    vrdxCmdSortKeyValue(cmd, res.m_vrdxSorter, m_sceneBuildShaderio.numRenderInstances, m_sceneDataBuffer.buffer,
-                        m_sceneBuildShaderio.instanceSortKeys - m_sceneDataBuffer.address, m_sceneDataBuffer.buffer,
-                        m_sceneBuildShaderio.instanceSortValues - m_sceneDataBuffer.address, m_sortingAuxBuffer.buffer,
-                        0, nullptr, 0);
+      memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                           &memBarrier, 0, nullptr, 0, nullptr);
 
-    memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
-                         &memBarrier, 0, nullptr, 0, nullptr);
-  }
+      vrdxCmdSortKeyValue(cmd, res.m_vrdxSorter, m_sceneBuildShaderio.numRenderInstances, m_sceneDataBuffer.buffer,
+                          m_sceneBuildShaderio.instanceSortKeys - m_sceneDataBuffer.address, m_sceneDataBuffer.buffer,
+                          m_sceneBuildShaderio.instanceSortValues - m_sceneDataBuffer.address,
+                          m_sortingAuxBuffer.buffer, 0, nullptr, 0);
+    }
 
-  {
-    auto timerSection = profiler.cmdFrameSection(cmd, "Traversal Init");
+    if(m_config.useBlasSharing)
+    {
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.sets.data(), 0, nullptr);
+
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeInstanceClassifyLod);
+      vkCmdDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, INSTANCES_CLASSIFY_LOD_WORKGROUP), 1, 1);
+
+      memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                           &memBarrier, 0, nullptr, 0, nullptr);
+
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeGeometryBlasSharing);
+      vkCmdDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numGeometries, GEOMETRY_BLAS_SHARING_WORKGROUP), 1, 1);
+    }
+
+    if(m_config.useBlasSharing || m_config.useSorting)
+    {
+      memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                           &memBarrier, 0, nullptr, 0, nullptr);
+    }
 
     // we prepare traversal by filling in instance root nodes into the traversal queue
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.sets.data(), 0, nullptr);
@@ -507,7 +591,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     vkCmdDispatchIndirect(cmd, m_sceneBuildBuffer.buffer, offsetof(shaderio::SceneBuilding, indirectDispatchBlasInsertion));
 
     memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
+    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
                          0, 1, &memBarrier, 0, nullptr, 0, nullptr);
@@ -571,8 +655,8 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
   {
     auto timerSection = profiler.cmdFrameSection(cmd, "Tlas Preparation");
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTlasInstancesBlas);
-    vkCmdDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TLAS_INSTANCES_BLAS_WORKGROUP), 1, 1);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeInstanceAssignBlas);
+    vkCmdDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, INSTANCES_ASSIGN_BLAS_WORKGROUP), 1, 1);
 
     memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
@@ -643,6 +727,7 @@ void RendererRayTraceClustersLod::deinit(Resources& res)
   res.m_allocator.destroyBuffer(m_sceneDataBuffer);
   res.m_allocator.destroyBuffer(m_sceneTraversalBuffer);
   res.m_allocator.destroyLargeBuffer(m_sceneBlasDataBuffer);
+  res.m_allocator.destroyBuffer(m_sceneGeometryHistogramBuffer);
 
   res.m_allocator.destroyBuffer(m_sbtBuffer);
 
@@ -829,7 +914,7 @@ void RendererRayTraceClustersLod::initRayTracingTlas(Resources& res, const Rende
   // Create a buffer holding the actual instance data (matrices++) for use by the AS builder
   res.createBuffer(m_tlasInstancesBuffer, tlasInstances.size() * sizeof(VkAccelerationStructureInstanceKHR),
                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
-  m_resourceReservedUsage.operationsMemBytes += tlasInstances.size() * sizeof(VkAccelerationStructureInstanceKHR);
+  m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_tlasInstancesBuffer.bufferSize, "operations", "rt instances");
   res.simpleUploadBuffer(m_tlasInstancesBuffer, tlasInstances.data());
 
   VkBufferDeviceAddressInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, nullptr, m_tlasInstancesBuffer.buffer};

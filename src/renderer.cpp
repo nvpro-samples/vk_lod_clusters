@@ -161,7 +161,7 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
 
     res.createBuffer(m_sortingAuxBuffer, sorterRequirements.size, sorterRequirements.usage);
 
-    m_resourceReservedUsage.operationsMemBytes += m_sortingAuxBuffer.bufferSize;
+    m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sortingAuxBuffer.bufferSize, "operations", "traversal sorting");
   }
 
   updateBasicDescriptors(res, rscene);

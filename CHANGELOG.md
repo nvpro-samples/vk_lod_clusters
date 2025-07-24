@@ -1,4 +1,16 @@
 # Changelog for vk_lod_clusters
+* 2025-7-24:
+  * Major feature update.
+  * Added ["BLAS sharing"](docs/blas_sharing.md) under "Traversal" to drastically reduce BLAS builds when geometries are instanced a lot. It is automatically enabled (`--autosharing 0/1`) for scene configurations that may benefit.
+  * Added ""Culled error scale" under "Traversal" to allow more control over the lod error allowed in indirectly visible instances (`--cullederrorscale <float>`).
+  * Added "Rendered Statistics" option to enable/disable computation of rendering statistics under "Traversal", this was always on before but had quite the performance impact and is now disabled.
+  * Allow changing of cluster & lod settings for files that were loaded with a cache, triggers processing again.
+  * Auto enable storing the file cache.
+* 2025-7-18:
+  * Mirror Box: Double right-click or M key to investigate out of frustum / occluded object behavior. Under the "Settings" tab this box can be adjusted manually as well.
+  * Improve ray offsets for shadows/ao in large scenes to avoid self-intersection.
+* 2025-7-17:
+  * Blas Sharing. Significantly reduces BLAS builds in ray tracing by sharing BLAS among instances. See new documentation TODO.
 * 2025-7-16:
   * Bugfix crash for ray tracing when not all tlas instances had a valid blas. This could have happened when we ran out of renderable clusters. The fix ensures the use of the low detail blas.
 * 2025-7-14:

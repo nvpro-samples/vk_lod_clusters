@@ -85,6 +85,11 @@ layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffe
   Geometry geometries[];
 };
 
+layout(scalar, binding = BINDINGS_SCENEBUILDING_UBO, set = 0) uniform buildBuffer
+{
+  SceneBuilding build;  
+};
+
 #if USE_STREAMING
 layout(scalar, binding = BINDINGS_STREAMING_UBO, set = 0) uniform streamingBuffer
 {
@@ -205,7 +210,7 @@ void main()
     float sunContribution  = 1.0;
     vec3  directionToLight = view.skyParams.sunDirection;
     if(view.doShadow == 1)
-      sunContribution = traceShadowRay(wPos, directionToLight);
+      sunContribution = traceShadowRay(wPos, wNormal, directionToLight);
 
     shaded = shading(instanceID, wPos, wNormal, visData, sunContribution, ambientOcclusion);
   }

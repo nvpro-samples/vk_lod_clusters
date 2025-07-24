@@ -119,7 +119,7 @@ void Scene::ProcessingInfo::deinit()
     nvutils::get_thread_pool().reset(numPoolThreadsOriginal);
 }
 
-bool Scene::init(const std::filesystem::path& filePath, const SceneConfig& config)
+bool Scene::init(const std::filesystem::path& filePath, const SceneConfig& config, bool skipCache)
 {
   *this = {};
 
@@ -134,7 +134,7 @@ bool Scene::init(const std::filesystem::path& filePath, const SceneConfig& confi
 
   std::string cacheFileName = nvutils::utf8FromPath(m_cacheFilePath);
 
-  if(m_config.autoLoadCache && m_cacheFileMapping.open(m_cacheFilePath))
+  if(!skipCache && m_config.autoLoadCache && m_cacheFileMapping.open(m_cacheFilePath))
   {
     m_cacheFileView.init(m_cacheFileMapping.size(), m_cacheFileMapping.data());
     if(m_cacheFileView.isValid())
@@ -169,8 +169,16 @@ bool Scene::init(const std::filesystem::path& filePath, const SceneConfig& confi
     return false;
   }
 
+  m_originalInstanceCount = m_instances.size();
+  m_originalGeometryCount = m_geometryViews.size();
+  m_activeGeometryCount   = m_originalGeometryCount;
+
   computeClusterStats();
   computeInstanceBBoxes();
+  m_gridBbox = m_bbox;
+
+  glm::vec3 modelExtent = m_bbox.hi - m_bbox.lo;
+  m_isBig = modelExtent.y < 0.1 * std::max(modelExtent.x, modelExtent.z) && m_originalInstanceCount > 1024;
 
   for(auto& geometry : m_geometryViews)
   {
@@ -192,11 +200,6 @@ bool Scene::init(const std::filesystem::path& filePath, const SceneConfig& confi
     m_hiTrianglesCountInstanced += geometry.hiTriangleCount;
     m_hiClustersCountInstanced += geometry.hiClustersCount;
   }
-
-  m_originalInstanceCount = m_instances.size();
-  m_originalGeometryCount = m_geometryViews.size();
-  m_activeGeometryCount   = m_originalGeometryCount;
-
 
   if(m_config.clusterStripify && (processingInfo.numTotalStrips.load() > 0))
   {
@@ -227,6 +230,8 @@ void Scene::deinit()
 
 void Scene::updateSceneGrid(const SceneGridConfig& gridConfig)
 {
+  m_gridConfig = gridConfig;
+
   size_t copiesCount = std::max(1u, gridConfig.numCopies);
 
   size_t numOldCopies = m_instances.size() / m_originalInstanceCount;
@@ -270,12 +275,15 @@ void Scene::updateSceneGrid(const SceneGridConfig& gridConfig)
 
   size_t lastCopyIndex = 0;
 
+  glm::vec3 modelExtent = (m_bbox.hi - m_bbox.lo);
+  glm::vec3 modelCenter = (m_bbox.hi + m_bbox.lo) * 0.5f;
+  float     modelSize   = glm::length(modelExtent);
   glm::vec3 gridShift;
   glm::mat4 gridRotMatrix;
 
   for(size_t copyIndex = 1; copyIndex < copiesCount; copyIndex++)
   {
-    gridShift = gridConfig.refShift * (m_bbox.hi - m_bbox.lo);
+    gridShift = gridConfig.refShift * modelExtent;
     size_t c  = copyIndex;
 
     float u = 0;
@@ -333,6 +341,23 @@ void Scene::updateSceneGrid(const SceneGridConfig& gridConfig)
       gridShift.z = 0;
     }
 
+    glm::mat4 scaleMatrix = glm::mat4(1.0f);
+
+    if(gridConfig.minScale != 1.0f || gridConfig.maxScale != 1.0f)
+    {
+      float scale = glm::mix(gridConfig.minScale, gridConfig.maxScale, randomUnorm(rng));
+      scaleMatrix = glm::scale(scaleMatrix, glm::vec3(scale));
+
+      if(scale < 1.0f)
+      {
+        gridShift.y += modelSize * (1.0f - scale);
+      }
+      else
+      {
+        gridShift.y -= modelSize * (scale - 1.0f);
+      }
+    }
+
     if(axis & (8 | 16 | 32))
     {
       glm::vec3 mask    = {axis & 8 ? 1.0f : 0.0f, axis & 16 ? 1.0f : 0.0f, axis & 32 ? 1.0f : 0.0f};
@@ -368,18 +393,25 @@ void Scene::updateSceneGrid(const SceneGridConfig& gridConfig)
 
       // modify matrix for the grid
       glm::mat4 worldMatrix = m_instances[i].matrix;
+      glm::vec3 translation = worldMatrix[3];
+      worldMatrix[3]        = glm::vec4(translation - modelCenter, 1.f);
+
+      worldMatrix = scaleMatrix * worldMatrix;
 
       if(axis & (8 | 16 | 32))
       {
         worldMatrix = gridRotMatrix * worldMatrix;
       }
-      glm::vec3 translation;
       translation    = worldMatrix[3];
-      worldMatrix[3] = glm::vec4(translation + gridShift, 1.f);
+      worldMatrix[3] = glm::vec4(translation + modelCenter + gridShift, 1.f);
 
       instance.matrix = worldMatrix;
     }
   }
+
+  m_gridBbox = m_bbox;
+  computeInstanceBBoxes();
+  std::swap(m_gridBbox, m_bbox);
 }
 
 void Scene::computeInstanceBBoxes()
@@ -388,9 +420,7 @@ void Scene::computeInstanceBBoxes()
 
   for(auto& instance : m_instances)
   {
-    assert(instance.geometryID <= m_geometryViews.size());
-
-    const GeometryView& geometry = m_geometryViews[instance.geometryID];
+    const GeometryView& geometry = getActiveGeometry(instance.geometryID);
 
     instance.bbox = {{FLT_MAX, FLT_MAX, FLT_MAX}, {-FLT_MAX, -FLT_MAX, -FLT_MAX}, 0, 0};
 
@@ -511,6 +541,7 @@ void Scene::processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex
     geometryView.clusterVertexRanges = geometryStorage.clusterVertexRanges;
     geometryView.clusterBboxes       = geometryStorage.clusterBboxes;
     geometryView.groupLodLevels      = geometryStorage.groupLodLevels;
+    geometryView.lodLevels           = geometryStorage.lodLevels;
 
     nvclusterlod::toView(geometryStorage.lodHierarchy, geometryView.lodHierarchy);
     nvclusterlod::toView(geometryStorage.lodMesh, geometryView.lodMesh);
@@ -691,7 +722,12 @@ void Scene::buildGeometryClusters(const ProcessingInfo& processingInfo, Geometry
   geometry.localVertices.resize(offset);
   geometry.localVertices.shrink_to_fit();
 
+  shaderio::LodLevel initLevel{};
+  initLevel.minBoundingSphereRadius = FLT_MAX;
+  initLevel.minMaxQuadricError      = FLT_MAX;
+
   geometry.lodLevelsCount = uint32_t(geometry.lodMesh.lodLevelGroupRanges.size());
+  geometry.lodLevels.resize(geometry.lodMesh.lodLevelGroupRanges.size(), initLevel);
 
   // for later, easier access
   geometry.groupLodLevels.resize(geometry.lodMesh.groupClusterRanges.size());
@@ -703,14 +739,38 @@ void Scene::buildGeometryClusters(const ProcessingInfo& processingInfo, Geometry
   for(size_t level = 0; level < geometry.lodMesh.lodLevelGroupRanges.size(); level++)
   {
     nvcluster_Range groupRange = geometry.lodMesh.lodLevelGroupRanges[level];
+
+    geometry.lodLevels[level].groupCount  = groupRange.count;
+    geometry.lodLevels[level].groupOffset = groupRange.offset;
+
     for(size_t g = groupRange.offset; g < groupRange.offset + groupRange.count; g++)
     {
+      nvcluster_Range clusterRange = geometry.lodMesh.groupClusterRanges[g];
+
       geometry.groupLodLevels[g] = uint8_t(level);
+
+      // USE_BLAS_SHARING
+      //
+      // For the BLAS sharing technique we need to figure out the conservative
+      // lod range that an instance may cover. We store for each lod level
+      // the smallest possible group bounding sphere as well as the smallest
+      // maximum error found in any group.
+
+      // The technique will use these values to artificially place a lod sphere
+      // at the far end of an instance and evaluate its lod metric. The minima
+      // ensure that there can't be any group in the instance's sphere that would
+      // behave such a way that it requires lower detail.
+      //
+      // See `instance_classify_lod.comp.glsl` shader.
+
+      geometry.lodLevels[level].minBoundingSphereRadius =
+          std::min(geometry.lodLevels[level].minBoundingSphereRadius,
+                   geometry.lodHierarchy.groupCumulativeBoundingSpheres[g].radius);
+      geometry.lodLevels[level].minMaxQuadricError =
+          std::min(geometry.lodLevels[level].minMaxQuadricError, geometry.lodHierarchy.groupCumulativeQuadricError[g]);
 
       if(level == 0)
       {
-        nvcluster_Range clusterRange = geometry.lodMesh.groupClusterRanges[g];
-
         uint32_t lastCluster  = clusterRange.offset + clusterRange.count - 1;
         uint32_t firstCluster = clusterRange.offset;
 
@@ -819,9 +879,17 @@ void Scene::computeHistograms()
   m_clusterVertexHistogram.resize(m_config.clusterVertices + 1, 0);
   m_groupClusterHistogram.resize(m_config.clusterGroupSize + 1, 0);
   m_nodeChildrenHistogram.resize(32 + 1, 0);
+  m_lodLevelsHistogram.resize(128, 0);
+
+  m_maxLodLevelsCount = 0;
 
   for(GeometryView& geometry : m_geometryViews)
   {
+    assert(geometry.lodLevelsCount < 128);
+    m_maxLodLevelsCount = std::max(m_maxLodLevelsCount, geometry.lodLevelsCount);
+
+    m_lodLevelsHistogram[geometry.lodLevelsCount]++;
+
     for(size_t c = 0; c < geometry.lodMesh.clusterTriangleRanges.size(); c++)
     {
       const nvcluster_Range& vertexRange   = geometry.clusterVertexRanges[c];
@@ -857,10 +925,14 @@ void Scene::computeHistograms()
     }
   }
 
+  m_lodLevelsHistogram.resize(m_maxLodLevelsCount + 1);
+
   m_clusterTriangleHistogramMax = 0u;
   m_clusterVertexHistogramMax   = 0u;
   m_groupClusterHistogramMax    = 0u;
   m_nodeChildrenHistogramMax    = 0u;
+  m_lodLevelsHistogramMax       = 0u;
+
   for(size_t i = 0; i < m_clusterTriangleHistogram.size(); i++)
   {
     m_clusterTriangleHistogramMax = std::max(m_clusterTriangleHistogramMax, m_clusterTriangleHistogram[i]);
@@ -877,12 +949,16 @@ void Scene::computeHistograms()
   {
     m_nodeChildrenHistogramMax = std::max(m_nodeChildrenHistogramMax, m_nodeChildrenHistogram[i]);
   }
+  for(size_t i = 0; i < m_lodLevelsHistogram.size(); i++)
+  {
+    m_lodLevelsHistogramMax = std::max(m_lodLevelsHistogramMax, m_lodLevelsHistogram[i]);
+  }
 }
 
 void Scene::buildGeometryClusterStrips(ProcessingInfo& processingInfo, GeometryStorage& geometry)
 {
-  uint32_t numMaxTriangles  = m_config.clusterTriangles;
-  uint32_t numThreadIndices = numMaxTriangles * 3 + numMaxTriangles * 3 + meshopt_stripifyBound(numMaxTriangles * 3);
+  uint32_t numMaxTriangles = m_config.clusterTriangles;
+  uint32_t numThreadIndices = numMaxTriangles * 3 + numMaxTriangles * 3 + uint32_t(meshopt_stripifyBound(numMaxTriangles * 3));
   std::vector<uint32_t> threadIndices(processingInfo.numInnerThreads * numThreadIndices);
 
   std::atomic_uint32_t numStrips = 0;

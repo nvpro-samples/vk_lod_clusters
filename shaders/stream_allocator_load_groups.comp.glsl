@@ -396,9 +396,10 @@ void main()
       groupBaseAddress += uint64_t(clasSize);
     }
     
-    // for stats
+  #if USE_MEMORY_STATS
     atomicAdd(streamingRW.clasAllocator.stats.d.allocatedSize, int64_t(allocByteSize));
     atomicAdd(streamingRW.clasAllocator.stats.d.wastedSize,    int64_t(wastedByteSize));
+  #endif
     
     // for allocation management, tag bits as used
     //

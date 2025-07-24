@@ -38,6 +38,8 @@ using namespace glm;
 #endif
 
 #define SHADERIO_ORIGINAL_MESH_GROUP 0xffffffffu
+#define SHADERIO_MAX_LOD_LEVELS 32
+
 
 struct BBox
 {
@@ -157,25 +159,35 @@ struct Node
 };
 BUFFER_REF_DECLARE_ARRAY(Nodes_in, Node, readonly, 8);
 
+struct LodLevel
+{
+  float    minBoundingSphereRadius;
+  float    minMaxQuadricError;
+  uint32_t groupOffset;
+  uint32_t groupCount;
+};
+BUFFER_REF_DECLARE_ARRAY(LodLevels_inout, LodLevel, , 8);
+
 struct Geometry
 {
-  uint32_t clustersCount;
-  uint32_t groupsCount;
-  uint32_t nodesCount;
+  uint32_t instancesOffset;
+  uint32_t instancesCount;
+  uint32_t lodsCompletedMask;  // bit mask for which lod-levels are fully loaded, requires STREAMING_GEOMETRY_LOD_LEVEL_TRACKING
   uint32_t lodLevelsCount;
 
   // lowest detail data is always available
-  uint64_t lowDetailBlasAddress;
-  uint32_t lowDetailClusterID;
   uint32_t lowDetailTriangles;
+  uint32_t lowDetailClusterID;
+  uint64_t lowDetailBlasAddress;
 
   // object space geometry bbox
   BBox bbox;
 
+  BUFFER_REF(LodLevels_inout) lodLevels;
+
   // lod hierarchy traversal
   BUFFER_REF(Nodes_in) nodes;
   BUFFER_REF(BBoxes_in) nodeBboxes;
-
 
   // streaming (null if preloaded)
   // provides memory address of a resident group.
@@ -192,7 +204,8 @@ struct Geometry
   BUFFER_REF(uint64s_in) preloadedClusterClasAddresses;
   BUFFER_REF(uint32s_in) preloadedClusterClasSizes;
 };
-BUFFER_REF_DECLARE(Geometry_in, Geometry, readonly, 8);
+BUFFER_REF_DECLARE(Geometry_in, Geometry, readonly, 16);
+BUFFER_REF_DECLARE(Geometry_inout, Geometry, , 16);
 
 struct RenderInstance
 {

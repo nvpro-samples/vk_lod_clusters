@@ -58,6 +58,11 @@ layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffe
   Geometry geometries[];
 };
 
+layout(scalar, binding = BINDINGS_SCENEBUILDING_UBO, set = 0) uniform buildBuffer
+{
+  SceneBuilding build;  
+};
+
 #if USE_STREAMING
 layout(scalar, binding = BINDINGS_STREAMING_UBO, set = 0) uniform streamingBuffer
 {
@@ -146,7 +151,7 @@ void main()
 #if ALLOW_SHADING && 1
   {
     const float overHeadLight = 1.0f;
-    const float ambientLight  = 1.f;
+    const float ambientLight  = 0.7f;
 
     out_Color = shading(IN.instanceID, IN.wPos, wNormal, visData, overHeadLight, ambientLight);
   }

@@ -50,6 +50,19 @@ layout(location = 0) rayPayloadEXT RayPayload rayHit;
 
 //////////////////////////////////////////////////////////////
 
+float hitBbox(vec3 rayPos, vec3 rayDir, vec3 bboxMin, vec3 bboxMax)
+{
+  vec3  invDir = 1.0 / (rayDir);
+  vec3  tbot   = invDir * (bboxMin - rayPos);
+  vec3  ttop   = invDir * (bboxMax - rayPos);
+  vec3  tmin   = min(ttop, tbot);
+  vec3  tmax   = max(ttop, tbot);
+  float t0     = max(tmin.x, max(tmin.y, tmin.z));
+  float t1     = min(tmax.x, min(tmax.y, tmax.z));
+  
+  return t1 > max(t0, 0.0) ? t0 : -1.0;
+}
+
 void main()
 {
   // for writing debugging values to stats.debug etc.
@@ -80,11 +93,48 @@ void main()
   rayHit.differentialY.xyz = directionOffsetY.xyz;
 #endif
 
+  vec3  mirrorCenter = view.wMirrorBox.xyz;
+  float mirrorSize   = view.wMirrorBox.w;
+  vec3 mirrorHitPoint;
+  vec3 mirrorNormal;
+  bool mirrorHit = false;
+  float mirrorT;
+  
+  if (view.useMirrorBox != 0)
+  {
+    mirrorT = hitBbox(origin.xyz, direction.xyz, mirrorCenter - mirrorSize, mirrorCenter + mirrorSize);
+    mirrorHit = mirrorT > 0;
+    if (mirrorHit)
+    {
+      mirrorHitPoint = origin.xyz + direction.xyz * mirrorT;    
+      mirrorNormal   = mirrorHitPoint - mirrorCenter;
+      vec3 signs     = sign(mirrorNormal);
+      mirrorNormal   = abs(mirrorNormal);
+      mirrorNormal   = vec3(equal(mirrorNormal, vec3(max(max(mirrorNormal.x, mirrorNormal.y),mirrorNormal.z)))) * signs;
+      
+      tMax = mirrorT;
+    }
+  }
+
   traceRayEXT(asScene, view.flipWinding == 2 ? 0 : gl_RayFlagsCullBackFacingTrianglesEXT, 0xff, 0, 0,  // hit offset, hit stride
               0,                                                           // miss offset
               origin.xyz, tMin, direction.xyz, tMax,
               0  // rayPayloadNV location qualifier
   );
+  
+  if (view.useMirrorBox != 0)
+  {
+    if (rayHit.color.w == 0 && mirrorHit)
+    {
+      traceRayEXT(asScene, view.flipWinding == 2 ? 0 : gl_RayFlagsCullBackFacingTrianglesEXT, 0xff, 0, 0,  // hit offset, hit stride
+                0,                                                           // miss offset
+                mirrorHitPoint, 0, reflect(direction.xyz, mirrorNormal), view.farPlane + mirrorT,
+                0  // rayPayloadNV location qualifier
+      );
+      
+      rayHit.color.xyz *= max(0,dot(mirrorNormal,-direction.xyz)) * 0.5 + 0.5;
+    }
+  }
 
   {
     imageStore(imgColor, screen, vec4(rayHit.color.xyz, 1));

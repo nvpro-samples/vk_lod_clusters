@@ -61,11 +61,13 @@ public:
 
 struct RendererConfig
 {
-  bool flipWinding        = false;
-  bool twoSided           = false;
-  bool useSorting         = false;
-  bool useCulling         = false;
-  bool debugVisualization = true;
+  bool flipWinding           = false;
+  bool twoSided              = false;
+  bool useSorting            = false;
+  bool useRenderStats        = false;
+  bool useCulling            = true;
+  bool useBlasSharing        = true;
+  bool useDebugVisualization = true;
 
   // the maximum number of renderable clusters per frame in bits i.e. (1 << number)
   uint32_t numRenderClusterBits = 22;

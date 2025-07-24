@@ -39,6 +39,7 @@
 #define VISUALIZE_GROUP 3
 #define VISUALIZE_LOD 4
 #define VISUALIZE_TRIANGLE 5
+#define VISUALIZE_BLAS 6
 
 #define BBOXES_PER_MESHLET 8
 
@@ -73,11 +74,13 @@
 /////////////////////////////////////////
 
 #define TRAVERSAL_PRESORT_WORKGROUP 128
-#define TRAVERSAL_INIT_WORKGROUP 128
+#define TRAVERSAL_INIT_WORKGROUP 64
 #define TRAVERSAL_RUN_WORKGROUP 64
-#define BLAS_SETUP_INSERTION_WORKGROUP 128
-#define BLAS_INSERT_CLUSTERS_WORKGROUP 128
-#define TLAS_INSTANCES_BLAS_WORKGROUP 128
+#define BLAS_SETUP_INSERTION_WORKGROUP 64
+#define BLAS_INSERT_CLUSTERS_WORKGROUP 64
+#define INSTANCES_ASSIGN_BLAS_WORKGROUP 64
+#define INSTANCES_CLASSIFY_LOD_WORKGROUP 64
+#define GEOMETRY_BLAS_SHARING_WORKGROUP 64
 
 // must be power of 2
 #define STREAM_UPDATE_SCENE_WORKGROUP 64
@@ -92,6 +95,14 @@
 
 /////////////////////////////////////////
 
+#ifndef USE_RENDER_STATS
+#define USE_RENDER_STATS 1
+#endif
+
+#ifndef USE_MEMORY_STATS
+#define USE_MEMORY_STATS 1
+#endif
+
 #ifndef USE_CULLING
 #define USE_CULLING 1
 #endif
@@ -100,6 +111,9 @@
 #define USE_INSTANCE_SORTING 1
 #endif
 
+#ifndef USE_BLAS_SHARING
+#define USE_BLAS_SHARING 1
+#endif
 
 #ifndef USE_STREAMING
 #define USE_STREAMING 1
@@ -110,7 +124,7 @@
 #endif
 
 #ifndef TARGETS_RASTERIZATION
-#define TARGETS_RASTERIZATION 1
+#define TARGETS_RASTERIZATION 0
 #endif
 
 #define TARGETS_RAY_TRACING (!(TARGETS_RASTERIZATION))
@@ -150,8 +164,10 @@ struct FrameConstants
   vec3  wUpDir;
   float sceneSize;
 
+  vec4 wMirrorBox;
+
   uint  flipWinding;
-  uint  tintTessellated;
+  uint  useMirrorBox;
   uint  visualize;
   float fov;
 
@@ -195,12 +211,11 @@ struct FrameConstants
 
 struct Readback
 {
-  uint numRenderClusters;
-  uint numTraversalInfos;
-  uint numRenderedClusters;
-  uint numRenderedTriangles;
-  uint numBlasBuilds;
-  uint _pad;
+  uint     numRenderClusters;
+  uint     numTraversalInfos;
+  uint     numRenderedClusters;
+  uint     numBlasBuilds;
+  uint64_t numRenderedTriangles;
 
   uint64_t blasActualSizes;
 

@@ -52,5 +52,5 @@ void main()
 #endif
 
   rayHit.color.rgb = skyColor;
-  rayHit.color.w   = 0.f;
+  rayHit.color.w   = 0;
 }

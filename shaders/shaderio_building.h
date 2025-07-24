@@ -27,10 +27,10 @@ namespace shaderio {
 using namespace glm;
 #else
 
-#define INSTANCE_FRUSTUM_BIT 1
-#define INSTANCE_VISIBLE_BIT 2
+#define INSTANCE_VISIBLE_BIT 1
 
 #define BLAS_BUILD_INDEX_LOWDETAIL (uint(~0))
+#define BLAS_BUILD_INDEX_SHARE_BIT (uint(1 << 31))
 
 #endif
 
@@ -90,12 +90,46 @@ struct TlasInstance
 };
 BUFFER_REF_DECLARE_ARRAY(TlasInstances_inout, TlasInstance, , 16);
 
+struct GeometryBuildHistogram
+{
+  // number of instances that start at this lod-level
+  uint32_t lodLevelMinHistogram[SHADERIO_MAX_LOD_LEVELS];
+  // number of instances that end at this lod-level
+  uint32_t lodLevelMaxHistogram[SHADERIO_MAX_LOD_LEVELS];
+  // a "somewhat" stable instance to use for sharing, that ends
+  // at this lod-level
+  uint32_t lodLevelMaxPackedInstance[SHADERIO_MAX_LOD_LEVELS];
+};
+BUFFER_REF_DECLARE_ARRAY(GeometryBuildHistogram_inout, GeometryBuildHistogram, , 16);
+
+struct GeometryBuildInfo
+{
+  uint32_t shareLevelMin;    // highest potential detail
+  uint32_t shareLevelMax;    // lowest potential detail
+  uint32_t shareInstanceID;  // which instance to use for sharing (its lod range is expressed by the values above)
+  uint32_t shareUseCount;    // how many instances end up using the shareInstanceID's blas.
+};
+BUFFER_REF_DECLARE_ARRAY(GeometryBuildInfos_inout, GeometryBuildInfo, , 16);
+
 struct InstanceBuildInfo
 {
-  uint clusterReferencesCount;
-  uint blasBuildIndex;  // can be BLAS_BUILD_INDEX_LOWDETAIL
+  // how many clusters this instance uses
+  uint32_t clusterReferencesCount;
+
+  // which blas to use
+  // Can be BLAS_BUILD_INDEX_LOWDETAIL or have BLAS_BUILD_INDEX_SHARE_BIT set.
+  // With BLAS_BUILD_INDEX_SHARE_BIT it encodes the instanceID that it shares the blas from.
+  // Without any of the previous special cases it is the index into the array of the
+  // dynamically built BLAS.
+  uint32_t blasBuildIndex;
+
+  uint8_t  lodLevelMin;          // highest potential detail
+  uint8_t  lodLevelMax;          // lowest potential detail
+  uint16_t geometryLodLevelMax;  // the highest lod level of the geometry
+  uint32_t instanceUseCount;     // how many instances use this instance's blas
+                                 // default 1, but in blas sharing case can be multiple.
 };
-BUFFER_REF_DECLARE_ARRAY(InstanceBuildInfos_inout, InstanceBuildInfo, , 8);
+BUFFER_REF_DECLARE_ARRAY(InstanceBuildInfos_inout, InstanceBuildInfo, , 16);
 
 // The central structure that contains relevant information to
 // perform the runtime lod hierchy traversal and building of
@@ -105,10 +139,18 @@ struct SceneBuilding
 {
   mat4 traversalViewMatrix;
 
-  uint  numRenderInstances;
-  uint  maxRenderClusters;
-  uint  maxTraversalInfos;
+  uint numGeometries;
+  uint numRenderInstances;
+  uint maxRenderClusters;
+  uint maxTraversalInfos;
+
   float errorOverDistanceThreshold;
+  float culledErrorScale;
+
+  uint sharingMinInstances;
+  uint sharingMinLevel;
+  uint sharingPushCulled;
+  uint sharingToleranceLevel;
 
   uint renderClusterCounter;
   int  traversalTaskCounter;
@@ -116,8 +158,10 @@ struct SceneBuilding
   uint traversalInfoWriteCounter;
 
   // result of traversal init & scratch for traversal run
+  // array size is [maxTraversalInfos]
   BUFFER_REF(uint64s_coh_volatile) traversalNodeInfos;
   // result of traversal run
+  // array size is [maxRenderClusters]
   BUFFER_REF(ClusterInfos_inout) renderClusterInfos;
 
   // rasterization related
@@ -130,25 +174,49 @@ struct SceneBuilding
 
   DispatchIndirectCommand indirectDispatchBlasInsertion;
 
+  // Computed dynamically, total number of CLAS that are referenced
+  // across all BLAS built in a frame.
   uint blasClasCounter;
+
+  // Computed dynamically and contains the number of blas that are built in a frame.
+  // It is read indirectly by `vkCmdBuildClusterAccelerationStructureIndirectNV`
   uint blasBuildCounter;
 
-  // instance states store culling/visibility related information
-  BUFFER_REF(uint32s_inout) instanceStates;
+  // per scene instance
+  // ------------
 
+  // culling/visibility related information
+  BUFFER_REF(uint8s_inout) instanceVisibility;
+
+  // instance sorting
   BUFFER_REF(uint32s_inout) instanceSortValues;
   BUFFER_REF(uint32s_inout) instanceSortKeys;
 
-  // per instance
-  BUFFER_REF(TlasInstances_inout) tlasInstances;
+  // instance blas handling
   BUFFER_REF(InstanceBuildInfos_inout) instanceBuildInfos;
+  BUFFER_REF(TlasInstances_inout) tlasInstances;
 
+  // per blas build
+  // --------------
+  // (arrays are sized for worst-case to be per-instance)
+
+  // configured in `blas_setup_insertion.comp.glsl`
+  // and input to `vkCmdBuildClusterAccelerationStructureIndirectNV`
   BUFFER_REF(BlasBuildInfo_inout) blasBuildInfos;
+
+  // result of building operations
   BUFFER_REF(uint32s_inout) blasBuildSizes;
   BUFFER_REF(uint64s_inout) blasBuildAddresses;
-  // split into per-instance regions
+
+  // split into per-blas regions during
+  // `blas_setup_insertion.comp.glsl`
+  // array size is [maxRenderClusters]
   BUFFER_REF(uint64s_inout) blasClusterAddresses;
-  uint64_t blasBuildData;
+
+  // per scene geometry
+  // ------------
+  BUFFER_REF(GeometryBuildInfos_inout) geometryBuildInfos;
+  BUFFER_REF(GeometryBuildHistogram_inout) geometryHistograms;
 };
 
 

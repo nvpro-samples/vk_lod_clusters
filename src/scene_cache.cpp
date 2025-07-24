@@ -49,6 +49,7 @@ bool Scene::storeCached(const GeometryView& view, uint64_t dataSize, void* data)
     nvclusterlod::detail::storeAndAdvance(isValid, dataAddress, dataEnd, view.clusterBboxes);
     nvclusterlod::detail::storeAndAdvance(isValid, dataAddress, dataEnd, view.groupLodLevels);
     nvclusterlod::detail::storeAndAdvance(isValid, dataAddress, dataEnd, view.nodeBboxes);
+    nvclusterlod::detail::storeAndAdvance(isValid, dataAddress, dataEnd, view.lodLevels);
   }
 
 
@@ -129,6 +130,7 @@ uint64_t Scene::storeCached(const GeometryView& view, FILE* outFile)
     fileWriteAligned(isValid, dataSize, outFile, view.clusterBboxes);
     fileWriteAligned(isValid, dataSize, outFile, view.groupLodLevels);
     fileWriteAligned(isValid, dataSize, outFile, view.nodeBboxes);
+    fileWriteAligned(isValid, dataSize, outFile, view.lodLevels);
 
 
     fileWriteAligned(isValid, dataSize, outFile, view.lodMesh.triangleVertices);
@@ -173,6 +175,7 @@ bool Scene::loadCached(GeometryView& view, uint64_t dataSize, const void* data)
     nvclusterlod::detail::loadAndAdvance(isValid, dataAddress, dataEnd, view.clusterBboxes);
     nvclusterlod::detail::loadAndAdvance(isValid, dataAddress, dataEnd, view.groupLodLevels);
     nvclusterlod::detail::loadAndAdvance(isValid, dataAddress, dataEnd, view.nodeBboxes);
+    nvclusterlod::detail::loadAndAdvance(isValid, dataAddress, dataEnd, view.lodLevels);
   }
 
   isValid = isValid && nvclusterlod::loadCached(view.lodMesh, dataEnd - dataAddress, reinterpret_cast<void*>(dataAddress));
@@ -282,6 +285,7 @@ void Scene::loadCachedGeometry(GeometryStorage& storage, size_t geometryIndex)
   fillVector(storage.clusterBboxes, view.clusterBboxes);
   fillVector(storage.groupLodLevels, view.groupLodLevels);
   fillVector(storage.nodeBboxes, view.nodeBboxes);
+  fillVector(storage.lodLevels, view.lodLevels);
 
   nvclusterlod::toStorage(view.lodMesh, storage.lodMesh);
   nvclusterlod::toStorage(view.lodHierarchy, storage.lodHierarchy);

@@ -82,6 +82,23 @@ vec3 visualizeColor(uint visData, uint instanceID)
   {
     return pow(unpackUnorm4x8(instances[instanceID].packedColor).xyz * 0.95 + 0.05, vec3(1.0/2.2));
   }
+#if TARGETS_RAY_TRACING
+  else if (view.visualize == VISUALIZE_BLAS) {
+    uint blasBuildIndex = build.instanceBuildInfos.d[instanceID].blasBuildIndex;
+    
+    if (blasBuildIndex == BLAS_BUILD_INDEX_LOWDETAIL)
+    {
+      return vec3(0.9, 0.1, 0.1);
+    }
+  #if USE_BLAS_SHARING
+    else if ((blasBuildIndex & BLAS_BUILD_INDEX_SHARE_BIT) != 0)
+    {
+      instanceID = blasBuildIndex & ~(BLAS_BUILD_INDEX_SHARE_BIT);
+    }
+  #endif
+    return colorizeID(instanceID).xyz;
+  }
+#endif
   else
   {
     return vec3(0.8);
@@ -249,9 +266,27 @@ void computeDefaultBasis(const vec3 z, out vec3 x, out vec3 y)
 #ifndef M_PI
 #define M_PI 3.141592653589
 #endif
+
+vec3 offsetRay(vec3 p, vec3 dir, vec3 geonrm)
+{
+  vec3 n = sign(dot(dir, geonrm)) * geonrm;
+
+  // Smallest epsilon that can be added without losing precision is 1.19209e-07, but we play safe
+  const float epsilon = 1.0f / 65536.0f;  // Safe epsilon
+
+  float magnitude = length(p);
+  float offset    = epsilon * magnitude;
+  // multiply the direction vector by the smallest offset
+  vec3 offsetVector = n * offset;
+  // add the offset vector to the starting point
+  vec3 offsetPoint = p + offsetVector;
+  return offsetPoint;
+}
+
+
 float ambientOcclusion(vec3 wPos, vec3 wNormal, uint32_t sampleCount, float radius)
 {
-  if (sampleCount == 0) return 1.0f;
+  if (sampleCount == 0) return 0.7f;
 
   uint32_t seed = wangHash(gl_LaunchIDEXT.x) ^ wangHash(gl_LaunchIDEXT.y);
   vec3     z    = wNormal;
@@ -271,7 +306,7 @@ float ambientOcclusion(vec3 wPos, vec3 wNormal, uint32_t sampleCount, float radi
     rayHitAO.color.w = 1.f;
     uint mask        = 0xFF;
     traceRayEXT(asScene, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
-                mask /*0xFF*/, 0, 0, 1, wPos, 1e-4f, wDirection, radius, 1);
+                mask /*0xFF*/, 0, 0, 1, offsetRay(wPos, wDirection, wNormal), 1e-4f, wDirection, radius, 1);
     if(rayHitAO.color.w > 0.f)
     {
       occlusion++;
@@ -281,37 +316,16 @@ float ambientOcclusion(vec3 wPos, vec3 wNormal, uint32_t sampleCount, float radi
   return max(0.2f, linearAo* linearAo);
 }
 
-float overheadLightingContribution(vec3 wPos, vec3 wNormal, vec3 wShadowDir, bool doShadow)
-{
-  const float minValue = 0.f;
-  if(!doShadow)
-    return 0.f;
-
-  float nDotDir = clamp(dot(wNormal, -wShadowDir), 0.f, 1.f);
-  if(nDotDir <= minValue)
-  {
-    return minValue;
-  }
-
-  vec3 wDirection = -wShadowDir;
-
-  rayHitAO.color.w = 1.f;
-  uint mask        = 0xFF;
-  traceRayEXT(asScene, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
-              mask /*0xFF*/, 0, 0, 1, wPos, 0.001f, wDirection, 10000000, 1);
-
-  return (rayHitAO.color.w > 0.f) ? minValue : 1.f;
-}
 
 // Returns 0.0 if there is a hit along the light direction and 1.0, if nothing was hit
-float traceShadowRay(vec3 wPos, vec3 wDirection)
+float traceShadowRay(vec3 wPos, vec3 wNormal, vec3 wDirection)
 {
   rayHitAO.color.w = 1.f;
   uint  mask       = 0xFF;
   uint  flags      = gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT;
   float minT       = 0.001f;
   float maxT       = 10000000.0f;
-  traceRayEXT(asScene, flags, mask, 0, 0, 1, wPos, minT, wDirection, maxT, 1);
+  traceRayEXT(asScene, flags, mask, 0, 0, 1, offsetRay(wPos, wDirection, wNormal), minT, wDirection, maxT, 1);
 
   return (rayHitAO.color.w > 0.f) ? 0.0F : 1.0f;
 }

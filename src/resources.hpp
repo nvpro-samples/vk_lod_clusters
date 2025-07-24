@@ -58,12 +58,21 @@ struct FrameConfig
   bool  freezeCulling      = false;
   bool  hbaoActive         = true;
   float lodPixelError      = 1.0f;
+  // increase error by this for instances not having primary visibility in ray tracing
+  float culledErrorScale = 2.0f;
   // how many frames until we schedule a group for unloading
   uint32_t streamingAgeThreshold = 16;
   // how much threads to use in the persistent kernels
   uint32_t traversalPersistentThreads = 2048;
 
+  uint32_t sharingMinInstances   = 2;
+  uint32_t sharingToleranceLevel = 2;
+  uint32_t sharingMinLevel       = 1;
+  bool     sharingPushCulled     = true;
+
   HbaoPass::Settings hbaoSettings;
+
+  uint32_t visualize = VISUALIZE_LOD;
 
   // must be kept next to each other
   shaderio::FrameConstants frameConstants;
@@ -128,6 +137,16 @@ inline void cmdCopyBuffer(VkCommandBuffer cmd, const nvvk::Buffer& src, const nv
 {
   VkBufferCopy cpy = {0, 0, src.bufferSize};
   vkCmdCopyBuffer(cmd, src.buffer, dst.buffer, 1, &cpy);
+}
+
+//////////////////////////////////////////////////////////////////////////
+
+std::string formatMemorySize(size_t sizeInBytes);
+
+inline size_t logMemoryUsage(size_t size, const char* memtype, const char* what)
+{
+  LOGI("%s memory: %s - %s\n", memtype, formatMemorySize(size).c_str(), what);
+  return size;
 }
 
 //////////////////////////////////////////////////////////////////////////

@@ -239,6 +239,7 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
 #endif
 
   bool forceCluster = false;
+  uint lodLevel = 0;
 
   if (isNode) {
     uint childIndex     = taskSubID;
@@ -268,8 +269,27 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
     bbox        = group.clusterBboxes.d[clusterIndex];
   #endif
     
-    // lets see if we reached the highest detail already
-    // a generatingGroup is a group of clusters of which this cluster was created from during mesh simplification.
+    // The continous lod algorithm optimizes to get the lowest detail we can get away with.
+    
+    // We render a cluster if its own group was traversed because it had an error
+    // greater than the threshold (it is "coarse enough"). This is fulfilled when reach
+    // the code here.
+    //
+    // However, multiple cluster groups of previous lod levels (higher detail) may cover this 
+    // same region. Therefore we must ensure that it's really this cluster to be drawn (it is "fine enough").
+    //
+    // This is achieved by looking at the cluster's generating group. The generating group
+    // contained the geometry that this cluster was simplified from and is from the previous,
+    // lower, lod level with a lower error.
+    //
+    // If that group wasn't traversed then we know we must be drawn, because we have the highest
+    // detail required. You will see a bit later down that we use the negated results 
+    // of `testForTraversal` for clusters.
+    //
+    // If this cluster is from the highest detail level, then there is no generating group
+    // as encoded by `SHADERIO_ORIGINAL_MESH_GROUP`.
+    // In streaming, it may also occur that the generating group isn't loaded, that also
+    // means this cluster is the highest detail available.
     
     uint32_t clusterGeneratingGroup = group.clusterGeneratingGroups.d[clusterIndex];
   #if USE_STREAMING
@@ -287,6 +307,8 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
     }
   #endif
     else {
+      // the generating group doesn't exist, draw this group
+      
       // this should always evaluate true
       traversalMetric = group.traversalMetric;
       forceCluster    = true;
@@ -295,6 +317,8 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
     
     // TraversalInfo aliases with ClusterInfo, packeNode == clusterID
     traversalInfo.packedNode = group.clusterResidentID + clusterIndex;
+    
+    lodLevel = group.lodLevel;
   }
   
   // perform traversal & culling logic
@@ -305,15 +329,14 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
 #if USE_CULLING && TARGETS_RASTERIZATION
   isValid            = isValid && queryWasVisible(worldMatrix, bbox);
 #elif USE_CULLING && TARGETS_RAY_TRACING
-  uint status = build.instanceStates.d[traversalInfo.instanceID];
-  // force lower resolutions for invisible things.
-  // should use metric based on instance's distance to camera/frustum etc.
-  if (status == 0) errorScale = 10.0;
+  uint visibilityState = build.instanceVisibility.d[traversalInfo.instanceID];
+  // instance is not primary visible, apply different error scale
+  if (visibilityState == 0) errorScale = build.culledErrorScale;
 #endif
-  bool traverse      = traverseChild(mat4x3(build.traversalViewMatrix * worldMatrix), uniformScale, traversalMetric, errorScale);
+  bool traverse      = testForTraversal(mat4x3(build.traversalViewMatrix * worldMatrix), uniformScale, traversalMetric, errorScale);
   bool traverseNode  = isValid && isNode && traverse;    // nodes test if we can descend
-  bool renderCluster = isValid && !isNode && (!traverse || forceCluster);  // clusters test opposite, if we cannot descend further
-  
+  bool renderCluster = isValid && !isNode && (!traverse || forceCluster);  // clusters use negated test or are forced
+
 #if USE_STREAMING
   if (traverseNode)
   {

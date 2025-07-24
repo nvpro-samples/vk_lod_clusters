@@ -96,6 +96,7 @@ uint murmurHash(uint idx)
 #endif
 
 BUFFER_REF_DECLARE_ARRAY(uint8s_in, uint8_t, readonly, 1);
+BUFFER_REF_DECLARE_ARRAY(uint8s_inout, uint8_t, , 1);
 BUFFER_REF_DECLARE_ARRAY(uint16s_in, uint16_t, readonly, 2);
 BUFFER_REF_DECLARE_ARRAY(uint16s_inout, uint16_t, , 2);
 BUFFER_REF_DECLARE_ARRAY(uint32s_in, uint32_t, readonly, 4);

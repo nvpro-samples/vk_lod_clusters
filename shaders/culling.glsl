@@ -74,8 +74,7 @@ bool intersectFrustum(vec3 bboxMin, vec3 bboxMax, mat4 worldTM, out vec4 oClipmi
     hPos  = worldViewProjTM * getBoxCorner(bboxMin, bboxMax, n);
     clip  = getClip(hPos, valid);
     bits &= getCullBits(hPos);
-    // TODO instead of loop unroll manually to do independent paired min/max to allow
-    // instruction parallelism
+
     clipMin = min(clipMin,clip);
     clipMax = max(clipMax,clip);
 

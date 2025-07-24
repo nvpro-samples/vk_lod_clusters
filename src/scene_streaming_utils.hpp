@@ -195,7 +195,8 @@ public:
     uint32_t                  activeIndex;
     uint32_t                  groupResidentID;
     uint32_t                  clusterResidentID;
-    uint32_t                  clusterCount;
+    uint16_t                  clusterCount;
+    uint16_t                  lodLevel;
     uint64_t                  deviceAddress;
     nvvk::BufferSubAllocation storageHandle;
   };
@@ -371,14 +372,16 @@ class StreamingUpdates
 public:
   struct TaskInfo
   {
-    uint32_t                   loadCount;
-    uint32_t                   unloadCount;
-    uint32_t                   newClusterCount;
-    uint32_t                   loadActiveGroupsOffset;
-    uint32_t                   loadActiveClustersOffset;
-    shaderio::StreamingPatch*  loadPatches;
-    shaderio::StreamingPatch*  unloadPatches;
-    nvvk::BufferSubAllocation* unloadHandles;
+    uint32_t                          loadCount;
+    uint32_t                          unloadCount;
+    uint32_t                          newClusterCount;
+    uint32_t                          loadActiveGroupsOffset;
+    uint32_t                          loadActiveClustersOffset;
+    uint32_t                          geometryPatchCount;
+    shaderio::StreamingPatch*         loadPatches;
+    shaderio::StreamingPatch*         unloadPatches;
+    nvvk::BufferSubAllocation*        unloadHandles;
+    shaderio::StreamingGeometryPatch* geometryPatches;
   };
 
   struct NewInfo

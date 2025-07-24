@@ -151,11 +151,12 @@ using unique_cgltf_ptr = std::unique_ptr<cgltf_data, decltype(&cgltf_free)>;
 
 // Traverses the glTF node and any of its children, adding a MeshInstance to
 // the meshSet for each referenced glTF primitive.
-void addInstancesFromNode(std::vector<lodclusters::Scene::Instance>& instances,
-                          const std::vector<size_t>&                 meshToGeometry,
-                          const cgltf_data*                          data,
-                          const cgltf_node*                          node,
-                          const glm::mat4                            parentObjToWorldTransform = glm::mat4(1))
+void addInstancesFromNode(std::vector<lodclusters::Scene::Instance>&     instances,
+                          std::vector<lodclusters::Scene::GeometryView>& geometryViews,
+                          const std::vector<size_t>&                     meshToGeometry,
+                          const cgltf_data*                              data,
+                          const cgltf_node*                              node,
+                          const glm::mat4                                parentObjToWorldTransform = glm::mat4(1))
 {
   if(node == nullptr)
     return;
@@ -176,6 +177,8 @@ void addInstancesFromNode(std::vector<lodclusters::Scene::Instance>& instances,
     lodclusters::Scene::Instance instance{};
     instance.geometryID = uint32_t(meshToGeometry[meshIndex]);
     instance.matrix     = nodeObjToWorldTransform;
+
+    geometryViews[instance.geometryID].instanceReferenceCount++;
 
     const cgltf_material* material = node->mesh->primitives[0].material;
     if(material)
@@ -204,7 +207,7 @@ void addInstancesFromNode(std::vector<lodclusters::Scene::Instance>& instances,
   const size_t numChildren = node->children_count;
   for(size_t childIdx = 0; childIdx < numChildren; childIdx++)
   {
-    addInstancesFromNode(instances, meshToGeometry, data, node->children[childIdx], nodeObjToWorldTransform);
+    addInstancesFromNode(instances, geometryViews, meshToGeometry, data, node->children[childIdx], nodeObjToWorldTransform);
   }
 }
 
@@ -558,7 +561,7 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
     const cgltf_scene scene = (data->scene != nullptr) ? (*(data->scene)) : (data->scenes[0]);
     for(size_t nodeIdx = 0; nodeIdx < scene.nodes_count; nodeIdx++)
     {
-      addInstancesFromNode(m_instances, meshToGeometry, data.get(), scene.nodes[nodeIdx]);
+      addInstancesFromNode(m_instances, m_geometryViews, meshToGeometry, data.get(), scene.nodes[nodeIdx]);
     }
   }
   else
@@ -567,7 +570,7 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
     {
       if(data->nodes[nodeIdx].parent == nullptr)
       {
-        addInstancesFromNode(m_instances, meshToGeometry, data.get(), &(data->nodes[nodeIdx]));
+        addInstancesFromNode(m_instances, m_geometryViews, meshToGeometry, data.get(), &(data->nodes[nodeIdx]));
       }
     }
   }

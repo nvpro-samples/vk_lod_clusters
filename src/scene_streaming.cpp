@@ -98,7 +98,8 @@ static void fillGroupData(const Scene::GeometryView& sceneGeometry,
                           uint32_t                   streamingNewBuildOffset,
                           uint64_t                   dstVA,
                           void*                      dst,
-                          size_t                     dstSize)
+                          size_t                     dstSize,
+                          uint16_t&                  outLodLevel)
 {
   assert(dstSize >= dataOffsets.finalSize);
 
@@ -166,6 +167,8 @@ static void fillGroupData(const Scene::GeometryView& sceneGeometry,
     offsetTriangles += triangleRange.count;
     offsetVertices += vertexRange.count;
   }
+
+  outLodLevel = lodLevel;
 }
 
 bool SceneStreaming::init(Resources* resources, const Scene* scene, const StreamingConfig& config)
@@ -249,15 +252,15 @@ bool SceneStreaming::init(Resources* resources, const Scene* scene, const Stream
   // storage uses block allocator, max may be less than what we asked for
   m_stats.maxDataBytes = m_storage.getMaxDataSize();
 
-  m_operationsSize += m_requests.getOperationsSize();
-  m_operationsSize += m_resident.getOperationsSize();
-  m_operationsSize += m_updates.getOperationsSize();
-  m_operationsSize += m_storage.getOperationsSize();
+  m_operationsSize += logMemoryUsage(m_requests.getOperationsSize(), "operations", "stream requests");
+  m_operationsSize += logMemoryUsage(m_resident.getOperationsSize(), "operations", "stream resident");
+  m_operationsSize += logMemoryUsage(m_updates.getOperationsSize(), "operations", "stream updates");
+  m_operationsSize += logMemoryUsage(m_storage.getOperationsSize(), "operations", "stream storage");
 
   res.createBuffer(m_shaderBuffer, sizeof(shaderio::SceneStreaming),
                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT
                        | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-  m_operationsSize += m_shaderBuffer.bufferSize;
+  m_operationsSize += logMemoryUsage(m_shaderBuffer.bufferSize, "operations", "stream shaderio");
 
   // seed lo res geometry
   initGeometries(res, scene);
@@ -294,6 +297,12 @@ void SceneStreaming::resetGeometryGroupAddresses(Resources::BatchedUploader& upl
     }
     // except last group, which is always loaded
     groupAddresses[lastGroupRange.offset] = persistentGeometry.lowDetailGroupsData.address;
+
+    for(uint32_t i = 0; i < persistentGeometry.lodLevelsCount; i++)
+    {
+      persistentGeometry.lodLoadedGroupsCount[i] = i == persistentGeometry.lodLevelsCount - 1 ? 1 : 0;
+    }
+    persistentGeometry.lastUpdateFrame = 0;
   }
 }
 
@@ -311,6 +320,7 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
   m_shaderGeometries.resize(scene->getActiveGeometryCount());
   m_persistentGeometries.resize(scene->getActiveGeometryCount());
 
+  uint32_t instancesOffset = 0;
   for(size_t geometryIndex = 0; geometryIndex < scene->getActiveGeometryCount(); geometryIndex++)
   {
     shaderio::Geometry&                 shaderGeometry     = m_shaderGeometries[geometryIndex];
@@ -324,6 +334,9 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
     res.createBufferTyped(persistentGeometry.nodes, numNodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     res.createBufferTyped(persistentGeometry.nodeBboxes, numNodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
+    uint32_t numLodLevels = sceneGeometry.lodLevelsCount;
+    res.createBufferTyped(persistentGeometry.lodLevels, numLodLevels, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+
     m_persistentGeometrySize += persistentGeometry.groupAddresses.bufferSize;
     m_persistentGeometrySize += persistentGeometry.nodes.bufferSize;
     m_persistentGeometrySize += persistentGeometry.nodeBboxes.bufferSize;
@@ -331,17 +344,28 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
     // setup shaderio
     shaderGeometry                         = {};
     shaderGeometry.bbox                    = sceneGeometry.bbox;
-    shaderGeometry.clustersCount           = sceneGeometry.totalClustersCount;
-    shaderGeometry.nodesCount              = uint32_t(numNodes);
     shaderGeometry.nodes                   = persistentGeometry.nodes.address;
     shaderGeometry.nodeBboxes              = persistentGeometry.nodeBboxes.address;
-    shaderGeometry.groupsCount             = uint32_t(numGroups);
     shaderGeometry.streamingGroupAddresses = persistentGeometry.groupAddresses.address;
+    shaderGeometry.lodLevelsCount          = numLodLevels;
+    shaderGeometry.lodLevels               = persistentGeometry.lodLevels.address;
+    shaderGeometry.lodsCompletedMask       = 1 << (numLodLevels - 1);
+    shaderGeometry.instancesCount          = sceneGeometry.instanceReferenceCount * scene->getGeometryInstanceFactor();
+    shaderGeometry.instancesOffset         = instancesOffset;
+
+    instancesOffset += shaderGeometry.instancesCount;
+
+    persistentGeometry.lodLevelsCount = numLodLevels;
+    for(uint32_t i = 0; i < numLodLevels; i++)
+    {
+      persistentGeometry.lodGroupsCount[i] = sceneGeometry.lodLevels[i].groupCount;
+    }
 
     // basic uploads
 
     uploader.uploadBuffer(persistentGeometry.nodes, sceneGeometry.lodHierarchy.nodes.data());
     uploader.uploadBuffer(persistentGeometry.nodeBboxes, sceneGeometry.nodeBboxes.data());
+    uploader.uploadBuffer(persistentGeometry.lodLevels, sceneGeometry.lodLevels.data());
 
     // seed lowest detail group, which must have just a single cluster
     nvcluster_Range lastGroupRange = sceneGeometry.lodMesh.lodLevelGroupRanges.back();
@@ -362,11 +386,13 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
     StreamingResident::Group* rgroup = m_resident.addGroup(geometryGroup, 1);
     rgroup->deviceAddress            = persistentGeometry.lowDetailGroupsData.address;
 
+    persistentGeometry.lodLoadedGroupsCount[rgroup->lodLevel] = 1;
+
     // setup and upload geometry data for the lowest detail group
     void* loGroupData = uploader.uploadBuffer(persistentGeometry.lowDetailGroupsData, (void*)nullptr);
     fillGroupData(sceneGeometry, geometryGroup, dataOffsets, rgroup->groupResidentID, rgroup->clusterResidentID,
                   rgroup->clusterResidentID, persistentGeometry.lowDetailGroupsData.address, loGroupData,
-                  persistentGeometry.lowDetailGroupsData.bufferSize);
+                  persistentGeometry.lowDetailGroupsData.bufferSize, rgroup->lodLevel);
 
     shaderGeometry.lowDetailClusterID = rgroup->clusterResidentID;
     shaderGeometry.lowDetailTriangles = sceneGeometry.lodMesh.clusterTriangleRanges[lastGroupRange.offset].count;
@@ -376,7 +402,7 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
   resetGeometryGroupAddresses(uploader);
 
   res.createBufferTyped(m_shaderGeometriesBuffer, scene->getActiveGeometryCount(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-  m_operationsSize += m_shaderGeometriesBuffer.bufferSize;
+  m_operationsSize += logMemoryUsage(m_shaderGeometriesBuffer.bufferSize, "operations", "stream geo buffer");
 
   uploader.uploadBuffer(m_shaderGeometriesBuffer, m_shaderGeometries.data());
 
@@ -533,6 +559,7 @@ void SceneStreaming::cmdBeginFrame(VkCommandBuffer         cmd,
     // no patch work this frame
     m_shaderData.update.patchGroupsCount         = 0;
     m_shaderData.update.patchUnloadGroupsCount   = 0;
+    m_shaderData.update.patchGeometriesCount     = 0;
     m_shaderData.update.loadActiveGroupsOffset   = 0;
     m_shaderData.update.loadActiveClustersOffset = 0;
     m_shaderData.update.newClasCount             = 0;
@@ -675,8 +702,22 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer cmd, QueueState&
     assert(group->storageHandle);
     updateTask.unloadHandles[unloadIndex] = group->storageHandle;
 
+    assert(m_persistentGeometries[geometryGroup.geometryID].lodLoadedGroupsCount[group->lodLevel] > 0);
+    m_persistentGeometries[geometryGroup.geometryID].lodLoadedGroupsCount[group->lodLevel]--;
+
     // and remove from active resident
     m_resident.removeGroup(group->groupResidentID);
+
+#if STREAMING_GEOMETRY_LOD_LEVEL_TRACKING
+    // append to geometry patch list if necessary
+    if(m_persistentGeometries[geometryGroup.geometryID].lastUpdateFrame != m_frameIndex)
+    {
+      m_persistentGeometries[geometryGroup.geometryID].lastUpdateFrame = m_frameIndex;
+      uint32_t                          geometryPatchIndex             = updateTask.geometryPatchCount++;
+      shaderio::StreamingGeometryPatch& geometryPatch                  = updateTask.geometryPatches[geometryPatchIndex];
+      geometryPatch.geometryID                                         = geometryGroup.geometryID;
+    }
+#endif
   }
 
   // for ray tracing
@@ -792,8 +833,21 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer cmd, QueueState&
 
     assert(deviceAddress % 16 == 0);
 
-    fillGroupData(sceneGeometry, geometryGroup, dataOffsets, residentGroup->groupResidentID,
-                  residentGroup->clusterResidentID, clasBuildOffset, deviceAddress, groupData, groupSize);
+    fillGroupData(sceneGeometry, geometryGroup, dataOffsets, residentGroup->groupResidentID, residentGroup->clusterResidentID,
+                  clasBuildOffset, deviceAddress, groupData, groupSize, residentGroup->lodLevel);
+
+    m_persistentGeometries[geometryGroup.geometryID].lodLoadedGroupsCount[residentGroup->lodLevel]++;
+
+#if STREAMING_GEOMETRY_LOD_LEVEL_TRACKING
+    // append to geometry patch list if necessary
+    if(m_persistentGeometries[geometryGroup.geometryID].lastUpdateFrame != m_frameIndex)
+    {
+      m_persistentGeometries[geometryGroup.geometryID].lastUpdateFrame = m_frameIndex;
+      uint32_t                          geometryPatchIndex             = updateTask.geometryPatchCount++;
+      shaderio::StreamingGeometryPatch& geometryPatch                  = updateTask.geometryPatches[geometryPatchIndex];
+      geometryPatch.geometryID                                         = geometryGroup.geometryID;
+    }
+#endif
 
     // setup patch
     shaderio::StreamingPatch& patch = updateTask.loadPatches[updateTask.loadCount++];
@@ -834,6 +888,26 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer cmd, QueueState&
 
     vkBeginCommandBuffer(cmd, &cmdInfo);
   }
+
+#if STREAMING_GEOMETRY_LOD_LEVEL_TRACKING
+  // evaluate geometry lod state
+  {
+    for(uint32_t g = 0; g < updateTask.geometryPatchCount; g++)
+    {
+      shaderio::StreamingGeometryPatch& sgpatch            = updateTask.geometryPatches[g];
+      PersistentGeometry&               persistentGeometry = m_persistentGeometries[sgpatch.geometryID];
+      uint32_t                          lodsCompletedMask  = 0;
+      for(uint32_t i = 0; i < persistentGeometry.lodLevelsCount; i++)
+      {
+        if(persistentGeometry.lodGroupsCount[i] == persistentGeometry.lodLoadedGroupsCount[i])
+        {
+          lodsCompletedMask |= 1 << i;
+        }
+      }
+      sgpatch.lodsCompletedMask = lodsCompletedMask;
+    }
+  }
+#endif
 
   uint32_t transferCount = 0;
   // finalize data for completed new residency & patch
@@ -1374,6 +1448,7 @@ void SceneStreaming::deinit()
     res.m_allocator.destroyBuffer(it.groupAddresses);
     res.m_allocator.destroyBuffer(it.nodeBboxes);
     res.m_allocator.destroyBuffer(it.nodes);
+    res.m_allocator.destroyBuffer(it.lodLevels);
     res.m_allocator.destroyBuffer(it.lowDetailGroupsData);
   }
 
@@ -1535,7 +1610,7 @@ bool SceneStreaming::initClas()
 
   // setup update related data
   m_updates.initClas(res, m_config, m_scene->m_config);
-  m_clasOperationsSize += m_updates.getClasOperationsSize();
+  m_clasOperationsSize += logMemoryUsage(m_updates.getClasOperationsSize(), "operations", "stream clas updates");
 
   m_clasTriangleInput = {VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_TRIANGLE_CLUSTER_INPUT_NV};
   m_clasTriangleInput.maxClusterTriangleCount       = m_scene->m_maxClusterTriangles;
@@ -1614,7 +1689,7 @@ bool SceneStreaming::initClas()
     m_clasAllocator.init(res, m_config.maxClasMegaBytes, uint32_t(m_clasSingleMaxSize) * m_scene->m_config.clusterGroupSize,
                          clusterProps.clusterByteAlignment << m_config.clasAllocatorGranularityShift,
                          m_config.clasAllocatorSectorSizeShift, m_shaderData.clasAllocator);
-    m_clasOperationsSize += m_clasAllocator.getOperationsSize();
+    m_clasOperationsSize += logMemoryUsage(m_clasAllocator.getOperationsSize(), "opertions", "clas alloc");
 
     m_stats.maxSizedReserved = m_clasAllocator.getMaxSized();
   }
@@ -1632,7 +1707,7 @@ bool SceneStreaming::initClas()
 
     assert(loGroupsCount == uint32_t(m_scene->getActiveGeometryCount()));
 
-    m_clasOperationsSize += m_resident.getClasOperationsSize();
+    m_clasOperationsSize += logMemoryUsage(m_resident.getClasOperationsSize(), "operations", "stream clas resident");
 
     size_t scratchSize = 0;
     size_t blasSize    = 0;
@@ -1827,7 +1902,7 @@ bool SceneStreaming::initClas()
 
       // build low detail blas, one per low detail group
       res.createBuffer(m_clasLowDetailBlasBuffer, blasSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
-      m_clasOperationsSize += blasSize;
+      m_clasOperationsSize += logMemoryUsage(blasSize, "operations", "stream clas lowdetail blas");
 
       cmdInfo.input        = blasInputInfo;
       cmdInfo.input.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV;

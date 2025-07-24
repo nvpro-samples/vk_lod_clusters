@@ -209,6 +209,9 @@ void LodClusters::onUIRender()
 {
   ImGuiWindow* viewport = ImGui::FindWindowByName("Viewport");
 
+  bool requestCameraRecenter = false;
+  bool requestMirrorBox      = false;
+
   if(viewport)
   {
     if(nvgui::isWindowHovered(viewport))
@@ -219,7 +222,11 @@ void LodClusters::onUIRender()
       }
       if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) || ImGui::IsKeyPressed(ImGuiKey_Space))
       {
-        m_requestCameraRecenter = true;
+        requestCameraRecenter = true;
+      }
+      if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Right) || ImGui::IsKeyPressed(ImGuiKey_M))
+      {
+        requestMirrorBox = true;
       }
     }
   }
@@ -234,8 +241,9 @@ void LodClusters::onUIRender()
   shaderio::Readback readback;
   m_resources.getReadbackData(readback);
 
+  bool pickingValid = isPickingValid(readback);
   // camera control, recenter
-  if(m_requestCameraRecenter && isPickingValid(readback))
+  if((requestCameraRecenter || requestMirrorBox) && pickingValid)
   {
 
     glm::uvec2 mousePos = {m_frameConfig.frameConstants.mousePosition.x / m_tweak.supersample,
@@ -252,13 +260,32 @@ void LodClusters::onUIRender()
                                   m_frameConfig.frameConstants.viewport.y / m_tweak.supersample};
       const glm::vec3 hitPos   = glm::unProjectZO({mousePos.x, mousePos.y, d}, view, proj, win_norm);
 
-      // Set the interest position
       glm::vec3 eye, center, up;
       m_info.cameraManipulator->getLookat(eye, center, up);
-      m_info.cameraManipulator->setLookat(eye, hitPos, up, false);
-    }
 
-    m_requestCameraRecenter = false;
+      if(requestCameraRecenter)
+      {
+        // Set the interest position
+        m_info.cameraManipulator->setLookat(eye, hitPos, up, false);
+      }
+
+      if(requestMirrorBox)
+      {
+        m_frameConfig.frameConstants.useMirrorBox = 1;
+        m_frameConfig.frameConstants.wMirrorBox = glm::vec4(hitPos, glm::distance(eye, hitPos) * m_tweak.mirrorBoxScale);
+      }
+    }
+    else
+    {
+      if(requestMirrorBox)
+      {
+        m_frameConfig.frameConstants.useMirrorBox = 0;
+      }
+    }
+  }
+  else if(requestMirrorBox && !pickingValid)
+  {
+    m_frameConfig.frameConstants.useMirrorBox = 0;
   }
 
   ImVec4 text_color = ImGui::GetStyleColorVec4(ImGuiCol_Text);
@@ -287,8 +314,29 @@ void LodClusters::onUIRender()
     PE::Checkbox("Disable back-face culling", &m_rendererConfig.twoSided);
     PE::InputInt("Render grid copies", (int*)&m_sceneGridConfig.numCopies, 1, 16, ImGuiInputTextFlags_EnterReturnsTrue,
                  "Instances the entire scene on a grid");
-    PE::InputInt("Render grid bits", (int*)&m_sceneGridConfig.gridBits, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
-                 "Instance grid config encoded in 6 bits: 0..2 bit enabled axis, 3..5 bit enabled rotation");
+    PE::entry(
+        "Render grid bits",
+        [&] {
+          for(uint32_t i = 0; i < 6; i++)
+          {
+            ImGui::PushID(i);
+            bool used = (m_sceneGridConfig.gridBits & (1 << i)) != 0;
+
+            ImGui::Checkbox("##hidden", &used);
+            if(i < 5)
+              ImGui::SameLine();
+            if(used)
+              m_sceneGridConfig.gridBits |= (1 << i);
+            else
+              m_sceneGridConfig.gridBits &= ~(1 << i);
+            ImGui::PopID();
+          }
+          return false;
+        },
+        "0..2 bit enabled axis, 3..5 bit enabled rotation");
+
+    //PE::InputInt("Render grid bits", (int*)&m_sceneGridConfig.gridBits, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
+    //             "Instance grid config encoded in 6 bits: 0..2 bit enabled axis, 3..5 bit enabled rotation");
     PE::Checkbox("Render grid unique geometries", &m_sceneGridConfig.uniqueGeometriesForCopies,
                  "New Instances of the grid also get their own set of geometries, stresses streaming & memory consumption");
     PE::InputFloat("Render grid X", &m_sceneGridConfig.refShift.x, 0.1f, 0.1f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
@@ -299,6 +347,10 @@ void LodClusters::onUIRender()
                    "Instance grid config encoded in 6 bits: 0..2 bit enabled axis, 3..5 bit enabled rotation");
     PE::InputFloat("Render grid snap angle", &m_sceneGridConfig.snapAngle, 5.0f, 10.f, "%.3f",
                    ImGuiInputTextFlags_EnterReturnsTrue, "If rotation is active snaps angle");
+    PE::InputFloat("Render grid min scale", &m_sceneGridConfig.minScale, 0.1f, 1.f, "%.3f",
+                   ImGuiInputTextFlags_EnterReturnsTrue, "Scale object");
+    PE::InputFloat("Render grid max scale", &m_sceneGridConfig.maxScale, 0.1f, 1.f, "%.3f",
+                   ImGuiInputTextFlags_EnterReturnsTrue, "Scale object");
     PE::end();
   }
 
@@ -319,6 +371,7 @@ void LodClusters::onUIRender()
     if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
     {
       PE::Checkbox("Cast shadow rays", (bool*)&m_frameConfig.frameConstants.doShadow);
+      PE::Checkbox("Reflective box", (bool*)&m_frameConfig.frameConstants.useMirrorBox);
       PE::SliderFloat("Ambient occlusion radius", &m_frameConfig.frameConstants.ambientOcclusionRadius, 0.001f, 1.f);
       PE::SliderInt("Ambient occlusion rays", &m_frameConfig.frameConstants.ambientOcclusionSamples, 0, 64);
     }
@@ -328,7 +381,7 @@ void LodClusters::onUIRender()
       if(PE::treeNode("HBAO settings"))
       {
         PE::Checkbox("Full resolution", &m_tweak.hbaoFullRes);
-        PE::InputFloat("Radius", &m_tweak.hbaoRadius, 0.01f);
+        PE::InputFloat("Radius", &m_tweak.hbaoRadius, 0.01f, 0, "%.6f");
         PE::InputFloat("Blur sharpness", &m_frameConfig.hbaoSettings.blurSharpness, 1.0f);
         PE::InputFloat("Intensity", &m_frameConfig.hbaoSettings.intensity, 0.1f);
         PE::InputFloat("Bias", &m_frameConfig.hbaoSettings.bias, 0.01f);
@@ -338,7 +391,7 @@ void LodClusters::onUIRender()
     ImGui::PushStyleColor(ImGuiCol_Text, recommendedColor);
     PE::entry("Visualize", [&]() {
       ImGui::PopStyleColor();  // pop text color here so it only applies to the label
-      return m_ui.enumCombobox(GUI_VISUALIZE, "visualize", &m_frameConfig.frameConstants.visualize);
+      return m_ui.enumCombobox(GUI_VISUALIZE, "visualize", &m_frameConfig.visualize);
     });
     PE::end();
   }
@@ -349,12 +402,39 @@ void LodClusters::onUIRender()
                         ImGuiInputTextFlags_EnterReturnsTrue);
     PE::InputIntClamped("Max traversal tasks (bits)", (int*)&m_rendererConfig.numTraversalTaskBits, 8, 25, 1, 1,
                         ImGuiInputTextFlags_EnterReturnsTrue);
+    PE::InputFloat("LoD pixel error", &m_frameConfig.lodPixelError, 0.25f, 0.25f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
     PE::Checkbox("Instance Sorting", &m_rendererConfig.useSorting);
     PE::Checkbox("Culling (Occlusion & Frustum)", &m_rendererConfig.useCulling);
+    ImGui::BeginDisabled(!m_rendererConfig.useCulling);
     PE::Checkbox("Freeze Cull / LoD", &m_frameConfig.freezeCulling);
-    PE::InputFloat("LoD pixel error", &m_frameConfig.lodPixelError, 0.25f, 0.25f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
-    PE::end();
+    ImGui::EndDisabled();
+    PE::Checkbox("Rendered Statistics", &m_rendererConfig.useRenderStats,
+                 "Adds additional atomic counters for statistics, impacts performance");
+
     m_frameConfig.lodPixelError = std::max(0.001f, m_frameConfig.lodPixelError);
+
+    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+    {
+      ImGui::BeginDisabled(!m_rendererConfig.useCulling);
+      PE::InputFloat("Culled error scale", &m_frameConfig.culledErrorScale, 1.f, 1.f, "%.3f",
+                     ImGuiInputTextFlags_EnterReturnsTrue, "scale the pixel error for occluded objects in ray tracing");
+      ImGui::EndDisabled();
+
+      m_frameConfig.culledErrorScale = std::max(1.0f, m_frameConfig.culledErrorScale);
+
+      PE::Checkbox("Blas Sharing", &m_rendererConfig.useBlasSharing);
+      ImGui::BeginDisabled(!m_rendererConfig.useBlasSharing);
+      PE::Checkbox("Blas Sharing push culled", &m_frameConfig.sharingPushCulled, "culled instances artificially pushed by a lod level");
+      PE::InputIntClamped("Blas Sharing min instances", (int*)&m_frameConfig.sharingMinInstances, 1, 0x7FFFFFFF, 1, 1,
+                          ImGuiInputTextFlags_EnterReturnsTrue, "how many instances may be built before sharing");
+      PE::InputIntClamped("Blas Sharing min level", (int*)&m_frameConfig.sharingMinLevel, 0, 0x7FFFFFFF, 1, 1,
+                          ImGuiInputTextFlags_EnterReturnsTrue, "minimum lod level from which sharing may be used");
+      PE::InputIntClamped("Blas Sharing tolerance level", (int*)&m_frameConfig.sharingToleranceLevel, 1, 32, 1, 1,
+                          ImGuiInputTextFlags_EnterReturnsTrue,
+                          "from which lod level we allow sharing a blas that may have too little detail for an instance");
+      ImGui::EndDisabled();
+    }
+    PE::end();
 
     if(ImGui::BeginTable("##Render stats", 3, ImGuiTableFlags_BordersOuter))
     {
@@ -377,34 +457,37 @@ void LodClusters::onUIRender()
       ImGui::TextColored(pct.pctRender > 100 ? warn_color : text_color, "%d (%d%%)", readback.numRenderClusters, pct.pctRender);
       ImGui::TableNextColumn();
       ImGui::TextColored(pct.pctRender > 100 ? warn_color : text_color, "%s", formatMetric(readback.numRenderClusters).c_str());
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      ImGui::Text("Rendered clusters");
-      ImGui::TableNextColumn();
-      ImGui::Text("%d", readback.numRenderedClusters);
-      ImGui::TableNextColumn();
-      ImGui::Text("%s", formatMetric(readback.numRenderedClusters).c_str());
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      ImGui::Text("Rendered triangles");
-      ImGui::TableNextColumn();
-      ImGui::Text("%d", readback.numRenderedTriangles);
-      ImGui::TableNextColumn();
-      ImGui::Text("%s", formatMetric(readback.numRenderedTriangles).c_str());
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      ImGui::Text("Rendered Tri/Cluster");
-      ImGui::TableNextColumn();
-      if(readback.numRenderedClusters > 0)
+      if(m_rendererConfig.useRenderStats)
       {
-        ImGui::Text("%.1f", float(readback.numRenderedTriangles) / float(readback.numRenderedClusters));
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Text("Rendered clusters");
+        ImGui::TableNextColumn();
+        ImGui::Text("%d", readback.numRenderedClusters);
+        ImGui::TableNextColumn();
+        ImGui::Text("%s", formatMetric(readback.numRenderedClusters).c_str());
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Text("Rendered triangles");
+        ImGui::TableNextColumn();
+        ImGui::Text("%llu", readback.numRenderedTriangles);
+        ImGui::TableNextColumn();
+        ImGui::Text("%s", formatMetric(readback.numRenderedTriangles).c_str());
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Text("Rendered Tri/Cluster");
+        ImGui::TableNextColumn();
+        if(readback.numRenderedClusters > 0)
+        {
+          ImGui::Text("%.1f", float(readback.numRenderedTriangles) / float(readback.numRenderedClusters));
+        }
+        else
+        {
+          ImGui::Text("N/A");
+        }
+        ImGui::TableNextColumn();
+        ImGui::Text("%s", "");
       }
-      else
-      {
-        ImGui::Text("N/A");
-      }
-      ImGui::TableNextColumn();
-      ImGui::Text("%s", "");
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
       ImGui::Text("Built BLAS");
@@ -418,7 +501,7 @@ void LodClusters::onUIRender()
   if(ImGui::CollapsingHeader("Clusters & LoDs generation", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
   {
     PE::begin("##Clusters");
-    if(m_scene && m_scene->m_loadedFromCache)
+    if(false && m_scene && m_scene->m_loadedFromCache)
     {
       PE::Text("Cluster size from cache", "%dT_%dV", m_scene->m_config.clusterTriangles, m_scene->m_config.clusterVertices);
       PE::Text("LoD group size", "%d", m_scene->m_config.clusterGroupSize);
@@ -762,6 +845,7 @@ void LodClusters::onUIRender()
     ImGui::Text("Clusters with config (%u) triangles: %u (%.1f%%)", m_scene->m_config.clusterTriangles,
                 m_scene->m_clusterTriangleHistogram.back(),
                 float(m_scene->m_clusterTriangleHistogram.back()) * 100.f / float(m_scene->m_totalClustersCount));
+    ImGui::Text("Geometry max lod levels: %d", m_scene->m_maxLodLevelsCount);
 
     uiPlot(std::string("Cluster Triangles Histogram"), std::string("Cluster count with %d triangles: %u"),
            m_scene->m_clusterTriangleHistogram, m_scene->m_clusterTriangleHistogramMax);
@@ -771,6 +855,8 @@ void LodClusters::onUIRender()
            m_scene->m_groupClusterHistogram, m_scene->m_groupClusterHistogramMax);
     uiPlot(std::string("Lod-Node Children Histogram"), std::string("Node count with %d children: %u"),
            m_scene->m_nodeChildrenHistogram, m_scene->m_nodeChildrenHistogramMax);
+    uiPlot(std::string("Geometry Lod Levels Histogram"), std::string("Geometry count with %d lod levels: %u"),
+           m_scene->m_lodLevelsHistogram, m_scene->m_lodLevelsHistogramMax);
   }
   ImGui::End();
   ImGui::End();
@@ -793,6 +879,18 @@ void LodClusters::onUIRender()
     nvgui::skySimpleParametersUI(m_frameConfig.frameConstants.skyParams);
   }
 
+  if(ImGui::CollapsingHeader("Mirror Box", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
+  {
+    namespace PE = nvgui::PropertyEditor;
+    PE::begin();
+    PE::Checkbox("Use", (bool*)&m_frameConfig.frameConstants.useMirrorBox);
+    PE::InputFloat3("Position", &m_frameConfig.frameConstants.wMirrorBox.x);
+    PE::InputFloat("Size", &m_frameConfig.frameConstants.wMirrorBox.w);
+    PE::InputFloat("Size distance factor", &m_tweak.mirrorBoxScale, 0, 0, "%.3f", 0,
+                   "When event is used, determine mirror box size based on `distance * factor`");
+    PE::end();
+  }
+
   if(ImGui::CollapsingHeader("Rendering Advanced", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
   {
     PE::begin("##Renderer Advanced");
@@ -803,86 +901,87 @@ void LodClusters::onUIRender()
 
   ImGui::End();
 
-#ifdef _DEBUG
-  ImGui::Begin("Debug");
-  if(ImGui::CollapsingHeader("Misc settings", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
+  if(m_showDebugUI)
   {
-    PE::begin("##HiddenID");
-    PE::InputInt("Colorize xor", (int*)&m_frameConfig.frameConstants.colorXor);
-    PE::Checkbox("Auto reset timer", &m_tweak.autoResetTimers);
-    PE::end();
-  }
-  if(ImGui::CollapsingHeader("Debug Shader Values", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
-  {
-    PE::begin("##HiddenID");
-    PE::InputInt("dbgInt", (int*)&m_frameConfig.frameConstants.dbgUint, 1, 100, ImGuiInputTextFlags_EnterReturnsTrue);
-    PE::InputFloat("dbgFloat", &m_frameConfig.frameConstants.dbgFloat, 0.1f, 1.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
-    PE::end();
-
-    ImGui::Text(" debugI :  %10d", readback.debugI);
-    ImGui::Text(" debugUI:  %10u", readback.debugUI);
-    ImGui::Text(" debugU64:  %llX", readback.debugU64);
-    static bool debugFloat = false;
-    static bool debugHex   = false;
-    static bool debugAll   = false;
-    ImGui::Checkbox(" as float", &debugFloat);
-    ImGui::SameLine();
-    ImGui::Checkbox("hex", &debugHex);
-    ImGui::SameLine();
-    ImGui::Checkbox("all", &debugAll);
-    //ImGui::SameLine();
-    //bool     doPrint = ImGui::Button("print");
-    uint32_t count = debugAll ? 64 : 32;
-
-    if(ImGui::BeginTable("##Debug", 4, ImGuiTableFlags_BordersOuter))
+    ImGui::Begin("Debug");
+    if(ImGui::CollapsingHeader("Misc settings", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {
-      ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 32);
-      ImGui::TableSetupColumn("A", ImGuiTableColumnFlags_WidthStretch);
-      ImGui::TableSetupColumn("B", ImGuiTableColumnFlags_WidthStretch);
-      ImGui::TableSetupColumn("C", ImGuiTableColumnFlags_WidthStretch);
-      ImGui::TableHeadersRow();
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      for(uint32_t i = 0; i < count; i++)
-      {
-        ImGui::Text("%2d", i);
-        if(debugFloat)
-        {
-          ImGui::TableNextColumn();
-          ImGui::Text("%f", *(float*)&readback.debugA[i]);
-          ImGui::TableNextColumn();
-          ImGui::Text("%f", *(float*)&readback.debugB[i]);
-          ImGui::TableNextColumn();
-          ImGui::Text("%f", *(float*)&readback.debugC[i]);
-        }
-        else if(debugHex)
-        {
-          ImGui::TableNextColumn();
-          ImGui::Text("%X", readback.debugA[i]);
-          ImGui::TableNextColumn();
-          ImGui::Text("%X", readback.debugB[i]);
-          ImGui::TableNextColumn();
-          ImGui::Text("%X", readback.debugC[i]);
-        }
-        else
-        {
-          ImGui::TableNextColumn();
-          ImGui::Text("%d", readback.debugA[i]);
-          ImGui::TableNextColumn();
-          ImGui::Text("%d", readback.debugB[i]);
-          ImGui::TableNextColumn();
-          ImGui::Text("%d", readback.debugC[i]);
-        }
+      PE::begin("##HiddenID");
+      PE::InputInt("Colorize xor", (int*)&m_frameConfig.frameConstants.colorXor);
+      PE::Checkbox("Auto reset timer", &m_tweak.autoResetTimers);
+      PE::end();
+    }
+    if(ImGui::CollapsingHeader("Debug Shader Values", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
+    {
+      PE::begin("##HiddenID");
+      PE::InputInt("dbgInt", (int*)&m_frameConfig.frameConstants.dbgUint, 1, 100, ImGuiInputTextFlags_EnterReturnsTrue);
+      PE::InputFloat("dbgFloat", &m_frameConfig.frameConstants.dbgFloat, 0.1f, 1.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
+      PE::end();
 
+      ImGui::Text(" debugI :  %10d", readback.debugI);
+      ImGui::Text(" debugUI:  %10u", readback.debugUI);
+      ImGui::Text(" debugU64:  %llX", readback.debugU64);
+      static bool debugFloat = false;
+      static bool debugHex   = false;
+      static bool debugAll   = false;
+      ImGui::Checkbox(" as float", &debugFloat);
+      ImGui::SameLine();
+      ImGui::Checkbox("hex", &debugHex);
+      ImGui::SameLine();
+      ImGui::Checkbox("all", &debugAll);
+      //ImGui::SameLine();
+      //bool     doPrint = ImGui::Button("print");
+      uint32_t count = debugAll ? 64 : 32;
+
+      if(ImGui::BeginTable("##Debug", 4, ImGuiTableFlags_BordersOuter))
+      {
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 32);
+        ImGui::TableSetupColumn("A", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("B", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("C", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableHeadersRow();
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-      }
+        for(uint32_t i = 0; i < count; i++)
+        {
+          ImGui::Text("%2d", i);
+          if(debugFloat)
+          {
+            ImGui::TableNextColumn();
+            ImGui::Text("%f", *(float*)&readback.debugA[i]);
+            ImGui::TableNextColumn();
+            ImGui::Text("%f", *(float*)&readback.debugB[i]);
+            ImGui::TableNextColumn();
+            ImGui::Text("%f", *(float*)&readback.debugC[i]);
+          }
+          else if(debugHex)
+          {
+            ImGui::TableNextColumn();
+            ImGui::Text("%X", readback.debugA[i]);
+            ImGui::TableNextColumn();
+            ImGui::Text("%X", readback.debugB[i]);
+            ImGui::TableNextColumn();
+            ImGui::Text("%X", readback.debugC[i]);
+          }
+          else
+          {
+            ImGui::TableNextColumn();
+            ImGui::Text("%d", readback.debugA[i]);
+            ImGui::TableNextColumn();
+            ImGui::Text("%d", readback.debugB[i]);
+            ImGui::TableNextColumn();
+            ImGui::Text("%d", readback.debugC[i]);
+          }
 
-      ImGui::EndTable();
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+        }
+
+        ImGui::EndTable();
+      }
     }
+    ImGui::End();
   }
-  ImGui::End();
-#endif
 
   handleChanges();
 

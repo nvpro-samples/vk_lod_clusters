@@ -97,7 +97,7 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
 
 ////////////////////////////////////////////
 
-layout(local_size_x=TLAS_INSTANCES_BLAS_WORKGROUP) in;
+layout(local_size_x=INSTANCES_ASSIGN_BLAS_WORKGROUP) in;
 
 ////////////////////////////////////////////
 
@@ -108,18 +108,36 @@ void main()
   if (instanceID < build.numRenderInstances)
   {
     InstanceBuildInfo buildInfo = build.instanceBuildInfos.d[instanceID];
-    uint buildIndex = buildInfo.blasBuildIndex;
+    uint buildIndex             = buildInfo.blasBuildIndex;
+    
+    bool doStats = true;
+    
+  #if USE_BLAS_SHARING    
+    // we might reference another instance's blas
+    if (buildIndex != BLAS_BUILD_INDEX_LOWDETAIL && (buildIndex & BLAS_BUILD_INDEX_SHARE_BIT) != 0)
+    {
+      uint shareInstanceID = buildIndex & ~(BLAS_BUILD_INDEX_SHARE_BIT);
+      buildInfo  = build.instanceBuildInfos.d[shareInstanceID];
+      buildIndex = buildInfo.blasBuildIndex;
+      
+      // don't add to build stats if we are referencing another instance
+      doStats = false;
+    }
+  #endif
     
     // By default tlasInstances are set to low detail blas,
     // override when applicable.
     
     if (buildInfo.clusterReferencesCount > 0)
     {
-      build.tlasInstances.d[instanceID].blasReference = build.blasBuildAddresses.d[buildIndex];
-    #if 1
-      // stats
-      atomicAdd(readback.blasActualSizes, uint64_t(build.blasBuildSizes.d[buildIndex]));
+    #if USE_MEMORY_STATS
+      if (doStats)
+      {
+        atomicAdd(readback.blasActualSizes, uint64_t(build.blasBuildSizes.d[buildIndex]));
+      }
     #endif
+      
+      build.tlasInstances.d[instanceID].blasReference = build.blasBuildAddresses.d[buildIndex];
     }
   }
   

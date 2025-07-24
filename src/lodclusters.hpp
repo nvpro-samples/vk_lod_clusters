@@ -80,13 +80,14 @@ public:
     bool facetShading = true;
     bool useStreaming = true;
 
-    bool useOrbit              = true;
-    bool autoResetTimers       = false;
-    bool useDebugVisualization = true;
+    bool autoResetTimers = false;
+    bool autoSharing     = true;
 
     bool  hbaoFullRes = false;
     bool  hbaoActive  = true;
     float hbaoRadius  = 0.05f;
+
+    float mirrorBoxScale = 0.2f;
   };
 
 
@@ -126,6 +127,7 @@ public:
   void onFileDrop(const std::filesystem::path& filename) override;
 
   void setSupportsClusters(bool supported) { m_resources.m_supportsClusters = supported; }
+  bool getShowDebugUI() const { return m_showDebugUI; }
 
 private:
   VkExtent2D                 m_windowSize;
@@ -146,10 +148,14 @@ private:
   nvgui::EnumRegistry       m_ui;
   nvutils::PerformanceTimer m_clock;
 
-  bool   m_reloadShaders         = false;
-  bool   m_requestCameraRecenter = false;
-  int    m_frames                = 0;
-  double m_animTime              = 0;
+  bool m_reloadShaders = false;
+#ifdef _DEBUG
+  bool m_showDebugUI = true;
+#else
+  bool m_showDebugUI = false;
+#endif
+  int    m_frames   = 0;
+  double m_animTime = 0;
 
   Tweak m_tweak;
   Tweak m_tweakLast;
@@ -180,7 +186,7 @@ private:
 
   uint32_t m_equalFrames = 0;
 
-  bool initScene(const std::filesystem::path& filePath);
+  bool initScene(const std::filesystem::path& filePath, bool configChange);
   void setSceneCamera(const std::filesystem::path& filePath);
   void saveCacheFile();
   void deinitScene();
@@ -194,8 +200,9 @@ private:
 
   void updateImguiImage();
 
-  void adjustSceneClusterConfig();
+  void findSceneClusterConfig();
   void updatedClusterConfig();
+  void updatedSceneGrid();
 
   void handleChanges();
 
