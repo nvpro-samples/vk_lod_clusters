@@ -178,7 +178,7 @@ bool Scene::init(const std::filesystem::path& filePath, const SceneConfig& confi
   m_gridBbox = m_bbox;
 
   glm::vec3 modelExtent = m_bbox.hi - m_bbox.lo;
-  m_isBig = modelExtent.y < 0.1 * std::max(modelExtent.x, modelExtent.z) && m_originalInstanceCount > 1024;
+  m_isBig = modelExtent.y < 0.15f * std::max(modelExtent.x, modelExtent.z) && m_originalInstanceCount > 1024;
 
   for(auto& geometry : m_geometryViews)
   {

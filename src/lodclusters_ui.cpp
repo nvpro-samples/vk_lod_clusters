@@ -267,6 +267,7 @@ void LodClusters::onUIRender()
       {
         // Set the interest position
         m_info.cameraManipulator->setLookat(eye, hitPos, up, false);
+        m_info.cameraManipulator->setSpeed(glm::length(eye - hitPos) * m_tweak.clickSpeedScale);
       }
 
       if(requestMirrorBox)
@@ -398,18 +399,20 @@ void LodClusters::onUIRender()
   if(ImGui::CollapsingHeader("Traversal"))
   {
     PE::begin("##TraversalSpecifics");
-    PE::InputIntClamped("Max render clusters (bits)", (int*)&m_rendererConfig.numRenderClusterBits, 8, 25, 1, 1,
-                        ImGuiInputTextFlags_EnterReturnsTrue);
     PE::InputIntClamped("Max traversal tasks (bits)", (int*)&m_rendererConfig.numTraversalTaskBits, 8, 25, 1, 1,
                         ImGuiInputTextFlags_EnterReturnsTrue);
+    PE::InputIntClamped("Max render clusters (bits)", (int*)&m_rendererConfig.numRenderClusterBits, 8, 25, 1, 1,
+                        ImGuiInputTextFlags_EnterReturnsTrue);
     PE::InputFloat("LoD pixel error", &m_frameConfig.lodPixelError, 0.25f, 0.25f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
+    PE::Checkbox("Separate Groups Kernel", &m_rendererConfig.useSeparateGroups,
+                 "optimization that splits traversal into two separate kernels");
     PE::Checkbox("Instance Sorting", &m_rendererConfig.useSorting);
-    PE::Checkbox("Culling (Occlusion & Frustum)", &m_rendererConfig.useCulling);
-    ImGui::BeginDisabled(!m_rendererConfig.useCulling);
-    PE::Checkbox("Freeze Cull / LoD", &m_frameConfig.freezeCulling);
-    ImGui::EndDisabled();
     PE::Checkbox("Rendered Statistics", &m_rendererConfig.useRenderStats,
                  "Adds additional atomic counters for statistics, impacts performance");
+    PE::Checkbox("Culling (Occlusion & Frustum)", &m_rendererConfig.useCulling);
+    ImGui::BeginDisabled(!m_rendererConfig.useCulling);
+    PE::Checkbox("Culling / LoD Freeze", &m_frameConfig.freezeCulling);
+    ImGui::EndDisabled();
 
     m_frameConfig.lodPixelError = std::max(0.001f, m_frameConfig.lodPixelError);
 
@@ -866,6 +869,11 @@ void LodClusters::onUIRender()
   if(ImGui::CollapsingHeader("Camera", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
   {
     nvgui::CameraWidget(m_info.cameraManipulator);
+    namespace PE = nvgui::PropertyEditor;
+    PE::begin();
+    PE::InputFloat("Speed distance factor", &m_tweak.clickSpeedScale, 0, 0, "%.2f", 0,
+                   "double click causes speed to be based on this percentage of the distance to hit point");
+    PE::end();
   }
 
   if(ImGui::CollapsingHeader("Lighting", nullptr, ImGuiTreeNodeFlags_DefaultOpen))

@@ -121,7 +121,11 @@ void main()
 
     // keep originals for array size warnings 
     readback.numRenderClusters    = renderClusterCounter;
+  #if USE_SEPARATE_GROUPS
+    readback.numTraversalInfos    = max(buildRW.traversalInfoWriteCounter, buildRW.traversalGroupCounter);
+  #else
     readback.numTraversalInfos    = buildRW.traversalInfoWriteCounter;
+  #endif
 
   #if USE_RENDER_STATS
     readback.numRenderedClusters  = numRenderedClusters;
@@ -144,7 +148,11 @@ void main()
 
     // keep originals for array size warnings 
     readback.numRenderClusters    = renderClusterCounter;
+  #if USE_SEPARATE_GROUPS
+    readback.numTraversalInfos    = max(buildRW.traversalInfoWriteCounter, buildRW.traversalGroupCounter);
+  #else
     readback.numTraversalInfos    = buildRW.traversalInfoWriteCounter;
+  #endif
 
   #if USE_STATS
     readback.numRenderedClusters  += numRenderedClusters; // + because we sometimes use atomicAdd on this directly

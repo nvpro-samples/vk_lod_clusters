@@ -44,6 +44,7 @@ private:
     shaderc::SpvCompilationResult computeTraversalPresort;
     shaderc::SpvCompilationResult computeTraversalInit;
     shaderc::SpvCompilationResult computeTraversalRun;
+    shaderc::SpvCompilationResult computeTraversalGroups;
     shaderc::SpvCompilationResult computeBuildSetup;
   };
 
@@ -53,6 +54,7 @@ private:
     VkPipeline computeTraversalPresort = nullptr;
     VkPipeline computeTraversalInit    = nullptr;
     VkPipeline computeTraversalRun     = nullptr;
+    VkPipeline computeTraversalGroups  = nullptr;
     VkPipeline computeBuildSetup       = nullptr;
   };
 
@@ -86,6 +88,7 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
   options.AddMacroDefinition("USE_SORTING", config.useSorting ? "1" : "0");
   options.AddMacroDefinition("USE_CULLING", config.useCulling ? "1" : "0");
   options.AddMacroDefinition("USE_RENDER_STATS", config.useRenderStats ? "1" : "0");
+  options.AddMacroDefinition("USE_SEPARATE_GROUPS", config.useSeparateGroups ? "1" : "0");
   options.AddMacroDefinition("DEBUG_VISUALIZATION", config.useDebugVisualization ? "1" : "0");
   options.AddMacroDefinition("MESHSHADER_WORKGROUP_SIZE", "32");
 
@@ -95,6 +98,12 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
   res.compileShader(m_shaders.computeTraversalInit, VK_SHADER_STAGE_COMPUTE_BIT, "traversal_init.comp.glsl", &options);
   res.compileShader(m_shaders.computeTraversalRun, VK_SHADER_STAGE_COMPUTE_BIT, "traversal_run.comp.glsl", &options);
   res.compileShader(m_shaders.computeBuildSetup, VK_SHADER_STAGE_COMPUTE_BIT, "build_setup.comp.glsl", &options);
+
+  if(config.useSeparateGroups)
+  {
+    res.compileShader(m_shaders.computeTraversalGroups, VK_SHADER_STAGE_COMPUTE_BIT,
+                      "traversal_run_separate_groups.comp.glsl", &options);
+  }
 
   if(!res.verifyShaders(m_shaders))
   {
@@ -133,6 +142,9 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     m_sceneBuildShaderio.maxRenderClusters  = uint32_t(1u << config.numRenderClusterBits);
     m_sceneBuildShaderio.maxTraversalInfos  = uint32_t(1u << config.numTraversalTaskBits);
 
+    m_sceneBuildShaderio.indirectDispatchGroups.gridY = 1;
+    m_sceneBuildShaderio.indirectDispatchGroups.gridZ = 1;
+
     BufferRanges mem = {};
     m_sceneBuildShaderio.renderClusterInfos =
         mem.append(sizeof(shaderio::ClusterInfo) * m_sceneBuildShaderio.maxRenderClusters, 8);
@@ -143,12 +155,21 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
       m_sceneBuildShaderio.instanceSortValues = mem.append(sizeof(uint32_t) * m_renderInstances.size(), 4);
     }
 
+    if(config.useSeparateGroups)
+    {
+      m_sceneBuildShaderio.traversalGroupInfos = mem.append(sizeof(uint64_t) * m_sceneBuildShaderio.maxTraversalInfos, 8);
+    }
+
     res.createBuffer(m_sceneDataBuffer, mem.getSize(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sceneDataBuffer.bufferSize, "operations", "build data");
 
     m_sceneBuildShaderio.renderClusterInfos += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.instanceSortKeys += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.instanceSortValues += m_sceneDataBuffer.address;
+    if(config.useSeparateGroups)
+    {
+      m_sceneBuildShaderio.traversalGroupInfos += m_sceneDataBuffer.address;
+    }
 
     res.createBuffer(m_sceneTraversalBuffer, sizeof(uint64_t) * m_sceneBuildShaderio.maxTraversalInfos,
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -234,6 +255,12 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
 
     shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeTraversalRun);
     vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTraversalRun);
+
+    if(config.useSeparateGroups)
+    {
+      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeTraversalGroups);
+      vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTraversalGroups);
+    }
   }
 
   return true;
@@ -327,6 +354,18 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalRun);
     vkCmdDispatch(cmd, getWorkGroupCount(frame.traversalPersistentThreads, TRAVERSAL_RUN_WORKGROUP), 1, 1);
+
+    if(m_config.useSeparateGroups)
+    {
+      memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 1,
+                           &memBarrier, 0, nullptr, 0, nullptr);
+
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalGroups);
+      vkCmdDispatchIndirect(cmd, m_sceneBuildBuffer.buffer, offsetof(shaderio::SceneBuilding, indirectDispatchGroups));
+    }
 
     memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;

@@ -1,4 +1,11 @@
 # Changelog for vk_lod_clusters
+* 2025-7-31:
+  * Bugfix for objects with single lod level appearing black in lod visualization.
+  * Filter out instances whose material uses BLENDED transparency.
+  * Double-Click/SPACE also changes walk speed (percentage of distance to hit point).
+* 2025-7-30:
+  * Added "Separate Groups Kernel" optimization to "Traversal" (default true). See `USE_SEPARATE_GROUPS` in [shaders/traversal_run.comp.glsl](shaders/traversal_run.comp.glsl) as well as the new kernel [shaders/traversal_run_separate_groups.comp.glsl](shaders/traversal_run_separate_groups.comp.glsl).
+  * Tweaked heuristic for persistent kernel threads once more.
 * 2025-7-24:
   * Major feature update.
   * Added ["BLAS sharing"](docs/blas_sharing.md) under "Traversal" to drastically reduce BLAS builds when geometries are instanced a lot. It is automatically enabled (`--autosharing 0/1`) for scene configurations that may benefit.

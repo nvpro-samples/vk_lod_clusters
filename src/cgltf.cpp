@@ -18,5 +18,8 @@
 */
 
 #define _CRT_SECURE_NO_WARNINGS
-#define  CGLTF_IMPLEMENTATION
+#define CGLTF_IMPLEMENTATION
+#ifdef _DEBUG
+#define CGLTF_VALIDATE_ENABLE_ASSERTS 1
+#endif
 #include <cgltf.h>

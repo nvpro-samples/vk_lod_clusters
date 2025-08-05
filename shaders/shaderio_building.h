@@ -157,12 +157,23 @@ struct SceneBuilding
   uint traversalInfoReadCounter;
   uint traversalInfoWriteCounter;
 
+  // only used for USE_SEPARATE_GROUPS
+  uint traversalGroupCounter;
+  uint _pad;
+
   // result of traversal init & scratch for traversal run
   // array size is [maxTraversalInfos]
   BUFFER_REF(uint64s_coh_volatile) traversalNodeInfos;
-  // result of traversal run
+  // only used for USE_SEPARATE_GROUPS
+  // array size is [maxTraversalInfos]
+  BUFFER_REF(uint64s_coh_volatile) traversalGroupInfos;
+
+  // result of traversal run or separate_groups
   // array size is [maxRenderClusters]
   BUFFER_REF(ClusterInfos_inout) renderClusterInfos;
+
+  // only used for USE_SEPARATE_GROUPS
+  DispatchIndirectCommand indirectDispatchGroups;
 
   // rasterization related
   //////////////////////////////////////////////////

@@ -172,15 +172,11 @@ void addInstancesFromNode(std::vector<lodclusters::Scene::Instance>&     instanc
   // If this node has a mesh, add instances for its primitives.
   if(node->mesh != nullptr)
   {
-    const ptrdiff_t meshIndex = (node->mesh) - data->meshes;
-
     lodclusters::Scene::Instance instance{};
-    instance.geometryID = uint32_t(meshToGeometry[meshIndex]);
-    instance.matrix     = nodeObjToWorldTransform;
+    const ptrdiff_t              meshIndex   = (node->mesh) - data->meshes;
+    const cgltf_material*        material    = node->mesh->primitives[0].material;
+    bool                         addInstance = true;
 
-    geometryViews[instance.geometryID].instanceReferenceCount++;
-
-    const cgltf_material* material = node->mesh->primitives[0].material;
     if(material)
     {
       instance.materialID = uint32_t(material - data->materials);
@@ -198,9 +194,23 @@ void addInstancesFromNode(std::vector<lodclusters::Scene::Instance>&     instanc
         instance.color.z = material->pbr_specular_glossiness.diffuse_factor[2];
         instance.color.w = material->pbr_specular_glossiness.diffuse_factor[3];
       }
+
+      if(material->alpha_mode == cgltf_alpha_mode_blend)
+      {
+        addInstance = false;
+      }
     }
 
-    instances.push_back(instance);
+    if(addInstance)
+    {
+      instance.geometryID = uint32_t(meshToGeometry[meshIndex]);
+      instance.matrix     = nodeObjToWorldTransform;
+
+      geometryViews[instance.geometryID].instanceReferenceCount++;
+
+
+      instances.push_back(instance);
+    }
   }
 
   // Recurse over any children of this node.

@@ -146,7 +146,7 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
     renderInstance.worldMatrix    = sceneInstance.matrix;
     renderInstance.geometryID     = sceneInstance.geometryID;
     renderInstance.materialID     = sceneInstance.materialID;
-    renderInstance.maxLodLevelRcp = 1.0f / float(geometry.lodLevelsCount - 1);
+    renderInstance.maxLodLevelRcp = geometry.lodLevelsCount > 1 ? 1.0f / float(geometry.lodLevelsCount - 1) : 0.0f;
     renderInstance.packedColor    = glm::packUnorm4x8(sceneInstance.color);
   }
 

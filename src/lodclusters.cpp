@@ -54,6 +54,7 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"cullederrorscale"}, &m_frameConfig.culledErrorScale);
   m_info.parameterRegistry->add({"culling"}, &m_rendererConfig.useCulling);
   m_info.parameterRegistry->add({"blassharing"}, &m_rendererConfig.useBlasSharing);
+  m_info.parameterRegistry->add({"separategroups"}, &m_rendererConfig.useSeparateGroups);
   m_info.parameterRegistry->add({"sharingmininstances"}, &m_frameConfig.sharingMinInstances);
   m_info.parameterRegistry->add({"sharingpushculled"}, &m_frameConfig.sharingPushCulled);
   m_info.parameterRegistry->add({"sharingminlevel"}, &m_frameConfig.sharingMinLevel);
@@ -311,7 +312,13 @@ void LodClusters::onAttach(nvapp::Application* app)
     physicalProperties.pNext = &smProperties;
     vkGetPhysicalDeviceProperties2(app->getPhysicalDevice(), &physicalProperties);
     // pseudo heuristic
-    m_frameConfig.traversalPersistentThreads = smProperties.shaderSMCount * smProperties.shaderWarpsPerSM * 8;
+    // larger GPUs seem better off with lower values
+    if(smProperties.shaderSMCount * smProperties.shaderWarpsPerSM > 4096)
+      m_frameConfig.traversalPersistentThreads = smProperties.shaderSMCount * smProperties.shaderWarpsPerSM * 2;
+    else if(smProperties.shaderSMCount * smProperties.shaderWarpsPerSM > 2048 + 1024)
+      m_frameConfig.traversalPersistentThreads = smProperties.shaderSMCount * smProperties.shaderWarpsPerSM * 4;
+    else
+      m_frameConfig.traversalPersistentThreads = smProperties.shaderSMCount * smProperties.shaderWarpsPerSM * 8;
   }
 
   {
@@ -375,7 +382,7 @@ void LodClusters::onAttach(nvapp::Application* app)
     const std::filesystem::path              exeDirectoryPath   = nvutils::getExecutablePath().parent_path();
     const std::vector<std::filesystem::path> defaultSearchPaths = {
         // regular build
-        std::filesystem::absolute(exeDirectoryPath / PROJECT_EXE_TO_DOWNLOAD_DIRECTORY),
+        std::filesystem::absolute(exeDirectoryPath / TARGET_EXE_TO_DOWNLOAD_DIRECTORY),
         // install build
         std::filesystem::absolute(exeDirectoryPath / "resources"),
     };
@@ -585,7 +592,7 @@ void LodClusters::handleChanges()
      || rendererCfgChanged(m_rendererConfig.useCulling) || rendererCfgChanged(m_rendererConfig.twoSided)
      || rendererCfgChanged(m_rendererConfig.useSorting) || rendererCfgChanged(m_rendererConfig.numRenderClusterBits)
      || rendererCfgChanged(m_rendererConfig.numTraversalTaskBits) || rendererCfgChanged(m_rendererConfig.useBlasSharing)
-     || rendererCfgChanged(m_rendererConfig.useRenderStats))
+     || rendererCfgChanged(m_rendererConfig.useRenderStats) || rendererCfgChanged(m_rendererConfig.useSeparateGroups))
   {
     rendererChanged = true;
 

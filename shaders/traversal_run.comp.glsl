@@ -75,6 +75,17 @@
   
   Please refer to [A Deep Dive into Nanite Virtualized Geometry, Karis et al. 2021](https://www.advances.realtimerendering.com/s2021/Karis_Nanite_SIGGRAPH_Advances_2021_final.pdf)
   for more details.
+  
+  
+  USE_SEPARATE_GROUPS
+  
+  When active, two kernels are used for the traversal.
+  The hierarchical node traversal is handled within this kernel, 
+  but the leaves (cluster groups and their clusters)
+  are processed in `traversal_run_separate_groups.comp.glsl`.
+  
+  This reduces divergence and can speed things up overall.
+
 */
 
 #version 460
@@ -228,7 +239,11 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
 
   // identify type of item: node or group
   bool isNode  = PACKED_GET(traversalInfo.packedNode, Node_packed_isGroup) == 0;
-  
+#if USE_SEPARATE_GROUPS
+  // in this mode this kernel only processes nodes
+  isNode = true;
+#endif
+
   uint geometryID   = instances[traversalInfo.instanceID].geometryID;
   Geometry geometry = geometries[geometryID];
 
@@ -239,9 +254,9 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
 #endif
 
   bool forceCluster = false;
-  uint lodLevel = 0;
 
-  if (isNode) {
+  if (isNode)
+  {
     uint childIndex     = taskSubID;
     uint childNodeIndex = PACKED_GET(traversalInfo.packedNode, Node_packed_nodeChildOffset) + childIndex;
     Node childNode      = geometry.nodes.d[childNodeIndex];
@@ -252,7 +267,11 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
     // prepare to enqueue this child node later, if metric evaluates properly
     traversalInfo.packedNode = childNode.packed;
   }
+#if !USE_SEPARATE_GROUPS
   else {
+    // a cluster group may be processed as well, in that case
+    // we test the children clusters.
+  
     uint clusterIndex = taskSubID;
     uint groupIndex   = PACKED_GET(traversalInfo.packedNode, Node_packed_groupIndex);
   #if USE_STREAMING
@@ -317,9 +336,8 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
     
     // TraversalInfo aliases with ClusterInfo, packeNode == clusterID
     traversalInfo.packedNode = group.clusterResidentID + clusterIndex;
-    
-    lodLevel = group.lodLevel;
   }
+#endif
   
   // perform traversal & culling logic
   
@@ -343,7 +361,8 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
     // when streaming we might need to bail out here, if the child group isn't resident
     bool isGroup    = PACKED_GET(traversalInfo.packedNode, Node_packed_isGroup) != 0;
     uint groupIndex = PACKED_GET(traversalInfo.packedNode, Node_packed_groupIndex);
-    
+  
+  #if USE_STREAMING
     // streamingGroupAddresses[groupIndex] encodes two things:
     //
     //   if the address is <  STREAMING_INVALID_ADDRESS_START:
@@ -384,7 +403,19 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
         }
       }
     }
+  #endif
   }
+#endif
+
+#if USE_SEPARATE_GROUPS
+  // In this mode we enqueue groups separately from nodes.
+  // we hijack the "cluster enqueue" mechanism for this.
+  //
+  // `renderCluster` now means `traverseGroup`
+  
+  renderCluster = isValid && traverseNode && PACKED_GET(traversalInfo.packedNode, Node_packed_isGroup) != 0;
+  if (renderCluster)
+    traverseNode = false;
 #endif
   
   // nodes will enqueue their children again (producer)
@@ -395,6 +426,7 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   
   uvec4 voteNodes = subgroupBallot(traverseNode);
   uint countNodes = subgroupBallotBitCount(voteNodes);
+  
   uvec4 voteClusters = subgroupBallot(renderCluster);
   uint countClusters = subgroupBallotBitCount(voteClusters);
   
@@ -407,33 +439,42 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
     atomicAdd(buildRW.traversalTaskCounter, int(countNodes));
     // get memory offsets
     offsetNodes    = atomicAdd(buildRW.traversalInfoWriteCounter, countNodes);
+  #if USE_SEPARATE_GROUPS
+    offsetClusters = atomicAdd(buildRW.traversalGroupCounter, countClusters);
+  #else
     offsetClusters = atomicAdd(buildRW.renderClusterCounter, countClusters);
+  #endif
   }
   memoryBarrierBuffer();
   
   offsetNodes = subgroupBroadcastFirst(offsetNodes);
   offsetNodes += subgroupBallotExclusiveBitCount(voteNodes);
-
   offsetClusters = subgroupBroadcastFirst(offsetClusters);
   offsetClusters += subgroupBallotExclusiveBitCount(voteClusters);
   
   // verify if we actually have output space left
   
   traverseNode  = traverseNode && offsetNodes < build.maxTraversalInfos;
+  
+#if USE_SEPARATE_GROUPS
+  // `renderCluster` means `traverseGroup` here
+  renderCluster = renderCluster && offsetClusters < build.maxTraversalInfos;
+#else
   renderCluster = renderCluster && offsetClusters < build.maxRenderClusters;
 
-#if TARGETS_RAY_TRACING
-  if (renderCluster)
-  {
-    // For ray tracing count how many clusters we later add to each instance/blas.
-    // this will help us determine the list length for each blas.
-    // The `blas_setup_insertion.comp.glsl` kernel then sub-allocates space for the lists
-    // based on this counter.
-    atomicAdd(build.instanceBuildInfos.d[traversalInfo.instanceID].clusterReferencesCount, 1);
-    // the render list we write below is filled in an unsorted manner with clusters
-    // from different instances. We later use the `blas_insert_clusters.comp.glsl` kernel to build
-    // the list for each blas.
-  }
+  #if TARGETS_RAY_TRACING
+    if (renderCluster)
+    {
+      // For ray tracing count how many clusters we later add to each instance/blas.
+      // this will help us determine the list length for each blas.
+      // The `blas_setup_insertion.comp.glsl` kernel then sub-allocates space for the lists
+      // based on this counter.
+      atomicAdd(build.instanceBuildInfos.d[traversalInfo.instanceID].clusterReferencesCount, 1);
+      // the render list we write below is filled in an unsorted manner with clusters
+      // from different instances. We later use the `blas_insert_clusters.comp.glsl` kernel to build
+      // the list for each blas.
+    }
+  #endif
 #endif
   
   // by design a thread cannot be a node and a cluster at same time.
@@ -441,12 +482,18 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   bool doStore = traverseNode || renderCluster;
   
   if (doStore)
-  {
+  {  
     // given TraversalInfo and ClusterInfo were chosen to alias in memory and be a single u64
     // we do just have to adjust the output addresses.
     
     uint writeIndex          = traverseNode ? offsetNodes : offsetClusters;
-    uint64s_coh writePointer = uint64s_coh(traverseNode ? uint64_t(build.traversalNodeInfos) : uint64_t(build.renderClusterInfos));
+    uint64s_coh writePointer = uint64s_coh(traverseNode ? uint64_t(build.traversalNodeInfos) 
+    #if USE_SEPARATE_GROUPS
+    : uint64_t(build.traversalGroupInfos)
+    #else
+    : uint64_t(build.renderClusterInfos)
+    #endif
+    );
     
   #if USE_ATOMIC_LOAD_STORE
     atomicStore(writePointer.d[writeIndex], packTraversalInfo(traversalInfo), gl_ScopeDevice, gl_StorageSemanticsBuffer, gl_SemanticsRelease);
@@ -557,7 +604,7 @@ void processAllSubTasks(inout TraversalInfo traversalInfo, bool threadRunnable, 
 
 ////////////////////////////////////////////
 
-void main()
+void run()
 {
   // This implements a persistent kernel that implements
   // a producer/consumer loop.
@@ -670,4 +717,19 @@ void main()
       }
     }
   }
+}
+
+void main()
+{
+  run();
+  
+#if USE_SEPARATE_GROUPS
+  if (gl_GlobalInvocationID.x == 0) {
+    // this sets up the grid for `traversal_run_separate_groups.comp.glsl`
+  
+    uint groupCount = atomicAdd(buildRW.traversalGroupCounter,0);
+    groupCount = min(groupCount,build.maxTraversalInfos);
+    buildRW.indirectDispatchGroups.gridX = (groupCount + TRAVERSAL_GROUPS_WORKGROUP - 1) / TRAVERSAL_GROUPS_WORKGROUP;
+  }
+#endif
 }

@@ -143,10 +143,10 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
     std::filesystem::path                    exeDirectoryPath = nvutils::getExecutablePath().parent_path();
     const std::vector<std::filesystem::path> searchPaths      = {
         // regular build
-        std::filesystem::absolute(exeDirectoryPath / std::filesystem::path(PROJECT_EXE_TO_SOURCE_DIRECTORY) / "shaders"),
-        std::filesystem::absolute(exeDirectoryPath / std::filesystem::path(PROJECT_EXE_TO_NVSHADERS_DIRECTORY)),
+        std::filesystem::absolute(exeDirectoryPath / TARGET_EXE_TO_SOURCE_DIRECTORY / "shaders"),
+        std::filesystem::absolute(exeDirectoryPath / TARGET_EXE_TO_NVSHADERS_DIRECTORY),
         // install build
-        std::filesystem::absolute(exeDirectoryPath / PROJECT_NAME / "shaders"),
+        std::filesystem::absolute(exeDirectoryPath / TARGET_NAME "_files" / "shaders"),
         std::filesystem::absolute(exeDirectoryPath),
     };
     m_glslCompiler.addSearchPaths(searchPaths);

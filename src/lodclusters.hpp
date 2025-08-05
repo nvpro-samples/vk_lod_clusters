@@ -87,7 +87,8 @@ public:
     bool  hbaoActive  = true;
     float hbaoRadius  = 0.05f;
 
-    float mirrorBoxScale = 0.2f;
+    float mirrorBoxScale  = 0.2f;
+    float clickSpeedScale = 0.33f;
   };
 
 

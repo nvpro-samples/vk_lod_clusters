@@ -68,6 +68,7 @@ struct RendererConfig
   bool useCulling            = true;
   bool useBlasSharing        = true;
   bool useDebugVisualization = true;
+  bool useSeparateGroups     = true;
 
   // the maximum number of renderable clusters per frame in bits i.e. (1 << number)
   uint32_t numRenderClusterBits = 22;

@@ -101,7 +101,7 @@ vec3 visualizeColor(uint visData, uint instanceID)
 #endif
   else
   {
-    return vec3(0.8);
+    return vec3(0.95);
   }
 }
 

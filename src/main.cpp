@@ -49,7 +49,7 @@ using namespace lodclusters;
 int main(int argc, char** argv)
 {
   nvapp::ApplicationCreateInfo appInfo;
-  appInfo.name    = PROJECT_NAME;
+  appInfo.name    = TARGET_NAME;
   appInfo.useMenu = true;
 
   VkPhysicalDeviceMeshShaderFeaturesNV meshNV = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_NV};
