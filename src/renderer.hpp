@@ -69,6 +69,10 @@ struct RendererConfig
   bool useBlasSharing        = true;
   bool useDebugVisualization = true;
   bool useSeparateGroups     = true;
+#if USE_DLSS
+  bool                        useDlss     = false;
+  NVSDK_NGX_PerfQuality_Value dlssQuality = NVSDK_NGX_PerfQuality_Value_MaxQuality;
+#endif
 
   // the maximum number of renderable clusters per frame in bits i.e. (1 << number)
   uint32_t numRenderClusterBits = 22;

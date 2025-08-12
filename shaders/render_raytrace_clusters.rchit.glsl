@@ -111,12 +111,16 @@ hitAttributeEXT vec2 barycentrics;
 /////////////////////////////////
 
 layout(location = 0) rayPayloadInEXT RayPayload rayHit;
-layout(location = 1) rayPayloadEXT RayPayload rayHitAO;
+layout(location = 1) rayPayloadEXT float rayHitAO;
 
 /////////////////////////////////
 
 
 #define SUPPORTS_RT 1
+
+#if USE_DLSS
+#include "dlss_util.h"
+#endif
 
 #include "render_shading.glsl"
 
@@ -212,7 +216,11 @@ void main()
     if(view.doShadow == 1)
       sunContribution = traceShadowRay(wPos, wNormal, directionToLight);
 
-    shaded = shading(instanceID, wPos, wNormal, visData, sunContribution, ambientOcclusion);
+    shaded = shading(instanceID, wPos, wNormal, visData, sunContribution, ambientOcclusion
+    #if USE_DLSS
+      , rayHit.dlssAlbedo, rayHit.dlssSpecular, rayHit.dlssNormalRoughness
+    #endif
+    );
   }
 #else
   shaded = vec4(visualizeColor(visData), 1.0);
@@ -251,6 +259,5 @@ void main()
     readback.instanceId        = packPickingValue(instanceID, depth);
   }
 
-  vec4 projPos   = view.viewProjMatrix * vec4(wPos, 1.f);
-  rayHit.color.w = projPos.z / projPos.w;
+  rayHit.hitT = gl_HitTEXT;
 }

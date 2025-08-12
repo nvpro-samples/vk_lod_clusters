@@ -1,4 +1,6 @@
 # Changelog for vk_lod_clusters
+* 2025-8-05:
+  * DLSS denoiser support in ray tracing. Activate `USE_DLSS` in `cmake` to download and enable support within the application. 
 * 2025-7-31:
   * Bugfix for objects with single lod level appearing black in lod visualization.
   * Filter out instances whose material uses BLENDED transparency.

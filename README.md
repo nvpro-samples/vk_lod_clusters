@@ -388,6 +388,8 @@ We recommend starting with a `Release` build, as the `Debug` build has a lot mor
 
 The cmake setup will download the `Stanford Bunny` glTF 2.0 model that serves as default scene.
 
+If `USE_DLSS` is activated in the cmake options, then the DLSS/NGX runtime is downloaded by cmake setup as well and DLSS denoising is available for the ray tracer.
+
 It will also look for [`nvpro_core2`](https://github.com/nvpro-samples/nvpro_core2) either as subdirectory of the current project directory, or up to two levels above. If it is not found, it will automatically download the git repo into .
 
 > [!IMPORTANT]

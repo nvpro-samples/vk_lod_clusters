@@ -89,6 +89,7 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
   options.AddMacroDefinition("USE_CULLING", config.useCulling ? "1" : "0");
   options.AddMacroDefinition("USE_RENDER_STATS", config.useRenderStats ? "1" : "0");
   options.AddMacroDefinition("USE_SEPARATE_GROUPS", config.useSeparateGroups ? "1" : "0");
+  options.AddMacroDefinition("USE_DLSS", "0");
   options.AddMacroDefinition("DEBUG_VISUALIZATION", config.useDebugVisualization ? "1" : "0");
   options.AddMacroDefinition("MESHSHADER_WORKGROUP_SIZE", "32");
 
@@ -126,6 +127,11 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
   {
     return false;
   }
+
+#if USE_DLSS
+  // not supported in raster for now
+  res.setFramebufferDlss(false, config.dlssQuality);
+#endif
 
   initBasics(res, rscene, config);
 
@@ -275,11 +281,14 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
 {
   VkMemoryBarrier memBarrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
 
+  glm::vec2 renderScale = res.getFramebufferWindow2RenderScale();
+  float     pixelScale  = std::min(renderScale.x, renderScale.y);
+
   m_sceneBuildShaderio.traversalViewMatrix =
       frame.freezeCulling ? frame.frameConstantsLast.viewMatrix : frame.frameConstants.viewMatrix;
   m_sceneBuildShaderio.errorOverDistanceThreshold =
-      nvclusterlodErrorOverDistance(frame.lodPixelError * float(frame.frameConstants.supersample),
-                                    frame.frameConstants.fov, frame.frameConstants.viewportf.y);
+      nvclusterlodErrorOverDistance(frame.lodPixelError * pixelScale, frame.frameConstants.fov,
+                                    frame.frameConstants.viewportf.y);
 
   const bool useSky = true;  // When using Sky, the sky is rendered first and the rest of the scene is rendered on top of it.
 

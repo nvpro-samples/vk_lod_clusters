@@ -30,6 +30,8 @@ endif()
 # Source files for this project
 #
 file(GLOB SOURCE_FILES src/*.*)
+list(FILTER SOURCE_FILES EXCLUDE REGEX "dlss*")
+
 file(GLOB SHADER_FILES shaders/*.glsl shaders/*.h)
 file(GLOB VK_RADIX_SORT_FILES thirdparty/vulkan_radix_sort/src/vk_radix_sort.cc)
 
@@ -55,11 +57,61 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 )
 
 #####################################################################################
-# source groups
+# Adding DLSS if selected
+option(USE_DLSS "Use DLSS-RR for denoising" ON)
+if(USE_DLSS)
+  message(STATUS "Using DLSS-RR for denoising")
+    download_package(
+      NAME DLSSRR
+      URLS https://github.com/NVIDIA/DLSS/archive/refs/tags/v310.3.0.zip
+      VERSION 310.3.0
+      LOCATION DLSSRR_SOURCE_DIR
+    )
 
+    # Set NGX SDK root path
+    set(NGX_SDK_ROOT "${DLSSRR_SOURCE_DIR}/DLSS-310.3.0/")
+    message(STATUS " - DLSS path: " ${NGX_SDK_ROOT})
+    include(cmake/ngx.cmake)
+    
+    target_link_libraries(${PROJECT_NAME} PRIVATE ngx)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE USE_DLSS)
+    list(APPEND SOURCE_FILES 
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dlss_wrapper.cpp 
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dlss_wrapper.hpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dlss_denoiser.cpp 
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/dlss_denoiser.hpp
+        )
+    target_sources(${PROJECT_NAME} PRIVATE ${SOURCE_FILES})
+    source_group("Source Files" FILES ${SOURCE_FILES})
+
+    if (WIN32)
+        if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+            file(GLOB DLSS_DLLS "${NGX_SDK_ROOT}/lib/Windows_x86_64/dev/nvngx_*.dll")
+        else()
+            file(GLOB DLSS_DLLS "${NGX_SDK_ROOT}/lib/Windows_x86_64/rel/nvngx_*.dll")
+        endif()
+    else()
+        if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+            file(GLOB DLSS_DLLS "${NGX_SDK_ROOT}/lib/Linux_x86_64/dev/libnvidia-ngx*.so.*")
+        else()
+            file(GLOB DLSS_DLLS "${NGX_SDK_ROOT}/lib/Linux_x86_64/rel/libnvidia-ngx*.so.*")
+        endif()    
+    endif()
+
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DLSS_DLLS} $<TARGET_FILE_DIR:${PROJECT_NAME}> VERBATIM
+        )
+
+    install(FILES ${DLSS_DLLS} DESTINATION ${CMAKE_INSTALL_PREFIX})
+
+endif()
+
+#####################################################################################
+# source groups
 
 source_group("Shader Files" FILES ${SHADER_FILES})
 source_group("Source Files" FILES ${SOURCE_FILES})
+
 
 #####################################################################################
 # finalize project

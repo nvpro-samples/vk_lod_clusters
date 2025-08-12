@@ -44,6 +44,10 @@
 #error Update Vulkan SDK >= 1.4.309.0
 #endif
 
+#if USE_DLSS
+#include "dlss_denoiser.hpp"
+#endif
+
 #include "hbao_pass.hpp"
 #include "nvhiz_vk.hpp"
 #include "../shaders/shaderio.h"
@@ -234,6 +238,8 @@ public:
   struct FrameBuffer
   {
     VkExtent2D renderSize{};
+    VkExtent2D targetSize{};
+    VkExtent2D windowSize{};
 
     int  supersample = 0;
     bool useResolved = false;
@@ -256,14 +262,27 @@ public:
     nvvk::Image imgHizFar = {};
 
     VkPipelineRenderingCreateInfo pipelineRenderingInfo = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-  };
 
+#if USE_DLSS
+    bool                        hasDenoiser  = false;
+    DlssDenoiser                dlssDenoiser = {};
+    NVSDK_NGX_PerfQuality_Value dlssQuality  = NVSDK_NGX_PerfQuality_Value(-1);
+#endif
+  };
 
   void init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstance instance, const nvvk::QueueInfo& queue, const nvvk::QueueInfo& queueTransfer);
   void deinit();
 
   bool initFramebuffer(const VkExtent2D& windowSize, int supersample, bool hbaoFullRes);
+  void updateFramebufferRenderSizeDependent(VkCommandBuffer cmd);
+#if USE_DLSS
+  void updateFramebufferDlss(VkCommandBuffer cmd);
+  void setFramebufferDlss(bool enabled, NVSDK_NGX_PerfQuality_Value dlssQuality);
+#endif
+  void deinitFramebufferRenderSizeDependent();
   void deinitFramebuffer();
+
+  glm::vec2 getFramebufferWindow2RenderScale() const;
 
   void beginFrame(uint32_t cycleIndex);
   void postProcessFrame(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler);

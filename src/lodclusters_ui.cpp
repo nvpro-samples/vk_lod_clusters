@@ -160,7 +160,7 @@ void LodClusters::viewportUI(ImVec2 corner)
   ImVec2     mouseAbsPos = ImGui::GetMousePos();
   glm::uvec2 mousePos    = {mouseAbsPos.x - corner.x, mouseAbsPos.y - corner.y};
 
-  m_frameConfig.frameConstants.mousePosition = mousePos * glm::uvec2(m_tweak.supersample, m_tweak.supersample);
+  m_frameConfig.frameConstants.mousePosition = glm::uvec2(glm::vec2(mousePos) * m_resources.getFramebufferWindow2RenderScale());
 
   if(m_renderer)
   {
@@ -245,9 +245,7 @@ void LodClusters::onUIRender()
   // camera control, recenter
   if((requestCameraRecenter || requestMirrorBox) && pickingValid)
   {
-
-    glm::uvec2 mousePos = {m_frameConfig.frameConstants.mousePosition.x / m_tweak.supersample,
-                           m_frameConfig.frameConstants.mousePosition.y / m_tweak.supersample};
+    glm::uvec2 mousePos = {m_frameConfig.frameConstants.mousePosition.x, m_frameConfig.frameConstants.mousePosition.y};
 
     const glm::mat4 view = m_info.cameraManipulator->getViewMatrix();
     const glm::mat4 proj = m_frameConfig.frameConstants.projMatrix;
@@ -256,9 +254,8 @@ void LodClusters::onUIRender()
 
     if(d < 1.0F)  // Ignore infinite
     {
-      glm::vec4       win_norm = {0, 0, m_frameConfig.frameConstants.viewport.x / m_tweak.supersample,
-                                  m_frameConfig.frameConstants.viewport.y / m_tweak.supersample};
-      const glm::vec3 hitPos   = glm::unProjectZO({mousePos.x, mousePos.y, d}, view, proj, win_norm);
+      glm::vec4 win_norm     = {0, 0, m_frameConfig.frameConstants.viewport.x, m_frameConfig.frameConstants.viewport.y};
+      const glm::vec3 hitPos = glm::unProjectZO({mousePos.x, mousePos.y, d}, view, proj, win_norm);
 
       glm::vec3 eye, center, up;
       m_info.cameraManipulator->getLookat(eye, center, up);
@@ -360,7 +357,20 @@ void LodClusters::onUIRender()
 
     PE::begin("##Rendering");
     PE::entry("Renderer", [&]() { return m_ui.enumCombobox(GUI_RENDERER, "renderer", &m_tweak.renderer); });
-    PE::entry("Super sampling", [&]() { return m_ui.enumCombobox(GUI_SUPERSAMPLE, "sampling", &m_tweak.supersample); });
+    PE::entry("Super Resolution", [&]() { return m_ui.enumCombobox(GUI_SUPERSAMPLE, "sampling", &m_tweak.supersample); });
+#if USE_DLSS
+    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD && m_resources.m_frameBuffer.dlssDenoiser.isAvailable())
+    {
+      PE::entry("DLSS - Denoiser", [&]() {
+        ImGui::Checkbox("Enabled", &m_rendererConfig.useDlss);
+        ImGui::SameLine();
+        bool dlaa = m_rendererConfig.dlssQuality == NVSDK_NGX_PerfQuality_Value_DLAA;
+        ImGui::Checkbox("DLAA", &dlaa);
+        m_rendererConfig.dlssQuality = dlaa ? NVSDK_NGX_PerfQuality_Value_DLAA : NVSDK_NGX_PerfQuality_Value_MaxQuality;
+        return false;
+      });
+    }
+#endif
     PE::Text("Render Resolution:", "%d x %d", m_resources.m_frameBuffer.renderSize.width,
              m_resources.m_frameBuffer.renderSize.height);
 

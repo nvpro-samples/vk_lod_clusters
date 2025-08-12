@@ -39,18 +39,25 @@ layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuff
 
 //////////////////////////////////////////////////////////////
 
+#if RAYTRACING_PAYLOAD_INDEX == 0
 layout(location = RAYTRACING_PAYLOAD_INDEX) rayPayloadInEXT RayPayload rayHit;
-
+#else
+layout(location = RAYTRACING_PAYLOAD_INDEX) rayPayloadInEXT float rayHit;
+#endif
 //////////////////////////////////////////////////////////////
 
 void main()
 {
 #if RAYTRACING_PAYLOAD_INDEX == 0
   vec3 skyColor = evalSimpleSky(view.skyParams, gl_WorldRayDirectionEXT);
+  rayHit.color = skyColor;
+  rayHit.hitT  = 0;
+  #if USE_DLSS
+    rayHit.dlssAlbedo = vec4(skyColor,1);
+    rayHit.dlssNormalRoughness = vec4(0);
+    rayHit.dlssSpecular = vec3(0);
+  #endif
 #else
-  vec3 skyColor = vec3(1);
+  rayHit = 0;
 #endif
-
-  rayHit.color.rgb = skyColor;
-  rayHit.color.w   = 0;
 }

@@ -133,6 +133,7 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("USE_BLAS_SHARING", config.useBlasSharing ? "1" : "0");
   options.AddMacroDefinition("USE_RENDER_STATS", config.useRenderStats ? "1" : "0");
   options.AddMacroDefinition("USE_SEPARATE_GROUPS", config.useSeparateGroups ? "1" : "0");
+  options.AddMacroDefinition("USE_DLSS", config.useDlss ? "1" : "0");
   options.AddMacroDefinition("DEBUG_VISUALIZATION", config.useDebugVisualization ? "1" : "0");
 
   shaderc::CompileOptions optionsAO = options;
@@ -201,6 +202,10 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     LOGE("RendererRayTraceClustersLod rscene.updateClasRequired failed\n");
     return false;
   }
+
+#if USE_DLSS
+  res.setFramebufferDlss(config.useDlss, config.dlssQuality);
+#endif
 
   initBasics(res, rscene, config);
 
@@ -356,8 +361,19 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
       m_dsetPack.bindings.addBinding(BINDINGS_STREAMING_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_stageFlags);
     }
     m_dsetPack.bindings.addBinding(BINDINGS_TLAS, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, m_stageFlags);
-    m_dsetPack.bindings.addBinding(BINDINGS_RENDER_TARGET, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_stageFlags);
     m_dsetPack.bindings.addBinding(BINDINGS_RAYTRACING_DEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_stageFlags);
+    m_dsetPack.bindings.addBinding(BINDINGS_RENDER_TARGET, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_stageFlags);
+#if USE_DLSS
+    if(config.useDlss)
+    {
+      // skip first
+      for(uint32_t i = 1; i < DlssDenoiser::eDlssCount; i++)
+      {
+        m_dsetPack.bindings.addBinding(BINDINGS_RENDER_TARGET + i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_stageFlags);
+      }
+    }
+#endif
+
     m_dsetPack.initFromBindings(res.m_device);
 
     nvvk::createPipelineLayout(res.m_device, &m_pipelineLayout, {m_dsetPack.layout}, {{m_stageFlags, 0, sizeof(uint32_t)}});
@@ -377,11 +393,26 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     }
     writeSets.append(m_dsetPack.getWriteSet(BINDINGS_TLAS), m_tlas);
 
-    VkDescriptorImageInfo renderTargetInfo;
-    renderTargetInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-    renderTargetInfo.imageView   = res.m_frameBuffer.imgColor.descriptor.imageView;
-    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_RENDER_TARGET), &renderTargetInfo);
     writeSets.append(m_dsetPack.getWriteSet(BINDINGS_RAYTRACING_DEPTH), res.m_frameBuffer.imgRaytracingDepth);
+#if USE_DLSS
+    if(config.useDlss)
+    {
+      // apply all
+      for(uint32_t i = 0; i < DlssDenoiser::eDlssCount; i++)
+      {
+        VkDescriptorImageInfo renderTargetInfo =
+            res.m_frameBuffer.dlssDenoiser.getDescriptorImageInfo(DlssDenoiser::DlssBufferType(i));
+        writeSets.append(m_dsetPack.getWriteSet(BINDINGS_RENDER_TARGET + i), &renderTargetInfo);
+      }
+    }
+    else
+#endif
+    {
+      VkDescriptorImageInfo renderTargetInfo;
+      renderTargetInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+      renderTargetInfo.imageView   = res.m_frameBuffer.imgColor.descriptor.imageView;
+      writeSets.append(m_dsetPack.getWriteSet(BINDINGS_RENDER_TARGET), &renderTargetInfo);
+    }
 
     vkUpdateDescriptorSets(res.m_device, uint32_t(writeSets.size()), writeSets.data(), 0, nullptr);
   }
@@ -456,9 +487,12 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
   m_sceneBuildShaderio.traversalViewMatrix =
       frame.freezeCulling ? frame.frameConstantsLast.viewMatrix : frame.frameConstants.viewMatrix;
 
+  glm::vec2 renderScale = res.getFramebufferWindow2RenderScale();
+  float     pixelScale  = std::min(renderScale.x, renderScale.y);
+
   m_sceneBuildShaderio.errorOverDistanceThreshold =
-      nvclusterlodErrorOverDistance(frame.lodPixelError * float(frame.frameConstants.supersample),
-                                    frame.frameConstants.fov, frame.frameConstants.viewportf.y);
+      nvclusterlodErrorOverDistance(frame.lodPixelError * pixelScale, frame.frameConstants.fov,
+                                    frame.frameConstants.viewportf.y);
 
   m_sceneBuildShaderio.culledErrorScale      = std::max(1.0f, frame.culledErrorScale);
   m_sceneBuildShaderio.sharingMinInstances   = frame.sharingMinInstances;
@@ -739,6 +773,16 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
   {
     res.cmdBuildHiz(cmd, frame, profiler);
   }
+
+#if USE_DLSS
+  if(m_config.useDlss)
+  {
+    auto timerSection = profiler.cmdFrameSection(cmd, "DLSS");
+
+    res.m_frameBuffer.dlssDenoiser.denoise(cmd, frame.frameConstants.jitter, frame.frameConstants.viewMatrix,
+                                           frame.frameConstants.projMatrix);
+  }
+#endif
 
   {
     // reservation for geometry may change
@@ -1023,18 +1067,32 @@ void RendererRayTraceClustersLod::updatedFrameBuffer(Resources& res, RenderScene
 {
   vkDeviceWaitIdle(res.m_device);
 
-  std::array<VkWriteDescriptorSet, 3> writeSets;
-  VkDescriptorImageInfo               renderTargetInfo;
-  renderTargetInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-  renderTargetInfo.imageView   = res.m_frameBuffer.imgColor.descriptor.imageView;
-  writeSets[0]                 = m_dsetPack.getWriteSet(BINDINGS_RENDER_TARGET);
-  writeSets[0].pImageInfo      = &renderTargetInfo;
-  writeSets[1]                 = m_dsetPack.getWriteSet(BINDINGS_RAYTRACING_DEPTH);
-  writeSets[1].pImageInfo      = &res.m_frameBuffer.imgRaytracingDepth.descriptor;
-  writeSets[2]                 = m_dsetPack.getWriteSet(BINDINGS_HIZ_TEX);
-  writeSets[2].pImageInfo      = &res.m_hizUpdate.farImageInfo;
+  nvvk::WriteSetContainer writeSets;
 
-  vkUpdateDescriptorSets(res.m_device, uint32_t(writeSets.size()), writeSets.data(), 0, nullptr);
+  writeSets.append(m_dsetPack.getWriteSet(BINDINGS_HIZ_TEX), &res.m_hizUpdate.farImageInfo);
+  writeSets.append(m_dsetPack.getWriteSet(BINDINGS_RAYTRACING_DEPTH), res.m_frameBuffer.imgRaytracingDepth);
+
+#if USE_DLSS
+  if(m_config.useDlss)
+  {
+    // apply all
+    for(uint32_t i = 0; i < DlssDenoiser::eDlssCount; i++)
+    {
+      VkDescriptorImageInfo renderTargetInfo =
+          res.m_frameBuffer.dlssDenoiser.getDescriptorImageInfo(DlssDenoiser::DlssBufferType(i));
+      writeSets.append(m_dsetPack.getWriteSet(BINDINGS_RENDER_TARGET + i), &renderTargetInfo);
+    }
+  }
+  else
+#endif
+  {
+    VkDescriptorImageInfo renderTargetInfo;
+    renderTargetInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    renderTargetInfo.imageView   = res.m_frameBuffer.imgColor.descriptor.imageView;
+    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_RENDER_TARGET), &renderTargetInfo);
+  }
+
+  vkUpdateDescriptorSets(res.m_device, writeSets.size(), writeSets.data(), 0, nullptr);
 
   Renderer::updatedFrameBuffer(res, rscene);
 }

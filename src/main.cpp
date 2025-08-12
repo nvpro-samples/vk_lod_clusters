@@ -113,10 +113,55 @@ int main(int argc, char** argv)
 
   nvvk::addSurfaceExtensions(vkSetup.instanceExtensions);
   nvvk::Context vkContext;
-  if(vkContext.init(vkSetup) != VK_SUCCESS)
+
+  // Initialize the Vulkan loader
+  NVVK_CHECK(volkInitialize());
+
   {
-    LOGE("Error in Vulkan context creation\n");
-    return 1;
+    nvutils::ScopedTimer st("Creating Vulkan Context");
+
+
+#if USE_DLSS
+    // Adding the DLSS extensions to the instance
+    static std::vector<VkExtensionProperties> extraInstanceExtensions;
+    DlssRayReconstruction::getRequiredInstanceExtensions({}, extraInstanceExtensions);
+    for(auto& ext : extraInstanceExtensions)
+    {
+      vkSetup.instanceExtensions.emplace_back(ext.extensionName);
+    }
+#endif
+    VkResult result{};
+
+    vkContext.contextInfo = vkSetup;
+
+    result = vkContext.createInstance();
+    result = vkContext.selectPhysicalDevice();
+
+#if USE_DLSS
+    // Adding the extra device extensions required by DLSS
+    static std::vector<VkExtensionProperties> extraDeviceExtensions;
+    DlssRayReconstruction::getRequiredDeviceExtensions({}, vkContext.getInstance(), vkContext.getPhysicalDevice(), extraDeviceExtensions);
+    for(auto& ext : extraDeviceExtensions)
+    {
+      vkContext.contextInfo.deviceExtensions.push_back({.extensionName = ext.extensionName, .specVersion = ext.specVersion});
+    }
+#endif
+
+    result = vkContext.createDevice();
+    NVVK_CHECK(result);
+
+    nvvk::DebugUtil::getInstance().init(vkContext.getDevice());
+
+
+    if(vkContext.contextInfo.verbose)
+    {
+      NVVK_CHECK(nvvk::Context::printVulkanVersion());
+      NVVK_CHECK(nvvk::Context::printInstanceLayers());
+      NVVK_CHECK(nvvk::Context::printInstanceExtensions(vkContext.contextInfo.instanceExtensions));
+      NVVK_CHECK(nvvk::Context::printDeviceExtensions(vkContext.getPhysicalDevice(), vkContext.contextInfo.deviceExtensions));
+      NVVK_CHECK(nvvk::Context::printGpus(vkContext.getInstance(), vkContext.getPhysicalDevice()));
+      LOGI("_________________________________________________\n");
+    }
   }
 
   sampleElement->setSupportsClusters(vkContext.hasExtensionEnabled(VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME));

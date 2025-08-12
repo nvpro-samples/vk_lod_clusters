@@ -31,6 +31,9 @@
 #extension GL_EXT_scalar_block_layout : enable
 
 #include "shaderio.h"
+#if USE_DLSS
+#include "dlss_util.h"
+#endif
 
 //////////////////////////////////////////////////////////////
 
@@ -40,9 +43,15 @@ layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuff
 };
 
 layout(set = 0, binding = BINDINGS_TLAS) uniform accelerationStructureEXT asScene;
-layout(set = 0, binding = BINDINGS_RENDER_TARGET, rgba8) uniform image2D imgColor;
 
 layout(set = 0, binding = BINDINGS_RAYTRACING_DEPTH, r32f) uniform image2D imgRaytracingDepth;
+layout(set = 0, binding = BINDINGS_RENDER_TARGET, rgba8)   uniform image2D imgColor;
+#if USE_DLSS
+layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssAlbedo, rgba8)             uniform image2D imgDlssAlbedo;
+layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssSpecAlbedo, rgba16f)       uniform image2D imgDlssSpecAlbedo;
+layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssNormalRoughness, rgba16f)  uniform image2D imgDlssNormalRoughness;
+layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssMotion, rg16f)             uniform image2D imgDlssMotion;
+#endif
 
 //////////////////////////////////////////////////////////////
 
@@ -67,9 +76,14 @@ void main()
 {
   // for writing debugging values to stats.debug etc.
   bool center = gl_LaunchIDEXT.xy == (gl_LaunchSizeEXT.xy / 2);
+  vec2 pixelOffset = vec2(0.5);
+  
+#if USE_DLSS
+  pixelOffset += view.jitter;
+#endif
 
   ivec2 screen = ivec2(gl_LaunchIDEXT.xy);
-  vec2  uv     = (vec2(gl_LaunchIDEXT.xy) + vec2(0.5)) / vec2(gl_LaunchSizeEXT.xy);
+  vec2  uv     = (vec2(gl_LaunchIDEXT.xy) + pixelOffset) / vec2(gl_LaunchSizeEXT.xy);
 
 
   vec2 d = uv * 2.0 - 1.0;
@@ -124,7 +138,7 @@ void main()
   
   if (view.useMirrorBox != 0)
   {
-    if (rayHit.color.w == 0 && mirrorHit)
+    if (rayHit.hitT == 0 && mirrorHit)
     {
       traceRayEXT(asScene, view.flipWinding == 2 ? 0 : gl_RayFlagsCullBackFacingTrianglesEXT, 0xff, 0, 0,  // hit offset, hit stride
                 0,                                                           // miss offset
@@ -133,11 +147,32 @@ void main()
       );
       
       rayHit.color.xyz *= max(0,dot(mirrorNormal,-direction.xyz)) * 0.5 + 0.5;
+      rayHit.hitT = mirrorT;
     }
   }
-
-  {
-    imageStore(imgColor, screen, vec4(rayHit.color.xyz, 1));
-    imageStore(imgRaytracingDepth, screen, vec4(rayHit.color.w == 0 ? 1.0 : rayHit.color.w, 0.f, 0.f, 0.f));
+  
+  bool  hitValid = rayHit.hitT != 0;  
+  vec3  hitPos   = origin.xyz + direction.xyz * (hitValid ? rayHit.hitT : view.farPlane * 0.99f);
+  float hitDepth = 1;
+  
+  if (hitValid) {
+    vec4 screenPos = view.viewProjMatrix * vec4(hitPos, 1);
+    hitDepth = screenPos.z / screenPos.w;
   }
+  
+  imageStore(imgColor, screen, vec4(rayHit.color.xyz, 1));
+  imageStore(imgRaytracingDepth, screen, vec4(hitDepth, 0.f, 0.f, 0.f));
+  
+#if USE_DLSS
+  vec2 motionVec = vec2(0);
+  
+  motionVec = calculateMotionVector(hitPos, view.viewProjMatrixPrev,
+                                    view.viewProjMatrix, view.viewportf);
+
+  imageStore(imgDlssMotion, screen, vec4(motionVec.x, motionVec.y, 0, 0));
+  imageStore(imgDlssAlbedo, screen, rayHit.dlssAlbedo);
+  imageStore(imgDlssSpecAlbedo, screen, vec4(rayHit.dlssSpecular, 1.0f));
+  imageStore(imgDlssNormalRoughness, screen, rayHit.dlssNormalRoughness);
+#endif
+  
 }

@@ -55,8 +55,9 @@
 #define BINDINGS_STREAMING_UBO 7
 #define BINDINGS_STREAMING_SSBO 8
 #define BINDINGS_TLAS 9
-#define BINDINGS_RENDER_TARGET 10
-#define BINDINGS_RAYTRACING_DEPTH 11
+#define BINDINGS_RAYTRACING_DEPTH 10
+// DLSS buffers start here as well
+#define BINDINGS_RENDER_TARGET 11
 
 /////////////////////////////////////////
 
@@ -136,6 +137,29 @@
 namespace shaderio {
 using namespace glm;
 
+#else
+
+#ifndef USE_DLSS
+#define USE_DLSS 1
+#endif
+
+struct RayPayload
+{
+  // Ray gen writes the direction through the pixel at x+1 for ray differentials.
+  // Closest hit returns the shaded color there.
+  vec3  color;
+  float hitT;
+#if DEBUG_VISUALIZATION
+  // Ray direction through the pixel at y+1 for ray differentials
+  vec4 differentialY;
+#endif
+#if USE_DLSS
+  vec4 dlssNormalRoughness;
+  vec4 dlssAlbedo;
+  vec3 dlssSpecular;
+#endif
+};
+
 #endif
 
 struct FrameConstants
@@ -153,11 +177,17 @@ struct FrameConstants
 
   mat4 skyProjMatrixI;
 
+  // for motion vectors
+  mat4 viewProjMatrixPrev;
+
   ivec2 viewport;
   vec2  viewportf;
 
   vec2 viewPixelSize;
   vec2 viewClipSize;
+
+  vec2 jitter;
+  vec2 _pad;
 
   vec3  wLightPos;
   float lightMixer;
@@ -242,17 +272,6 @@ struct Readback
   uint debugC[64];
 };
 
-
-struct RayPayload
-{
-  // Ray gen writes the direction through the pixel at x+1 for ray differentials.
-  // Closest hit returns the shaded color there.
-  vec4 color;
-#if DEBUG_VISUALIZATION
-  // Ray direction through the pixel at y+1 for ray differentials
-  vec4 differentialY;
-#endif
-};
 
 #ifdef __cplusplus
 }

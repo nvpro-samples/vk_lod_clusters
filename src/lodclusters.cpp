@@ -22,6 +22,9 @@
 #include <nvgui/camera.hpp>
 
 #include "lodclusters.hpp"
+#if USE_DLSS
+#include "../shaders/dlss_util.h"
+#endif
 
 bool g_verbose = false;
 
@@ -53,6 +56,8 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"loderror"}, &m_frameConfig.lodPixelError);
   m_info.parameterRegistry->add({"cullederrorscale"}, &m_frameConfig.culledErrorScale);
   m_info.parameterRegistry->add({"culling"}, &m_rendererConfig.useCulling);
+  m_info.parameterRegistry->add({"dlss"}, &m_rendererConfig.useDlss);
+  m_info.parameterRegistry->add({"dlssquality"}, (int*)&m_rendererConfig.dlssQuality);
   m_info.parameterRegistry->add({"blassharing"}, &m_rendererConfig.useBlasSharing);
   m_info.parameterRegistry->add({"separategroups"}, &m_rendererConfig.useSeparateGroups);
   m_info.parameterRegistry->add({"sharingmininstances"}, &m_frameConfig.sharingMinInstances);
@@ -592,7 +597,11 @@ void LodClusters::handleChanges()
      || rendererCfgChanged(m_rendererConfig.useCulling) || rendererCfgChanged(m_rendererConfig.twoSided)
      || rendererCfgChanged(m_rendererConfig.useSorting) || rendererCfgChanged(m_rendererConfig.numRenderClusterBits)
      || rendererCfgChanged(m_rendererConfig.numTraversalTaskBits) || rendererCfgChanged(m_rendererConfig.useBlasSharing)
-     || rendererCfgChanged(m_rendererConfig.useRenderStats) || rendererCfgChanged(m_rendererConfig.useSeparateGroups))
+     || rendererCfgChanged(m_rendererConfig.useRenderStats) || rendererCfgChanged(m_rendererConfig.useSeparateGroups)
+#if USE_DLSS
+     || rendererCfgChanged(m_rendererConfig.useDlss) || rendererCfgChanged(m_rendererConfig.dlssQuality)
+#endif
+  )
   {
     rendererChanged = true;
 
@@ -636,9 +645,6 @@ void LodClusters::onRender(VkCommandBuffer cmd)
 
   if(m_renderer)
   {
-    uint32_t width  = m_windowSize.width;
-    uint32_t height = m_windowSize.height;
-
     if(m_rendererFboChangeID != m_resources.m_fboChangeID)
     {
       m_renderer->updatedFrameBuffer(m_resources, *m_renderScene);
@@ -648,6 +654,10 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     m_frameConfig.hbaoActive = m_tweak.hbaoActive && m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD;
 
     shaderio::FrameConstants& frameConstants = m_frameConfig.frameConstants;
+
+    // for motion always use last
+    frameConstants.viewProjMatrixPrev = frameConstants.viewProjMatrix;
+
     if(m_frames && !m_frameConfig.freezeCulling)
     {
       m_frameConfig.frameConstantsLast = m_frameConfig.frameConstants;
@@ -655,11 +665,12 @@ void LodClusters::onRender(VkCommandBuffer cmd)
 
     int supersample = m_tweak.supersample;
 
-    uint32_t renderWidth  = width * m_tweak.supersample;
-    uint32_t renderHeight = height * m_tweak.supersample;
+    uint32_t renderWidth  = m_resources.m_frameBuffer.renderSize.width;
+    uint32_t renderHeight = m_resources.m_frameBuffer.renderSize.height;
 
     frameConstants.facetShading = m_tweak.facetShading ? 1 : 0;
     frameConstants.visualize    = m_frameConfig.visualize;
+    frameConstants.frame        = m_frames;
 
     {
       frameConstants.visFilterClusterID  = ~0;
@@ -679,11 +690,14 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     frameConstants.nearPlane   = m_info.cameraManipulator->getClipPlanes().x;
     frameConstants.farPlane    = m_info.cameraManipulator->getClipPlanes().y;
     frameConstants.wUpDir      = m_info.cameraManipulator->getUp();
-
+#if USE_DLSS
+    frameConstants.jitter = shaderio::dlssJitter(m_frames);
+#endif
     frameConstants.fov = glm::radians(m_info.cameraManipulator->getFov());
 
-    glm::mat4 projection = glm::perspectiveRH_ZO(glm::radians(m_info.cameraManipulator->getFov()), float(width) / float(height),
-                                                 frameConstants.nearPlane, frameConstants.farPlane);
+    glm::mat4 projection =
+        glm::perspectiveRH_ZO(glm::radians(m_info.cameraManipulator->getFov()), float(renderWidth) / float(renderHeight),
+                              frameConstants.nearPlane, frameConstants.farPlane);
     projection[1][1] *= -1;
 
     glm::mat4 view  = m_info.cameraManipulator->getViewMatrix();

@@ -105,17 +105,28 @@ vec3 visualizeColor(uint visData, uint instanceID)
   }
 }
 
-vec4 shading(uint instanceID, vec3 wPos, vec3 wNormal, uint visData, float overheadLight, float ambientOcclusion)
+vec4 shading(uint instanceID, vec3 wPos, vec3 wNormal, uint visData, float overheadLight, float ambientOcclusion
+#if USE_DLSS
+  , out vec4 dlssAlbedo, out vec3 dlssSpecular, out vec4 dlssNormalRoughness
+#endif
+)
 {
-  const vec3 sunColor       = vec3(0.99f, 1.f, 0.71f);
-  const vec3 skyColor       = view.skyParams.skyColor;
-  const vec3 groundColor    = view.skyParams.groundColor;
-  vec3       materialAlbedo = visualizeColor(visData, instanceID);
-  vec4       color          = vec4(0.f);
+  const vec3 sunColor           = vec3(0.99f, 1.f, 0.71f);
+  const vec3 skyColor           = view.skyParams.skyColor;
+  const vec3 groundColor        = view.skyParams.groundColor;
+  const float materialRoughness = 0;
+  const vec3  materialAlbedo    = visualizeColor(visData, instanceID);
 
+  vec4 color   = vec4(0.f);
   vec3 normal  = normalize(wNormal.xyz);
   vec3 wEyePos = vec3(view.viewMatrixI[3].x, view.viewMatrixI[3].y, view.viewMatrixI[3].z);
   vec3 eyeDir  = normalize(wEyePos.xyz - wPos.xyz);
+  
+#if USE_DLSS
+  dlssAlbedo = vec4(materialAlbedo,0);
+  dlssNormalRoughness = vec4(wNormal.xyz, materialRoughness);
+  dlssSpecular = EnvBRDFApprox2(vec3(1), materialRoughness, dot(wNormal, eyeDir));
+#endif
 
   // Ambient
   float ambientIntensity = 1.f;
@@ -236,6 +247,19 @@ uint wangHash(uint seed)
   return seed;
 }
 
+uint xxhash32(uint3 p)
+{
+  const uvec4 primes = uint4(2246822519U, 3266489917U, 668265263U, 374761393U);
+  uint        h32;
+  h32 = p.z + primes.w + p.x * primes.y;
+  h32 = primes.z * ((h32 << 17) | (h32 >> (32 - 17)));
+  h32 += p.y * primes.y;
+  h32 = primes.z * ((h32 << 17) | (h32 >> (32 - 17)));
+  h32 = primes.x * (h32 ^ (h32 >> 15));
+  h32 = primes.y * (h32 ^ (h32 >> 13));
+  return h32 ^ (h32 >> 16);
+}
+
 //-----------------------------------------------------------------------
 // https://www.pcg-random.org/
 //-----------------------------------------------------------------------
@@ -287,8 +311,12 @@ vec3 offsetRay(vec3 p, vec3 dir, vec3 geonrm)
 float ambientOcclusion(vec3 wPos, vec3 wNormal, uint32_t sampleCount, float radius)
 {
   if (sampleCount == 0) return 0.7f;
-
+#if USE_DLSS
+  uint32_t seed = xxhash32(uvec3(gl_LaunchIDEXT.x, gl_LaunchIDEXT.y, view.frame));
+#else
   uint32_t seed = wangHash(gl_LaunchIDEXT.x) ^ wangHash(gl_LaunchIDEXT.y);
+#endif
+  
   vec3     z    = wNormal;
   vec3     x, y;
   computeDefaultBasis(z, x, y);
@@ -303,11 +331,11 @@ float ambientOcclusion(vec3 wPos, vec3 wNormal, uint32_t sampleCount, float radi
 
     vec3 wDirection  = vec3(cos(r1) * sq, sin(r1) * sq, sqrt(r2));
     wDirection       = wDirection.x * x + wDirection.y * y + wDirection.z * z;
-    rayHitAO.color.w = 1.f;
+    rayHitAO         = 1.f;
     uint mask        = 0xFF;
     traceRayEXT(asScene, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
                 mask /*0xFF*/, 0, 0, 1, offsetRay(wPos, wDirection, wNormal), 1e-4f, wDirection, radius, 1);
-    if(rayHitAO.color.w > 0.f)
+    if(rayHitAO > 0.f)
     {
       occlusion++;
     }
@@ -320,14 +348,14 @@ float ambientOcclusion(vec3 wPos, vec3 wNormal, uint32_t sampleCount, float radi
 // Returns 0.0 if there is a hit along the light direction and 1.0, if nothing was hit
 float traceShadowRay(vec3 wPos, vec3 wNormal, vec3 wDirection)
 {
-  rayHitAO.color.w = 1.f;
+  rayHitAO         = 1.f;
   uint  mask       = 0xFF;
   uint  flags      = gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT;
   float minT       = 0.001f;
   float maxT       = 10000000.0f;
   traceRayEXT(asScene, flags, mask, 0, 0, 1, offsetRay(wPos, wDirection, wNormal), minT, wDirection, maxT, 1);
 
-  return (rayHitAO.color.w > 0.f) ? 0.0F : 1.0f;
+  return (rayHitAO > 0.f) ? 0.0F : 1.0f;
 }
 
 float determinant(vec3 a, vec3 b, vec3 c)
