@@ -181,10 +181,10 @@ void Renderer::deinitBasics(Resources& res)
 void Renderer::updateBasicDescriptors(Resources& res, RenderScene& scene)
 {
   nvvk::WriteSetContainer writeSets;
-  writeSets.append(m_basicDset.getWriteSet(BINDINGS_FRAME_UBO), res.m_commonBuffers.frameConstants);
-  writeSets.append(m_basicDset.getWriteSet(BINDINGS_RAYTRACING_DEPTH), res.m_frameBuffer.imgRaytracingDepth.descriptor);
-  writeSets.append(m_basicDset.getWriteSet(BINDINGS_GEOMETRIES_SSBO), scene.getShaderGeometriesBuffer());
-  writeSets.append(m_basicDset.getWriteSet(BINDINGS_RENDERINSTANCES_SSBO), m_renderInstanceBuffer);
+  writeSets.append(m_basicDset.makeWrite(BINDINGS_FRAME_UBO), res.m_commonBuffers.frameConstants);
+  writeSets.append(m_basicDset.makeWrite(BINDINGS_RAYTRACING_DEPTH), res.m_frameBuffer.imgRaytracingDepth.descriptor);
+  writeSets.append(m_basicDset.makeWrite(BINDINGS_GEOMETRIES_SSBO), scene.getShaderGeometriesBuffer());
+  writeSets.append(m_basicDset.makeWrite(BINDINGS_RENDERINSTANCES_SSBO), m_renderInstanceBuffer);
   vkUpdateDescriptorSets(res.m_device, writeSets.size(), writeSets.data(), 0, nullptr);
 }
 
@@ -193,13 +193,14 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& scene, const Rend
 {
   m_basicShaderFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_MESH_BIT_NV | VK_SHADER_STAGE_FRAGMENT_BIT;
 
-  m_basicDset.bindings.addBinding(BINDINGS_FRAME_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_basicShaderFlags);
-  m_basicDset.bindings.addBinding(BINDINGS_RAYTRACING_DEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_basicShaderFlags);
-  m_basicDset.bindings.addBinding(BINDINGS_GEOMETRIES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
-  m_basicDset.bindings.addBinding(BINDINGS_RENDERINSTANCES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
-  m_basicDset.initFromBindings(res.m_device);
+  nvvk::DescriptorBindings bindings;
+  bindings.addBinding(BINDINGS_FRAME_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_basicShaderFlags);
+  bindings.addBinding(BINDINGS_RAYTRACING_DEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_basicShaderFlags);
+  bindings.addBinding(BINDINGS_GEOMETRIES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
+  bindings.addBinding(BINDINGS_RENDERINSTANCES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
+  m_basicDset.init(bindings, res.m_device);
 
-  nvvk::createPipelineLayout(res.m_device, &m_basicPipelineLayout, {m_basicDset.layout},
+  nvvk::createPipelineLayout(res.m_device, &m_basicPipelineLayout, {m_basicDset.getLayout()},
                              {{m_basicShaderFlags, 0, sizeof(uint32_t)}});
 
   nvvk::GraphicsPipelineCreator graphicsGen;
@@ -244,7 +245,7 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& scene, const Rend
 
 void Renderer::renderInstanceBboxes(VkCommandBuffer cmd)
 {
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelineLayout, 0, 1, m_basicDset.sets.data(), 0, nullptr);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelineLayout, 0, 1, m_basicDset.getSetPtr(), 0, nullptr);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelines.renderInstanceBboxes);
 
   uint32_t numRenderInstances = uint32_t(m_renderInstances.size());
@@ -258,7 +259,7 @@ void Renderer::writeRayTracingDepthBuffer(VkCommandBuffer cmd)
   uint32_t dummy = 0;
   vkCmdPushConstants(cmd, m_basicPipelineLayout, m_basicShaderFlags, 0, sizeof(uint32_t), &dummy);
 
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelineLayout, 0, 1, m_basicDset.sets.data(), 0, nullptr);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelineLayout, 0, 1, m_basicDset.getSetPtr(), 0, nullptr);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelines.writeDepth);
 
   vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -269,7 +270,7 @@ void Renderer::writeBackgroundSky(VkCommandBuffer cmd)
   uint32_t dummy = 0;
   vkCmdPushConstants(cmd, m_basicPipelineLayout, m_basicShaderFlags, 0, sizeof(uint32_t), &dummy);
 
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelineLayout, 0, 1, m_basicDset.sets.data(), 0, nullptr);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelineLayout, 0, 1, m_basicDset.getSetPtr(), 0, nullptr);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelines.background);
 
   vkCmdDraw(cmd, 3, 1, 0, 0);

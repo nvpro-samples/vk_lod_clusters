@@ -61,25 +61,26 @@ bool HbaoPass::init(nvvk::ResourceAllocator* allocator, nvvk::SamplerPool* sampl
 
   // descriptor sets
   {
-    m_dsetPack.bindings.addBinding(NVHBAO_MAIN_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-    m_dsetPack.bindings.addBinding(NVHBAO_MAIN_TEX_DEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-                                   VK_SHADER_STAGE_COMPUTE_BIT, &m_linearSampler);
-    m_dsetPack.bindings.addBinding(NVHBAO_MAIN_TEX_LINDEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-    m_dsetPack.bindings.addBinding(NVHBAO_MAIN_TEX_VIEWNORMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-    m_dsetPack.bindings.addBinding(NVHBAO_MAIN_TEX_DEPTHARRAY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-    m_dsetPack.bindings.addBinding(NVHBAO_MAIN_TEX_RESULTARRAY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-    m_dsetPack.bindings.addBinding(NVHBAO_MAIN_TEX_RESULT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-    m_dsetPack.bindings.addBinding(NVHBAO_MAIN_TEX_BLUR, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-    m_dsetPack.bindings.addBinding(NVHBAO_MAIN_IMG_LINDEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-    m_dsetPack.bindings.addBinding(NVHBAO_MAIN_IMG_VIEWNORMAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-    m_dsetPack.bindings.addBinding(NVHBAO_MAIN_IMG_DEPTHARRAY, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-    m_dsetPack.bindings.addBinding(NVHBAO_MAIN_IMG_RESULTARRAY, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-    m_dsetPack.bindings.addBinding(NVHBAO_MAIN_IMG_RESULT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-    m_dsetPack.bindings.addBinding(NVHBAO_MAIN_IMG_BLUR, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-    m_dsetPack.bindings.addBinding(NVHBAO_MAIN_IMG_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-    m_dsetPack.initFromBindings(m_device, config.maxFrames);
+    nvvk::DescriptorBindings bindings;
+    bindings.addBinding(NVHBAO_MAIN_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(NVHBAO_MAIN_TEX_DEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                        VK_SHADER_STAGE_COMPUTE_BIT, &m_linearSampler);
+    bindings.addBinding(NVHBAO_MAIN_TEX_LINDEPTH, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(NVHBAO_MAIN_TEX_VIEWNORMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(NVHBAO_MAIN_TEX_DEPTHARRAY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(NVHBAO_MAIN_TEX_RESULTARRAY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(NVHBAO_MAIN_TEX_RESULT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(NVHBAO_MAIN_TEX_BLUR, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(NVHBAO_MAIN_IMG_LINDEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(NVHBAO_MAIN_IMG_VIEWNORMAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(NVHBAO_MAIN_IMG_DEPTHARRAY, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(NVHBAO_MAIN_IMG_RESULTARRAY, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(NVHBAO_MAIN_IMG_RESULT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(NVHBAO_MAIN_IMG_BLUR, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(NVHBAO_MAIN_IMG_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    m_dsetPack.init(bindings, m_device, config.maxFrames);
 
-    nvvk::createPipelineLayout(m_device, &m_pipelineLayout, {m_dsetPack.layout}, {{VK_SHADER_STAGE_COMPUTE_BIT, 0, 16}});
+    nvvk::createPipelineLayout(m_device, &m_pipelineLayout, {m_dsetPack.getLayout()}, {{VK_SHADER_STAGE_COMPUTE_BIT, 0, 16}});
   }
 
   // pipelines
@@ -307,23 +308,21 @@ bool HbaoPass::initFrame(Frame& frame, const FrameConfig& config, VkCommandBuffe
   VkDescriptorBufferInfo  uboInfo = m_uboInfo;
   uboInfo.offset                  = m_uboInfo.range * frame.slot;
 
-  const nvvk::DescriptorBindings& bindings = m_dsetPack.bindings;
-  VkDescriptorSet                 dset     = m_dsetPack.sets[frame.slot];
-  writes.append(bindings.getWriteSet(NVHBAO_MAIN_UBO, dset), uboInfo);
-  writes.append(bindings.getWriteSet(NVHBAO_MAIN_TEX_DEPTH, dset), config.sourceDepth);
-  writes.append(bindings.getWriteSet(NVHBAO_MAIN_TEX_LINDEPTH, dset), frame.images.depthlinear);
-  writes.append(bindings.getWriteSet(NVHBAO_MAIN_TEX_VIEWNORMAL, dset), frame.images.viewnormal);
-  writes.append(bindings.getWriteSet(NVHBAO_MAIN_TEX_DEPTHARRAY, dset), frame.images.deptharray);
-  writes.append(bindings.getWriteSet(NVHBAO_MAIN_TEX_RESULTARRAY, dset), frame.images.resultarray);
-  writes.append(bindings.getWriteSet(NVHBAO_MAIN_TEX_RESULT, dset), frame.images.result);
-  writes.append(bindings.getWriteSet(NVHBAO_MAIN_TEX_BLUR, dset), frame.images.blur);
-  writes.append(bindings.getWriteSet(NVHBAO_MAIN_IMG_LINDEPTH, dset), frame.images.depthlinear);
-  writes.append(bindings.getWriteSet(NVHBAO_MAIN_IMG_VIEWNORMAL, dset), frame.images.viewnormal);
-  writes.append(bindings.getWriteSet(NVHBAO_MAIN_IMG_DEPTHARRAY, dset), frame.images.deptharray);
-  writes.append(bindings.getWriteSet(NVHBAO_MAIN_IMG_RESULTARRAY, dset), frame.images.resultarray);
-  writes.append(bindings.getWriteSet(NVHBAO_MAIN_IMG_RESULT, dset), frame.images.result);
-  writes.append(bindings.getWriteSet(NVHBAO_MAIN_IMG_BLUR, dset), frame.images.blur);
-  writes.append(bindings.getWriteSet(NVHBAO_MAIN_IMG_OUT, dset), config.targetColor);
+  writes.append(m_dsetPack.makeWrite(NVHBAO_MAIN_UBO, frame.slot), uboInfo);
+  writes.append(m_dsetPack.makeWrite(NVHBAO_MAIN_TEX_DEPTH, frame.slot), config.sourceDepth);
+  writes.append(m_dsetPack.makeWrite(NVHBAO_MAIN_TEX_LINDEPTH, frame.slot), frame.images.depthlinear);
+  writes.append(m_dsetPack.makeWrite(NVHBAO_MAIN_TEX_VIEWNORMAL, frame.slot), frame.images.viewnormal);
+  writes.append(m_dsetPack.makeWrite(NVHBAO_MAIN_TEX_DEPTHARRAY, frame.slot), frame.images.deptharray);
+  writes.append(m_dsetPack.makeWrite(NVHBAO_MAIN_TEX_RESULTARRAY, frame.slot), frame.images.resultarray);
+  writes.append(m_dsetPack.makeWrite(NVHBAO_MAIN_TEX_RESULT, frame.slot), frame.images.result);
+  writes.append(m_dsetPack.makeWrite(NVHBAO_MAIN_TEX_BLUR, frame.slot), frame.images.blur);
+  writes.append(m_dsetPack.makeWrite(NVHBAO_MAIN_IMG_LINDEPTH, frame.slot), frame.images.depthlinear);
+  writes.append(m_dsetPack.makeWrite(NVHBAO_MAIN_IMG_VIEWNORMAL, frame.slot), frame.images.viewnormal);
+  writes.append(m_dsetPack.makeWrite(NVHBAO_MAIN_IMG_DEPTHARRAY, frame.slot), frame.images.deptharray);
+  writes.append(m_dsetPack.makeWrite(NVHBAO_MAIN_IMG_RESULTARRAY, frame.slot), frame.images.resultarray);
+  writes.append(m_dsetPack.makeWrite(NVHBAO_MAIN_IMG_RESULT, frame.slot), frame.images.result);
+  writes.append(m_dsetPack.makeWrite(NVHBAO_MAIN_IMG_BLUR, frame.slot), frame.images.blur);
+  writes.append(m_dsetPack.makeWrite(NVHBAO_MAIN_IMG_OUT, frame.slot), config.targetColor);
 
   vkUpdateDescriptorSets(m_device, uint32_t(writes.size()), writes.data(), 0, nullptr);
 
@@ -455,7 +454,7 @@ void HbaoPass::cmdCompute(VkCommandBuffer cmd, const Frame& frame, const Setting
                        nullptr, 0, nullptr);
 
   vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(calc), &calc);
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, &m_dsetPack.sets[frame.slot], 0, nullptr);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(frame.slot), 0, nullptr);
 
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.depth_linearize);
   vkCmdDispatch(cmd, gridFull.x, gridFull.y, 1);

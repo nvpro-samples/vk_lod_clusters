@@ -1,4 +1,6 @@
 # Changelog for vk_lod_clusters
+* 2025-8-24:
+  * Updated `meshoptimizer` submodule to `v 0.25`
 * 2025-8-05:
   * DLSS denoiser support in ray tracing. Activate `USE_DLSS` in `cmake` to download and enable support within the application. 
 * 2025-7-31:

@@ -60,50 +60,15 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 # Adding DLSS if selected
 option(USE_DLSS "Use DLSS-RR for denoising" ON)
 if(USE_DLSS)
-  message(STATUS "Using DLSS-RR for denoising")
-    download_package(
-      NAME DLSSRR
-      URLS https://github.com/NVIDIA/DLSS/archive/refs/tags/v310.3.0.zip
-      VERSION 310.3.0
-      LOCATION DLSSRR_SOURCE_DIR
-    )
-
-    # Set NGX SDK root path
-    set(NGX_SDK_ROOT "${DLSSRR_SOURCE_DIR}/DLSS-310.3.0/")
-    message(STATUS " - DLSS path: " ${NGX_SDK_ROOT})
-    include(cmake/ngx.cmake)
-    
-    target_link_libraries(${PROJECT_NAME} PRIVATE ngx)
-    target_compile_definitions(${PROJECT_NAME} PRIVATE USE_DLSS)
-    list(APPEND SOURCE_FILES 
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/dlss_wrapper.cpp 
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/dlss_wrapper.hpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/dlss_denoiser.cpp 
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/dlss_denoiser.hpp
-        )
-    target_sources(${PROJECT_NAME} PRIVATE ${SOURCE_FILES})
-    source_group("Source Files" FILES ${SOURCE_FILES})
-
-    if (WIN32)
-        if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-            file(GLOB DLSS_DLLS "${NGX_SDK_ROOT}/lib/Windows_x86_64/dev/nvngx_*.dll")
-        else()
-            file(GLOB DLSS_DLLS "${NGX_SDK_ROOT}/lib/Windows_x86_64/rel/nvngx_*.dll")
-        endif()
-    else()
-        if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-            file(GLOB DLSS_DLLS "${NGX_SDK_ROOT}/lib/Linux_x86_64/dev/libnvidia-ngx*.so.*")
-        else()
-            file(GLOB DLSS_DLLS "${NGX_SDK_ROOT}/lib/Linux_x86_64/rel/libnvidia-ngx*.so.*")
-        endif()    
-    endif()
-
-    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DLSS_DLLS} $<TARGET_FILE_DIR:${PROJECT_NAME}> VERBATIM
-        )
-
-    install(FILES ${DLSS_DLLS} DESTINATION ${CMAKE_INSTALL_PREFIX})
-
+  find_package(NGX REQUIRED)
+  target_link_libraries(${PROJECT_NAME} PRIVATE ngx)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE USE_DLSS)
+  target_sources(${PROJECT_NAME} PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/dlss_wrapper.cpp 
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/dlss_wrapper.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/dlss_denoiser.cpp 
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/dlss_denoiser.hpp
+  )
 endif()
 
 #####################################################################################
@@ -118,6 +83,7 @@ source_group("Source Files" FILES ${SOURCE_FILES})
 #
 add_project_definitions(${PROJECT_NAME})
 copy_to_runtime_and_install( ${PROJECT_NAME}
+    FILES ${DLSS_DLLS}
     NVSHADERS_FILES "${NVSHADERS_DIR}/nvshaders/slang_types.h"
                     "${NVSHADERS_DIR}/nvshaders/sky_io.h.slang"
                     "${NVSHADERS_DIR}/nvshaders/sky_functions.h.slang"

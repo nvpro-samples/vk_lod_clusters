@@ -187,35 +187,36 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
   {
     m_stageFlags = VK_SHADER_STAGE_MESH_BIT_NV | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 
-    m_dsetPack.bindings.addBinding(BINDINGS_FRAME_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_stageFlags);
-    m_dsetPack.bindings.addBinding(BINDINGS_READBACK_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
-    m_dsetPack.bindings.addBinding(BINDINGS_GEOMETRIES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
-    m_dsetPack.bindings.addBinding(BINDINGS_RENDERINSTANCES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
-    m_dsetPack.bindings.addBinding(BINDINGS_SCENEBUILDING_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
-    m_dsetPack.bindings.addBinding(BINDINGS_SCENEBUILDING_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_stageFlags);
-    m_dsetPack.bindings.addBinding(BINDINGS_HIZ_TEX, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, m_stageFlags);
+    nvvk::DescriptorBindings bindings;
+    bindings.addBinding(BINDINGS_FRAME_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_stageFlags);
+    bindings.addBinding(BINDINGS_READBACK_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
+    bindings.addBinding(BINDINGS_GEOMETRIES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
+    bindings.addBinding(BINDINGS_RENDERINSTANCES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
+    bindings.addBinding(BINDINGS_SCENEBUILDING_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
+    bindings.addBinding(BINDINGS_SCENEBUILDING_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_stageFlags);
+    bindings.addBinding(BINDINGS_HIZ_TEX, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, m_stageFlags);
     if(rscene.useStreaming)
     {
-      m_dsetPack.bindings.addBinding(BINDINGS_STREAMING_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
-      m_dsetPack.bindings.addBinding(BINDINGS_STREAMING_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_stageFlags);
+      bindings.addBinding(BINDINGS_STREAMING_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
+      bindings.addBinding(BINDINGS_STREAMING_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_stageFlags);
     }
-    m_dsetPack.initFromBindings(res.m_device);
+    m_dsetPack.init(bindings, res.m_device);
 
-    nvvk::createPipelineLayout(res.m_device, &m_pipelineLayout, {m_dsetPack.layout}, {{m_stageFlags, 0, sizeof(uint32_t)}});
+    nvvk::createPipelineLayout(res.m_device, &m_pipelineLayout, {m_dsetPack.getLayout()}, {{m_stageFlags, 0, sizeof(uint32_t)}});
 
     nvvk::WriteSetContainer writeSets;
 
-    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_FRAME_UBO), res.m_commonBuffers.frameConstants);
-    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_READBACK_SSBO), &res.m_commonBuffers.readBack);
-    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_GEOMETRIES_SSBO), rscene.getShaderGeometriesBuffer());
-    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_RENDERINSTANCES_SSBO), m_renderInstanceBuffer);
-    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_SCENEBUILDING_SSBO), m_sceneBuildBuffer);
-    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_SCENEBUILDING_UBO), m_sceneBuildBuffer);
-    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_HIZ_TEX), &res.m_hizUpdate.farImageInfo);
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_FRAME_UBO), res.m_commonBuffers.frameConstants);
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_READBACK_SSBO), &res.m_commonBuffers.readBack);
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_GEOMETRIES_SSBO), rscene.getShaderGeometriesBuffer());
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_RENDERINSTANCES_SSBO), m_renderInstanceBuffer);
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_SCENEBUILDING_SSBO), m_sceneBuildBuffer);
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_SCENEBUILDING_UBO), m_sceneBuildBuffer);
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_HIZ_TEX), &res.m_hizUpdate.farImageInfo);
     if(rscene.useStreaming)
     {
-      writeSets.append(m_dsetPack.getWriteSet(BINDINGS_STREAMING_SSBO), rscene.sceneStreaming.getShaderStreamingBuffer());
-      writeSets.append(m_dsetPack.getWriteSet(BINDINGS_STREAMING_UBO), rscene.sceneStreaming.getShaderStreamingBuffer());
+      writeSets.append(m_dsetPack.makeWrite(BINDINGS_STREAMING_SSBO), rscene.sceneStreaming.getShaderStreamingBuffer());
+      writeSets.append(m_dsetPack.makeWrite(BINDINGS_STREAMING_UBO), rscene.sceneStreaming.getShaderStreamingBuffer());
     }
     vkUpdateDescriptorSets(res.m_device, uint32_t(writeSets.size()), writeSets.data(), 0, nullptr);
   }
@@ -316,7 +317,7 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
 
   {
     auto timerSection = profiler.cmdFrameSection(cmd, "Traversal Preparation");
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.sets.data(), 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
 
     if(m_config.useSorting)
     {
@@ -339,7 +340,7 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
                            &memBarrier, 0, nullptr, 0, nullptr);
     }
 
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.sets.data(), 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalInit);
     vkCmdDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TRAVERSAL_INIT_WORKGROUP), 1, 1);
 
@@ -410,7 +411,7 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
       writeBackgroundSky(cmd);
     }
 
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1, m_dsetPack.sets.data(), 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelines.graphicsMesh);
     vkCmdDrawMeshTasksIndirectNV(cmd, m_sceneBuildBuffer.buffer, offsetof(shaderio::SceneBuilding, indirectDrawClusters), 1, 0);
@@ -442,10 +443,10 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
 void RendererRasterClustersLod::updatedFrameBuffer(Resources& res, RenderScene& rscene)
 {
   vkDeviceWaitIdle(res.m_device);
-  std::array<VkWriteDescriptorSet, 1> writeSets;
-  writeSets[0]            = m_dsetPack.getWriteSet(BINDINGS_HIZ_TEX);
-  writeSets[0].pImageInfo = &res.m_hizUpdate.farImageInfo;
-  vkUpdateDescriptorSets(res.m_device, uint32_t(writeSets.size()), writeSets.data(), 0, nullptr);
+
+  VkWriteDescriptorSet write = m_dsetPack.makeWrite(BINDINGS_HIZ_TEX);
+  write.pImageInfo           = &res.m_hizUpdate.farImageInfo;
+  vkUpdateDescriptorSets(res.m_device, 1, &write, 0, nullptr);
 
   Renderer::updatedFrameBuffer(res, rscene);
 }

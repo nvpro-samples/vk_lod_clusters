@@ -348,52 +348,53 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     m_stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR
                    | VK_SHADER_STAGE_COMPUTE_BIT;
 
-    m_dsetPack.bindings.addBinding(BINDINGS_FRAME_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_stageFlags);
-    m_dsetPack.bindings.addBinding(BINDINGS_READBACK_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
-    m_dsetPack.bindings.addBinding(BINDINGS_GEOMETRIES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
-    m_dsetPack.bindings.addBinding(BINDINGS_RENDERINSTANCES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
-    m_dsetPack.bindings.addBinding(BINDINGS_SCENEBUILDING_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
-    m_dsetPack.bindings.addBinding(BINDINGS_SCENEBUILDING_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_stageFlags);
-    m_dsetPack.bindings.addBinding(BINDINGS_HIZ_TEX, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, m_stageFlags);
+    nvvk::DescriptorBindings bindings;
+    bindings.addBinding(BINDINGS_FRAME_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_stageFlags);
+    bindings.addBinding(BINDINGS_READBACK_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
+    bindings.addBinding(BINDINGS_GEOMETRIES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
+    bindings.addBinding(BINDINGS_RENDERINSTANCES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
+    bindings.addBinding(BINDINGS_SCENEBUILDING_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
+    bindings.addBinding(BINDINGS_SCENEBUILDING_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_stageFlags);
+    bindings.addBinding(BINDINGS_HIZ_TEX, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, m_stageFlags);
     if(rscene.useStreaming)
     {
-      m_dsetPack.bindings.addBinding(BINDINGS_STREAMING_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
-      m_dsetPack.bindings.addBinding(BINDINGS_STREAMING_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_stageFlags);
+      bindings.addBinding(BINDINGS_STREAMING_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
+      bindings.addBinding(BINDINGS_STREAMING_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_stageFlags);
     }
-    m_dsetPack.bindings.addBinding(BINDINGS_TLAS, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, m_stageFlags);
-    m_dsetPack.bindings.addBinding(BINDINGS_RAYTRACING_DEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_stageFlags);
-    m_dsetPack.bindings.addBinding(BINDINGS_RENDER_TARGET, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_stageFlags);
+    bindings.addBinding(BINDINGS_TLAS, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, m_stageFlags);
+    bindings.addBinding(BINDINGS_RAYTRACING_DEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_stageFlags);
+    bindings.addBinding(BINDINGS_RENDER_TARGET, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_stageFlags);
 #if USE_DLSS
     if(config.useDlss)
     {
       // skip first
       for(uint32_t i = 1; i < DlssDenoiser::eDlssCount; i++)
       {
-        m_dsetPack.bindings.addBinding(BINDINGS_RENDER_TARGET + i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_stageFlags);
+        bindings.addBinding(BINDINGS_RENDER_TARGET + i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_stageFlags);
       }
     }
 #endif
 
-    m_dsetPack.initFromBindings(res.m_device);
+    m_dsetPack.init(bindings, res.m_device);
 
-    nvvk::createPipelineLayout(res.m_device, &m_pipelineLayout, {m_dsetPack.layout}, {{m_stageFlags, 0, sizeof(uint32_t)}});
+    nvvk::createPipelineLayout(res.m_device, &m_pipelineLayout, {m_dsetPack.getLayout()}, {{m_stageFlags, 0, sizeof(uint32_t)}});
 
     nvvk::WriteSetContainer writeSets;
-    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_FRAME_UBO), res.m_commonBuffers.frameConstants);
-    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_READBACK_SSBO), &res.m_commonBuffers.readBack);
-    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_GEOMETRIES_SSBO), rscene.getShaderGeometriesBuffer());
-    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_RENDERINSTANCES_SSBO), m_renderInstanceBuffer);
-    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_SCENEBUILDING_SSBO), m_sceneBuildBuffer);
-    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_SCENEBUILDING_UBO), m_sceneBuildBuffer);
-    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_HIZ_TEX), &res.m_hizUpdate.farImageInfo);
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_FRAME_UBO), res.m_commonBuffers.frameConstants);
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_READBACK_SSBO), &res.m_commonBuffers.readBack);
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_GEOMETRIES_SSBO), rscene.getShaderGeometriesBuffer());
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_RENDERINSTANCES_SSBO), m_renderInstanceBuffer);
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_SCENEBUILDING_SSBO), m_sceneBuildBuffer);
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_SCENEBUILDING_UBO), m_sceneBuildBuffer);
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_HIZ_TEX), &res.m_hizUpdate.farImageInfo);
     if(rscene.useStreaming)
     {
-      writeSets.append(m_dsetPack.getWriteSet(BINDINGS_STREAMING_SSBO), rscene.sceneStreaming.getShaderStreamingBuffer());
-      writeSets.append(m_dsetPack.getWriteSet(BINDINGS_STREAMING_UBO), rscene.sceneStreaming.getShaderStreamingBuffer());
+      writeSets.append(m_dsetPack.makeWrite(BINDINGS_STREAMING_SSBO), rscene.sceneStreaming.getShaderStreamingBuffer());
+      writeSets.append(m_dsetPack.makeWrite(BINDINGS_STREAMING_UBO), rscene.sceneStreaming.getShaderStreamingBuffer());
     }
-    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_TLAS), m_tlas);
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_TLAS), m_tlas);
 
-    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_RAYTRACING_DEPTH), res.m_frameBuffer.imgRaytracingDepth);
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_RAYTRACING_DEPTH), res.m_frameBuffer.imgRaytracingDepth);
 #if USE_DLSS
     if(config.useDlss)
     {
@@ -402,7 +403,7 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
       {
         VkDescriptorImageInfo renderTargetInfo =
             res.m_frameBuffer.dlssDenoiser.getDescriptorImageInfo(DlssDenoiser::DlssBufferType(i));
-        writeSets.append(m_dsetPack.getWriteSet(BINDINGS_RENDER_TARGET + i), &renderTargetInfo);
+        writeSets.append(m_dsetPack.makeWrite(BINDINGS_RENDER_TARGET + i), &renderTargetInfo);
       }
     }
     else
@@ -411,7 +412,7 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
       VkDescriptorImageInfo renderTargetInfo;
       renderTargetInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
       renderTargetInfo.imageView   = res.m_frameBuffer.imgColor.descriptor.imageView;
-      writeSets.append(m_dsetPack.getWriteSet(BINDINGS_RENDER_TARGET), &renderTargetInfo);
+      writeSets.append(m_dsetPack.makeWrite(BINDINGS_RENDER_TARGET), &renderTargetInfo);
     }
 
     vkUpdateDescriptorSets(res.m_device, uint32_t(writeSets.size()), writeSets.data(), 0, nullptr);
@@ -533,7 +534,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
 
   {
     auto timerSection = profiler.cmdFrameSection(cmd, "Traversal Preparation");
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.sets.data(), 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
 
     if(m_config.useSorting)
     {
@@ -553,7 +554,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
 
     if(m_config.useBlasSharing)
     {
-      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.sets.data(), 0, nullptr);
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
 
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeInstanceClassifyLod);
       vkCmdDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, INSTANCES_CLASSIFY_LOD_WORKGROUP), 1, 1);
@@ -576,7 +577,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     }
 
     // we prepare traversal by filling in instance root nodes into the traversal queue
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.sets.data(), 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalInit);
     vkCmdDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TRAVERSAL_INIT_WORKGROUP), 1, 1);
 
@@ -647,7 +648,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
 
     // this kernel prepares the per-blas clas reference list starting position.
     // it also resets the per-blas clas counters.
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.sets.data(), 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeBlasSetupInsertion);
     vkCmdDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, BLAS_SETUP_INSERTION_WORKGROUP), 1, 1);
 
@@ -754,7 +755,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     auto timerSection = profiler.cmdFrameSection(cmd, "Render");
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_pipelines.rayTracing);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_pipelineLayout, 0, 1, m_dsetPack.sets.data(), 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
 #if !STREAMING_DEBUG_WITHOUT_RT
     vkCmdTraceRaysKHR(cmd, &m_sbtRegions.raygen, &m_sbtRegions.miss, &m_sbtRegions.hit, &m_sbtRegions.callable,
                       frame.frameConstants.viewport.x, frame.frameConstants.viewport.y, 1);
@@ -1069,8 +1070,8 @@ void RendererRayTraceClustersLod::updatedFrameBuffer(Resources& res, RenderScene
 
   nvvk::WriteSetContainer writeSets;
 
-  writeSets.append(m_dsetPack.getWriteSet(BINDINGS_HIZ_TEX), &res.m_hizUpdate.farImageInfo);
-  writeSets.append(m_dsetPack.getWriteSet(BINDINGS_RAYTRACING_DEPTH), res.m_frameBuffer.imgRaytracingDepth);
+  writeSets.append(m_dsetPack.makeWrite(BINDINGS_HIZ_TEX), &res.m_hizUpdate.farImageInfo);
+  writeSets.append(m_dsetPack.makeWrite(BINDINGS_RAYTRACING_DEPTH), res.m_frameBuffer.imgRaytracingDepth);
 
 #if USE_DLSS
   if(m_config.useDlss)
@@ -1080,7 +1081,7 @@ void RendererRayTraceClustersLod::updatedFrameBuffer(Resources& res, RenderScene
     {
       VkDescriptorImageInfo renderTargetInfo =
           res.m_frameBuffer.dlssDenoiser.getDescriptorImageInfo(DlssDenoiser::DlssBufferType(i));
-      writeSets.append(m_dsetPack.getWriteSet(BINDINGS_RENDER_TARGET + i), &renderTargetInfo);
+      writeSets.append(m_dsetPack.makeWrite(BINDINGS_RENDER_TARGET + i), &renderTargetInfo);
     }
   }
   else
@@ -1089,7 +1090,7 @@ void RendererRayTraceClustersLod::updatedFrameBuffer(Resources& res, RenderScene
     VkDescriptorImageInfo renderTargetInfo;
     renderTargetInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     renderTargetInfo.imageView   = res.m_frameBuffer.imgColor.descriptor.imageView;
-    writeSets.append(m_dsetPack.getWriteSet(BINDINGS_RENDER_TARGET), &renderTargetInfo);
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_RENDER_TARGET), &renderTargetInfo);
   }
 
   vkUpdateDescriptorSets(res.m_device, writeSets.size(), writeSets.data(), 0, nullptr);
