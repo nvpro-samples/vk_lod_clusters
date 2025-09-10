@@ -35,6 +35,8 @@ public:
     uint32_t                             clasPositionTruncateBits = 0;
   };
 
+  static bool canPreload(VkDeviceSize, const Scene* scene);
+
   // pointers must stay valid during lifetime
   bool init(Resources* res, const Scene* scene, const Config& config);
 
@@ -50,6 +52,7 @@ public:
 
   // device memory usage
   size_t getClasSize() const { return m_clasSize; }
+  size_t getBlasSize() const { return m_blasSize; };
   size_t getGeometrySize() const { return m_geometrySize; }
   size_t getOperationsSize() const { return m_operationsSize + m_clasOperationsSize; }
 
@@ -82,6 +85,7 @@ private:
   const Scene* m_scene     = nullptr;
 
   size_t m_clasSize           = 0;
+  size_t m_blasSize           = 0;
   size_t m_clasOperationsSize = 0;
   size_t m_geometrySize       = 0;
   size_t m_operationsSize     = 0;

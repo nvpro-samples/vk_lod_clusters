@@ -17,13 +17,15 @@
 * SPDX-License-Identifier: Apache-2.0
 */
 
+#include <cinttypes>
+#include <cstring>
 #include <random>
-#include <string.h>
 
 #include <meshoptimizer.h>
 #include <nvutils/logger.hpp>
 #include <nvutils/parallel_work.hpp>
 #include <nvutils/file_operations.hpp>
+#include <nvutils/hash_operations.hpp>
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/ext/scalar_constants.hpp>
@@ -57,11 +59,20 @@ void Scene::ProcessingInfo::init(float processingThreadsPct)
   }
 }
 
-void Scene::ProcessingInfo::setupParallelism(size_t geometryCount_)
+void Scene::ProcessingInfo::setupParallelism(size_t geometryCount_, size_t geometryCompletedCount, int parallelismMode)
 {
   geometryCount = geometryCount_;
 
-  bool preferInnerParallelism = geometryCount < numPoolThreads;
+  bool preferInnerParallelism = (geometryCount - geometryCompletedCount) < numPoolThreads;
+
+  if(parallelismMode < 0)
+  {
+    preferInnerParallelism = true;
+  }
+  if(parallelismMode > 0)
+  {
+    preferInnerParallelism = false;
+  }
 
   numOuterThreads = preferInnerParallelism ? 1 : numPoolThreads;
   numInnerThreads = preferInnerParallelism ? numPoolThreads : 1;
@@ -78,12 +89,13 @@ void Scene::ProcessingInfo::setupParallelism(size_t geometryCount_)
 
 void Scene::ProcessingInfo::logBegin()
 {
-  LOGI("... geometry load & processing: geometries %llu, threads outer %d inner %d\n", geometryCount, numOuterThreads, numInnerThreads);
+  LOGI("... geometry load & processing: geometries %" PRIu64 ", threads outer %d inner %d\n", geometryCount,
+       numOuterThreads, numInnerThreads);
 
   startTime = clock.getMicroseconds();
 }
 
-void Scene::ProcessingInfo::logCompletedGeometry()
+uint32_t Scene::ProcessingInfo::logCompletedGeometry()
 {
   std::lock_guard lock(progressMutex);
 
@@ -92,13 +104,15 @@ void Scene::ProcessingInfo::logCompletedGeometry()
   // statistics
   const uint32_t precentageGranularity = 5;
   uint32_t       percentage            = uint32_t(size_t(progressGeometriesCompleted * 100) / geometryCount);
-  percentage                           = (percentage / precentageGranularity) * precentageGranularity;
+  uint32_t       percentageSnapped     = (percentage / precentageGranularity) * precentageGranularity;
 
-  if(percentage > progressLastPercentage)
+  if(percentageSnapped > progressLastPercentage)
   {
-    progressLastPercentage = percentage;
-    LOGI("... geometry load & processing: %3d%%\n", percentage);
+    progressLastPercentage = percentageSnapped;
+    LOGI("... geometry load & processing: %3d%%\n", percentageSnapped);
   }
+
+  return percentage;
 }
 
 void Scene::ProcessingInfo::logEnd()
@@ -123,18 +137,20 @@ bool Scene::init(const std::filesystem::path& filePath, const SceneConfig& confi
 {
   *this = {};
 
-  m_filePath        = filePath;
-  m_config          = config;
-  m_loadedFromCache = false;
-
-  m_cacheFilePath = filePath;
+  m_filePath             = filePath;
+  m_config               = config;
+  m_loadedFromCache      = false;
+  m_cacheFilePath        = filePath;
+  m_cachePartialFilePath = filePath;
+  m_cacheFileSize        = 0;
 
   std::string oldExtension = filePath.extension().string();
   m_cacheFilePath.replace_extension(oldExtension + ".nvsngeo");
+  m_cachePartialFilePath.replace_extension(oldExtension + ".nvsngeo_partial");
 
   std::string cacheFileName = nvutils::utf8FromPath(m_cacheFilePath);
 
-  if(!skipCache && m_config.autoLoadCache && m_cacheFileMapping.open(m_cacheFilePath))
+  if(!skipCache && !m_config.processingOnly && m_config.autoLoadCache && m_cacheFileMapping.open(m_cacheFilePath))
   {
     m_cacheFileView.init(m_cacheFileMapping.size(), m_cacheFileMapping.data());
     if(m_cacheFileView.isValid())
@@ -142,7 +158,13 @@ bool Scene::init(const std::filesystem::path& filePath, const SceneConfig& confi
       // when loading results from the cache, we cannot change the cluster or lod settings of a scene,
       // it's considered read only.
       m_loadedFromCache = true;
-      LOGI("Scene::init using cache file %s\n", cacheFileName.c_str());
+      m_cacheFileSize   = m_cacheFileMapping.size();
+      LOGI("Scene::init using cache file:\n  %s\n", cacheFileName.c_str());
+
+      if(m_cacheFileSize > size_t(2) * 1024 * 1024 * 1024)
+      {
+        m_config.memoryMappedCache = true;
+      }
     }
     else
     {
@@ -510,7 +532,19 @@ void Scene::processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex
     }
     else
     {
+      size_t originalVertexCount = geometryStorage.vertices.size();
+
+      // some exports give us independent triangles, clean those up
+      if(geometryStorage.vertices.size() >= geometryStorage.globalTriangles.size() * 3)
+      {
+        buildGeometryDedupVertices(processingInfo, geometryStorage);
+      }
+
       buildGeometryClusters(processingInfo, geometryStorage);
+
+      // The dedup might change the vertex count of the mesh, but for the cache file
+      // comparison we actually want to use the original vertex count
+      geometryStorage.lodInfo.inputVertexCount = originalVertexCount;
 
       // no longer need original triangles
       geometryStorage.globalTriangles = {};
@@ -547,6 +581,9 @@ void Scene::processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex
     nvclusterlod::toView(geometryStorage.lodMesh, geometryView.lodMesh);
     geometryView.nodeBboxes = geometryStorage.nodeBboxes;
   }
+
+  // always reset
+  geometryView.instanceReferenceCount = 0;
 
   if(m_processingOnlyFile)
   {
@@ -821,6 +858,140 @@ void Scene::computeLodBboxes_recursive(GeometryStorage& geometry, size_t i)
   }
 }
 
+struct HashVertexRange
+{
+  uint32_t offset = 0;
+  uint32_t count  = 0;
+};
+
+static_assert(std::atomic_uint32_t::is_always_lock_free && sizeof(std::atomic_uint32_t) == sizeof(uint32_t));
+
+void Scene::buildGeometryDedupVertices(ProcessingInfo& processingInfo, GeometryStorage& geometry)
+{
+  std::vector<uint32_t> remap(geometry.vertices.size(), ~0);
+
+  size_t hashMapSize = std::max(geometry.vertices.size() / 64, size_t(0xFFFF));
+
+  // vertex hash key
+  std::vector<size_t> vertexHashKey(geometry.vertices.size());
+  // list of vertices per hash key
+  std::vector<HashVertexRange> hashRanges(hashMapSize, HashVertexRange());
+  std::vector<uint32_t>        hashVertices(geometry.vertices.size());
+
+  // This pass initializes the remap array as `remap[vertexIdx] = vertexIdx`,
+  // while at the same time doing this only for used vertices.
+  // Unused vertices will be left at ~0.
+
+  nvutils::parallel_batches_pooled(
+      geometry.globalTriangles.size(),
+      [&](uint64_t idx, uint32_t threadInnerIdx) {
+        glm::uvec3 tris = geometry.globalTriangles[idx];
+
+        remap[tris.x] = tris.x;
+        remap[tris.y] = tris.y;
+        remap[tris.z] = tris.z;
+      },
+      processingInfo.numInnerThreads);
+
+  nvutils::parallel_batches_pooled(
+      geometry.vertices.size(),
+      [&](uint64_t idx, uint32_t threadInnerIdx) {
+        const glm::vec4& vertex = geometry.vertices[idx];
+
+        size_t hashKey = nvutils::hashVal(vertex.x, vertex.y, vertex.z, vertex.w);
+        hashKey %= hashMapSize;
+
+        vertexHashKey[idx] = hashKey;
+        ((std::atomic_uint32_t&)hashRanges[hashKey].count)++;
+      },
+      processingInfo.numInnerThreads);
+
+  uint32_t offset = 0;
+
+  for(size_t i = 0; i < hashMapSize; i++)
+  {
+    hashRanges[i].offset = offset;
+    offset += hashRanges[i].count;
+    hashRanges[i].count = 0;
+  }
+
+  for(size_t i = 0; i < geometry.vertices.size(); i++)
+  {
+    size_t           key                       = vertexHashKey[i];
+    HashVertexRange& range                     = hashRanges[key];
+    hashVertices[range.offset + range.count++] = uint32_t(i);
+  }
+
+  // actual vertex comparisons
+  nvutils::parallel_batches_pooled(
+      geometry.vertices.size(),
+      [&](uint64_t idx, uint32_t threadInnerIdx) {
+        if(((std::atomic_uint32_t&)remap[idx]).load() == uint32_t(idx))
+        {
+          const glm::vec4&       vertex = geometry.vertices[idx];
+          size_t                 key    = vertexHashKey[idx];
+          const HashVertexRange& range  = hashRanges[key];
+
+          for(uint32_t i = 0; i < range.count; i++)
+          {
+            uint32_t otherVertexIdx = hashVertices[range.offset + i];
+            if(otherVertexIdx <= idx || (((std::atomic_uint32_t&)remap[otherVertexIdx]).load() != otherVertexIdx))
+              continue;
+
+            if(vertex == geometry.vertices[otherVertexIdx])
+            {
+              ((std::atomic_uint32_t&)remap[otherVertexIdx]).store(uint32_t(idx));
+            }
+          }
+        }
+      },
+      processingInfo.numInnerThreads);
+
+  // compaction, create details for new vertices
+
+  uint32_t newVertexOffset = 0;
+  for(size_t i = 0; i < geometry.vertices.size(); i++)
+  {
+    uint32_t otherIdx = remap[i];
+
+    // mapped to ourself, survives
+    if(otherIdx == uint32_t(i))
+    {
+      // store read location of new vertex at offset
+      vertexHashKey[newVertexOffset] = i;
+      // new vertex location for remapping triangle indices
+      remap[i] = newVertexOffset++;
+    }
+    else if(otherIdx != ~0)
+    {
+      // mapping to another vertex (guaranteed handled before)
+      assert(otherIdx < uint32_t(i));
+      remap[i] = remap[otherIdx];
+    }
+  }
+
+  // build new vertices array
+  std::vector<glm::vec4> newVertices(newVertexOffset);
+
+  nvutils::parallel_batches_pooled(
+      newVertices.size(),
+      [&](uint64_t idx, uint32_t threadInnerIdx) { newVertices[idx] = geometry.vertices[vertexHashKey[idx]]; },
+      processingInfo.numInnerThreads);
+
+  geometry.vertices = std::move(newVertices);
+
+  // remap triangle indices
+  nvutils::parallel_batches_pooled(
+      geometry.globalTriangles.size(),
+      [&](uint64_t idx, uint32_t threadInnerIdx) {
+        glm::uvec3& tris = geometry.globalTriangles[idx];
+        tris.x           = remap[tris.x];
+        tris.y           = remap[tris.y];
+        tris.z           = remap[tris.z];
+      },
+      processingInfo.numInnerThreads);
+}
+
 void Scene::buildGeometryBboxes(const ProcessingInfo& processingInfo, GeometryStorage& geometry)
 {
   geometry.clusterBboxes.resize(geometry.lodMesh.clusterTriangleRanges.size());
@@ -879,13 +1050,13 @@ void Scene::computeHistograms()
   m_clusterVertexHistogram.resize(m_config.clusterVertices + 1, 0);
   m_groupClusterHistogram.resize(m_config.clusterGroupSize + 1, 0);
   m_nodeChildrenHistogram.resize(32 + 1, 0);
-  m_lodLevelsHistogram.resize(128, 0);
+  m_lodLevelsHistogram.resize(SHADERIO_MAX_LOD_LEVELS + 1, 0);
 
   m_maxLodLevelsCount = 0;
 
   for(GeometryView& geometry : m_geometryViews)
   {
-    assert(geometry.lodLevelsCount < 128);
+    assert(geometry.lodLevelsCount < SHADERIO_MAX_LOD_LEVELS);
     m_maxLodLevelsCount = std::max(m_maxLodLevelsCount, geometry.lodLevelsCount);
 
     m_lodLevelsHistogram[geometry.lodLevelsCount]++;

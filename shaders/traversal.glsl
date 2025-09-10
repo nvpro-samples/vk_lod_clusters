@@ -17,6 +17,21 @@
 * SPDX-License-Identifier: Apache-2.0
 */
 
+#define FLT_MAX 3.402823466e+38f
+
+TraversalInfo unpackTraversalInfo(uint64_t packed64)
+{
+  u32vec2       data = unpack32(packed64);
+  TraversalInfo info;
+  info.instanceID = data.x;
+  info.packedNode = data.y;
+  return info;
+}
+uint64_t packTraversalInfo(TraversalInfo info)
+{
+  return pack64(u32vec2(info.instanceID, info.packedNode));
+}
+
 float computeUniformScale(mat4 transform)
 {
   return max(max(length(vec3(transform[0])), length(vec3(transform[1]))), length(vec3(transform[2])));
@@ -62,5 +77,9 @@ bool testForTraversal(vec3 wViewPos, float uniformScale, TraversalMetric metric,
 
 bool testForBlasSharing(Geometry geometry)
 {
-  return geometry.instancesCount >= max(build.sharingMinInstances,2);
+#if USE_BLAS_CACHING
+  return geometry.instancesCount >= 1;
+#else
+  return geometry.instancesCount >= 2;
+#endif
 }

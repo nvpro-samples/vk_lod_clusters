@@ -17,6 +17,8 @@
 * SPDX-License-Identifier: Apache-2.0
 */
 
+#include <thread>
+
 #include <fmt/format.h>
 #include <nvutils/file_operations.hpp>
 #include <nvgui/camera.hpp>
@@ -38,7 +40,7 @@ LodClusters::LodClusters(const Info& info)
 
   m_profilerTimeline = m_info.profilerManager->createTimeline(createInfo);
 
-  m_info.parameterRegistry->add({"scene"}, {".gltf", ".glb"}, &m_sceneFilePath);
+  m_info.parameterRegistry->add({"scene"}, {".gltf", ".glb", ".cfg"}, &m_sceneFilePath);
   m_info.parameterRegistry->add({"renderer"}, (int*)&m_tweak.renderer);
   m_info.parameterRegistry->add({"verbose"}, &g_verbose, true);
   m_info.parameterRegistry->add({"resetstats"}, &m_tweak.autoResetTimers);
@@ -46,6 +48,10 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"debugui"}, &m_showDebugUI);
 
   m_info.parameterRegistry->add({"dumpspirv", "dumps compiled spirv into working directory"}, &m_resources.m_dumpSpirv);
+  m_info.parameterRegistry->add({"camerastring"}, &m_cameraString);
+  m_info.parameterRegistry->add({"cameraspeed"}, &m_cameraSpeed);
+  m_info.parameterRegistry->addVector({"sundirection"}, &m_frameConfig.frameConstants.skyParams.sunDirection);
+  m_info.parameterRegistry->addVector({"suncolor"}, &m_frameConfig.frameConstants.skyParams.sunColor);
 
   m_info.parameterRegistry->add({"streaming"}, &m_tweak.useStreaming);
   m_info.parameterRegistry->add({"clasallocator"}, &m_streamingConfig.usePersistentClasAllocator);
@@ -53,23 +59,40 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"gridconfig"}, &m_sceneGridConfig.gridBits);
   m_info.parameterRegistry->add({"gridunique"}, &m_sceneGridConfig.uniqueGeometriesForCopies);
   m_info.parameterRegistry->add({"clusterconfig"}, (int*)&m_tweak.clusterConfig);
+  m_info.parameterRegistry->add({"clustergroupsize"}, &m_sceneConfig.clusterGroupSize);
+  m_info.parameterRegistry->add({"loddecimationfactor"}, &m_sceneConfig.lodLevelDecimationFactor);
   m_info.parameterRegistry->add({"loderror"}, &m_frameConfig.lodPixelError);
+  m_info.parameterRegistry->add({"ao"}, &m_tweak.hbaoActive);  // use same as hbao
+  m_info.parameterRegistry->add({"aoradius"}, &m_frameConfig.frameConstants.ambientOcclusionRadius);
+  m_info.parameterRegistry->add({"hbao"}, &m_tweak.hbaoActive);
+  m_info.parameterRegistry->add({"hbaoradius"}, &m_tweak.hbaoRadius);
+  m_info.parameterRegistry->add({"hbaofullres"}, &m_tweak.hbaoFullRes);
+  m_info.parameterRegistry->add({"claspositionbits"}, &m_streamingConfig.clasPositionTruncateBits);
+  m_info.parameterRegistry->add({"maxtransfermegabytes"}, (uint32_t*)&m_streamingConfig.maxTransferMegaBytes);
+  m_info.parameterRegistry->add({"maxblascachingmegabytes"}, (uint32_t*)&m_streamingConfig.maxBlasCachingMegaBytes);
+  m_info.parameterRegistry->add({"maxclasmegabytes"}, (uint32_t*)&m_streamingConfig.maxClasMegaBytes);
+  m_info.parameterRegistry->add({"maxgeomegabytes"}, (uint32_t*)&m_streamingConfig.maxGeometryMegaBytes);
+  m_info.parameterRegistry->add({"maxresidentgroups"}, &m_streamingConfig.maxGroups);
+  m_info.parameterRegistry->add({"maxframeloadrequests"}, &m_streamingConfig.maxPerFrameLoadRequests);
+  m_info.parameterRegistry->add({"maxframeunloadrequests"}, &m_streamingConfig.maxPerFrameUnloadRequests);
   m_info.parameterRegistry->add({"cullederrorscale"}, &m_frameConfig.culledErrorScale);
   m_info.parameterRegistry->add({"culling"}, &m_rendererConfig.useCulling);
   m_info.parameterRegistry->add({"dlss"}, &m_rendererConfig.useDlss);
   m_info.parameterRegistry->add({"dlssquality"}, (int*)&m_rendererConfig.dlssQuality);
   m_info.parameterRegistry->add({"blassharing"}, &m_rendererConfig.useBlasSharing);
+  m_info.parameterRegistry->add({"blasmerging"}, &m_rendererConfig.useBlasMerging);
+  m_info.parameterRegistry->add({"blascaching"}, &m_rendererConfig.useBlasCaching);
   m_info.parameterRegistry->add({"separategroups"}, &m_rendererConfig.useSeparateGroups);
-  m_info.parameterRegistry->add({"sharingmininstances"}, &m_frameConfig.sharingMinInstances);
   m_info.parameterRegistry->add({"sharingpushculled"}, &m_frameConfig.sharingPushCulled);
-  m_info.parameterRegistry->add({"sharingminlevel"}, &m_frameConfig.sharingMinLevel);
-  m_info.parameterRegistry->add({"sharingtolerancelevel"}, &m_frameConfig.sharingToleranceLevel);
+  m_info.parameterRegistry->add({"sharingenabledlevels"}, &m_frameConfig.sharingEnabledLevels);
+  m_info.parameterRegistry->add({"sharingtolerantlevels"}, &m_frameConfig.sharingTolerantLevels);
+  m_info.parameterRegistry->add({"cachingenabledlevels"}, &m_frameConfig.cachingEnabledLevels);
   m_info.parameterRegistry->add({"instancesorting"}, &m_rendererConfig.useSorting);
   m_info.parameterRegistry->add({"renderclusterbits"}, &m_rendererConfig.numRenderClusterBits);
   m_info.parameterRegistry->add({"rendertraversalbits"}, &m_rendererConfig.numTraversalTaskBits);
   m_info.parameterRegistry->add({"visualize"}, &m_frameConfig.visualize);
   m_info.parameterRegistry->add({"renderstats"}, &m_rendererConfig.useRenderStats);
-  m_info.parameterRegistry->add({"hbao"}, &m_tweak.hbaoActive);
+
   m_info.parameterRegistry->add({"facetshading"}, &m_tweak.facetShading);
   m_info.parameterRegistry->add({"flipwinding"}, &m_rendererConfig.flipWinding);
   m_info.parameterRegistry->add({"twosided"}, &m_rendererConfig.twoSided);
@@ -83,6 +106,10 @@ LodClusters::LodClusters(const Info& info)
                                 &m_sceneConfig.memoryMappedCache);
   m_info.parameterRegistry->add({"processingonly", "directly terminate app once cache file was saved. default false"},
                                 &m_sceneConfig.processingOnly);
+  m_info.parameterRegistry->add({"processingpartial", "in processingonly mode also allow partial/resuming processing. default false"},
+                                &m_sceneConfig.processingAllowPartial);
+  m_info.parameterRegistry->add({"processingmode", "0 auto, -1 inner (within geometry), +1 outer (over geometries) parallelism. default 0"},
+                                &m_sceneConfig.processingMode);
   m_info.parameterRegistry->add({"processingthreadpct", "float percentage of threads during initial file load and processing into lod clusters, default 0.5 == 50 %"},
                                 &m_sceneConfig.processingThreadsPct);
 
@@ -100,11 +127,18 @@ LodClusters::LodClusters(const Info& info)
   m_frameConfig.frameConstants.ambientOcclusionSamples = 2;
   m_frameConfig.frameConstants.visualize               = VISUALIZE_LOD;
   m_frameConfig.frameConstants.facetShading            = 1;
+  m_frameConfig.frameConstants.wMirrorBox              = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
 
   m_frameConfig.frameConstants.lightMixer = 0.5f;
   m_frameConfig.frameConstants.skyParams  = {};
+
+  m_lastAmbientOcclusionSamples = m_frameConfig.frameConstants.ambientOcclusionSamples;
+
+  m_sceneConfig.progressPct     = &m_sceneProgress;
+  m_sceneConfigLast.progressPct = &m_sceneProgress;
 }
-bool LodClusters::initScene(const std::filesystem::path& filePath, bool configChange)
+
+void LodClusters::initScene(const std::filesystem::path& filePath, bool configChange)
 {
   deinitScene();
 
@@ -114,32 +148,43 @@ bool LodClusters::initScene(const std::filesystem::path& filePath, bool configCh
   {
     LOGI("Loading scene %s\n", fileName.c_str());
 
-    m_scene = std::make_unique<Scene>();
-    if(!m_scene->init(filePath, m_sceneConfig, configChange))
-    {
-      m_scene = nullptr;
-      LOGW("Loading scene failed\n");
-    }
-    else
-    {
-      findSceneClusterConfig();
+    m_scene         = nullptr;
+    m_sceneLoading  = true;
+    m_sceneProgress = 0;
 
-      m_scene->updateSceneGrid(m_sceneGridConfig);
-      m_sceneGridConfigLast = m_sceneGridConfig;
-      updatedSceneGrid();
-    }
+    std::thread([=, this]() {
+      auto scene = std::make_unique<Scene>();
+      if(!scene->init(filePath, m_sceneConfig, configChange))
+      {
+        scene = nullptr;
+        LOGW("Loading scene failed\n");
+      }
+      else
+      {
+        m_scene         = std::move(scene);
+        m_sceneFilePath = filePath;
+        findSceneClusterConfig();
 
-    m_sceneFilePath = filePath;
+        m_scene->updateSceneGrid(m_sceneGridConfig);
+        m_sceneGridConfigLast = m_sceneGridConfig;
+        updatedSceneGrid();
 
-    if(m_scene)
-    {
-      initRenderScene();
-    }
+        m_renderSceneCanPreload = ScenePreloaded::canPreload(m_resources.getDeviceLocalHeapSize(), m_scene.get());
 
-    return m_scene != nullptr && m_renderScene != nullptr;
+        if(!configChange)
+        {
+          postInitNewScene();
+          m_tweakLast       = m_tweak;
+          m_sceneConfigLast = m_sceneConfig;
+        }
+      }
+      m_sceneLoading = false;
+    }).detach();
+
+    return;
   }
 
-  return true;
+  return;
 }
 
 void LodClusters::initRenderScene()
@@ -286,18 +331,15 @@ void LodClusters::postInitNewScene()
   m_frameConfig.frameConstants.wLightPos = center + sceneDimension;
   m_frameConfig.frameConstants.sceneSize = glm::length(m_scene->m_bbox.hi - m_scene->m_bbox.lo);
 
-  m_tweak.hbaoRadius = m_scene->m_isBig ? 0.001f : 0.05f;
-
-  float mirrorBoxSize = sceneDimension * 0.25f;
-
-  m_frameConfig.frameConstants.wMirrorBox =
-      glm::vec4(m_scene->m_bbox.lo.x - sceneDimension, center.y, m_scene->m_bbox.lo.z - sceneDimension, sceneDimension);
-
   setSceneCamera(m_sceneFilePath);
 
-  m_frames = 0;
-
+  m_frames                    = 0;
   m_streamingConfig.maxGroups = std::max(m_streamingConfig.maxGroups, uint32_t(m_scene->getActiveGeometryCount()));
+
+  if(!m_scene->m_hasVertexNormals)
+    m_tweak.facetShading = true;
+
+  m_frameConfig.frameConstants.skyParams.sunDirection = glm::normalize(m_frameConfig.frameConstants.skyParams.sunDirection);
 }
 
 
@@ -306,9 +348,7 @@ void LodClusters::onAttach(nvapp::Application* app)
   m_app = app;
 
   m_tweak.supersample = std::max(1, m_tweak.supersample);
-
   m_info.cameraManipulator->setMode(nvutils::CameraManipulator::Fly);
-
   m_renderer = nullptr;
 
   {
@@ -361,9 +401,10 @@ void LodClusters::onAttach(nvapp::Application* app)
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_GREY, "grey");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_CLUSTER, "clusters");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_GROUP, "cluster groups");
-    m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_LOD, "lods");
+    m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_LOD, "lod levels");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_TRIANGLE, "triangles");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_BLAS, "blas");
+    m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_BLAS_CACHED, "blas cached");
   }
 
   // Initialize core components
@@ -392,7 +433,7 @@ void LodClusters::onAttach(nvapp::Application* app)
         std::filesystem::absolute(exeDirectoryPath / "resources"),
     };
 
-    m_sceneFilePath = nvutils::findFile("bunny_v2/bunny.gltf", defaultSearchPaths);
+    m_sceneFilePathDefault = m_sceneFilePath = nvutils::findFile("bunny_v2/bunny.gltf", defaultSearchPaths);
 
     // enforce unique geometries in the sample scene
     m_sceneGridConfig.uniqueGeometriesForCopies = true;
@@ -421,11 +462,7 @@ void LodClusters::onAttach(nvapp::Application* app)
     m_streamingConfig.maxGeometryMegaBytes = 1 * 1024;
   }
 
-  if(initScene(m_sceneFilePath, false))
-  {
-    postInitNewScene();
-    initRenderer(m_tweak.renderer);
-  }
+  onFileDrop(m_sceneFilePath);
 
   m_tweakLast          = m_tweak;
   m_sceneConfigLast    = m_sceneConfig;
@@ -457,23 +494,57 @@ void LodClusters::saveCacheFile()
 
 void LodClusters::onFileDrop(const std::filesystem::path& filePath)
 {
-  // reset grid parameter (in case scene is too large to be replicated)
-  m_sceneGridConfig.numCopies = 1;
-
   if(filePath.empty())
     return;
+
+  if(filePath.extension() == ".cfg")
+  {
+    LOGI("Loading config: %s\n", nvutils::utf8FromPath(filePath).c_str());
+
+    m_cameraString = {};
+    m_cameraSpeed  = 0;
+
+    std::filesystem::path oldPath = m_sceneFilePath;
+
+    std::string filePathString = nvutils::utf8FromPath(filePath);
+
+    std::vector<const char*> args;
+    args.push_back("--configfile");
+    args.push_back(filePathString.c_str());
+
+    m_info.parameterParser->parse(std::span(args), false, {}, {}, true);
+
+    if(m_sceneFilePath != oldPath)
+    {
+      std::filesystem::path newPath = m_sceneFilePath;
+      m_sceneFilePath               = oldPath;
+
+      onFileDrop(newPath);
+    }
+
+    return;
+  }
+
+  if(filePath != m_sceneFilePathDefault)
+  {
+    // reset grid parameter (in case scene is too large to be replicated)
+    m_sceneGridConfig.numCopies                 = 1;
+    m_sceneGridConfig.uniqueGeometriesForCopies = false;
+  }
+
   LOGI("Loading model: %s\n", nvutils::utf8FromPath(filePath).c_str());
   deinitRenderer();
 
-  if(initScene(filePath, false))
-  {
-    postInitNewScene();
-    initRenderer(m_tweak.renderer);
-    m_tweakLast       = m_tweak;
-    m_sceneConfigLast = m_sceneConfig;
-  }
+  initScene(filePath, false);
 }
 
+void LodClusters::doProcessingOnly()
+{
+  updatedClusterConfig();
+  assert(m_app == nullptr);
+  m_scene = std::make_unique<Scene>();
+  m_scene->init(m_sceneFilePath, m_sceneConfig, false);
+}
 
 const LodClusters::ClusterInfo LodClusters::s_clusterInfos[NUM_CLUSTER_CONFIGS] = {
     {64, 64, CLUSTER_64T_64V},     {64, 128, CLUSTER_64T_128V},   {64, 192, CLUSTER_64T_192V},
@@ -518,10 +589,13 @@ void LodClusters::updatedSceneGrid()
 
     bool bigScene = m_scene->m_isBig;
 
-    m_info.cameraManipulator->setSpeed(modelRadius * (bigScene ? 0.0025f : 0.25f));
-    m_info.cameraManipulator->setClipPlanes(
-        glm::vec2((bigScene ? 0.0001f : 0.01F) * modelRadius,
-                  bigScene ? gridRadius * 1.2f : std::max(50.0f * modelRadius, gridRadius * 1.2f)));
+    if(!m_cameraSpeed)
+      m_info.cameraManipulator->setSpeed(modelRadius * (bigScene ? 0.0025f : 0.25f));
+
+    if(m_cameraString.empty())
+      m_info.cameraManipulator->setClipPlanes(
+          glm::vec2((bigScene ? 0.0001f : 0.01F) * modelRadius,
+                    bigScene ? gridRadius * 1.2f : std::max(50.0f * modelRadius, gridRadius * 1.2f)));
   }
 
   if(m_tweak.autoSharing)
@@ -542,30 +616,10 @@ void LodClusters::handleChanges()
     m_rendererConfig.useBlasSharing = false;
   }
 
-  bool sceneChanged = false;
-  if(memcmp(&m_sceneConfig, &m_sceneConfigLast, sizeof(m_sceneConfig)))
+  if(m_rendererConfig.useBlasSharing && m_renderScene && !m_renderScene->useStreaming)
   {
-    sceneChanged = true;
-
-    deinitRenderer();
-    initScene(m_sceneFilePath, true);
-  }
-
-  bool sceneGridChanged = false;
-  if(!sceneChanged && memcmp(&m_sceneGridConfig, &m_sceneGridConfigLast, sizeof(m_sceneGridConfig)) && m_scene)
-  {
-    sceneGridChanged = true;
-
-    deinitRenderer();
-    m_scene->updateSceneGrid(m_sceneGridConfig);
-    updatedSceneGrid();
-  }
-
-  bool shaderChanged = false;
-  if(m_reloadShaders)
-  {
-    shaderChanged   = true;
-    m_reloadShaders = false;
+    m_rendererConfig.useBlasMerging = false;
+    m_rendererConfig.useBlasCaching = false;
   }
 
   bool frameBufferChanged = false;
@@ -577,41 +631,80 @@ void LodClusters::handleChanges()
     frameBufferChanged = true;
   }
 
-  bool renderSceneChanged = false;
-  if(sceneGridChanged || tweakChanged(m_tweak.useStreaming)
-     || (memcmp(&m_streamingConfig, &m_streamingConfigLast, sizeof(m_streamingConfig))))
+  bool shaderChanged = false;
+  if(m_reloadShaders)
   {
-    if(!sceneChanged || !sceneGridChanged)
+    shaderChanged   = true;
+    m_reloadShaders = false;
+  }
+
+  bool sceneChanged = false;
+  if(memcmp(&m_sceneConfig, &m_sceneConfigLast, sizeof(m_sceneConfig)))
+  {
+    sceneChanged = true;
+
+    deinitRenderer();
+    initScene(m_sceneFilePath, true);
+  }
+
+  bool sceneGridChanged = false;
+  if(m_scene)
+  {
+    if(!m_renderScene)
     {
-      deinitRenderer();
+      // async loading might us get into this state
+      // pretend scene grid changed to re-init renderscene
+      sceneGridChanged = true;
     }
 
-    renderSceneChanged = true;
-    deinitRenderScene();
-    initRenderScene();
-  }
+    if(!sceneChanged && memcmp(&m_sceneGridConfig, &m_sceneGridConfigLast, sizeof(m_sceneGridConfig)))
+    {
+      sceneGridChanged = true;
 
-  bool rendererChanged = false;
-  if(sceneChanged || shaderChanged || renderSceneChanged || tweakChanged(m_tweak.renderer)
-     || rendererCfgChanged(m_rendererConfig.flipWinding) || rendererCfgChanged(m_rendererConfig.useDebugVisualization)
-     || rendererCfgChanged(m_rendererConfig.useCulling) || rendererCfgChanged(m_rendererConfig.twoSided)
-     || rendererCfgChanged(m_rendererConfig.useSorting) || rendererCfgChanged(m_rendererConfig.numRenderClusterBits)
-     || rendererCfgChanged(m_rendererConfig.numTraversalTaskBits) || rendererCfgChanged(m_rendererConfig.useBlasSharing)
-     || rendererCfgChanged(m_rendererConfig.useRenderStats) || rendererCfgChanged(m_rendererConfig.useSeparateGroups)
+      deinitRenderer();
+      m_scene->updateSceneGrid(m_sceneGridConfig);
+      updatedSceneGrid();
+    }
+
+    bool renderSceneChanged = false;
+    if(sceneGridChanged || tweakChanged(m_tweak.useStreaming)
+       || (memcmp(&m_streamingConfig, &m_streamingConfigLast, sizeof(m_streamingConfig))))
+    {
+      if(!sceneChanged || !sceneGridChanged)
+      {
+        deinitRenderer();
+      }
+
+      renderSceneChanged = true;
+      deinitRenderScene();
+      initRenderScene();
+    }
+
+    if(sceneChanged || shaderChanged || renderSceneChanged || tweakChanged(m_tweak.renderer)
 #if USE_DLSS
-     || rendererCfgChanged(m_rendererConfig.useDlss) || rendererCfgChanged(m_rendererConfig.dlssQuality)
+       || rendererCfgChanged(m_rendererConfig.useDlss) || rendererCfgChanged(m_rendererConfig.dlssQuality)
 #endif
-  )
-  {
-    rendererChanged = true;
+       || rendererCfgChanged(m_rendererConfig.flipWinding) || rendererCfgChanged(m_rendererConfig.useDebugVisualization)
+       || rendererCfgChanged(m_rendererConfig.useCulling) || rendererCfgChanged(m_rendererConfig.twoSided)
+       || rendererCfgChanged(m_rendererConfig.useSorting) || rendererCfgChanged(m_rendererConfig.numRenderClusterBits)
+       || rendererCfgChanged(m_rendererConfig.numTraversalTaskBits) || rendererCfgChanged(m_rendererConfig.useBlasSharing)
+       || rendererCfgChanged(m_rendererConfig.useRenderStats) || rendererCfgChanged(m_rendererConfig.useSeparateGroups)
+       || rendererCfgChanged(m_rendererConfig.useBlasMerging) || rendererCfgChanged(m_rendererConfig.useBlasCaching))
+    {
+      if(rendererCfgChanged(m_rendererConfig.useBlasCaching))
+      {
+        m_renderScene->streamingReset();
+      }
 
-    initRenderer(m_tweak.renderer);
+      initRenderer(m_tweak.renderer);
+    }
+    else if(m_renderer && frameBufferChanged)
+    {
+      m_renderer->updatedFrameBuffer(m_resources, *m_renderScene);
+      m_rendererFboChangeID = m_resources.m_fboChangeID;
+    }
   }
-  else if(m_renderer && frameBufferChanged)
-  {
-    m_renderer->updatedFrameBuffer(m_resources, *m_renderScene);
-    m_rendererFboChangeID = m_resources.m_fboChangeID;
-  }
+
 
   bool hadChange = shaderChanged || memcmp(&m_tweakLast, &m_tweak, sizeof(m_tweak))
                    || memcmp(&m_rendererConfigLast, &m_rendererConfig, sizeof(m_rendererConfig))
@@ -851,6 +944,21 @@ void LodClusters::setSceneCamera(const std::filesystem::path& filePath)
     m_info.cameraManipulator->setLookat(modelCenter + dir * (modelRadius * (bigScene ? 0.5f : 1.f)), modelCenter, up);
     nvgui::SetHomeCamera(m_info.cameraManipulator->getCamera());
   }
+
+  if(m_cameraSpeed)
+  {
+    m_info.cameraManipulator->setSpeed(m_cameraSpeed);
+  }
+
+  if(!m_cameraString.empty())
+  {
+    nvutils::CameraManipulator::Camera cam = m_info.cameraManipulator->getCamera();
+    if(cam.setFromString(m_cameraString))
+    {
+      m_info.cameraManipulator->setCamera(cam);
+      nvgui::SetHomeCamera(m_info.cameraManipulator->getCamera());
+    }
+  }
 }
 
 float LodClusters::decodePickingDepth(const shaderio::Readback& readback)
@@ -869,4 +977,5 @@ bool LodClusters::isPickingValid(const shaderio::Readback& readback)
 {
   return readback._packedDepth0 != 0u;
 }
+
 }  // namespace lodclusters

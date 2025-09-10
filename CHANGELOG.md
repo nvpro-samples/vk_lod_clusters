@@ -1,7 +1,26 @@
 # Changelog for vk_lod_clusters
+* 2025-9-xx:
+  * Added ["BLAS Caching"](docs/blas_caching.md). This option enhances "BLAS Sharing" so that fully resident lod levels
+    are kept in a dedicated BLAS that can be re-used many frames. Any instance whose minimum lod level is higher or 
+    equal than this BLAS's lod level can use it. Therefore we can further reduce the number of BLAS built per frame.
+  * Added ["BLAS Merging"](docs/blas_merging.md). This option enhances "BLAS Sharing" such that we build a single BLAS for 
+    all instances that overlap in near lod range. The instances still make streaming requests, however, only a 
+    single BLAS is built based on the highest available detail that is already streamed in. This technique therefore
+    guarantees that at most only two BLAS are built per unique geometry in the scene. Which significantly helps
+    reduce worst-case memory reservations and further reduces BLAS builds. Special thanks to Pyarelal Knowles for
+    the idea to drive lod picking based on streaming state.
+  * Enforce facet shading when scene has no vertex normals (compile shaders `ALLOW_VERTEX_NORMALS` accordingly)
+  * Bugfix "CLAS position drop bits" option being ignored.
+  * Bugfix detection when pre-loading is likely to overshoot device memory
+  * Bugfix HiZ render target size with DLSS denoising active, which resulted in objects classifed as culled when they weren't.
+  * Lot's of UI changes and added visible progress bar during scene loading.
+  * Added `--processingpartial 1` command line option which allows the `--processingonly 1` mode to resume from partial results.
+  * `--processingonly 1` mode now skips Vulkan context and application window creation.
+  * `--processingmode <int>` 0 auto, -1 inner (within geometry), +1 outer (over geometries) parallelism. default 0.
+  * Added `Scene::buildGeometryDedupVertices` which is triggered when we detect that a mesh as fully independent triangles (some exports do this).
 * 2025-8-24:
   * Updated `meshoptimizer` submodule to `v 0.25`
-* 2025-8-05:
+* 2025-8-5:
   * DLSS denoiser support in ray tracing. Activate `USE_DLSS` in `cmake` to download and enable support within the application. 
 * 2025-7-31:
   * Bugfix for objects with single lod level appearing black in lod visualization.
@@ -12,7 +31,7 @@
   * Tweaked heuristic for persistent kernel threads once more.
 * 2025-7-24:
   * Major feature update.
-  * Added ["BLAS sharing"](docs/blas_sharing.md) under "Traversal" to drastically reduce BLAS builds when geometries are instanced a lot. It is automatically enabled (`--autosharing 0/1`) for scene configurations that may benefit.
+  * Added ["BLAS Sharing"](docs/blas_sharing.md) under "Traversal" to drastically reduce BLAS builds when geometries are instanced a lot. It is automatically enabled (`--autosharing 0/1`) for scene configurations that may benefit.
   * Added ""Culled error scale" under "Traversal" to allow more control over the lod error allowed in indirectly visible instances (`--cullederrorscale <float>`).
   * Added "Rendered Statistics" option to enable/disable computation of rendering statistics under "Traversal", this was always on before but had quite the performance impact and is now disabled.
   * Allow changing of cluster & lod settings for files that were loaded with a cache, triggers processing again.

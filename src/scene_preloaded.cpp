@@ -21,6 +21,45 @@
 
 namespace lodclusters {
 
+bool ScenePreloaded::canPreload(VkDeviceSize deviceLocalHeapSize, const Scene* scene)
+{
+  VkDeviceSize sizeLimit = (deviceLocalHeapSize * 600) / 1000;
+  VkDeviceSize testSize  = 0;
+
+  for(size_t geometryIndex = 0; geometryIndex < scene->getActiveGeometryCount(); geometryIndex++)
+  {
+    const Scene::GeometryView& sceneGeometry = scene->getActiveGeometry(geometryIndex);
+    ScenePreloaded::Geometry   preloadGeometry;
+
+    // * 2 for some to account for clas etc.
+    testSize += sceneGeometry.localTriangles.size_bytes() * 2;
+    testSize += sceneGeometry.vertices.size_bytes() * 2;
+
+    size_t numClusters = sceneGeometry.lodMesh.clusterTriangleRanges.size();
+    testSize += preloadGeometry.clusters.value_size * numClusters * 2;
+    testSize += preloadGeometry.clusterBboxes.value_size * numClusters;
+    testSize += preloadGeometry.clusterGeneratingGroups.value_size * numClusters;
+
+    size_t numGroups = sceneGeometry.lodMesh.groupClusterRanges.size();
+    testSize += preloadGeometry.groups.value_size * numGroups;
+
+    size_t numNodes = sceneGeometry.lodHierarchy.nodes.size();
+    testSize += preloadGeometry.nodes.value_size * numNodes;
+    testSize += preloadGeometry.nodeBboxes.value_size * numNodes;
+
+    uint32_t numLodLevels = sceneGeometry.lodLevelsCount;
+    testSize += preloadGeometry.lodLevels.value_size * numLodLevels;
+  }
+
+  if(testSize > sizeLimit)
+  {
+    LOGI("Likely exceeding device memory limit for preloaded scene\n");
+    return false;
+  }
+
+  return true;
+}
+
 bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& config)
 {
   assert(m_resources == nullptr && "init called without prior deinit");
@@ -29,13 +68,17 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
   m_scene     = scene;
   m_config    = config;
 
-  Resources::BatchedUploader uploader(*res);
+  if(!canPreload(res->getDeviceLocalHeapSize(), scene))
+  {
+    LOGW("Likely exceeding device memory limit for preloaded scene\n");
+    return false;
+  }
+
 
   m_shaderGeometries.resize(scene->getActiveGeometryCount());
   m_geometries.resize(scene->getActiveGeometryCount());
 
-  VkDeviceSize sizeLimit           = (res->getDeviceLocalHeapSize() * 1000) / 800;
-  VkDeviceSize clusterGeometrySize = 0;
+  Resources::BatchedUploader uploader(*res);
 
   uint32_t instancesOffset = 0;
   for(size_t geometryIndex = 0; geometryIndex < scene->getActiveGeometryCount(); geometryIndex++)
@@ -74,31 +117,19 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
     m_geometrySize += preloadGeometry.nodes.bufferSize;
     m_geometrySize += preloadGeometry.nodeBboxes.bufferSize;
 
-    clusterGeometrySize += preloadGeometry.localTriangles.bufferSize;
-    clusterGeometrySize += preloadGeometry.vertices.bufferSize;
-    clusterGeometrySize += preloadGeometry.clusters.bufferSize;
-
-    // simple estimate extra clas size as raw copy
-    if(m_geometrySize + clusterGeometrySize > sizeLimit)
-    {
-      LOGW("Likely exceeding device memory limit for preloaded scene\n");
-      uploader.abort();
-      deinit();
-      return false;
-    }
-
     // setup shaderio
-    shaderGeometry                   = {};
-    shaderGeometry.bbox              = sceneGeometry.bbox;
-    shaderGeometry.nodes             = preloadGeometry.nodes.address;
-    shaderGeometry.nodeBboxes        = preloadGeometry.nodeBboxes.address;
-    shaderGeometry.preloadedGroups   = preloadGeometry.groups.address;
-    shaderGeometry.preloadedClusters = preloadGeometry.clusters.address;
-    shaderGeometry.lodLevelsCount    = uint32_t(numLodLevels);
-    shaderGeometry.lodLevels         = preloadGeometry.lodLevels.address;
-    shaderGeometry.lodsCompletedMask = (1 << shaderGeometry.lodLevelsCount) - 1;
-    shaderGeometry.instancesCount    = sceneGeometry.instanceReferenceCount * scene->getGeometryInstanceFactor();
-    shaderGeometry.instancesOffset   = instancesOffset;
+    shaderGeometry                    = {};
+    shaderGeometry.bbox               = sceneGeometry.bbox;
+    shaderGeometry.nodes              = preloadGeometry.nodes.address;
+    shaderGeometry.nodeBboxes         = preloadGeometry.nodeBboxes.address;
+    shaderGeometry.preloadedGroups    = preloadGeometry.groups.address;
+    shaderGeometry.preloadedClusters  = preloadGeometry.clusters.address;
+    shaderGeometry.lodLevelsCount     = uint32_t(numLodLevels);
+    shaderGeometry.lodLevels          = preloadGeometry.lodLevels.address;
+    shaderGeometry.cachedBlasAddress  = 0;
+    shaderGeometry.cachedBlasLodLevel = TRAVERSAL_INVALID_LOD_LEVEL;
+    shaderGeometry.instancesCount     = sceneGeometry.instanceReferenceCount * scene->getGeometryInstanceFactor();
+    shaderGeometry.instancesOffset    = instancesOffset;
 
     instancesOffset += shaderGeometry.instancesCount;
 
@@ -232,8 +263,9 @@ void ScenePreloaded::deinit()
   m_resources->m_allocator.destroyBuffer(m_clasLowDetailBlasBuffer);
 
   m_resources->m_allocator.destroyBuffer(m_shaderGeometriesBuffer);
-  m_resources = nullptr;
-  m_scene     = nullptr;
+  m_resources    = nullptr;
+  m_scene        = nullptr;
+  m_geometrySize = 0;
 }
 
 bool ScenePreloaded::initClas()
@@ -243,6 +275,7 @@ bool ScenePreloaded::initClas()
 
   m_clasOperationsSize = 0;
   m_clasSize           = 0;
+  m_blasSize           = 0;
 
   VkClusterAccelerationStructureTriangleClusterInputNV clusterTriangleInput = {
       VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_TRIANGLE_CLUSTER_INPUT_NV};
@@ -458,7 +491,7 @@ bool ScenePreloaded::initClas()
   // create low detail blas
   {
     res->createBuffer(m_clasLowDetailBlasBuffer, blasSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
-    m_clasOperationsSize += logMemoryUsage(blasSize, "operations", "preloaded clas lowdetail blas");
+    m_blasSize = blasSize;
 
     cmd = res->createTempCmdBuffer();
 
@@ -525,6 +558,7 @@ void ScenePreloaded::deinitClas()
 
   m_clasSize           = 0;
   m_clasOperationsSize = 0;
+  m_blasSize           = 0;
   m_hasClas            = false;
 }
 }  // namespace lodclusters

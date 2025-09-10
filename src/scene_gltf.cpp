@@ -367,9 +367,24 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
 
   beginProcessingOnly(uniqueMeshes.size());
 
-  processingInfo.setupParallelism(uniqueMeshes.size());
+  // when we are resuming in processingOnly mode, we might have completed several geometries already,
+  // which is passed to influence the decision about the parallelism mode.
+  processingInfo.setupParallelism(uniqueMeshes.size(), m_processingOnlyPartialCompleted, m_config.processingMode);
 
   auto fnLoadAndProcessGeometry = [&](uint64_t geometryIndex, uint32_t threadOuterIdx) {
+    // when resuming a partial processing, early out if it was already processed
+    // second entry is dataSize
+    if(m_processingOnlyPartialFile && m_processingOnlyGeometryOffsets[geometryIndex * 2 + 1])
+    {
+      uint32_t percentage = processingInfo.logCompletedGeometry();
+      if(m_config.progressPct)
+      {
+        m_config.progressPct->store(percentage);
+      }
+
+      return;
+    }
+
     // map back from unique geometry to gltf mesh
     size_t meshIndex = uniqueMeshes[geometryIndex];
 
@@ -400,11 +415,13 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
         const cgltf_attribute& gltfAttrib = gltfPrim->attributes[attribIdx];
         const cgltf_accessor*  accessor   = gltfAttrib.data;
 
-        // TODO: Can we assume alignment in order to make these a single read_float call?
         if(strcmp(gltfAttrib.name, "POSITION") == 0)
         {
           verticesCount += (uint32_t)gltfAttrib.data->count;
-          break;
+        }
+        else if(strcmp(gltfAttrib.name, "NORMAL") == 0)
+        {
+          m_hasVertexNormals = true;
         }
       }
 
@@ -422,7 +439,7 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
     // load vertices & index data
     if(!isCached)
     {
-      geometry.vertices.resize(verticesCount);
+      geometry.vertices.resize(verticesCount, {0, 0, 0, 0});
       geometry.globalTriangles.resize(triangleCount);
 
       // fill pass
@@ -451,7 +468,6 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
           const cgltf_attribute& gltfAttrib = gltfPrim->attributes[attribIdx];
           const cgltf_accessor*  accessor   = gltfAttrib.data;
 
-          // TODO: Can we assume alignment in order to make these a single read_float call?
           if(strcmp(gltfAttrib.name, "POSITION") == 0)
           {
             glm::vec4* writeVertices = geometry.vertices.data() + offsetVertices;
@@ -544,7 +560,11 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
 
     processGeometry(processingInfo, geometryIndex, isCached);
 
-    processingInfo.logCompletedGeometry();
+    uint32_t percentage = processingInfo.logCompletedGeometry();
+    if(m_config.progressPct)
+    {
+      m_config.progressPct->store(percentage);
+    }
   };
 
   processingInfo.logBegin();
@@ -552,6 +572,10 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
   nvutils::parallel_batches_pooled<1>(uniqueMeshes.size(), fnLoadAndProcessGeometry, processingInfo.numOuterThreads);
 
   processingInfo.logEnd();
+  if(m_config.progressPct)
+  {
+    m_config.progressPct->store(100);
+  }
 
   bool notCompleted = processingInfo.progressGeometriesCompleted != uniqueMeshes.size();
   if(notCompleted)
@@ -559,7 +583,11 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
     LOGW("Error in processing geometries, completed / required mismatch\nTry using `--processingonly 1`\n");
   }
 
-  endProcessingOnly(notCompleted);
+  if(endProcessingOnly(notCompleted))
+  {
+    // while not an error, on processing only we also early out with false
+    return false;
+  }
 
   if(notCompleted)
   {

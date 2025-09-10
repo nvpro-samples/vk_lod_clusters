@@ -125,8 +125,9 @@ void main()
     
       uint groupResidentID = group.residentID;
       StreamingGroup residentGroup;
-      residentGroup.clusterCount = group.clusterCount;
-      residentGroup.age = 0;
+      residentGroup.geometryID   = spatch.geometryID;
+      residentGroup.lodLevel     = group.lodLevel;
+      residentGroup.age          = uint16_t(0);
       residentGroup.group = Group_in(spatch.groupAddress);
     #if STREAMING_DEBUG_ADDRESSES
       if (uint64_t(streaming.resident.groups.d[groupResidentID].group) < STREAMING_INVALID_ADDRESS_START)
@@ -163,6 +164,7 @@ void main()
         buildInfo.packed |= PACKED_FLAG(ClasBuildInfo_packed_triangleCount, cluster.triangleCountMinusOne+1);
         buildInfo.packed |= PACKED_FLAG(ClasBuildInfo_packed_vertexCount, cluster.vertexCountMinusOne+1);
         buildInfo.packed |= PACKED_FLAG(ClasBuildInfo_packed_indexType, 1);
+        buildInfo.packed |= PACKED_FLAG(ClasBuildInfo_packed_positionTruncateBitCount, streaming.clasPositionTruncateBits);
         
         buildInfo.baseGeometryIndexAndFlags = ClasGeometryFlag_OPAQUE_BIT_NV;
         
@@ -184,11 +186,14 @@ void main()
       }
     }
   }
-#if STREAMING_GEOMETRY_LOD_LEVEL_TRACKING
-  if (threadID < streaming.update.patchGeometriesCount)
+#if 1  // relevant to USE_BLAS_CACHING
+  if (threadID < streaming.update.patchCachedBlasCount)
   {
     StreamingGeometryPatch sgpatch = streaming.update.geometryPatches.d[threadID];
-    geometries[sgpatch.geometryID].lodsCompletedMask = sgpatch.lodsCompletedMask;
+    uint cachedBlasLodLevel        = sgpatch.cachedBlasLodLevel;
+    uint geometryID                = sgpatch.geometryID;
+    geometries[geometryID].cachedBlasLodLevel = uint8_t(cachedBlasLodLevel);
+    geometries[geometryID].cachedBlasAddress  = sgpatch.cachedBlasAddress;
   }
 #endif
 }

@@ -268,12 +268,9 @@ void main()
     // cluster group / pre-built blas.
     bool lowestDetailOnly = lodLevelMin == geometryLodLevelMax;
     
-    if (lowestDetailOnly)
+    if (TRAVERSAL_ALLOW_LOW_DETAIL_BLAS && lowestDetailOnly)
     {
-    #if USE_RENDER_STATS
-      atomicAdd(readback.numRenderedTriangles, geometry.lowDetailTriangles); 
-      atomicAdd(readback.numRenderedClusters, 1);
-    #endif
+
     }
     else if (geometryUsesBlasSharing)
     {
@@ -301,7 +298,7 @@ void main()
     build.instanceBuildInfos.d[instanceID].lodLevelMin            = uint8_t(lodLevelMin);
     build.instanceBuildInfos.d[instanceID].lodLevelMax            = uint8_t(lodLevelMax);
     build.instanceBuildInfos.d[instanceID].geometryLodLevelMax    = uint16_t(geometryLodLevelMax);
-    build.instanceBuildInfos.d[instanceID].instanceUseCount       = 1;
+    build.instanceBuildInfos.d[instanceID].geometryID             = geometryID;
     
     // ensure that the tlas instances are always initialized to the pre-built low detail blas and
     // renderable in some way.

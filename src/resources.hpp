@@ -35,6 +35,7 @@
 #include <nvvk/sampler_pool.hpp>
 #include <nvvk/staging.hpp>
 #include <nvvk/descriptors.hpp>
+#include <nvvk/physical_device.hpp>
 #include <nvvk/graphics_pipeline.hpp>
 #include <nvvk/profiler_vk.hpp>
 #include <nvvkglsl/glsl.hpp>
@@ -66,13 +67,16 @@ struct FrameConfig
   float culledErrorScale = 2.0f;
   // how many frames until we schedule a group for unloading
   uint32_t streamingAgeThreshold = 16;
+
   // how much threads to use in the persistent kernels
   uint32_t traversalPersistentThreads = 2048;
 
-  uint32_t sharingMinInstances   = 2;
-  uint32_t sharingToleranceLevel = 2;
-  uint32_t sharingMinLevel       = 1;
+  uint32_t sharingTolerantLevels = 7;
+  uint32_t sharingEnabledLevels  = 8;
   bool     sharingPushCulled     = true;
+
+  uint32_t cachingEnabledLevels = 8;
+  uint32_t cachingAgeThreshold  = 16;
 
   HbaoPass::Settings hbaoSettings;
 
@@ -85,65 +89,11 @@ struct FrameConfig
 
 //////////////////////////////////////////////////////////////////////////
 
-struct PhysicalDeviceInfo
-{
-  VkPhysicalDeviceProperties         properties10;
-  VkPhysicalDeviceVulkan11Properties properties11 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES};
-  VkPhysicalDeviceVulkan12Properties properties12 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
-  VkPhysicalDeviceVulkan13Properties properties13 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
-  VkPhysicalDeviceVulkan14Properties properties14 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_PROPERTIES};
-
-  VkPhysicalDeviceFeatures         features10;
-  VkPhysicalDeviceVulkan11Features features11 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
-  VkPhysicalDeviceVulkan12Features features12 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
-  VkPhysicalDeviceVulkan13Features features13 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
-  VkPhysicalDeviceVulkan14Features features14 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES};
-
-  VkPhysicalDeviceMemoryProperties memoryProperties = {};
-
-  void init(VkPhysicalDevice physicalDevice, uint32_t apiVersion = VK_API_VERSION_1_4)
-  {
-    assert(apiVersion >= VK_API_VERSION_1_2);
-
-    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
-
-    VkPhysicalDeviceProperties2 props = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
-    props.pNext                       = &properties11;
-    properties11.pNext                = &properties12;
-    if(apiVersion >= VK_API_VERSION_1_3)
-    {
-      properties12.pNext = &properties13;
-    }
-    if(apiVersion >= VK_API_VERSION_1_4)
-    {
-      properties13.pNext = &properties14;
-    }
-    vkGetPhysicalDeviceProperties2(physicalDevice, &props);
-    properties10 = props.properties;
-
-    VkPhysicalDeviceFeatures2 features = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-    features.pNext                     = &features11;
-    features11.pNext                   = &features12;
-    if(apiVersion >= VK_API_VERSION_1_3)
-    {
-      features12.pNext = &features13;
-    }
-    if(apiVersion >= VK_API_VERSION_1_4)
-    {
-      features13.pNext = &features14;
-    }
-    vkGetPhysicalDeviceFeatures2(physicalDevice, &features);
-    features10 = features.features;
-  }
-};
-
 inline void cmdCopyBuffer(VkCommandBuffer cmd, const nvvk::Buffer& src, const nvvk::Buffer& dst)
 {
   VkBufferCopy cpy = {0, 0, src.bufferSize};
   vkCmdCopyBuffer(cmd, src.buffer, dst.buffer, 1, &cpy);
 }
-
-//////////////////////////////////////////////////////////////////////////
 
 std::string formatMemorySize(size_t sizeInBytes);
 
@@ -524,11 +474,12 @@ public:
     nvvk::BufferTyped<shaderio::Readback>       readBackHost;
   } m_commonBuffers;
 
-  PhysicalDeviceInfo          m_physicalDeviceInfo = {};
-  nvvk::GraphicsPipelineState m_basicGraphicsState = {};
-  uint32_t                    m_cycleIndex         = 0;
-  size_t                      m_fboChangeID        = ~0;
-  glm::vec4                   m_bgColor            = {0.1, 0.13, 0.15, 1.0};
+  nvvk::PhysicalDeviceInfo         m_physicalDeviceInfo = {};
+  VkPhysicalDeviceMemoryProperties m_memoryProperties   = {};
+  nvvk::GraphicsPipelineState      m_basicGraphicsState = {};
+  uint32_t                         m_cycleIndex         = 0;
+  size_t                           m_fboChangeID        = ~0;
+  glm::vec4                        m_bgColor            = {0.1, 0.13, 0.15, 1.0};
 
   bool m_supportsClusters = false;
   bool m_dumpSpirv        = false;

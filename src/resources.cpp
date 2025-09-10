@@ -109,6 +109,7 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
   m_queueTransfer  = queueTransfer;
 
   m_physicalDeviceInfo.init(physicalDevice);
+  vkGetPhysicalDeviceMemoryProperties(physicalDevice, &m_memoryProperties);
 
   {
     VmaAllocatorCreateInfo allocatorInfo = {
@@ -431,8 +432,8 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
     VkImageCreateInfo imageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     imageInfo.imageType         = VK_IMAGE_TYPE_2D;
     imageInfo.format            = m_frameBuffer.raytracingDepthFormat;
-    imageInfo.extent.width      = m_frameBuffer.targetSize.width;
-    imageInfo.extent.height     = m_frameBuffer.targetSize.height;
+    imageInfo.extent.width      = m_frameBuffer.renderSize.width;
+    imageInfo.extent.height     = m_frameBuffer.renderSize.height;
     imageInfo.extent.depth      = 1;
     imageInfo.mipLevels         = 1;
     imageInfo.arrayLayers       = 1;
@@ -473,7 +474,7 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
   }
 
   {
-    m_hiz.setupUpdateInfos(m_hizUpdate, m_frameBuffer.targetSize.width, m_frameBuffer.targetSize.height,
+    m_hiz.setupUpdateInfos(m_hizUpdate, m_frameBuffer.renderSize.width, m_frameBuffer.renderSize.height,
                            m_frameBuffer.depthStencilFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
 
     // hiz
@@ -781,7 +782,7 @@ void Resources::cmdImageTransition(VkCommandBuffer cmd, nvvk::Image& rimg, VkIma
 
 VkDeviceSize Resources::getDeviceLocalHeapSize() const
 {
-  const VkPhysicalDeviceMemoryProperties& memProperties = m_physicalDeviceInfo.memoryProperties;
+  const VkPhysicalDeviceMemoryProperties& memProperties = m_memoryProperties;
 
   for(uint32_t type = 0; type < memProperties.memoryTypeCount; type++)
   {

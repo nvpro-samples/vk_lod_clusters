@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,24 +13,22 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
-
 /*
   
   Shader Description
   ==================
   
-  This compute shader assigns the blasReference address to each
-  tlas instance description prior updating the tlas and after
-  the per-frame blas were built.
-
-  A single thread represents one instance
+  USE_BLAS_CACHING && USE_STREAMING && USE_RAY_TRACING only
+  
+  This compute shader sets up the copying of BLAS into cached BLAS destinations.
+  
+  One thread represents one streaming's cached blas patch
 */
 
 #version 460
-
 
 #extension GL_GOOGLE_include_directive : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
@@ -43,7 +41,6 @@
 #extension GL_EXT_shader_atomic_int64 : enable
 
 #extension GL_EXT_control_flow_attributes : require
-#extension GL_KHR_shader_subgroup_vote : require
 #extension GL_KHR_shader_subgroup_ballot : require
 #extension GL_KHR_shader_subgroup_shuffle : require
 #extension GL_KHR_shader_subgroup_basic : require
@@ -52,9 +49,15 @@
 
 #include "shaderio.h"
 
+layout(push_constant) uniform pushData
+{
+  uint setup;
+} push;
+
 layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuffer
 {
   FrameConstants view;
+  FrameConstants viewLast;
 };
 
 layout(scalar, binding = BINDINGS_READBACK_SSBO, set = 0) buffer readbackBuffer
@@ -79,12 +82,10 @@ layout(scalar, binding = BINDINGS_SCENEBUILDING_UBO, set = 0) uniform buildBuffe
   SceneBuilding build;  
 };
 
-layout(scalar, binding = BINDINGS_SCENEBUILDING_SSBO, set = 0) buffer buildBufferRW
+layout(scalar, binding = BINDINGS_SCENEBUILDING_SSBO, set = 0) coherent buffer buildBufferRW
 {
   SceneBuilding buildRW;  
 };
-
-#if USE_STREAMING
 layout(scalar, binding = BINDINGS_STREAMING_UBO, set = 0) uniform streamingBuffer
 {
   SceneStreaming streaming;
@@ -93,71 +94,30 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
 {
   SceneStreaming streamingRW;
 };
-#endif
 
 ////////////////////////////////////////////
 
-layout(local_size_x=INSTANCES_ASSIGN_BLAS_WORKGROUP) in;
+layout(local_size_x=BLAS_CACHING_SETUP_COPY_WORKGROUP) in;
 
 ////////////////////////////////////////////
 
 void main()
 {
-  uint instanceID = gl_GlobalInvocationID.x;
+  uint threadID = gl_GlobalInvocationID.x;
   
-  if (instanceID < build.numRenderInstances)
-  {
-    InstanceBuildInfo buildInfo = build.instanceBuildInfos.d[instanceID];
-    uint buildIndex             = buildInfo.blasBuildIndex;
-    
-    bool doStats         = true;
-    uint64_t blasAddress = 0;
-    
-  #if USE_BLAS_SHARING    
-    // we might reference another instance's blas
-    if (buildIndex != BLAS_BUILD_INDEX_LOWDETAIL && (buildIndex & (BLAS_BUILD_INDEX_SHARE_BIT | BLAS_BUILD_INDEX_CACHE_BIT)) != 0)
-    {
-      uint lookupIndex = buildIndex & ~(BLAS_BUILD_INDEX_SHARE_BIT | BLAS_BUILD_INDEX_CACHE_BIT);
-    #if USE_BLAS_CACHING
-      if ((buildIndex & BLAS_BUILD_INDEX_CACHE_BIT) != 0)
-      {
-        blasAddress = geometries[lookupIndex].cachedBlasAddress;
-      }
-      else
-    #endif
-      {
-        buildIndex = build.instanceBuildInfos.d[lookupIndex].blasBuildIndex;
-      }
-      // don't add to build stats if we are referencing another instance
-      doStats = false;
-    }
-  #endif
-    
-    // By default tlasInstances are set to low detail blas,
-    // override when applicable.
-    
-    if (buildIndex != BLAS_BUILD_INDEX_LOWDETAIL)
-    {
-    #if USE_MEMORY_STATS
-      if (doStats)
-      {
-        atomicAdd(readback.blasActualSizes, uint64_t(build.blasBuildSizes.d[buildIndex]));
-      }
-    #endif
-      
-      build.tlasInstances.d[instanceID].blasReference =
-      #if USE_BLAS_CACHING
-        blasAddress != 0 ? blasAddress : 
-      #endif
-        build.blasBuildAddresses.d[buildIndex];
-    }
-  }
+  // guaranteed to be loadable
+  StreamingGeometryPatch sgpatch = streaming.update.geometryPatches.d[threadID];
+  uint64_t dstAddress            = sgpatch.cachedBlasAddress;
   
-#if 1
-  // stats
-  if (instanceID == 0)
+  // some patches may contain nullt address when a cached BLAS is removed completely
+  if (threadID < streaming.update.patchCachedBlasCount && dstAddress != uint64_t(0))
   {
-    readback.numBlasBuilds = build.blasBuildCounter;
+    // configure the BLAS copy operation to the persistent storage address
+    
+    uint buildIndex = build.geometryBuildInfos.d[sgpatch.geometryID].cachedBuildIndex;    
+    uint copyOffset = atomicAdd(buildRW.cachedBlasCopyCounter, 1);
+    
+    build.cachedBlasClusterAddressesSrc.d[copyOffset] = build.blasBuildAddresses.d[buildIndex];
+    build.cachedBlasClusterAddressesDst.d[copyOffset] = dstAddress;
   }
-#endif
 }

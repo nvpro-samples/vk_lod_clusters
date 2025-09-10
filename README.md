@@ -20,6 +20,7 @@ A lot more details on this geometry representation and the LoD system can be fou
 
 ![image showing continuous LoD clusters](docs/continuous_lod_clusters.png)
 
+![screenshot showing a highly detailed classic architectural building](/docs/zorah_scene.jpg)
 
 ## Continuous level of detail using clusters
 
@@ -61,15 +62,18 @@ In the UI you can influence the size of clusters and the LoD grouping of them in
 
 > [!WARNING]
 > The processing of larger scenes can take a while, even on CPUs with many cores. Therefore the application will save
-> a cache file of the results automatically. This file is a simple memory mappable binary file that can take a lot of space
+> an uncompressed cache file of the results automatically. This file is a simple memory mappable binary file that can take a lot of space
 > and is placed next to the original file with a `.nvsngeo` file ending.
 > If disk space is a concern use `--autosavecache 0` to avoid the automatic storage.
 >
 > With the `--processingonly 1` command-line option one can reduce peak memory consumption during processing of scenes with many geometries.
 > In this mode saving to the cache file is interleaved with the processing and resources are deallocated immediately once saved.
 > At the end of the processing the app closes automatically.
+> In combination with the `--processingpartial 1` command-line option, the processing only mode can resume partial results. So one can terminate the app during processing and continue at a later time.
+> There is no consistency checking of settings or input meshes for this.
+> To reduce system memory usage during processing one may lower the percentage of system threads that are used via `--processingthreadpct <float 0.0 - 1.0>` (default is 0.5, half the systems supported concurrency).
 >
-> If system memory usage after loading a cached file is a concern, then `--mappedcache 1` can be used to load data through memory mapping directly. However, we still have to improve the streaming logic a bit to avoid IO related hitches.
+> If system memory usage after loading a cached file is a concern, then `--mappedcache 1` can be used to load data through memory mapping directly (forced for caches that are >= 2 GiB). However, we still have to improve the streaming logic a bit to avoid IO related hitches.
 >
 > Be aware, there are currently only few compatibility checks for these cache files, therefore we recommend deleting if changes were made to the original input mesh.
 
@@ -115,7 +119,7 @@ otherwise occluded.
 * [shaders/render_raytrace.rgen.glsl](/shaders/render_raytrace.rgen.glsl)
 * [shaders/render_raytrace.rmiss.glsl](/shaders/render_raytrace.rmiss.glsl)
 
-The ray tracing code path can optimize the number of BLAS builds through _"BLAS sharing"_, which allows instances to use the BLAS
+The ray tracing code path can optimize the number of BLAS builds through _"BLAS Sharing"_, which allows instances to use the BLAS
 from another instance.
 
 Please have a look at the [BLAS Sharing description](docs/blas_sharing.md).
@@ -346,7 +350,7 @@ In future versions we will try to optimize this scheme a bit further.
 
 ## Problem-Solving
 
-The technology being quite new, we might not have ironed out all issues. If you experience instabilities, please let us know through GitHub Issues.
+The sample uses a lot of technologies and has many configurations. We don't have a lot of test coverage for it. If you experience instabilities, please let us know through GitHub Issues.
 You can use the commandline to change some defaults:
 
 * `--renderer 0` starts with rasterization.
@@ -359,6 +363,7 @@ You can use the commandline to change some defaults:
 * `--autoloadcache 0` disables loading scenes from cache file.
 * `--mappedcache 1` keeps memory mapped cache file persistently, otherwise loads cache to system memory. Useful to save RAM on very large scenes.
 * `--autosavecache 0` disables saving the cache file.
+* `--processingonly 1 --processingthreadpct 0.25 --processingpartial 1` when processing big scenes, the dedicated processing only mode is better and one can reduce the memory consumption by lowering the amount of threads used.
 
 ## Limitations
 
@@ -371,8 +376,6 @@ You can use the commandline to change some defaults:
 
 * Better streaming behavior when a memory mapped cache is used.
 * Implement sorting of streaming requests based on distance of instance. Sorting instances alone is not sufficient.
-* Further improvements to BLAS sharing.
-* Further optimizations to the CLAS allocator
 * Allowing the use of a compute shader to do rasterization of smaller/non-clipped triangles.
 * EXT_mesh_shader support
 
@@ -395,6 +398,13 @@ It will also look for [`nvpro_core2`](https://github.com/nvpro-samples/nvpro_cor
 > [!IMPORTANT]
 > Note, that the repository of `nvpro_core2` needs to be updated manually, when the sample is updated manually, as version mismatches could occur over time. Either run the appropriate git commands or delete `/build/_deps/nvpro_core2`.
 
+### Interactions
+
+* `WASD` and `QE` to control the camera. `SHIFT` for faster speed, `CTRL` for slower. `ALT` to orbit around the last hit point.
+* `SPACE` or `double left click` to get a surface hit point that the camera will orient itself to. This also adjusts the walking speed based on a percentage of the distance to the point. Meaning close by hit points will cause slower walk than points further in the distance.
+* `M` or `double right click` to on a surface hit point to generate the reflective mirror box in ray tracing. Trigger this on the sky to make it disappear.
+* `R` to reload the shaders (meant for debugging).
+
 ## Further Samples about NVIDIA RTX Mega Geometry
 
 Other Vulkan samples using the new extensions are:
@@ -406,9 +416,42 @@ We also recommend having a look at [RTX Mega Geometry](https://github.com/NVIDIA
 
 ## Additional Scenes
 
+### Zorah Demo Scene
+
+This is a glTF export of the highly detailed raw geometry from the [NVIDIA RTX Kit - Zorah Sample](https://developer.nvidia.com/rtx-kit?sortBy=developer_learning_library) as [presented at GDC 2025](https://developer.nvidia.com/blog/nvidia-rtx-advances-with-neural-rendering-and-digital-human-technologies-at-gdc-2025/).
+
+![screenshot showing a highly detailed classical building with intricate ornaments](/docs/zorah_scene.jpg)
+
+- [zorah_main_public.gltf.7z](http://developer.download.nvidia.com/ProGraphics/nvpro-samples/zorah_main_public.gltf.7z)
+  - 1.64 G Triangles, with instancing 18.9 G Triangles
+  - Cannot be pre-loaded must be streamed
+  - **~ 12.8 GB 7z**, unpacks to **~ 36.1 GB on disk**
+  - The render cache file will require 62 GB next to the gltf file, it can be downloaded (see next link)
+- [zorah_main_public.gltf.nvsngeo.7z](https://developer.download.nvidia.com/ProGraphics/nvpro-samples/zorah_main_public.gltf.nvsngeo.7z)
+  - **~ 19 GB 7z**, unpacks to **~ 58.7 GB on disk**
+  - Ensure that the `zorah_main_public.gltf.nvsngeo` is in the same directory as `zorah_main_public.gltf`.
+  - If you want to avoid this big download and do the pre-processing for the cluster lod manually, use the following command-line:
+    - `vk_lod_cluster.exe "zorah_main_public.gltf" --clusterconfig 4 --processingonly 1 --processingthreadpct 0.2 --processingpartial 1`
+    - This will use 20% of the local PC's supported concurrency to process the model and allow to abort and resume the processing. On a 16-core Ryzen 9 a value of `0.4` will yield around 12 threads and require 128 GB RAM and take around half an hour. We recommend lower thread percentages on machines with less RAM.
+
+Make sure to use an NVME or SSD drive for storing these files. We recommend GPUs with at least 8 GB VRAM.
+
+> [!IMPORTANT]
+> Open or Drag & Drop the `zorah_main_public.cfg` file within the vk_lod_clusters application and _NOT_ the glTF directly.
+> Make sure the processed `zorah_main_public.gltf.nvsngeo` was either downloaded or generated as described above.
+
+Known Issues:
+* Compared to the original demo the vegetation had to be removed to make the sharing of the glTF possible (the asset itself is licensed under MIT License).
+* Some objects float a bit strangely in the air and lack animation, this is expected for this scene and sample.
+* The vegetation will appear to fade out a bit quickly, especially the grass. This is a known limitation for mesh-based simplifcation on
+  sparse geometry like this. We do not use any techniques that preserve volume during decimation.
+* Trees can appear a bit blurry with DLSS and very noisy without it. We will try to improve future versions of DLSS denoising this scenario. 
+
+### Threedscans Statues
+
 ![screenshot showing two separate renderings of statues for humans or animals arranged on a grid](/docs/otherscenes.jpg)
 
-We prepared two more scenes to play with. They are based on models from [https://threedscans.com/](https://threedscans.com/):
+These scenes are based on models from [https://threedscans.com/](https://threedscans.com/):
 - [threedscans_animals](http://developer.download.nvidia.com/ProGraphics/nvpro-samples/threedscans_animals.zip)
   - 7.9 M Triangles
   - ~ 1.4 GB preloaded memory

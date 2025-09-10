@@ -38,8 +38,8 @@ namespace lodclusters {
 struct SceneConfig
 {
   // cluster and cluster group settings
-  uint32_t clusterVertices  = 64;
-  uint32_t clusterTriangles = 64;
+  uint32_t clusterVertices  = 128;
+  uint32_t clusterTriangles = 128;
   uint32_t clusterGroupSize = 32;
 
   // at each lod step reduce cluster group triangles by this factor
@@ -55,6 +55,10 @@ struct SceneConfig
   // terminate the app. This allows to greatly reduce peak memory
   // consumption during processing.
   bool processingOnly = false;
+  // in processing only mode we allow partial success / resuming
+  bool processingAllowPartial = false;
+  // -1 inner, +1 outer, 0 auto
+  int processingMode = 0;
 
   // save cache file after load automatically
   bool autoSaveCache = true;
@@ -63,6 +67,8 @@ struct SceneConfig
   // when loading from cache file, memory map it,
   // rather than loading it into system RAM.
   bool memoryMappedCache = false;
+
+  std::atomic_uint32_t* progressPct = nullptr;
 };
 
 struct SceneGridConfig
@@ -220,10 +226,13 @@ public:
   uint32_t m_nodeChildrenHistogramMax;
   uint32_t m_lodLevelsHistogramMax;
 
-  bool m_loadedFromCache = false;
+  bool m_loadedFromCache  = false;
+  bool m_hasVertexNormals = false;
 
   size_t m_originalInstanceCount = 0;
   size_t m_originalGeometryCount = 0;
+
+  size_t m_cacheFileSize = 0;
 
 private:
   static bool     loadCached(GeometryView& view, uint64_t dataSize, const void* data);
@@ -348,6 +357,13 @@ private:
     uint64_t       m_geometryCount = 0;
   };
 
+  struct CachePartialEntry
+  {
+    uint64_t geometryIndex = 0;
+    uint64_t offset        = 0;
+    uint64_t dataSize      = 0;
+  };
+
 
   size_t m_activeGeometryCount = 0;
 
@@ -356,6 +372,7 @@ private:
 
   std::filesystem::path m_filePath;
   std::filesystem::path m_cacheFilePath;
+  std::filesystem::path m_cachePartialFilePath;
 
   // When loading a scene from a cache file, we can actually
   // directly load all data from the memory mapped file, rather than
@@ -368,8 +385,10 @@ private:
   CacheFileView            m_cacheFileView;
 
   // only used in `processingOnly` mode
-  FILE*                 m_processingOnlyFile       = nullptr;
-  uint64_t              m_processingOnlyFileOffset = 0;
+  FILE*                 m_processingOnlyFile             = nullptr;
+  FILE*                 m_processingOnlyPartialFile      = nullptr;
+  size_t                m_processingOnlyPartialCompleted = 0;
+  uint64_t              m_processingOnlyFileOffset       = 0;
   std::vector<uint64_t> m_processingOnlyGeometryOffsets;
 
   struct ProcessingInfo
@@ -406,12 +425,13 @@ private:
     double                    startTime = 0;
 
     void init(float pct);
-    void setupParallelism(size_t geometryCount_);
+    // parallelismMode: <0 inner, ==0 auto, >0 outer
+    void setupParallelism(size_t geometryCount_, size_t geometryCompletedCount, int parallelismMode);
     void deinit();
 
-    void logBegin();
-    void logCompletedGeometry();
-    void logEnd();
+    void     logBegin();
+    uint32_t logCompletedGeometry();
+    void     logEnd();
   };
 
   bool loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path& filePath);
@@ -444,13 +464,14 @@ private:
 
   void buildGeometryClusters(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
   void computeLodBboxes_recursive(GeometryStorage& geometry, size_t nodeIdx);
+  void buildGeometryDedupVertices(ProcessingInfo& processingInfo, GeometryStorage& geometry);
   void buildGeometryBboxes(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
   void buildGeometryClusterStrips(ProcessingInfo& processingInfo, GeometryStorage& geometry);
   void buildGeometryClusterVertices(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
 
   void beginProcessingOnly(size_t geometryCount);
   void saveProcessingOnly(ProcessingInfo& processingInfo, size_t geometryIndex);
-  void endProcessingOnly(bool hadError);
+  bool endProcessingOnly(bool hadError);
 
   void computeClusterStats();
   void computeHistograms();

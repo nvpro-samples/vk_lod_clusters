@@ -98,10 +98,18 @@ int main(int argc, char** argv)
   sampleInfo.cameraManipulator               = cameraManipulator;
   sampleInfo.profilerManager                 = &profilerManager;
   sampleInfo.parameterRegistry               = &parameterRegistry;
+  sampleInfo.parameterParser                 = &parameterParser;
   std::shared_ptr<LodClusters> sampleElement = std::make_shared<LodClusters>(sampleInfo);
 
   parameterParser.add(parameterRegistry);
   parameterParser.parse(argc, argv);
+
+  // can skip vulkan
+  if(sampleElement->isProcessingOnly())
+  {
+    sampleElement->doProcessingOnly();
+    return 0;
+  }
 
   nvvk::ValidationSettings validationSettings;
   if(vkSetup.enableValidationLayers)
@@ -208,12 +216,14 @@ int main(int argc, char** argv)
     loggerDeref->addLog(logLevel, "%s", text.c_str());
   });
 
-  app.addElement(std::make_shared<nvapp::ElementDefaultMenu>());
+  auto profilerUiSettings          = std::make_shared<nvapp::ElementProfiler::ViewSettings>();
+  profilerUiSettings->table.levels = 1u;
+
   app.addElement(std::make_shared<nvapp::ElementDefaultWindowTitle>());
-  app.addElement(logger);
   app.addElement(sampleElement);
+  app.addElement(logger);
   app.addElement(std::make_shared<nvapp::ElementCamera>(cameraManipulator));
-  app.addElement(std::make_shared<nvapp::ElementProfiler>(&profilerManager));
+  app.addElement(std::make_shared<nvapp::ElementProfiler>(&profilerManager, profilerUiSettings));
   app.run();
 
   nvutils::Logger::getInstance().setLogCallback(nullptr);

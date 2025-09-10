@@ -119,6 +119,7 @@ void main()
   RenderInstance instance = instances[instanceLoad];
   uint geometryID = instance.geometryID;
   Geometry geometry = geometries[geometryID];
+  uint instancesOffset = geometry.instancesOffset;
   
   // by default all instances use the lowest detail blas as fallback
   uint blasBuildIndex = BLAS_BUILD_INDEX_LOWDETAIL;  
@@ -131,9 +132,14 @@ void main()
   
   // geometry's pick for the shared blas lod level
   // computed in `geometry_blas_sharing.comp.glsl`
+  
+  uint cachedLevel     = build.geometryBuildInfos.d[geometryID].cachedLevel;
   uint shareLevelMin   = build.geometryBuildInfos.d[geometryID].shareLevelMin;
   uint shareLevelMax   = build.geometryBuildInfos.d[geometryID].shareLevelMax;
   uint shareInstanceID = build.geometryBuildInfos.d[geometryID].shareInstanceID;
+#if USE_BLAS_MERGING
+  uint mergedInstanceID = build.geometryBuildInfos.d[geometryID].mergedInstanceID;
+#endif
   
   // When we need to build a BLAS for this instance, we need to add it's root node
   // to the traversal queue. Building the BLAS however isn't always required,
@@ -141,8 +147,17 @@ void main()
   
   bool traverseRootNode = false;
   if (isValid)
-  {
-    if (instanceLevelMin == uint(instanceInfo.geometryLodLevelMax)) {
+  {  
+  #if USE_BLAS_MERGING  
+    // note an instance can be both shareInstance and mergedInstance at the same time
+    // not ideal, but currently possible.
+    if (mergedInstanceID == instanceID) {
+      traverseRootNode = true;
+      build.instanceVisibility.d[instanceID] = uint8_t(build.instanceVisibility.d[instanceID] | INSTANCE_USES_MERGED_BIT);
+    }
+  #endif
+    
+    if (TRAVERSAL_ALLOW_LOW_DETAIL_BLAS && instanceLevelMin == uint(instanceInfo.geometryLodLevelMax)) {
       // no need, lowest detail BLAS is used
       traverseRootNode = false;
     }
@@ -151,11 +166,15 @@ void main()
       
       // we want to traverse this instance
       traverseRootNode = true;
-
-    #if USE_RENDER_STATS
-      build.instanceBuildInfos.d[instanceLoad].instanceUseCount = build.geometryBuildInfos.d[geometryID].shareUseCount + 1;
-    #endif
     }
+  #if USE_BLAS_CACHING
+    else if (instanceLevelMin >= cachedLevel) {
+      // don't add, use cached blas instead
+      blasBuildIndex = geometryID | BLAS_BUILD_INDEX_CACHE_BIT;
+    
+      traverseRootNode = false;
+    }
+  #endif
     else if (instanceLevelMin >= shareLevelMax) {
       // don't add, use shareInstance's blas instead
       blasBuildIndex = build.geometryBuildInfos.d[geometryID].shareInstanceID | BLAS_BUILD_INDEX_SHARE_BIT;
@@ -163,12 +182,25 @@ void main()
       traverseRootNode = false;
     }
     else {
-      // we are not sharing anything, build a regular per-instance traversal
+      // typically we are not sharing anything, trigger a regular per-instance traversal
       traverseRootNode = true;
+
+    #if USE_BLAS_MERGING
+      if (mergedInstanceID != ~0)
+      {
+        // use mergedInstance BLAS
+        build.instanceVisibility.d[instanceID] = uint8_t(build.instanceVisibility.d[instanceID] | INSTANCE_USES_MERGED_BIT);
+        if (mergedInstanceID == instanceID) {
+        }
+        else {
+          blasBuildIndex = mergedInstanceID | BLAS_BUILD_INDEX_SHARE_BIT;
+        }
+      }
+    #endif
     }
   }
-    
-  uvec4 voteNodes = subgroupBallot(traverseRootNode);
+  
+  uvec4 voteNodes  = subgroupBallot(traverseRootNode);
   
   uint offsetNodes = 0;
   if (subgroupElect())
@@ -176,7 +208,7 @@ void main()
     offsetNodes = atomicAdd(buildRW.traversalTaskCounter, int(subgroupBallotBitCount(voteNodes)));
   }
   
-  offsetNodes = subgroupBroadcastFirst(offsetNodes);  
+  offsetNodes =  subgroupBroadcastFirst(offsetNodes);
   offsetNodes += subgroupBallotExclusiveBitCount(voteNodes);
       
   if (traverseRootNode && offsetNodes < build.maxTraversalInfos)

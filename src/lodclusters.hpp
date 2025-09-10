@@ -22,7 +22,7 @@
 #include <backends/imgui_impl_vulkan.h>
 #include <nvapp/application.hpp>
 #include <nvutils/camera_manipulator.hpp>
-#include <nvutils/parameter_registry.hpp>
+#include <nvutils/parameter_parser.hpp>
 #include <nvvk/context.hpp>
 #include <nvvk/profiler_vk.hpp>
 #include <nvgui/enum_registry.hpp>
@@ -111,6 +111,7 @@ public:
   {
     nvutils::ProfilerManager*                   profilerManager{};
     nvutils::ParameterRegistry*                 parameterRegistry{};
+    nvutils::ParameterParser*                   parameterParser{};
     std::shared_ptr<nvutils::CameraManipulator> cameraManipulator;
   };
 
@@ -129,6 +130,9 @@ public:
 
   void setSupportsClusters(bool supported) { m_resources.m_supportsClusters = supported; }
   bool getShowDebugUI() const { return m_showDebugUI; }
+
+  bool isProcessingOnly() const { return !m_sceneFilePath.empty() && m_sceneConfig.processingOnly; }
+  void doProcessingOnly();
 
 private:
   VkExtent2D                 m_windowSize;
@@ -161,15 +165,26 @@ private:
   Tweak m_tweak;
   Tweak m_tweakLast;
 
+  uint32_t m_lastAmbientOcclusionSamples = 0;
+
   std::unique_ptr<Scene> m_scene;
   std::filesystem::path  m_sceneFilePath;
+  std::filesystem::path  m_sceneFilePathDefault;
   SceneConfig            m_sceneConfig;
   SceneConfig            m_sceneConfigLast;
   glm::vec3              m_sceneUpVector = glm::vec3(0, 1, 0);
   SceneGridConfig        m_sceneGridConfig;
   SceneGridConfig        m_sceneGridConfigLast;
+  std::atomic_bool       m_sceneLoading  = false;
+  std::atomic_uint32_t   m_sceneProgress = 0;
+
+
+  std::string m_cameraString;
+  float       m_cameraSpeed = 0;
+  //std::filesystem::path  m_cameraFilePath;
 
   std::unique_ptr<RenderScene> m_renderScene;
+  bool                         m_renderSceneCanPreload = false;
 
   StreamingConfig m_streamingConfig;
   StreamingConfig m_streamingConfigLast;
@@ -187,7 +202,7 @@ private:
 
   uint32_t m_equalFrames = 0;
 
-  bool initScene(const std::filesystem::path& filePath, bool configChange);
+  void initScene(const std::filesystem::path& filePath, bool configChange);
   void setSceneCamera(const std::filesystem::path& filePath);
   void saveCacheFile();
   void deinitScene();
@@ -211,6 +226,8 @@ private:
   bool  isPickingValid(const shaderio::Readback& readback);
 
   void viewportUI(ImVec2 corner);
+
+  void loadingUI();
 
   template <typename T>
   bool sceneChanged(const T& val) const

@@ -117,11 +117,6 @@ void main()
   #endif
     
     uint buildIndex = build.instanceBuildInfos.d[instanceID].blasBuildIndex;
-  #if USE_BLAS_SHARING && USE_RENDER_STATS
-    uint instanceUseCount = build.instanceBuildInfos.d[instanceID].instanceUseCount;
-  #else
-    uint instanceUseCount = 1;
-  #endif
     
     uint idx = atomicAdd(build.blasBuildInfos.d[buildIndex].clusterReferencesCount,1);
     uint64s_inout clusterReferences = uint64s_inout(build.blasBuildInfos.d[buildIndex].clusterReferences);
@@ -133,10 +128,7 @@ void main()
     #else
       uint numTriangles = geometry.preloadedClusters.d[clusterID].triangleCountMinusOne + 1;
     #endif
-    atomicAdd(readback.numRenderedTriangles, numTriangles * instanceUseCount);
-    #if USE_BLAS_SHARING
-      atomicAdd(readback.numRenderedClusters, instanceUseCount - 1);
-    #endif
+    atomicAdd(readback.numRenderedTriangles, numTriangles);
   #endif
   }
 }

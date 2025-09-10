@@ -63,8 +63,8 @@ using namespace glm;
 // the minimum allocation will use 32 bits, which can only straddle across two u32 values
 #define STREAMING_ALLOCATOR_MIN_SIZE 32
 
-// Tracks whether a geometry lod level is loaded completely
-#define STREAMING_GEOMETRY_LOD_LEVEL_TRACKING 0
+// must fit in uint16_t
+#define STREAMING_CACHED_BLAS_MAX_CLUSTERS 0xFFFF
 
 /////////////////////////////////////////
 
@@ -152,9 +152,11 @@ BUFFER_REF_DECLARE_ARRAY(StreamingPatchs_in, StreamingPatch, , 16);
 struct StreamingGeometryPatch
 {
   uint32_t geometryID;
-  uint32_t lodsCompletedMask;
+  uint16_t cachedBlasLodLevel;
+  uint16_t cachedBlasClustersCount;
+  uint64_t cachedBlasAddress;
 };
-BUFFER_REF_DECLARE_ARRAY(StreamingGeometryPatchs_in, StreamingGeometryPatch, , 8);
+BUFFER_REF_DECLARE_ARRAY(StreamingGeometryPatchs_in, StreamingGeometryPatch, , 16);
 
 struct StreamingUpdate
 {
@@ -164,8 +166,8 @@ struct StreamingUpdate
   uint patchGroupsCount;
 
   // geometry patch count
-  uint patchGeometriesCount;
-  uint _pad;
+  uint patchCachedBlasCount;
+  uint patchCachedClustersCount;
 
   // all newly loaded groups have linear positions in the
   // compacted list of active groups starting with this value
@@ -199,8 +201,9 @@ struct StreamingUpdate
 
 struct StreamingGroup
 {
-  uint32_t clusterCount;
-  int32_t  age;
+  uint32_t geometryID;
+  uint16_t lodLevel;
+  uint16_t age;
   BUFFER_REF(Group_in) group;
 };
 BUFFER_REF_DECLARE_ARRAY(StreamingGroup_inout, StreamingGroup, , 16);
@@ -292,6 +295,8 @@ struct SceneStreaming
 {
   int32_t ageThreshold;
   uint    frameIndex;
+  uint    useBlasCaching;
+  uint    clasPositionTruncateBits;
 
   StreamingResident  resident;
   StreamingUpdate    update;

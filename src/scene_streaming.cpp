@@ -21,6 +21,8 @@
 
 #include "scene_streaming.hpp"
 
+#define STREAMING_DEBUG_FORCE_REQUESTS 0
+
 namespace lodclusters {
 
 static_assert(sizeof(shaderio::ClasBuildInfo) == sizeof(VkClusterAccelerationStructureBuildTriangleClusterInfoNV));
@@ -190,6 +192,7 @@ bool SceneStreaming::init(Resources* resources, const Scene* scene, const Stream
   m_frameIndex              = 1;  // intentionally start at 1
   m_operationsSize          = 0;
   m_persistentGeometrySize  = 0;
+  m_blasSize                = 0;
   m_clasOperationsSize      = 0;
   m_clasLowDetailSize       = 0;
   m_clasSingleMaxSize       = 0;
@@ -221,6 +224,8 @@ bool SceneStreaming::init(Resources* resources, const Scene* scene, const Stream
     bindings.addBinding(BINDINGS_FRAME_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     bindings.addBinding(BINDINGS_READBACK_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     bindings.addBinding(BINDINGS_GEOMETRIES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(BINDINGS_SCENEBUILDING_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(BINDINGS_SCENEBUILDING_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     bindings.addBinding(BINDINGS_STREAMING_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     bindings.addBinding(BINDINGS_STREAMING_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     m_dsetPack.init(bindings, res.m_device);
@@ -247,7 +252,7 @@ bool SceneStreaming::init(Resources* resources, const Scene* scene, const Stream
 
   m_requests.init(res, m_config, groupCountAlignment, clusterCountAlignment);
   m_resident.init(res, m_config, groupCountAlignment, clusterCountAlignment);
-  m_updates.init(res, m_config, groupCountAlignment, clusterCountAlignment);
+  m_updates.init(res, m_config, uint32_t(m_scene->getActiveGeometryCount()), groupCountAlignment, clusterCountAlignment);
   m_storage.init(res, m_config);
 
   // storage uses block allocator, max may be less than what we asked for
@@ -266,17 +271,49 @@ bool SceneStreaming::init(Resources* resources, const Scene* scene, const Stream
   // seed lo res geometry
   initGeometries(res, scene);
 
+  return true;
+}
+
+void SceneStreaming::updateBindings(const nvvk::Buffer& sceneBuildingBuffer)
+{
+  nvvk::WriteSetContainer writeSets;
+  writeSets.append(m_dsetPack.makeWrite(BINDINGS_FRAME_UBO), m_resources->m_commonBuffers.frameConstants);
+  writeSets.append(m_dsetPack.makeWrite(BINDINGS_READBACK_SSBO), m_resources->m_commonBuffers.readBack);
+  writeSets.append(m_dsetPack.makeWrite(BINDINGS_GEOMETRIES_SSBO), m_shaderGeometriesBuffer);
+  writeSets.append(m_dsetPack.makeWrite(BINDINGS_SCENEBUILDING_SSBO), sceneBuildingBuffer);
+  writeSets.append(m_dsetPack.makeWrite(BINDINGS_SCENEBUILDING_UBO), sceneBuildingBuffer);
+  writeSets.append(m_dsetPack.makeWrite(BINDINGS_STREAMING_SSBO), m_shaderBuffer);
+  writeSets.append(m_dsetPack.makeWrite(BINDINGS_STREAMING_UBO), m_shaderBuffer);
+  vkUpdateDescriptorSets(m_resources->m_device, writeSets.size(), writeSets.data(), 0, nullptr);
+}
+
+void SceneStreaming::resetCachedBlas(Resources::BatchedUploader& uploader)
+{
+  for(size_t geometryIndex = 0; geometryIndex < m_scene->getActiveGeometryCount(); geometryIndex++)
   {
-    nvvk::WriteSetContainer writeSets;
-    writeSets.append(m_dsetPack.makeWrite(BINDINGS_FRAME_UBO), res.m_commonBuffers.frameConstants);
-    writeSets.append(m_dsetPack.makeWrite(BINDINGS_READBACK_SSBO), res.m_commonBuffers.readBack);
-    writeSets.append(m_dsetPack.makeWrite(BINDINGS_GEOMETRIES_SSBO), m_shaderGeometriesBuffer);
-    writeSets.append(m_dsetPack.makeWrite(BINDINGS_STREAMING_SSBO), m_shaderBuffer);
-    writeSets.append(m_dsetPack.makeWrite(BINDINGS_STREAMING_UBO), m_shaderBuffer);
-    vkUpdateDescriptorSets(res.m_device, writeSets.size(), writeSets.data(), 0, nullptr);
+    SceneStreaming::PersistentGeometry& persistentGeometry = m_persistentGeometries[geometryIndex];
+
+    persistentGeometry.cachedBlasUpdateFrame = 0;
+    persistentGeometry.cachedBlasLevel       = TRAVERSAL_INVALID_LOD_LEVEL;
+    if(persistentGeometry.cachedBlasAllocation)
+    {
+      m_cachedBlasAllocator.subFree(persistentGeometry.cachedBlasAllocation);
+    }
   }
 
-  return true;
+  // resets cachedBlasLevel and cachedBlasAddress
+  uploader.uploadBuffer(m_shaderGeometriesBuffer, m_shaderGeometries.data());
+}
+
+void SceneStreaming::resetCachedBlas()
+{
+  if(m_requiresClas && m_config.allowBlasCaching)
+  {
+    Resources::BatchedUploader uploader(*m_resources);
+
+    resetCachedBlas(uploader);
+    uploader.flush();
+  }
 }
 
 void SceneStreaming::resetGeometryGroupAddresses(Resources::BatchedUploader& uploader)
@@ -287,6 +324,7 @@ void SceneStreaming::resetGeometryGroupAddresses(Resources::BatchedUploader& upl
   for(size_t geometryIndex = 0; geometryIndex < m_scene->getActiveGeometryCount(); geometryIndex++)
   {
     SceneStreaming::PersistentGeometry& persistentGeometry = m_persistentGeometries[geometryIndex];
+    shaderio::Geometry&                 shaderGeometry     = m_shaderGeometries[geometryIndex];
     const Scene::GeometryView&          sceneGeometry      = m_scene->getActiveGeometry(geometryIndex);
 
     nvcluster_Range lastGroupRange = sceneGeometry.lodMesh.lodLevelGroupRanges.back();
@@ -299,11 +337,13 @@ void SceneStreaming::resetGeometryGroupAddresses(Resources::BatchedUploader& upl
     // except last group, which is always loaded
     groupAddresses[lastGroupRange.offset] = persistentGeometry.lowDetailGroupsData.address;
 
-    for(uint32_t i = 0; i < persistentGeometry.lodLevelsCount; i++)
+    // also reset the number of groups loaded per lod-level, except last which is also always loaded.
+    uint32_t maxLodLevel = persistentGeometry.lodLevelsCount - 1;
+    for(uint32_t i = 0; i < maxLodLevel; i++)
     {
-      persistentGeometry.lodLoadedGroupsCount[i] = i == persistentGeometry.lodLevelsCount - 1 ? 1 : 0;
+      persistentGeometry.lodLoadedGroupsCount[i] = 0;
     }
-    persistentGeometry.lastUpdateFrame = 0;
+    persistentGeometry.lodLoadedGroupsCount[maxLodLevel] = 1;
   }
 }
 
@@ -350,7 +390,8 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
     shaderGeometry.streamingGroupAddresses = persistentGeometry.groupAddresses.address;
     shaderGeometry.lodLevelsCount          = numLodLevels;
     shaderGeometry.lodLevels               = persistentGeometry.lodLevels.address;
-    shaderGeometry.lodsCompletedMask       = 1 << (numLodLevels - 1);
+    shaderGeometry.cachedBlasAddress       = 0;
+    shaderGeometry.cachedBlasLodLevel      = TRAVERSAL_INVALID_LOD_LEVEL;
     shaderGeometry.instancesCount          = sceneGeometry.instanceReferenceCount * scene->getGeometryInstanceFactor();
     shaderGeometry.instancesOffset         = instancesOffset;
 
@@ -416,7 +457,7 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
 void SceneStreaming::cmdBeginFrame(VkCommandBuffer         cmd,
                                    QueueState&             cmdQueueState,
                                    QueueState&             asyncQueueState,
-                                   uint32_t                ageThreshold,
+                                   const FrameSettings&    settings,
                                    nvvk::ProfilerGpuTimer& profiler)
 {
   // This function sets up all relevant streaming tasks for the frame
@@ -518,7 +559,7 @@ void SceneStreaming::cmdBeginFrame(VkCommandBuffer         cmd,
     }
 #endif
 
-    uint32_t dependentIndex = handleCompletedRequest(cmd, cmdQueueState, asyncQueueState, popRequestIndex);
+    uint32_t dependentIndex = handleCompletedRequest(cmd, cmdQueueState, asyncQueueState, settings, popRequestIndex);
     // check if immediate update to perform
     if(dependentIndex != INVALID_TASK_INDEX)
     {
@@ -560,7 +601,8 @@ void SceneStreaming::cmdBeginFrame(VkCommandBuffer         cmd,
     // no patch work this frame
     m_shaderData.update.patchGroupsCount         = 0;
     m_shaderData.update.patchUnloadGroupsCount   = 0;
-    m_shaderData.update.patchGeometriesCount     = 0;
+    m_shaderData.update.patchCachedBlasCount     = 0;
+    m_shaderData.update.patchCachedClustersCount = 0;
     m_shaderData.update.loadActiveGroupsOffset   = 0;
     m_shaderData.update.loadActiveClustersOffset = 0;
     m_shaderData.update.newClasCount             = 0;
@@ -590,15 +632,20 @@ void SceneStreaming::cmdBeginFrame(VkCommandBuffer         cmd,
     m_clasAllocator.cmdBeginFrame(cmd);
   }
 
-
-  m_shaderData.frameIndex   = m_frameIndex;
-  m_shaderData.ageThreshold = ageThreshold;
+  m_shaderData.frameIndex               = m_frameIndex;
+  m_shaderData.ageThreshold             = settings.ageThreshold;
+  m_shaderData.useBlasCaching           = settings.useBlasCaching ? 1 : 0;
+  m_shaderData.clasPositionTruncateBits = m_config.clasPositionTruncateBits;
 
   // upload final configurations for this frame
   vkCmdUpdateBuffer(cmd, m_shaderBuffer.buffer, 0, sizeof(m_shaderData), &m_shaderData);
 }
 
-uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer cmd, QueueState& cmdQueueState, QueueState& asyncQueueState, uint32_t popRequestIndex)
+uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
+                                                QueueState&          cmdQueueState,
+                                                QueueState&          asyncQueueState,
+                                                const FrameSettings& settings,
+                                                uint32_t             popRequestIndex)
 {
   // This function handles the requests from the device to upload new geometry groups,
   // or unload some that haven't been used in a while.
@@ -638,12 +685,14 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer cmd, QueueState&
     }
   }
 
+#if !STREAMING_DEBUG_FORCE_REQUESTS
   if((!loadCount && !unloadCount) || !m_debugFrameLimit)
   {
     // no work to do
     m_requestsTaskQueue.releaseTaskIndex(popRequestIndex);
     return INVALID_TASK_INDEX;
   }
+#endif
 
   // for debugging
   if(m_debugFrameLimit > 0)
@@ -670,6 +719,8 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer cmd, QueueState&
 
   StreamingStorage::TaskInfo& storageTask = m_storage.getNewTask(pushStorageIndex);
   StreamingUpdates::TaskInfo& updateTask  = m_updates.getNewTask(pushUpdateIndex);
+
+  bool useBlasCaching = m_requiresClas && m_config.allowBlasCaching && settings.useBlasCaching;
 
   // let's do unloads first, so we can recycle resident objects
   for(uint32_t g = 0; g < unloadCount; g++)
@@ -709,16 +760,14 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer cmd, QueueState&
     // and remove from active resident
     m_resident.removeGroup(group->groupResidentID);
 
-#if STREAMING_GEOMETRY_LOD_LEVEL_TRACKING
     // append to geometry patch list if necessary
-    if(m_persistentGeometries[geometryGroup.geometryID].lastUpdateFrame != m_frameIndex)
+    if(useBlasCaching && m_persistentGeometries[geometryGroup.geometryID].cachedBlasUpdateFrame != m_frameIndex)
     {
-      m_persistentGeometries[geometryGroup.geometryID].lastUpdateFrame = m_frameIndex;
-      uint32_t                          geometryPatchIndex             = updateTask.geometryPatchCount++;
-      shaderio::StreamingGeometryPatch& geometryPatch                  = updateTask.geometryPatches[geometryPatchIndex];
-      geometryPatch.geometryID                                         = geometryGroup.geometryID;
+      m_persistentGeometries[geometryGroup.geometryID].cachedBlasUpdateFrame = m_frameIndex;
+      uint32_t                          geometryPatchIndex                   = updateTask.geometryCachedCount++;
+      shaderio::StreamingGeometryPatch& geometryPatch = updateTask.geometryPatches[geometryPatchIndex];
+      geometryPatch.geometryID                        = geometryGroup.geometryID;
     }
-#endif
   }
 
   // for ray tracing
@@ -839,16 +888,14 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer cmd, QueueState&
 
     m_persistentGeometries[geometryGroup.geometryID].lodLoadedGroupsCount[residentGroup->lodLevel]++;
 
-#if STREAMING_GEOMETRY_LOD_LEVEL_TRACKING
     // append to geometry patch list if necessary
-    if(m_persistentGeometries[geometryGroup.geometryID].lastUpdateFrame != m_frameIndex)
+    if(useBlasCaching && m_persistentGeometries[geometryGroup.geometryID].cachedBlasUpdateFrame != m_frameIndex)
     {
-      m_persistentGeometries[geometryGroup.geometryID].lastUpdateFrame = m_frameIndex;
-      uint32_t                          geometryPatchIndex             = updateTask.geometryPatchCount++;
-      shaderio::StreamingGeometryPatch& geometryPatch                  = updateTask.geometryPatches[geometryPatchIndex];
-      geometryPatch.geometryID                                         = geometryGroup.geometryID;
+      m_persistentGeometries[geometryGroup.geometryID].cachedBlasUpdateFrame = m_frameIndex;
+      uint32_t                          geometryPatchIndex                   = updateTask.geometryCachedCount++;
+      shaderio::StreamingGeometryPatch& geometryPatch = updateTask.geometryPatches[geometryPatchIndex];
+      geometryPatch.geometryID                        = geometryGroup.geometryID;
     }
-#endif
 
     // setup patch
     shaderio::StreamingPatch& patch = updateTask.loadPatches[updateTask.loadCount++];
@@ -866,7 +913,7 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer cmd, QueueState&
 
   updateTask.newClusterCount = clasBuildOffset;
 
-
+#if !STREAMING_DEBUG_FORCE_REQUESTS
   if(updateTask.loadCount == 0 && updateTask.unloadCount == 0)
   {
     // we ended up doing no work
@@ -875,6 +922,7 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer cmd, QueueState&
     m_storageTaskQueue.releaseTaskIndex(pushStorageIndex);
     return INVALID_TASK_INDEX;
   }
+#endif
 
   if(m_config.useAsyncTransfer)
   {
@@ -890,25 +938,13 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer cmd, QueueState&
     vkBeginCommandBuffer(cmd, &cmdInfo);
   }
 
-#if STREAMING_GEOMETRY_LOD_LEVEL_TRACKING
-  // evaluate geometry lod state
+
+  // evaluate geometry lod state and see if we need to
+  // rebuild the cached blas
+  if(useBlasCaching)
   {
-    for(uint32_t g = 0; g < updateTask.geometryPatchCount; g++)
-    {
-      shaderio::StreamingGeometryPatch& sgpatch            = updateTask.geometryPatches[g];
-      PersistentGeometry&               persistentGeometry = m_persistentGeometries[sgpatch.geometryID];
-      uint32_t                          lodsCompletedMask  = 0;
-      for(uint32_t i = 0; i < persistentGeometry.lodLevelsCount; i++)
-      {
-        if(persistentGeometry.lodGroupsCount[i] == persistentGeometry.lodLoadedGroupsCount[i])
-        {
-          lodsCompletedMask |= 1 << i;
-        }
-      }
-      sgpatch.lodsCompletedMask = lodsCompletedMask;
-    }
+    handleBlasCaching(updateTask, settings);
   }
-#endif
 
   uint32_t transferCount = 0;
   // finalize data for completed new residency & patch
@@ -979,6 +1015,157 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer cmd, QueueState&
   return useDecoupledUpdate ? INVALID_TASK_INDEX : pushUpdateIndex;
 }
 
+void SceneStreaming::handleBlasCaching(StreamingUpdates::TaskInfo& updateTask, const FrameSettings& settings)
+{
+  uint32_t writeIndex = 0;
+
+  uint32_t cachedBuildsTotal   = 0;
+  uint32_t cachedClustersTotal = 0;
+
+#if STREAMING_DEBUG_FORCE_REQUESTS
+  if(updateTask.geometryCachedCount == 0)
+  {
+    updateTask.geometryPatches[updateTask.geometryCachedCount++].geometryID = 0;
+  }
+#endif
+
+  for(uint32_t g = 0; g < updateTask.geometryCachedCount; g++)
+  {
+    shaderio::StreamingGeometryPatch sgpatch            = updateTask.geometryPatches[g];
+    PersistentGeometry&              persistentGeometry = m_persistentGeometries[sgpatch.geometryID];
+    const Scene::GeometryView&       geometryView       = m_scene->getActiveGeometry(sgpatch.geometryID);
+
+    uint32_t cachedClustersCount = 0;
+    uint32_t blasCacheMinLevel =
+        persistentGeometry.lodLevelsCount - std::min(settings.blasCacheMinLevel, persistentGeometry.lodLevelsCount);
+
+    // skip last level, always exists as low detail blas
+    for(uint32_t i = blasCacheMinLevel; i < persistentGeometry.lodLevelsCount - 1; i++)
+    {
+      // fully loaded
+      if(persistentGeometry.lodGroupsCount[i] == persistentGeometry.lodLoadedGroupsCount[i])
+      {
+        uint32_t groupCount  = geometryView.lodLevels[i].groupCount;
+        uint32_t groupOffset = geometryView.lodLevels[i].groupOffset;
+
+        // clusters are stored linearly, densely packed
+        cachedClustersCount = geometryView.lodMesh.groupClusterRanges[groupOffset + groupCount - 1].count
+                              + geometryView.lodMesh.groupClusterRanges[groupOffset + groupCount - 1].offset
+                              - geometryView.lodMesh.groupClusterRanges[groupOffset].offset;
+
+        // check if it fits
+        if(cachedClustersCount <= STREAMING_CACHED_BLAS_MAX_CLUSTERS)
+        {
+          sgpatch.cachedBlasLodLevel = i;
+          break;
+        }
+        else
+        {
+          cachedClustersCount = 0;
+        }
+      }
+    }
+
+    // three scenarios:
+    // lower detail resident than before: must rebuild cached blas or invalidate
+    // higher detail resident than before: can rebuild cached blas otherwise use existing
+    // do nothing
+
+    bool isInvalidateOnly = !cachedClustersCount && persistentGeometry.cachedBlasLevel != TRAVERSAL_INVALID_LOD_LEVEL;
+    bool isLowerDetail    = cachedClustersCount && sgpatch.cachedBlasLodLevel > persistentGeometry.cachedBlasLevel;
+    bool isHigherDetail   = cachedClustersCount && sgpatch.cachedBlasLodLevel < persistentGeometry.cachedBlasLevel
+                          && persistentGeometry.cachedBlasUpdateFrame + settings.blasCacheAgeThreshold > m_frameIndex;
+
+    if(isLowerDetail || isHigherDetail || isInvalidateOnly || STREAMING_DEBUG_FORCE_REQUESTS)
+    {
+      if(isLowerDetail || isInvalidateOnly)
+      {
+        // de-allocate first, because will use less space next, which is guaranteed to fit
+        if(persistentGeometry.cachedBlasAllocation)
+        {
+          m_cachedBlasAllocator.subFree(persistentGeometry.cachedBlasAllocation);
+        }
+      }
+
+      bool canBuild = !isInvalidateOnly && (cachedClustersTotal + cachedClustersCount <= settings.blasCacheMaxClusters)
+                      && (cachedBuildsTotal + 1 <= settings.blasCacheMaxBuilds);
+
+      // attempt to allocate
+      nvvk::BufferSubAllocation subAllocation;
+      canBuild = canBuild && allocateCachedBlas(persistentGeometry, cachedClustersCount, settings, subAllocation);
+
+      if(canBuild)
+      {
+        // able to allocate & build new
+
+        // de-allocate old if still exists
+        // isHigherDetail attempts to get space for higher detail first,
+        // so it can keep old cached blas if building fails
+        if(persistentGeometry.cachedBlasAllocation)
+        {
+          m_cachedBlasAllocator.subFree(persistentGeometry.cachedBlasAllocation);
+        }
+        persistentGeometry.cachedBlasLevel       = sgpatch.cachedBlasLodLevel;
+        persistentGeometry.cachedBlasAllocation  = subAllocation;
+        persistentGeometry.cachedBlasUpdateFrame = m_frameIndex;
+
+        // setup cached build patch
+        sgpatch.cachedBlasAddress       = m_cachedBlasAllocator.subRange(subAllocation).address;
+        sgpatch.cachedBlasClustersCount = uint16_t(cachedClustersCount);
+
+        updateTask.geometryPatches[writeIndex++] = sgpatch;
+
+        cachedClustersTotal += cachedClustersCount;
+        cachedBuildsTotal++;
+      }
+      else if(isHigherDetail)
+      {
+        // we were not able to change to higher detail, leave things as is
+      }
+      else
+      {
+        // setup invalidate patch
+        persistentGeometry.cachedBlasLevel       = TRAVERSAL_INVALID_LOD_LEVEL;
+        persistentGeometry.cachedBlasUpdateFrame = m_frameIndex;
+
+        sgpatch.cachedBlasLodLevel = TRAVERSAL_INVALID_LOD_LEVEL;
+        sgpatch.cachedBlasAddress  = 0;
+
+        updateTask.geometryPatches[writeIndex++] = sgpatch;
+      }
+    }
+  }
+
+  updateTask.geometryCachedCount         = writeIndex;
+  updateTask.geometryCachedClustersCount = cachedClustersTotal;
+}
+
+bool SceneStreaming::allocateCachedBlas(const PersistentGeometry&  geometry,
+                                        uint32_t                   lodClustersCount,
+                                        const FrameSettings&       settings,
+                                        nvvk::BufferSubAllocation& subAllocation)
+{
+  VkClusterAccelerationStructureClustersBottomLevelInputNV blasInput = {
+      VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_CLUSTERS_BOTTOM_LEVEL_INPUT_NV};
+  // Just using m_hiPerGeometryClusters here is problematic, as the intermediate state
+  // of a continuous lod can yield higher numbers (especially when streaming may temporarily cause overlapping of different levels).
+  // Therefore, we use the highest sum of all clusters across all lod levels.
+  blasInput.maxClusterCountPerAccelerationStructure = lodClustersCount;
+  blasInput.maxTotalClusterCount                    = lodClustersCount;
+
+  VkClusterAccelerationStructureInputInfoNV inputs = {VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV};
+  inputs.maxAccelerationStructureCount             = 1;
+  inputs.opMode                                    = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV;
+  inputs.opType                       = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV;
+  inputs.opInput.pClustersBottomLevel = &blasInput;
+  inputs.flags                        = settings.blasCacheFlags;
+
+  VkAccelerationStructureBuildSizesInfoKHR sizesInfo = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+  vkGetClusterAccelerationStructureBuildSizesNV(m_resources->m_device, &inputs, &sizesInfo);
+
+  return m_cachedBlasAllocator.subAllocate(subAllocation, sizesInfo.accelerationStructureSize, m_cachedBlasAlignment) == VK_SUCCESS;
+}
+
 static uint32_t getWorkGroupCount(uint32_t numThreads, uint32_t workGroupSize)
 {
   // compute workgroup count from threads
@@ -1024,12 +1211,15 @@ void SceneStreaming::cmdPreTraversal(VkCommandBuffer cmd, VkDeviceAddress clasSc
   }
 
   // if we have an update to perform do it prior traversal
-  if(m_shaderData.update.patchGroupsCount)
+  if(m_shaderData.update.patchGroupsCount || m_shaderData.update.patchCachedBlasCount)
   {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                       m_requiresClas ? m_pipelines.computeUpdateSceneRay : m_pipelines.computeUpdateSceneRaster);
 
-    vkCmdDispatch(cmd, getWorkGroupCount(m_shaderData.update.patchGroupsCount, STREAM_UPDATE_SCENE_WORKGROUP), 1, 1);
+    vkCmdDispatch(cmd,
+                  getWorkGroupCount(std::max(m_shaderData.update.patchGroupsCount, m_shaderData.update.patchCachedBlasCount),
+                                    STREAM_UPDATE_SCENE_WORKGROUP),
+                  1, 1);
 
     // with the update also comes a new compacted list of resident objects
     m_resident.cmdRunTask(cmd, m_shaderData.update.taskIndex);
@@ -1178,7 +1368,7 @@ void SceneStreaming::cmdPreTraversal(VkCommandBuffer cmd, VkDeviceAddress clasSc
   }
 }
 
-void SceneStreaming::cmdPostTraversal(VkCommandBuffer cmd, VkDeviceAddress clasScratchBuffer, nvvk::ProfilerGpuTimer& profiler)
+void SceneStreaming::cmdPostTraversal(VkCommandBuffer cmd, VkDeviceAddress clasScratchBuffer, bool runAgeFilter, nvvk::ProfilerGpuTimer& profiler)
 {
   // After traversal was performed, this function filters resident cluster groups
   // by age to append to the unload request list.
@@ -1194,7 +1384,7 @@ void SceneStreaming::cmdPostTraversal(VkCommandBuffer cmd, VkDeviceAddress clasS
 
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
 
-  if(m_shaderData.resident.activeGroupsCount)
+  if(m_shaderData.resident.activeGroupsCount && runAgeFilter)
   {
     // age filter resident groups, writes unload request array
 
@@ -1394,6 +1584,27 @@ size_t SceneStreaming::getClasSize(bool reserved) const
   }
 }
 
+size_t SceneStreaming::getBlasSize(bool reserved) const
+{
+  size_t size = m_blasSize;
+
+  if(m_requiresClas && m_config.allowBlasCaching)
+  {
+    nvvk::BufferSubAllocator::Report report = m_cachedBlasAllocator.getReport();
+
+    if(reserved)
+    {
+      size += report.reservedSize;
+    }
+    else
+    {
+      size += report.requestedSize;
+    }
+  }
+
+  return size;
+}
+
 size_t SceneStreaming::getGeometrySize(bool reserved) const
 {
   StreamingStats stats;
@@ -1444,7 +1655,7 @@ void SceneStreaming::deinit()
   m_updates.deinit(res);
   m_requests.deinit(res);
 
-  for(auto it : m_persistentGeometries)
+  for(auto& it : m_persistentGeometries)
   {
     res.m_allocator.destroyBuffer(it.groupAddresses);
     res.m_allocator.destroyBuffer(it.nodeBboxes);
@@ -1452,6 +1663,7 @@ void SceneStreaming::deinit()
     res.m_allocator.destroyBuffer(it.lodLevels);
     res.m_allocator.destroyBuffer(it.lowDetailGroupsData);
   }
+  m_persistentGeometries.clear();
 
   res.m_allocator.destroyBuffer(m_shaderGeometriesBuffer);
   res.m_allocator.destroyBuffer(m_shaderBuffer);
@@ -1484,6 +1696,10 @@ void SceneStreaming::reset()
 
   Resources::BatchedUploader uploader(res);
   resetGeometryGroupAddresses(uploader);
+  if(m_requiresClas && m_config.allowBlasCaching)
+  {
+    resetCachedBlas(uploader);
+  }
   if(m_requiresClas && m_config.usePersistentClasAllocator)
   {
     m_clasAllocator.cmdReset(uploader.getCmd());
@@ -1596,6 +1812,7 @@ bool SceneStreaming::initClas()
   Resources& res            = *m_resources;
   m_stats.reservedClasBytes = m_config.maxClasMegaBytes * 1024 * 1024;
   m_clasOperationsSize      = 0;
+  m_blasSize                = 0;
 
   m_requiresClas = true;
 
@@ -1604,6 +1821,23 @@ bool SceneStreaming::initClas()
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV};
   props2.pNext = &clusterProps;
   vkGetPhysicalDeviceProperties2(res.m_physicalDevice, &props2);
+
+  if(m_config.allowBlasCaching)
+  {
+    nvvk::BufferSubAllocator::InitInfo initInfo;
+    initInfo.keepLastBlock    = false;
+    initInfo.debugName        = "CachedBlasAllocator";
+    initInfo.maxAllocatedSize = m_config.maxBlasCachingMegaBytes * 1024 * 1024;
+    initInfo.blockSize        = std::min(size_t(16), m_config.maxBlasCachingMegaBytes) * 1024 * 1024;
+    initInfo.memoryUsage      = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    initInfo.usageFlags = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+                          | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    initInfo.resourceAllocator = &res.m_allocator;
+    initInfo.minAlignment      = clusterProps.clusterBottomLevelByteAlignment;
+    m_cachedBlasAlignment      = initInfo.minAlignment;
+
+    m_cachedBlasAllocator.init(initInfo);
+  }
 
   m_clasScratchAlignment = clusterProps.clusterScratchByteAlignment;
 
@@ -1903,7 +2137,7 @@ bool SceneStreaming::initClas()
 
       // build low detail blas, one per low detail group
       res.createBuffer(m_clasLowDetailBlasBuffer, blasSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
-      m_clasOperationsSize += logMemoryUsage(blasSize, "operations", "stream clas lowdetail blas");
+      m_blasSize += blasSize;
 
       cmdInfo.input        = blasInputInfo;
       cmdInfo.input.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV;
@@ -1968,6 +2202,19 @@ void SceneStreaming::deinitClas()
   res.m_allocator.destroyBuffer(m_clasLowDetailBlasBuffer);
   m_stats.reservedClasBytes = 0;
 
+  if(m_config.allowBlasCaching)
+  {
+    for(auto& persistentGeometry : m_persistentGeometries)
+    {
+      if(persistentGeometry.cachedBlasAllocation)
+      {
+        m_cachedBlasAllocator.subFree(persistentGeometry.cachedBlasAllocation);
+      }
+    }
+
+    m_cachedBlasAllocator.deinit();
+  }
+
   for(auto& shaderGeometry : m_shaderGeometries)
   {
     shaderGeometry.lowDetailBlasAddress = 0;
@@ -1981,6 +2228,7 @@ void SceneStreaming::deinitClas()
   m_clasScratchNewBuildSize = 0;
   m_clasScratchMoveSize     = 0;
   m_clasScratchTotalSize    = 0;
+  m_blasSize                = 0;
 
   m_requiresClas = false;
 }

@@ -190,6 +190,7 @@ void main()
     // and offsets are enoced in the group itself.
     newBuildOffset = group.streamingNewBuildOffset;
     newGroupByteSize = 0;
+  
     for (uint c = 0; c < group.clusterCount; c++)
     {
       uint clasSize = streaming.update.newClasSizes.d[newBuildOffset + c];

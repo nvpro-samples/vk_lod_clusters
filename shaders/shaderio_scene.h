@@ -40,7 +40,6 @@ using namespace glm;
 #define SHADERIO_ORIGINAL_MESH_GROUP 0xffffffffu
 #define SHADERIO_MAX_LOD_LEVELS 32
 
-
 struct BBox
 {
   vec3 lo;
@@ -172,13 +171,16 @@ struct Geometry
 {
   uint32_t instancesOffset;
   uint32_t instancesCount;
-  uint32_t lodsCompletedMask;  // bit mask for which lod-levels are fully loaded, requires STREAMING_GEOMETRY_LOD_LEVEL_TRACKING
-  uint32_t lodLevelsCount;
+  uint8_t  lodLevelsCount;
+  uint8_t  cachedBlasLodLevel;  // for USE_BLAS_CACHING
 
   // lowest detail data is always available
-  uint32_t lowDetailTriangles;
+  uint16_t lowDetailTriangles;
   uint32_t lowDetailClusterID;
   uint64_t lowDetailBlasAddress;
+
+  // only for USE_BLAS_CACHING in streaming
+  uint64_t cachedBlasAddress;
 
   // object space geometry bbox
   BBox bbox;

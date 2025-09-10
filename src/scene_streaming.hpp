@@ -134,13 +134,28 @@ public:
     return initShadersAndPipelines();
   }
 
+  struct FrameSettings
+  {
+    bool                                 useBlasCaching        = false;
+    uint32_t                             blasCacheAgeThreshold = 16;
+    uint32_t                             blasCacheMaxClusters  = 0;
+    uint32_t                             blasCacheMaxBuilds    = 0;
+    uint32_t                             blasCacheMinLevel     = 0;
+    VkBuildAccelerationStructureFlagsKHR blasCacheFlags        = 0;
+    uint32_t                             ageThreshold          = 16;
+  };
+
   // called by render thread
   // render thread must take care of barriers prior/after these operations
   // triggers main setup, ensures data is uploaded, unloaded etc.
   //    implicitly does "handleCompletedUpdate" and "handleCompletedStorage"
   //    explicitly calls `handleCompletedRequest`
   // barriers: none
-  void cmdBeginFrame(VkCommandBuffer cmd, QueueState& cmdQueueState, QueueState& asyncQueueState, uint32_t ageThreshold, nvvk::ProfilerGpuTimer& profiler);
+  void cmdBeginFrame(VkCommandBuffer         cmd,
+                     QueueState&             cmdQueueState,
+                     QueueState&             asyncQueueState,
+                     const FrameSettings&    settings,
+                     nvvk::ProfilerGpuTimer& profiler);
 
   // triggers scene update & clas build if required
   // barriers: requires transfers from `cmdBeginFrame` to be completed
@@ -149,7 +164,7 @@ public:
   // triggers age filter & clas move
   // barriers: requires compute shader writes from `cmdPreTraversal` to be completed,
   //           for ray tracing also requires acceleration structure builds
-  void cmdPostTraversal(VkCommandBuffer cmd, VkDeviceAddress clasScratchBuffer, nvvk::ProfilerGpuTimer& profiler);
+  void cmdPostTraversal(VkCommandBuffer cmd, VkDeviceAddress clasScratchBuffer, bool runAgeFilter, nvvk::ProfilerGpuTimer& profiler);
 
   // triggers request download
   // barriers: requires compute shader writes from `cmdPostTraversal` to be completed
@@ -166,11 +181,21 @@ public:
   // used by renderer
   const nvvk::BufferTyped<shaderio::Geometry>& getShaderGeometriesBuffer() const { return m_shaderGeometriesBuffer; }
   const nvvk::Buffer&                          getShaderStreamingBuffer() const { return m_shaderBuffer; }
+  const shaderio::SceneStreaming&              getShaderStreamingData() const { return m_shaderData; }
+  const StreamingConfig&                       getStreamingConfig() const { return m_config; }
 
   // device side memory usage, reserved or current state
   size_t getClasSize(bool reserved) const;
+  size_t getBlasSize(bool reserved) const;
   size_t getGeometrySize(bool reserved) const;
   size_t getOperationsSize() const { return m_operationsSize + m_clasOperationsSize; }
+
+  uint32_t getMaxCachedBlasBuilds() const { return m_updates.getMaxCachedBlasBuilds(); }
+
+  void updateBindings(const nvvk::Buffer& sceneBuildingBuffer);
+
+  void resetCachedBlas(Resources::BatchedUploader& uploader);
+  void resetCachedBlas();
 
   // for debugging one can limit the amount of streaming requests to perform
   //  < 0 means all requests are handled (regular usage)
@@ -192,6 +217,7 @@ private:
   size_t          m_persistentGeometrySize;
   size_t          m_operationsSize;
   size_t          m_clasOperationsSize;
+  size_t          m_blasSize;
   uint32_t        m_lastUpdateIndex;
   uint32_t        m_frameIndex;
   StreamingStats  m_stats;
@@ -208,7 +234,9 @@ private:
     uint32_t                              lodLevelsCount                                = 0;
     uint32_t                              lodLoadedGroupsCount[SHADERIO_MAX_LOD_LEVELS] = {};
     uint32_t                              lodGroupsCount[SHADERIO_MAX_LOD_LEVELS]       = {};
-    uint32_t                              lastUpdateFrame                               = 0;
+    uint32_t                              cachedBlasUpdateFrame                         = 0;
+    uint32_t                              cachedBlasLevel                               = TRAVERSAL_INVALID_LOD_LEVEL;
+    nvvk::BufferSubAllocation             cachedBlasAllocation                          = {};
   };
 
   std::vector<PersistentGeometry>       m_persistentGeometries;
@@ -247,10 +275,26 @@ private:
   // manages updates to the scene, this is where loads/unloads are becoming effective
   StreamingUpdates m_updates;
 
+  // manages memory of cached BLAS builds
+  nvvk::BufferSubAllocator m_cachedBlasAllocator;
+  uint32_t                 m_cachedBlasAlignment = 4;
+
   // This is the main function where we react on streaming requests.
   // It processes the request by issuing new storage upload work and prepares the scene patching and resident update task.
   // returns the updateTaskIndex to be handled immediately in this frame if it's != INVALID_TASK_INDEX
-  uint32_t handleCompletedRequest(VkCommandBuffer cmd, QueueState& cmdQueueState, QueueState& asyncQueueState, uint32_t popRequestIndex);
+  uint32_t handleCompletedRequest(VkCommandBuffer      cmd,
+                                  QueueState&          cmdQueueState,
+                                  QueueState&          asyncQueueState,
+                                  const FrameSettings& settings,
+                                  uint32_t             popRequestIndex);
+
+private:
+  void handleBlasCaching(StreamingUpdates::TaskInfo& updateTask, const FrameSettings& settings);
+
+  bool allocateCachedBlas(const PersistentGeometry&  geometry,
+                          uint32_t                   lodClustersCount,
+                          const FrameSettings&       settings,
+                          nvvk::BufferSubAllocation& subAllocation);
 
   // ray tracing specific
   VkClusterAccelerationStructureTriangleClusterInputNV m_clasTriangleInput;

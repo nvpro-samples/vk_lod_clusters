@@ -167,11 +167,6 @@ void main()
       // we don't need to add a cluster because we always add it
       // implictly through the use of the low detail BLAS.
       
-      #if USE_RENDER_STATS
-        atomicAdd(readback.numRenderedTriangles, geometry.lowDetailTriangles);
-        atomicAdd(readback.numRenderedClusters, 1);
-      #endif
-      
     #elif TARGETS_RASTERIZATION
       // lowest detail lod is guaranteed to have only one cluster
       

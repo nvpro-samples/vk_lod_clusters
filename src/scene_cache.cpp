@@ -364,33 +364,93 @@ void Scene::beginProcessingOnly(size_t geometryCount)
     return;
   }
 
-  std::string outFilename = nvutils::utf8FromPath(m_filePath) + ".nvsngeo";
+  std::string outFilename        = nvutils::utf8FromPath(m_cacheFilePath);
+  std::string outPartialFilename = nvutils::utf8FromPath(m_cachePartialFilePath);
 
-  m_processingOnlyFile = nullptr;
-  int result           = 0;
+  bool partialExists = m_config.processingAllowPartial && std::filesystem::exists(m_cachePartialFilePath)
+                       && std::filesystem::exists(m_cacheFilePath);
+
+  const char* mode = partialExists ? "ab" : "wb";
+
+  m_processingOnlyPartialCompleted = 0;
+  m_processingOnlyFileOffset       = sizeof(Scene::CacheHeader);
+
+  m_processingOnlyGeometryOffsets.resize(geometryCount * 2 + 1);
+  m_processingOnlyGeometryOffsets[geometryCount * 2] = geometryCount;
+
+  if(partialExists)
+  {
+    // fill in the info from the partial data file
+    nvutils::FileReadMapping mapping;
+    if(mapping.open(m_cachePartialFilePath) && mapping.size())
+    {
+      size_t                   entryCount = mapping.size() / sizeof(CachePartialEntry);
+      const CachePartialEntry* entries    = reinterpret_cast<const CachePartialEntry*>(mapping.data());
+
+      LOGI("Scene::beginProcessingOnly partial resuming - %llu completed\n", entryCount);
+
+      for(size_t i = 0; i < entryCount; i++)
+      {
+        const CachePartialEntry& entry = entries[i];
+
+        m_processingOnlyGeometryOffsets[entry.geometryIndex * 2 + 0] = entry.offset;
+        m_processingOnlyGeometryOffsets[entry.geometryIndex * 2 + 1] = entry.dataSize;
+
+        m_processingOnlyFileOffset = std::max(m_processingOnlyFileOffset, entry.offset + entry.dataSize);
+      }
+      mapping.close();
+
+      m_processingOnlyPartialCompleted = entryCount;
+
+      // the cache file might have partial results of a geometry not valid/finished, reset its size
+      std::filesystem::resize_file(m_cacheFilePath, m_processingOnlyFileOffset);
+      std::filesystem::resize_file(m_cachePartialFilePath, sizeof(CachePartialEntry) * entryCount);
+    }
+  }
+
+  m_processingOnlyFile        = nullptr;
+  m_processingOnlyPartialFile = nullptr;
+  int result                  = 0;
 #ifdef WIN32
-  result = fopen_s(&m_processingOnlyFile, outFilename.c_str(), "wb") == 0;
+  result = fopen_s(&m_processingOnlyFile, outFilename.c_str(), mode) == 0;
 #else
-  m_processingOnlyFile = fopen(outFilename.c_str(), "wb");
+  m_processingOnlyFile = fopen(outFilename.c_str(), mode);
   result               = (m_processingOnlyFile) != nullptr;
 #endif
 
   if(!result)
   {
-    LOGE("Scene::beginProcessOnlySave failed to save file %s\n", outFilename.c_str());
+    LOGE("Scene::beginProcessOnlySave failed to save file:\n   %s\n", outFilename.c_str());
     return;
   }
 
-  Scene::CacheHeader header;
+  if(!partialExists)
+  {
+    // write header to cache file (unless we are resuming a partial processing)
+    Scene::CacheHeader header;
+    fwrite(&header, sizeof(header), 1, m_processingOnlyFile);
+  }
 
-  fwrite(&header, sizeof(header), 1, m_processingOnlyFile);
+  if(m_config.processingAllowPartial)
+  {
+#ifdef WIN32
+    result = fopen_s(&m_processingOnlyPartialFile, outPartialFilename.c_str(), mode) == 0;
+#else
+    m_processingOnlyPartialFile = fopen(outPartialFilename.c_str(), mode);
+    result                      = (m_processingOnlyFile) != nullptr;
+#endif
 
-  m_processingOnlyFileOffset = sizeof(Scene::CacheHeader);
+    if(!result)
+    {
+      fclose(m_processingOnlyFile);
+      m_processingOnlyFile = nullptr;
 
-  m_processingOnlyGeometryOffsets.resize(geometryCount * 2 + 1);
-  m_processingOnlyGeometryOffsets[geometryCount * 2] = geometryCount;
+      LOGE("Scene::beginProcessOnlySave failed to save file:\n  %s\n", outPartialFilename.c_str());
+      return;
+    }
+  }
 
-  LOGI("Scene::beginProcessOnlySave started save file %s\n", outFilename.c_str());
+  LOGI("Scene::beginProcessOnlySave started save file:\n  %s\n", outFilename.c_str());
 }
 
 
@@ -401,8 +461,19 @@ void Scene::saveProcessingOnly(ProcessingInfo& processingInfo, size_t geometryIn
     std::lock_guard lock(processingInfo.processOnlySaveMutex);
 
     uint64_t dataSize = storeCached(m_geometryViews[geometryIndex], m_processingOnlyFile);
+    fflush(m_processingOnlyFile);
+
     m_processingOnlyGeometryOffsets[geometryIndex * 2 + 0] = m_processingOnlyFileOffset;
     m_processingOnlyGeometryOffsets[geometryIndex * 2 + 1] = dataSize;
+
+    if(m_processingOnlyPartialFile)
+    {
+      CachePartialEntry entry = {geometryIndex, m_processingOnlyFileOffset, dataSize};
+
+      fwrite(&entry, sizeof(entry), 1, m_processingOnlyPartialFile);
+      fflush(m_processingOnlyPartialFile);
+    }
+
 
     m_processingOnlyFileOffset += dataSize;
   }
@@ -412,10 +483,10 @@ void Scene::saveProcessingOnly(ProcessingInfo& processingInfo, size_t geometryIn
   m_geometryStorages[geometryIndex] = {};
 }
 
-void Scene::endProcessingOnly(bool hadError)
+bool Scene::endProcessingOnly(bool hadError)
 {
   if(!m_processingOnlyFile)
-    return;
+    return false;
 
   if(!hadError)
   {
@@ -423,21 +494,39 @@ void Scene::endProcessingOnly(bool hadError)
   }
 
   fclose(m_processingOnlyFile);
+  if(m_processingOnlyPartialFile)
+  {
+    fclose(m_processingOnlyPartialFile);
+  }
 
-  std::string outFilename = nvutils::utf8FromPath(m_cacheFilePath);
+  m_processingOnlyFile             = nullptr;
+  m_processingOnlyPartialFile      = nullptr;
+  m_processingOnlyPartialCompleted = 0;
+
+  std::string outFilename        = nvutils::utf8FromPath(m_cacheFilePath);
+  std::string outPartialFilename = nvutils::utf8FromPath(m_cachePartialFilePath);
+
+  LOGI("Scene::endProcessOnlySave completed %s\n", hadError ? "with errors" : "successfully");
+
+  if(std::filesystem::exists(m_cachePartialFilePath))
+  {
+    std::filesystem::remove(m_cachePartialFilePath);
+
+    LOGI("  deleted: %s\n", outPartialFilename.c_str());
+  }
 
   if(hadError)
   {
     std::filesystem::remove(m_cacheFilePath);
 
-    LOGI("Scene::endProcessOnlySave had error, deleted %s\n", outFilename.c_str());
+    LOGI("  deleted: %s\n", outFilename.c_str());
   }
   else
   {
-    LOGI("Scene::endProcessOnlySave finished to save file %s\n", outFilename.c_str());
+    LOGI("  saved: %s\n", outFilename.c_str());
   }
 
-  exit(0);
+  return true;
 }
 
 }  // namespace lodclusters

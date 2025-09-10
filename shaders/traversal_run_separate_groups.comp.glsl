@@ -158,13 +158,13 @@ void main()
   
   // load group and test its clusters
   
-  // pull required input item from subgroupTasks
+  // pull required inputs
   TraversalInfo traversalInfo = unpackTraversalInfo(build.traversalGroupInfos.d[threadReadIndex]);
-  
-  uint groupIndex        = PACKED_GET(traversalInfo.packedNode, Node_packed_groupIndex);
-  uint groupClusterCount = PACKED_GET(traversalInfo.packedNode, Node_packed_groupClusterCountMinusOne) + 1;
+  uint instanceID             = traversalInfo.instanceID;
+  uint groupIndex             = PACKED_GET(traversalInfo.packedNode, Node_packed_groupIndex);
+  uint groupClusterCount      = PACKED_GET(traversalInfo.packedNode, Node_packed_groupClusterCountMinusOne) + 1;
 
-  uint geometryID   = instances[traversalInfo.instanceID].geometryID;
+  uint geometryID   = instances[instanceID].geometryID;
   Geometry geometry = geometries[geometryID];
 
   // retrieve traversal & culling related information from the child node or cluster
@@ -173,21 +173,25 @@ void main()
   BBox bbox;
 #endif
 
-  mat4 worldMatrix   = instances[traversalInfo.instanceID].worldMatrix;
+  mat4 worldMatrix   = instances[instanceID].worldMatrix;
   float uniformScale = computeUniformScale(worldMatrix);
   float errorScale   = 1.0;
 #if USE_CULLING && TARGETS_RAY_TRACING
-  uint visibilityState = build.instanceVisibility.d[traversalInfo.instanceID];
+  uint visibilityState = build.instanceVisibility.d[instanceID];
   // instance is not primary visible, apply different error scale
-  if (visibilityState == 0) errorScale = build.culledErrorScale;
+  if ((visibilityState & INSTANCE_VISIBLE_BIT) == 0) errorScale = build.culledErrorScale;
 #endif
   mat4x3 traversalMatrix = mat4x3(build.traversalViewMatrix * worldMatrix);
 
 #if USE_STREAMING
-  // The later `if (traverseNode)` branch ensured that this pointer is valid
+  // traversal_run ensured we never get here without ensuring residency
   // and we never traverse to a group that isn't resident.
   Group group = Group_in(geometry.streamingGroupAddresses.d[groupIndex]).d;
-  streaming.resident.groups.d[group.residentID].age = 0;
+  #if USE_BLAS_MERGING
+    // handled in traversal_run
+  #else
+    streaming.resident.groups.d[group.residentID].age = uint16_t(0);
+  #endif
 #else
   // can directly access the group
   Group group = geometry.preloadedGroups.d[groupIndex];
@@ -197,7 +201,7 @@ void main()
   {
     bool forceCluster = false;
     bool isValid = true;
-    
+
     {
     #if USE_CULLING && TARGETS_RASTERIZATION
       bbox        = group.clusterBboxes.d[clusterIndex];
@@ -287,7 +291,7 @@ void main()
       // this will help us determine the list length for each blas.
       // The `blas_setup_insertion.comp.glsl` kernel then sub-allocates space for the lists
       // based on this counter.
-      atomicAdd(build.instanceBuildInfos.d[traversalInfo.instanceID].clusterReferencesCount, 1);
+      atomicAdd(build.instanceBuildInfos.d[instanceID].clusterReferencesCount, 1);
       // the render list we write below is filled in an unsorted manner with clusters
       // from different instances. We later use the `blas_insert_clusters.comp.glsl` kernel to build
       // the list for each blas.

@@ -39,18 +39,20 @@ static const uint32_t INVALID_TASK_INDEX         = ~0;
 struct StreamingConfig
 {
   bool usePersistentClasAllocator = true;
+  bool allowBlasCaching           = true;
   bool useAsyncTransfer           = false;
   bool useDecoupledAsyncTransfer  = false;
 
-  uint32_t maxPerFrameLoadRequests   = 1024;
-  uint32_t maxPerFrameUnloadRequests = 4096;
+  uint32_t maxPerFrameLoadRequests   = 128;
+  uint32_t maxPerFrameUnloadRequests = 1024;
 
   uint32_t maxGroups   = 1 << 16;
   uint32_t maxClusters = 0;  // if 0 then computed from maxGroups
 
-  size_t maxTransferMegaBytes = 32;
-  size_t maxGeometryMegaBytes = 1024 * 2;
-  size_t maxClasMegaBytes     = 1024 * 2;
+  size_t maxTransferMegaBytes    = 32;
+  size_t maxGeometryMegaBytes    = 1024 * 2;
+  size_t maxClasMegaBytes        = 1024 * 2;
+  size_t maxBlasCachingMegaBytes = 1024;
 
   VkBuildAccelerationStructureFlagsKHR clasBuildFlags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
   uint32_t                             clasPositionTruncateBits = 0;
@@ -377,7 +379,8 @@ public:
     uint32_t                          newClusterCount;
     uint32_t                          loadActiveGroupsOffset;
     uint32_t                          loadActiveClustersOffset;
-    uint32_t                          geometryPatchCount;
+    uint32_t                          geometryCachedCount;
+    uint32_t                          geometryCachedClustersCount;
     shaderio::StreamingPatch*         loadPatches;
     shaderio::StreamingPatch*         unloadPatches;
     nvvk::BufferSubAllocation*        unloadHandles;
@@ -390,13 +393,14 @@ public:
     uint32_t clusters = 0;
   };
 
-  void init(Resources& res, const StreamingConfig& config, uint32_t groupCountAlignment, uint32_t clusterCountAlignment);
+  void init(Resources& res, const StreamingConfig& config, uint32_t geometryCount, uint32_t groupCountAlignment, uint32_t clusterCountAlignment);
   void initClas(Resources& res, const StreamingConfig& config, const SceneConfig& sceneConfig);
   void deinitClas(Resources& res);
   void deinit(Resources& res);
 
-  size_t getOperationsSize() const;
-  size_t getClasOperationsSize() const;
+  size_t   getOperationsSize() const;
+  size_t   getClasOperationsSize() const;
+  uint32_t getMaxCachedBlasBuilds() const;
 
   void reset();
 
@@ -429,6 +433,8 @@ public:
   const TaskInfo& getCompletedTask(uint32_t taskIndex) const { return m_taskInfos[taskIndex]; }
 
 private:
+  bool m_useBlasCaching = false;
+
   nvvk::BufferTyped<shaderio::StreamingPatch> m_patchesBuffer;
   nvvk::BufferTyped<shaderio::StreamingPatch> m_patchesHostBuffer;
 
@@ -437,6 +443,7 @@ private:
 
   shaderio::StreamingUpdate m_shaderData;
 
+  uint32_t m_maxCachedBlasBuilds;
   uint32_t m_clusterCountAlignment;
   uint32_t m_scheduleIndex;
   NewInfo  m_pendingNew;

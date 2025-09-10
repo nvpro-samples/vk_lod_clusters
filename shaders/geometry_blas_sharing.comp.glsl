@@ -112,31 +112,65 @@ void main()
   
   if (geometryID < build.numGeometries)
   {
-    Geometry geometry           = geometries[geometryID];
+    Geometry geometry      = geometries[geometryID];
     
-    uint shareLevelMin   = 0xFFFF;
-    uint shareLevelMax   = 0xFFFF;
-    uint shareInstanceID = 0xFFFFFFFF;
-    
+  #if USE_BLAS_CACHING
+    uint cachedLevel       = geometry.cachedBlasLodLevel;
+    uint cachedLevelNeeded = TRAVERSAL_INVALID_LOD_LEVEL;
+  #endif
+    uint shareLevelMin    = TRAVERSAL_INVALID_LOD_LEVEL;
+    uint shareLevelMax    = TRAVERSAL_INVALID_LOD_LEVEL;
+    uint shareInstanceID  = ~0u;
+    uint mergedInstanceID = ~0u;
+
     if (testForBlasSharing(geometry))
     {
       // every instance built per frame that is not sharing
       uint numBuildInstances  = 0;
-      // every instance that is sharing
-      uint numSharedInstances = 0;
   
       // used in the loop for temporarily storing previous iteration's result
       uint numPrevInstances    = 0;
-      for (uint lodLevel = 0; lodLevel < geometry.lodLevelsCount; lodLevel++)
+      
+      uint lodLevelsCount      = geometry.lodLevelsCount;
+      bool allowMerge          = true;
+      
+      uint sharingToleranceLevel = max(1u, lodLevelsCount - min(build.sharingTolerantLevels, lodLevelsCount));
+      uint sharingMinLevel       = lodLevelsCount - min(build.sharingEnabledLevels, lodLevelsCount);
+      
+      for (uint lodLevel = 0; lodLevel < lodLevelsCount; lodLevel++)
       {
         uint numInstances = build.geometryHistograms.d[geometryID].lodLevelMinHistogram[lodLevel];
+        bool terminates   = build.geometryHistograms.d[geometryID].lodLevelMaxHistogram[lodLevel] > 0;
+        
+      #if USE_BLAS_CACHING
+        if (numInstances > 0 && lodLevel >= cachedLevel)
+        {
+          if (cachedLevelNeeded == TRAVERSAL_INVALID_LOD_LEVEL)
+          {
+            cachedLevelNeeded = lodLevel;
+            // pretend we already triggered shareLevelMax
+            // triggering sharing isn't necessary after this point
+            shareLevelMax     = TRAVERSAL_INVALID_LOD_LEVEL - 1;
+            // only do merging if instances existed before the cached level
+            allowMerge        = numBuildInstances != 0;
+          }
+        }
+      #endif
+        
+      #if USE_BLAS_MERGING
+        // find the next best instance that terminates early
+        if (mergedInstanceID == ~0 && terminates && allowMerge)
+        {
+          uint packedLodInstance = build.geometryHistograms.d[geometryID].lodLevelMaxPackedInstance[lodLevel];
+          mergedInstanceID       = packedLodInstance & ((1<<27)-1);
+        }
+      #endif
         
         // check if we still need to find the sharing level, and 
         //       if any instance is ending at this lod level
-        if (lodLevel >= build.sharingMinLevel &&
-            shareLevelMax == 0xFFFF &&
-            numBuildInstances + numInstances >= build.sharingMinInstances && 
-            build.geometryHistograms.d[geometryID].lodLevelMaxHistogram[lodLevel] > 0)
+        if (lodLevel >= sharingMinLevel &&
+            shareLevelMax == TRAVERSAL_INVALID_LOD_LEVEL &&
+            terminates)
         {
           uint packedLodInstance = build.geometryHistograms.d[geometryID].lodLevelMaxPackedInstance[lodLevel];
           shareLevelMax   = lodLevel;
@@ -144,35 +178,42 @@ void main()
           shareInstanceID = packedLodInstance & ((1<<27)-1);
           
           // from some lod level onwards add tolerance of one level
-          if (lodLevel >= build.sharingToleranceLevel && shareLevelMin < lodLevel)
+          if (lodLevel >= sharingToleranceLevel && shareLevelMin < lodLevel)
           {
             // pretend we "end" one lod level earlier
             shareLevelMax  = lodLevel - 1;
-            // subtract or add previous lod level instances accordingly
-            numSharedInstances += numPrevInstances;
+            // subtract previous lod level instances accordingly
             numBuildInstances  -= numPrevInstances;
           }
         }
-        if (shareLevelMax != 0xFFFF)
-        {
-          // all instances whose lodLevelMin is >= shareLevelMax, can use the shared blas
-          numSharedInstances += numInstances;
-        }
-        else
+        
+        // if not sharing, append to running number of per-instance builds,
+        // these might be merged or not later
+        //
+        // != TRAVERSAL_INVALID_LOD_LEVEL would be the default condition
+        // but given BLAS_CACHING uses TRAVERSAL_INVALID_LOD_LEVEL - 1, we also want
+        // to account for that
+        if (shareLevelMax > TRAVERSAL_INVALID_LOD_LEVEL - 1)
         {
           numBuildInstances += numInstances;
         }
         
         numPrevInstances = numInstances;
       }
-      
-    #if USE_RENDER_STATS
-      build.geometryBuildInfos.d[geometryID].shareUseCount = numSharedInstances;
-    #endif
     }
-  
-    build.geometryBuildInfos.d[geometryID].shareLevelMin   = uint16_t(shareLevelMin);
-    build.geometryBuildInfos.d[geometryID].shareLevelMax   = uint16_t(shareLevelMax);
+  #if USE_BLAS_CACHING
+    // this value is later used to influence the streaming age filter,
+    // but we don't want to keep everything alive if it isn't actually used.
+    build.geometryBuildInfos.d[geometryID].cachedLevel      = uint16_t(cachedLevelNeeded);
+  #else
+    build.geometryBuildInfos.d[geometryID].cachedBuildIndex = ~0;
+    build.geometryBuildInfos.d[geometryID].cachedLevel      = uint16_t(TRAVERSAL_INVALID_LOD_LEVEL);
+  #endif
+    build.geometryBuildInfos.d[geometryID].shareLevelMin   = uint8_t(shareLevelMin);
+    build.geometryBuildInfos.d[geometryID].shareLevelMax   = uint8_t(shareLevelMax);
     build.geometryBuildInfos.d[geometryID].shareInstanceID = shareInstanceID;
+  #if USE_BLAS_MERGING
+    build.geometryBuildInfos.d[geometryID].mergedInstanceID = mergedInstanceID;
+  #endif
   }
 }

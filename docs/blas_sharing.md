@@ -2,7 +2,7 @@
 
 ![image illustrating the benefits of BLAS sharing](blas_sharing_benefit.jpg)
 
-BLAS sharing enables the re-use of a BLAS from a higher detailed instance
+**BLAS Sharing** enables the re-use of a BLAS from a higher detailed instance
 for other instance's that can safely use it. It allows to reduce the number of BLAS builds
 in a continous level of detail (LoD) technique. As ray tracing is less susceptible
 to performance issues from meshes with high triangle density, it is an option
@@ -54,6 +54,13 @@ instancing the same geometry many times.
 
 The key to BLAS sharing is identifying the conservative LoD range of each instance.
 
+![image illustrating the orientation issue of LoD range classification](blas_sharing_orientation.png)
+
+Each LoD level of an instance is composed of many groups. Their projected errors
+change with the orientation. Rather than doing a full traversal/test over all
+groups, we leverage conservative estimates based on a single pair of proxies
+per LoD level.
+
 ![image illustrating the LoD range classification](blas_sharing_lodrange.png)
 
 **Minimum LoD level**
@@ -79,7 +86,7 @@ with a positive result. Because our rules pick clusters where the first transiti
 between above and below threshold happens, it cannot be that this transition happens
 at a later LoD level, cause they are guaranteed to be coarser (higher error or bigger radius).
 
-**Adjustments**
+**Adjusting the LoD levels**
 
 The current implementation implements some fudging of the LoD ranges to allow
 sharing at lower detail, compared to what is actually required. This can be enabled
@@ -145,7 +152,7 @@ Each instance is tested against four categories in the following order:
 
 ![image illustrating the implementation](blas_sharing_implementation.png)
 
-In the source look for `USE_BLAS_SHARING`.
+In the source look for `USE_BLAS_SHARING` and `useBlasSharing`.
 
 The following kernels contain key aspects of the implementation in the provided order:
 * [shaders/instance_classify_lod.comp.glsl](../shaders/instance_classify_lod.comp.glsl): Runs the instance LoD classification and feeds the geometry LoD level histograms. Updates corresponding `shaderio::GeometryBuildHistogram` and `shaderio::InstanceBuildInfo`. Set each TLAS instance to use the low detail BLAS, this may be overwritten at a later time.
@@ -153,16 +160,33 @@ The following kernels contain key aspects of the implementation in the provided 
 * [shaders/traversal_init_blas_sharing.comp.glsl](../shaders/traversal_init_blas_sharing.comp.glsl): Reads the instance LoD classification from `shaderio::InstanceBuildInfo` and the corresponding `shaderio::GeometryBuildInfo` to test which category an instance belongs to.
 * [shaders/instance_assign_blas.comp.glsl](../shaders/instance_assign_blas.comp.glsl): Is run after the BLAS were built and assigns the TLAS instance BLAS. The BLAS assigned here was built in this frame and can come either from the instance itself (category 2 or 4 above) or through an indirection (category 3). For category 1 no assignment is required, as it was already handled at beginning. It could also happen that we ran out of cluster render list space, and hence no BLAS was actually built, in which case also no assignment is done.
 
+## Improvements
+
+* ["BLAS Merging"](blas_merging.md) provides a guarantee that we only build two BLAS per unique geometry per-frame. On merged BLAS used for all high detail instances and one shared or cached BLAS for medium detail.
+* ["BLAS Caching"](blas_caching.md) enables BLAS re-use across frames.
+
 ## Example Results
 
 In this [sample scene](https://grabcad.com/library/lego-ideas-tree-house-21318-1) there is a lot of LEGO® bricks instancing that allows great BLAS re-use.
 
 ![rendering of a scene made of lego bricks](blas_sharing_scene.jpg)
 
-Looking at the various statistics we can see that the overall frame time is greatly reduced from `5.9` to `1.6` milliseconds due to the very high reduction of BLAS builds. This also lowers the BLAS memory from `120 MB` to `7 MB`. Last but not least the required traversal tasks as well as render list usage is reduced by a factor of ten or more.
+**BLAS Sharing**
+
+Looking at the various statistics we can see that the overall frame time is greatly reduced from `3.9` to `1.6` milliseconds due to the very high reduction of BLAS builds. This also lowers the BLAS memory from `62 MB` to `9 MB`. Last but not least the required traversal tasks as well as cluster list usage are reduced greatly.
 
 While in this particular scene the render time is also a little bit less, because of the improved cache hits on a smaller set of BLASes, other scenes can see an increase in trace time. A small increase is more commonly expected, as the shared BLAS will cause objects afar to use more detail than necessary. This can be mitigated by introducing more than just one shared BLAS for different LoD levels.
+
+**BLAS Merging**
+
+BLAS merging lowers both traversal and BLAS build operations once more. It also reduces the overall
+memory requirements in the `Operations` and `BLAS Reservations` nicely, due to this technique removing the need for per-instance BLASes.
+
+**BLAS Caching**
+
+BLAS caching further reduces BLAS builds, but doesn't really bring much of a gain anymore. Currently it increases the memory consumption a bit, this however could be improved with a different implementation that strictly only does "merged" or "cached" BLAS builds and removes the "shared". It is also very scene dependent.
 
 ![statistics of the rendered sample scene](blas_sharing_results.png)
 
 > LEGO® is a trademark of the LEGO Group of companies which does not sponsor, authorize or endorse this site
+

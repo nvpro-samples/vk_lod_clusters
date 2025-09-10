@@ -17,11 +17,15 @@
 * SPDX-License-Identifier: Apache-2.0
 */
 
+#include <cinttypes>
 #include <filesystem>
+#include <chrono>
+#include <thread>
 
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h>
 #include <implot/implot.h>
+#include <nvgui/fonts.hpp>
 #include <nvgui/camera.hpp>
 #include <nvgui/sky.hpp>
 #include <nvgui/property_editor.hpp>
@@ -32,10 +36,17 @@
 
 namespace lodclusters {
 
+#define MEMORY_WITH_BINARY_PREFIXES 1
+
 std::string formatMemorySize(size_t sizeInBytes)
 {
+#if MEMORY_WITH_BINARY_PREFIXES
+  static const std::string units[]     = {"B", "KiB", "MiB", "GiB"};
+  static const size_t      unitSizes[] = {1, 1024, 1024 * 1024, 1024 * 1024 * 1024};
+#else
   static const std::string units[]     = {"B", "KB", "MB", "GB"};
   static const size_t      unitSizes[] = {1, 1000, 1000 * 1000, 1000 * 1000 * 1000};
+#endif
 
   uint32_t currentUnit = 0;
   for(uint32_t i = 1; i < 4; i++)
@@ -111,7 +122,7 @@ void uiPlot(const std::string& plotName, const std::string& tooltipFormat, const
 static uint32_t getUsagePct(uint64_t requested, uint64_t reserved)
 {
   bool     exceeds = requested > reserved;
-  uint32_t pct     = uint32_t(double(requested) * 100.0 / double(reserved));
+  uint32_t pct     = uint32_t(double(requested) * 100.0 / double(std::max(reserved, uint64_t(1))));
   // artificially raise pct over 100 to trigger warning
   if(exceeds && pct < 101)
     pct = 101;
@@ -120,16 +131,23 @@ static uint32_t getUsagePct(uint64_t requested, uint64_t reserved)
 
 struct UsagePercentages
 {
-  uint32_t pctRender    = 0;
-  uint32_t pctTraversal = 0;
-  uint32_t pctResident  = 0;
-  uint32_t pctClasLeft  = 100;
-  uint32_t pctGeoMemory = 0;
+  uint32_t pctClusters     = 0;
+  uint32_t pctTasks        = 0;
+  uint32_t pctResident     = 0;
+  uint32_t pctBlas         = 0;
+  uint32_t pctClasLeft     = 100;
+  uint32_t pctGeoMemory    = 0;
+  uint32_t clampedClusters = 0;
+  uint32_t clampedTasks    = 0;
 
-  void setupPercentages(shaderio::Readback& readback, const RendererConfig& rendererConfig)
+  void setupPercentages(shaderio::Readback& readback, uint64_t maxRenderClusters, uint64_t maxTraversalTasks, uint64_t maxBlasBuilds)
   {
-    pctRender    = getUsagePct(readback.numRenderClusters, uint64_t(1) << rendererConfig.numRenderClusterBits);
-    pctTraversal = getUsagePct(readback.numTraversalInfos, uint64_t(1) << rendererConfig.numTraversalTaskBits);
+    pctClusters = getUsagePct(readback.numRenderClusters, maxRenderClusters);
+    pctTasks    = getUsagePct(readback.numTraversalTasks, maxTraversalTasks);
+    pctBlas     = getUsagePct(readback.numBlasBuilds, maxBlasBuilds);
+
+    clampedClusters = std::min(readback.numRenderClusters, uint32_t(maxRenderClusters));
+    clampedTasks    = std::min(readback.numTraversalTasks, uint32_t(maxTraversalTasks));
   }
 
   void setupPercentages(StreamingStats& stats, const StreamingConfig& streamingConfig)
@@ -141,9 +159,9 @@ struct UsagePercentages
 
   const char* getWarning()
   {
-    if(pctRender > 100)
+    if(pctClusters > 100)
       return "WARNING: Scene: Render clusters limit exceeded";
-    if(pctTraversal > 100)
+    if(pctTasks > 100)
       return "WARNING: Scene: Traversal task limit exceeded";
     if(pctResident == 100)
       return "WARNING: Streaming: No resident groups left";
@@ -168,7 +186,8 @@ void LodClusters::viewportUI(ImVec2 corner)
     m_resources.getReadbackData(readback);
 
     UsagePercentages pct;
-    pct.setupPercentages(readback, m_rendererConfig);
+    pct.setupPercentages(readback, m_renderer->getMaxRenderClusters(), m_renderer->getMaxTraversalTasks(),
+                         m_renderer->getMaxBlasBuilds());
 
     if(m_renderScene->useStreaming)
     {
@@ -205,12 +224,40 @@ void LodClusters::viewportUI(ImVec2 corner)
   }
 }
 
+
+void LodClusters::loadingUI() {}
+
 void LodClusters::onUIRender()
 {
   ImGuiWindow* viewport = ImGui::FindWindowByName("Viewport");
 
   bool requestCameraRecenter = false;
   bool requestMirrorBox      = false;
+
+  if(m_sceneLoading)
+  {
+    // Display a modal window when loading assets or other long operation on separated thread
+    ImGui::OpenPopup("Busy Info");
+
+    // Position in the center of the main window when appearing
+    const ImVec2 win_size(300, 100);
+    ImGui::SetNextWindowSize(win_size);
+    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5F, 0.5F));
+
+    // Window without any decoration
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 15.0);
+    if(ImGui::BeginPopupModal("Busy Info", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDecoration))
+    {
+      // Center text in window
+      ImGui::TextDisabled("Please wait ...");
+      ImGui::NewLine();
+      ImGui::ProgressBar(float(m_sceneProgress) / 100.0f, ImVec2(-1.0f, 0.0f), "Loading Scene");
+      ImGui::EndPopup();
+    }
+    ImGui::PopStyleVar();
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
 
   if(viewport)
   {
@@ -229,13 +276,6 @@ void LodClusters::onUIRender()
         requestMirrorBox = true;
       }
     }
-  }
-
-  bool earlyOut = !m_scene;
-
-  if(earlyOut)
-  {
-    return;
   }
 
   shaderio::Readback readback;
@@ -297,31 +337,40 @@ void LodClusters::onUIRender()
   UsagePercentages pct = {};
   if(m_renderer)
   {
-    pct.setupPercentages(readback, m_rendererConfig);
+    pct.setupPercentages(readback, m_renderer->getMaxRenderClusters(), m_renderer->getMaxTraversalTasks(),
+                         m_renderer->getMaxBlasBuilds());
   }
 
-  ImGui::Begin("Settings");
-  ImGui::PushItemWidth(170 * ImGui::GetWindowDpiScale());
+  StreamingStats stats = {};
+  if(m_renderScene && m_renderScene->useStreaming)
+  {
+    m_renderScene->sceneStreaming.getStats(stats);
+  }
 
   namespace PE = nvgui::PropertyEditor;
 
-  if(ImGui::CollapsingHeader("Scene Modifiers"))  //, nullptr, ImGuiTreeNodeFlags_DefaultOpen ))
+  if(ImGui::Begin("Settings"))
   {
-    PE::begin("##Scene Complexity");
-    PE::Checkbox("Flip faces winding", &m_rendererConfig.flipWinding);
-    PE::Checkbox("Disable back-face culling", &m_rendererConfig.twoSided);
-    PE::InputInt("Render grid copies", (int*)&m_sceneGridConfig.numCopies, 1, 16, ImGuiInputTextFlags_EnterReturnsTrue,
-                 "Instances the entire scene on a grid");
-    PE::entry(
-        "Render grid bits",
-        [&] {
-          for(uint32_t i = 0; i < 6; i++)
+    ImGui::PushItemWidth(170 * ImGui::GetWindowDpiScale());
+
+    if(ImGui::CollapsingHeader("Scene Modifiers"))  //, nullptr, ImGuiTreeNodeFlags_DefaultOpen ))
+    {
+      PE::begin("##Scene Complexity", ImGuiTableFlags_Resizable);
+      PE::Checkbox("Flip faces winding", &m_rendererConfig.flipWinding);
+      PE::Checkbox("Disable back-face culling", &m_rendererConfig.twoSided);
+
+      if(PE::treeNode("Render grid settings", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanFullWidth))
+      {
+        PE::InputInt("Copies", (int*)&m_sceneGridConfig.numCopies, 1, 16, ImGuiInputTextFlags_EnterReturnsTrue,
+                     "Instances the entire scene on a grid");
+        PE::entry("Position Axis", [&] {
+          for(uint32_t i = 0; i < 3; i++)
           {
             ImGui::PushID(i);
             bool used = (m_sceneGridConfig.gridBits & (1 << i)) != 0;
 
             ImGui::Checkbox("##hidden", &used);
-            if(i < 5)
+            if(i < 2)
               ImGui::SameLine();
             if(used)
               m_sceneGridConfig.gridBits |= (1 << i);
@@ -330,165 +379,214 @@ void LodClusters::onUIRender()
             ImGui::PopID();
           }
           return false;
-        },
-        "0..2 bit enabled axis, 3..5 bit enabled rotation");
+        });
 
-    //PE::InputInt("Render grid bits", (int*)&m_sceneGridConfig.gridBits, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
-    //             "Instance grid config encoded in 6 bits: 0..2 bit enabled axis, 3..5 bit enabled rotation");
-    PE::Checkbox("Render grid unique geometries", &m_sceneGridConfig.uniqueGeometriesForCopies,
-                 "New Instances of the grid also get their own set of geometries, stresses streaming & memory consumption");
-    PE::InputFloat("Render grid X", &m_sceneGridConfig.refShift.x, 0.1f, 0.1f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
-                   "Instance grid config encoded in 6 bits: 0..2 bit enabled axis, 3..5 bit enabled rotation");
-    PE::InputFloat("Render grid Y", &m_sceneGridConfig.refShift.y, 0.1f, 0.1f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
-                   "Instance grid config encoded in 6 bits: 0..2 bit enabled axis, 3..5 bit enabled rotation");
-    PE::InputFloat("Render grid Z", &m_sceneGridConfig.refShift.z, 0.1f, 0.1f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
-                   "Instance grid config encoded in 6 bits: 0..2 bit enabled axis, 3..5 bit enabled rotation");
-    PE::InputFloat("Render grid snap angle", &m_sceneGridConfig.snapAngle, 5.0f, 10.f, "%.3f",
-                   ImGuiInputTextFlags_EnterReturnsTrue, "If rotation is active snaps angle");
-    PE::InputFloat("Render grid min scale", &m_sceneGridConfig.minScale, 0.1f, 1.f, "%.3f",
-                   ImGuiInputTextFlags_EnterReturnsTrue, "Scale object");
-    PE::InputFloat("Render grid max scale", &m_sceneGridConfig.maxScale, 0.1f, 1.f, "%.3f",
-                   ImGuiInputTextFlags_EnterReturnsTrue, "Scale object");
-    PE::end();
-  }
+        PE::entry("Rotation Axis", [&] {
+          for(uint32_t i = 3; i < 6; i++)
+          {
+            ImGui::PushID(i);
+            bool used = (m_sceneGridConfig.gridBits & (1 << i)) != 0;
 
-  if(ImGui::CollapsingHeader("Rendering", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
-  {
+            ImGui::Checkbox("##hidden", &used);
+            if((i % 3) < 2)
+              ImGui::SameLine();
+            if(used)
+              m_sceneGridConfig.gridBits |= (1 << i);
+            else
+              m_sceneGridConfig.gridBits &= ~(1 << i);
+            ImGui::PopID();
+          }
+          return false;
+        });
 
-    PE::begin("##Rendering");
-    PE::entry("Renderer", [&]() { return m_ui.enumCombobox(GUI_RENDERER, "renderer", &m_tweak.renderer); });
-    PE::entry("Super Resolution", [&]() { return m_ui.enumCombobox(GUI_SUPERSAMPLE, "sampling", &m_tweak.supersample); });
-#if USE_DLSS
-    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD && m_resources.m_frameBuffer.dlssDenoiser.isAvailable())
-    {
-      PE::entry("DLSS - Denoiser", [&]() {
-        ImGui::Checkbox("Enabled", &m_rendererConfig.useDlss);
-        ImGui::SameLine();
-        bool dlaa = m_rendererConfig.dlssQuality == NVSDK_NGX_PerfQuality_Value_DLAA;
-        ImGui::Checkbox("DLAA", &dlaa);
-        m_rendererConfig.dlssQuality = dlaa ? NVSDK_NGX_PerfQuality_Value_DLAA : NVSDK_NGX_PerfQuality_Value_MaxQuality;
-        return false;
-      });
-    }
-#endif
-    PE::Text("Render Resolution:", "%d x %d", m_resources.m_frameBuffer.renderSize.width,
-             m_resources.m_frameBuffer.renderSize.height);
+        PE::Checkbox("Unique geometries", &m_sceneGridConfig.uniqueGeometriesForCopies,
+                     "New Instances of the grid also get their own set of geometries, stresses streaming & memory consumption");
 
-    PE::Checkbox("Facet shading", &m_tweak.facetShading);
-    PE::Checkbox("Wireframe", (bool*)&m_frameConfig.frameConstants.doWireframe);
-    PE::Checkbox("Instance BBoxes", &m_frameConfig.showInstanceBboxes);
-
-    // conditional UI, declutters the UI, prevents presenting many sections in disabled state
-    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
-    {
-      PE::Checkbox("Cast shadow rays", (bool*)&m_frameConfig.frameConstants.doShadow);
-      PE::Checkbox("Reflective box", (bool*)&m_frameConfig.frameConstants.useMirrorBox);
-      PE::SliderFloat("Ambient occlusion radius", &m_frameConfig.frameConstants.ambientOcclusionRadius, 0.001f, 1.f);
-      PE::SliderInt("Ambient occlusion rays", &m_frameConfig.frameConstants.ambientOcclusionSamples, 0, 64);
-    }
-    if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD)
-    {
-      PE::Checkbox("Ambient occlusion (HBAO)", &m_tweak.hbaoActive);
-      if(PE::treeNode("HBAO settings"))
-      {
-        PE::Checkbox("Full resolution", &m_tweak.hbaoFullRes);
-        PE::InputFloat("Radius", &m_tweak.hbaoRadius, 0.01f, 0, "%.6f");
-        PE::InputFloat("Blur sharpness", &m_frameConfig.hbaoSettings.blurSharpness, 1.0f);
-        PE::InputFloat("Intensity", &m_frameConfig.hbaoSettings.intensity, 0.1f);
-        PE::InputFloat("Bias", &m_frameConfig.hbaoSettings.bias, 0.01f);
+        PE::InputFloat("X gap", &m_sceneGridConfig.refShift.x, 0.1f, 0.1f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
+                       "Instance grid config encoded in 6 bits: 0..2 bit enabled axis, 3..5 bit enabled rotation");
+        PE::InputFloat("Y gap", &m_sceneGridConfig.refShift.y, 0.1f, 0.1f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
+                       "Instance grid config encoded in 6 bits: 0..2 bit enabled axis, 3..5 bit enabled rotation");
+        PE::InputFloat("Z gap", &m_sceneGridConfig.refShift.z, 0.1f, 0.1f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
+                       "Instance grid config encoded in 6 bits: 0..2 bit enabled axis, 3..5 bit enabled rotation");
+        PE::InputFloat("Snap angle", &m_sceneGridConfig.snapAngle, 5.0f, 10.f, "%.3f",
+                       ImGuiInputTextFlags_EnterReturnsTrue, "If rotation is active snaps angle");
+        PE::InputFloat("Min scale", &m_sceneGridConfig.minScale, 0.1f, 1.f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue, "Scale object");
+        PE::InputFloat("Max scale", &m_sceneGridConfig.maxScale, 0.1f, 1.f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue, "Scale object");
         PE::treePop();
       }
+      PE::end();
     }
-    ImGui::PushStyleColor(ImGuiCol_Text, recommendedColor);
-    PE::entry("Visualize", [&]() {
-      ImGui::PopStyleColor();  // pop text color here so it only applies to the label
-      return m_ui.enumCombobox(GUI_VISUALIZE, "visualize", &m_frameConfig.visualize);
-    });
-    PE::end();
-  }
-  if(ImGui::CollapsingHeader("Traversal"))
-  {
-    PE::begin("##TraversalSpecifics");
-    PE::InputIntClamped("Max traversal tasks (bits)", (int*)&m_rendererConfig.numTraversalTaskBits, 8, 25, 1, 1,
-                        ImGuiInputTextFlags_EnterReturnsTrue);
-    PE::InputIntClamped("Max render clusters (bits)", (int*)&m_rendererConfig.numRenderClusterBits, 8, 25, 1, 1,
-                        ImGuiInputTextFlags_EnterReturnsTrue);
-    PE::InputFloat("LoD pixel error", &m_frameConfig.lodPixelError, 0.25f, 0.25f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
-    PE::Checkbox("Separate Groups Kernel", &m_rendererConfig.useSeparateGroups,
-                 "optimization that splits traversal into two separate kernels");
-    PE::Checkbox("Instance Sorting", &m_rendererConfig.useSorting);
-    PE::Checkbox("Rendered Statistics", &m_rendererConfig.useRenderStats,
-                 "Adds additional atomic counters for statistics, impacts performance");
-    PE::Checkbox("Culling (Occlusion & Frustum)", &m_rendererConfig.useCulling);
-    ImGui::BeginDisabled(!m_rendererConfig.useCulling);
-    PE::Checkbox("Culling / LoD Freeze", &m_frameConfig.freezeCulling);
-    ImGui::EndDisabled();
 
-    m_frameConfig.lodPixelError = std::max(0.001f, m_frameConfig.lodPixelError);
-
-    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+    if(ImGui::CollapsingHeader("Rendering", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {
-      ImGui::BeginDisabled(!m_rendererConfig.useCulling);
-      PE::InputFloat("Culled error scale", &m_frameConfig.culledErrorScale, 1.f, 1.f, "%.3f",
-                     ImGuiInputTextFlags_EnterReturnsTrue, "scale the pixel error for occluded objects in ray tracing");
-      ImGui::EndDisabled();
 
-      m_frameConfig.culledErrorScale = std::max(1.0f, m_frameConfig.culledErrorScale);
-
-      PE::Checkbox("Blas Sharing", &m_rendererConfig.useBlasSharing);
-      ImGui::BeginDisabled(!m_rendererConfig.useBlasSharing);
-      PE::Checkbox("Blas Sharing push culled", &m_frameConfig.sharingPushCulled, "culled instances artificially pushed by a lod level");
-      PE::InputIntClamped("Blas Sharing min instances", (int*)&m_frameConfig.sharingMinInstances, 1, 0x7FFFFFFF, 1, 1,
-                          ImGuiInputTextFlags_EnterReturnsTrue, "how many instances may be built before sharing");
-      PE::InputIntClamped("Blas Sharing min level", (int*)&m_frameConfig.sharingMinLevel, 0, 0x7FFFFFFF, 1, 1,
-                          ImGuiInputTextFlags_EnterReturnsTrue, "minimum lod level from which sharing may be used");
-      PE::InputIntClamped("Blas Sharing tolerance level", (int*)&m_frameConfig.sharingToleranceLevel, 1, 32, 1, 1,
-                          ImGuiInputTextFlags_EnterReturnsTrue,
-                          "from which lod level we allow sharing a blas that may have too little detail for an instance");
-      ImGui::EndDisabled();
-    }
-    PE::end();
-
-    if(ImGui::BeginTable("##Render stats", 3, ImGuiTableFlags_BordersOuter))
-    {
-      ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 150.0f);
-      ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
-      ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
-      //ImGui::TableHeadersRow();
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      ImGui::Text("Traversal tasks");
-      ImGui::TableNextColumn();
-      ImGui::TextColored(pct.pctTraversal > 100 ? warn_color : text_color, "%d (%d%%)", readback.numTraversalInfos, pct.pctTraversal);
-      ImGui::TableNextColumn();
-      ImGui::TextColored(pct.pctTraversal > 100 ? warn_color : text_color, "%s",
-                         formatMetric(readback.numTraversalInfos).c_str());
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      ImGui::Text("Render list clusters");
-      ImGui::TableNextColumn();
-      ImGui::TextColored(pct.pctRender > 100 ? warn_color : text_color, "%d (%d%%)", readback.numRenderClusters, pct.pctRender);
-      ImGui::TableNextColumn();
-      ImGui::TextColored(pct.pctRender > 100 ? warn_color : text_color, "%s", formatMetric(readback.numRenderClusters).c_str());
-      if(m_rendererConfig.useRenderStats)
+      PE::begin("##Rendering", ImGuiTableFlags_Resizable);
+      PE::entry("Renderer", [&]() { return m_ui.enumCombobox(GUI_RENDERER, "renderer", &m_tweak.renderer); });
+      PE::entry("Super Resolution",
+                [&]() { return m_ui.enumCombobox(GUI_SUPERSAMPLE, "sampling", &m_tweak.supersample); });
+#if USE_DLSS
+      ImGui::BeginDisabled(
+          !(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD && m_resources.m_frameBuffer.dlssDenoiser.isAvailable()));
       {
+        PE::entry("DLSS - Denoiser", [&]() {
+          ImGui::Checkbox("Enabled", &m_rendererConfig.useDlss);
+          ImGui::SameLine();
+          bool dlaa = m_rendererConfig.dlssQuality == NVSDK_NGX_PerfQuality_Value_DLAA;
+          ImGui::Checkbox("DLAA", &dlaa);
+          m_rendererConfig.dlssQuality = dlaa ? NVSDK_NGX_PerfQuality_Value_DLAA : NVSDK_NGX_PerfQuality_Value_MaxQuality;
+          return false;
+        });
+      }
+      ImGui::EndDisabled();
+#endif
+      PE::Text("Render Resolution:", "%d x %d", m_resources.m_frameBuffer.renderSize.width,
+               m_resources.m_frameBuffer.renderSize.height);
+
+      ImGui::PushStyleColor(ImGuiCol_Text, recommendedColor);
+      PE::entry("Visualize", [&]() {
+        ImGui::PopStyleColor();  // pop text color here so it only applies to the label
+        return m_ui.enumCombobox(GUI_VISUALIZE, "visualize", &m_frameConfig.visualize);
+      });
+
+      if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+      {
+        PE::Checkbox("Cast shadow rays", (bool*)&m_frameConfig.frameConstants.doShadow);
+        PE::Checkbox("Ambient occlusion", &m_tweak.hbaoActive);
+
+        if(!m_tweak.hbaoActive)
+        {
+          m_frameConfig.frameConstants.ambientOcclusionSamples = 0;
+        }
+        else
+        {
+          m_frameConfig.frameConstants.ambientOcclusionSamples = m_lastAmbientOcclusionSamples;
+        }
+      }
+      if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD)
+      {
+        PE::Text("HBAO", "");
+        PE::Checkbox("Ambient occlusion", &m_tweak.hbaoActive);
+      }
+      if(PE::treeNode("AO settings"))
+      {  // conditional UI, declutters the UI, prevents presenting many sections in disabled state
+        if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+        {
+          PE::SliderFloat("Radius", &m_frameConfig.frameConstants.ambientOcclusionRadius, 0.001f, 1.f, "%.7f");
+          if(PE::SliderInt("Rays", &m_frameConfig.frameConstants.ambientOcclusionSamples, 1, 64))
+          {
+            if(m_frameConfig.frameConstants.ambientOcclusionSamples)
+            {
+              m_tweak.hbaoActive = true;
+            }
+          }
+          if(m_frameConfig.frameConstants.ambientOcclusionSamples)
+          {
+            m_lastAmbientOcclusionSamples = m_frameConfig.frameConstants.ambientOcclusionSamples;
+          }
+        }
+        if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD)
+        {
+          PE::InputFloat("Radius", &m_tweak.hbaoRadius, 0.01f, 0, "%.6f");
+          PE::Checkbox("Full resolution", &m_tweak.hbaoFullRes);
+          PE::InputFloat("Blur sharpness", &m_frameConfig.hbaoSettings.blurSharpness, 1.0f);
+          PE::InputFloat("Intensity", &m_frameConfig.hbaoSettings.intensity, 0.1f);
+          PE::InputFloat("Bias", &m_frameConfig.hbaoSettings.bias, 0.01f);
+        }
+        PE::treePop();
+      }
+
+      if(PE::treeNode("Other settings"))
+      {
+        if(m_scene && m_scene->m_hasVertexNormals)
+        {
+          PE::Checkbox("Facet shading", &m_tweak.facetShading);
+        }
+        PE::Checkbox("Wireframe", (bool*)&m_frameConfig.frameConstants.doWireframe);
+        PE::Checkbox("Instance BBoxes", &m_frameConfig.showInstanceBboxes);
+        PE::Checkbox("Reflective box", (bool*)&m_frameConfig.frameConstants.useMirrorBox);
+        PE::treePop();
+      }
+
+      PE::end();
+    }
+    if(ImGui::CollapsingHeader("Traversal", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
+    {
+      PE::begin("##TraversalSpecifics", ImGuiTableFlags_Resizable);
+      PE::InputIntClamped("Max tasks (bits)", (int*)&m_rendererConfig.numTraversalTaskBits, 8, 25, 1, 1,
+                          ImGuiInputTextFlags_EnterReturnsTrue);
+      PE::InputIntClamped("Max clusters (bits)", (int*)&m_rendererConfig.numRenderClusterBits, 8, 25, 1, 1,
+                          ImGuiInputTextFlags_EnterReturnsTrue,
+                          "Maximum clusters that can be enqueued per-frame in bits. For raster this equals rendered clusters, for ray tracing its BLAS input.");
+      PE::InputFloat("LoD pixel error", &m_frameConfig.lodPixelError, 0.25f, 0.25f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
+
+      m_frameConfig.lodPixelError = std::max(0.001f, m_frameConfig.lodPixelError);
+
+      if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+      {
+        ImGui::BeginDisabled(!m_rendererConfig.useCulling);
+        PE::InputFloat("Culled error scale", &m_frameConfig.culledErrorScale, 1.f, 1.f, "%.3f",
+                       ImGuiInputTextFlags_EnterReturnsTrue, "scale the pixel error for occluded objects in ray tracing");
+        ImGui::EndDisabled();
+
+        m_frameConfig.culledErrorScale = std::max(1.0f, m_frameConfig.culledErrorScale);
+
+        PE::Checkbox("Blas Sharing", &m_rendererConfig.useBlasSharing, "shares blas for instances further away that can use it safely");
+
+        if(PE::treeNode("Blas Sharing settings"))
+        {
+          ImGui::BeginDisabled(!m_rendererConfig.useBlasSharing);
+          PE::Checkbox("Blas Caching", &m_rendererConfig.useBlasCaching,
+                       "builds a cached blas depending on highest fully resident lod level.");
+          PE::Checkbox("Blas Merging", &m_rendererConfig.useBlasMerging,
+                       "builds a merged blas for closer instances. Guarantees only 2 dynamic blas per geometry.");
+          PE::Checkbox("Push culled lod", &m_frameConfig.sharingPushCulled, "culled instances artificially pushed by one lod level");
+          PE::InputIntClamped("Shared tail levels", (int*)&m_frameConfig.sharingEnabledLevels, 0, 32, 1, 1,
+                              ImGuiInputTextFlags_EnterReturnsTrue,
+                              "Sharing may be used in the last N levels of the instance geometry");
+          PE::InputIntClamped("Tolerant tail levels", (int*)&m_frameConfig.sharingTolerantLevels, 0, 32, 1, 1,
+                              ImGuiInputTextFlags_EnterReturnsTrue,
+                              "Share BLAS despite a lod level mismatch in the last N levels of the instance geometry");
+          PE::InputIntClamped("Cached tail levels", (int*)&m_frameConfig.cachingEnabledLevels, 0, 32, 1, 1,
+                              ImGuiInputTextFlags_EnterReturnsTrue,
+                              "Caching may be used in the last N levels of the instance geometry");
+          ImGui::EndDisabled();
+          PE::treePop();
+        }
+      }
+      if(PE::treeNode("Other settings"))
+      {
+        PE::Checkbox("Separate Groups Kernel", &m_rendererConfig.useSeparateGroups,
+                     "optimization that splits traversal into two separate kernels");
+        PE::Checkbox("Instance Sorting", &m_rendererConfig.useSorting);
+        PE::Checkbox("Enqueued Statistics", &m_rendererConfig.useRenderStats,
+                     "Adds additional atomic counters for statistics, impacts performance");
+        PE::Checkbox("Culling (Occlusion & Frustum)", &m_rendererConfig.useCulling);
+        ImGui::BeginDisabled(!m_rendererConfig.useCulling);
+        PE::Checkbox("Culling / LoD Freeze", &m_frameConfig.freezeCulling);
+        ImGui::EndDisabled();
+        PE::treePop();
+      }
+      PE::end();
+
+      ImGui::Separator();
+
+      if(m_rendererConfig.useRenderStats && ImGui::BeginTable("##Render stats", 3, ImGuiTableFlags_RowBg))
+      {
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 140.0f * ImGui::GetWindowDpiScale());
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        ImGui::Text("Rendered clusters");
-        ImGui::TableNextColumn();
-        ImGui::Text("%d", readback.numRenderedClusters);
+        ImGui::Text("Enqueued Clusters");
         ImGui::TableNextColumn();
         ImGui::Text("%s", formatMetric(readback.numRenderedClusters).c_str());
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        ImGui::Text("Rendered triangles");
-        ImGui::TableNextColumn();
-        ImGui::Text("%llu", readback.numRenderedTriangles);
+        ImGui::Text("Enqueued Triangles");
         ImGui::TableNextColumn();
         ImGui::Text("%s", formatMetric(readback.numRenderedTriangles).c_str());
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        ImGui::Text("Rendered Tri/Cluster");
+        ImGui::Text("Enqueued Tri/Cluster");
         ImGui::TableNextColumn();
         if(readback.numRenderedClusters > 0)
         {
@@ -498,171 +596,188 @@ void LodClusters::onUIRender()
         {
           ImGui::Text("N/A");
         }
-        ImGui::TableNextColumn();
-        ImGui::Text("%s", "");
+        ImGui::EndTable();
       }
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      ImGui::Text("Built BLAS");
-      ImGui::TableNextColumn();
-      ImGui::Text("%d", readback.numBlasBuilds);
-      ImGui::TableNextColumn();
-      ImGui::Text("%s", formatMetric(readback.numBlasBuilds).c_str());
-      ImGui::EndTable();
     }
-  }
-  if(ImGui::CollapsingHeader("Clusters & LoDs generation", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
-  {
-    PE::begin("##Clusters");
-    if(false && m_scene && m_scene->m_loadedFromCache)
+    if(ImGui::CollapsingHeader("Clusters & LoDs generation", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {
-      PE::Text("Cluster size from cache", "%dT_%dV", m_scene->m_config.clusterTriangles, m_scene->m_config.clusterVertices);
-      PE::Text("LoD group size", "%d", m_scene->m_config.clusterGroupSize);
-    }
-    else
-    {
+      bool largeCache = m_scene && m_scene->m_cacheFileSize > size_t(512) * 1024 * 1024;
+      if(largeCache)
+      {
+        ImGui::Text("Loaded from a large cache file");
+        ImGui::Text("Disabled live processing");
+      }
+      else
+      {
+        ImGui::Text("Changes can take significant time");
+      }
+
+      ImGui::BeginDisabled(largeCache);
+      PE::begin("##Clusters", ImGuiTableFlags_Resizable);
       PE::entry("Cluster/meshlet size",
                 [&]() { return m_ui.enumCombobox(GUI_MESHLET, "##cluster", &m_tweak.clusterConfig); });
       PE::InputIntClamped("LoD group size", (int*)&m_sceneConfig.clusterGroupSize, 8, 256, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
                           "number of clusters that make lod group. Their triangles are decimated together and they share a common error property");
-    }
+      PE::end();
+      ImGui::EndDisabled();
 
-    PE::InputIntClamped("CLAS Mantissa drop bits", (int*)&m_streamingConfig.clasPositionTruncateBits, 0, 22, 1, 1,
-                        ImGuiInputTextFlags_EnterReturnsTrue,
-                        "number of mantissa bits to drop (zeroed) to reduce memory consumption");
-    PE::entry("CLAS build mode",
-              [&]() { return m_ui.enumCombobox(GUI_BUILDMODE, "##clasbuild", &m_streamingConfig.clasBuildFlags); });
-    PE::end();
-  }
-
-  StreamingStats stats = {};
-  if(m_renderScene->useStreaming)
-  {
-    m_renderScene->sceneStreaming.getStats(stats);
-  }
-
-  if(m_scene && ImGui::CollapsingHeader("Streaming", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
-  {
-    PE::begin("##Streaming");
-    ImGui::PushStyleColor(ImGuiCol_Text, recommendedColor);
-    PE::Checkbox("Enable", &m_tweak.useStreaming);
-    ImGui::PopStyleColor();
-
-    ImGui::BeginDisabled(m_renderScene == nullptr);
-    if(PE::entry("Streaming state", [&] { return ImGui::Button("Reset"); }, "resets the streaming state"))
-    {
-      m_renderScene->streamingReset();
-    }
-    ImGui::EndDisabled();
-
-    PE::Checkbox("Async transfer", &m_streamingConfig.useAsyncTransfer, "Use asynchronous transfer queue for uploads");
-    ImGui::BeginDisabled(!m_streamingConfig.useAsyncTransfer);
-    PE::Checkbox("Decoupled transfer", &m_streamingConfig.useDecoupledAsyncTransfer,
-                 "Allow asynchronous transfers to take multiple frames");
-    ImGui::EndDisabled();
-
-    PE::InputIntClamped("Unused frames until unloaded", (int*)&m_frameConfig.streamingAgeThreshold, 2, 1024, 1, 1,
-                        ImGuiInputTextFlags_EnterReturnsTrue);
-
-    PE::InputIntClamped("Max Resident Groups", (int*)&m_streamingConfig.maxGroups, uint32_t(m_scene->getActiveGeometryCount()),
-                        16 * 1024 * 1024, 128, 128, ImGuiInputTextFlags_EnterReturnsTrue);
-
-    PE::InputIntClamped("Max Frame Group Loads", (int*)&m_streamingConfig.maxPerFrameLoadRequests, 1, 16 * 1024 * 1024,
-                        128, 128, ImGuiInputTextFlags_EnterReturnsTrue);
-    PE::InputIntClamped("Max Frame Group Unloads", (int*)&m_streamingConfig.maxPerFrameUnloadRequests, 1,
-                        16 * 1024 * 1024, 128, 128, ImGuiInputTextFlags_EnterReturnsTrue);
-
-    PE::InputIntClamped("Max Geometry MB", (int*)&m_streamingConfig.maxGeometryMegaBytes, 128, 1024 * 48, 128, 128,
-                        ImGuiInputTextFlags_EnterReturnsTrue);
-    PE::InputIntClamped("Max Transfer MB", (int*)&m_streamingConfig.maxTransferMegaBytes, 16, 1024, 16, 16,
-                        ImGuiInputTextFlags_EnterReturnsTrue);
-    PE::InputIntClamped("Max CLAS MB", (int*)&m_streamingConfig.maxClasMegaBytes, 128, 1024 * 48, 16, 16,
-                        ImGuiInputTextFlags_EnterReturnsTrue);
-
-    PE::Checkbox("Persistent Clas Allocator", &m_streamingConfig.usePersistentClasAllocator,
-                 "Use persistent allocation on the device for clas memory, otherwise move based compaction");
-    ImGui::BeginDisabled(!m_streamingConfig.usePersistentClasAllocator);
-    PE::InputIntClamped("Allocator granularity shift bits", (int*)&m_streamingConfig.clasAllocatorGranularityShift, 0,
-                        8, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
-                        "Clas Allocation byte granularity: (clas alignment value) < shift");
-    PE::InputIntClamped("Allocator sector shift bits", (int*)&m_streamingConfig.clasAllocatorSectorSizeShift, 5, 16, 1,
-                        1, ImGuiInputTextFlags_EnterReturnsTrue,
-                        "Clas Allocation is scanning for free gaps using unused bits is done per sector of (1 << shift) of 32-bit values");
-    PE::Text("Allocator sector size", "%d", 1 << m_streamingConfig.clasAllocatorSectorSizeShift);
-    ImGui::EndDisabled();
-    PE::end();
-
-
-    if(ImGui::BeginTable("Streaming stats", 3, ImGuiTableFlags_BordersOuter))
-    {
-      ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 170.0f);
-      ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_WidthStretch);
-      ImGui::TableSetupColumn("Percentage", ImGuiTableColumnFlags_WidthStretch);
-      //ImGui::TableHeadersRow(); // we do not show the header, it is not visually usefull
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      ImGui::Text("Geometry");
-      ImGui::TableNextColumn();
-      ImGui::TextColored(stats.couldNotStore ? warn_color : text_color, "%s", formatMemorySize(stats.usedDataBytes).c_str());
-      ImGui::TableNextColumn();
-      ImGui::TextColored(stats.couldNotStore ? warn_color : text_color, "%d%%", getUsagePct(stats.usedDataBytes, stats.maxDataBytes));
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
       if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
       {
-        ImGui::Text("CLAS memory");
-        ImGui::TableNextColumn();
-        ImGui::TextColored(stats.couldNotAllocateClas ? warn_color : text_color, "%s",
-                           formatMemorySize(stats.usedClasBytes).c_str());
-        ImGui::TableNextColumn();
-        ImGui::TextColored(stats.couldNotAllocateClas ? warn_color : text_color, "%d%%",
-                           getUsagePct(stats.usedClasBytes, stats.reservedClasBytes));
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-
-        ImGui::Text("CLAS waste");
-        ImGui::TableNextColumn();
-        ImGui::TextColored(text_color, "%s", formatMemorySize(stats.wastedClasBytes).c_str());
-        ImGui::TableNextColumn();
-        ImGui::TextColored(text_color, "%d%%", getUsagePct(stats.wastedClasBytes, stats.usedClasBytes));
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-
-        ImGui::Text("CLAS groups left");
-        ImGui::TableNextColumn();
-        ImGui::TextColored(stats.couldNotAllocateClas ? warn_color : text_color, "%s", formatMetric(stats.maxSizedLeft).c_str());
-        ImGui::TableNextColumn();
-        ImGui::TextColored(stats.couldNotAllocateClas ? warn_color : text_color, "%d%%",
-                           getUsagePct(stats.maxSizedLeft, stats.maxSizedReserved));
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
+        ImGui::Separator();
+        PE::begin("##CLAS", ImGuiTableFlags_Resizable);
+        PE::InputIntClamped("CLAS Mantissa drop bits", (int*)&m_streamingConfig.clasPositionTruncateBits, 0, 22, 1, 1,
+                            ImGuiInputTextFlags_EnterReturnsTrue,
+                            "number of mantissa bits to drop (zeroed) to reduce memory consumption");
+        PE::entry("CLAS build mode",
+                  [&]() { return m_ui.enumCombobox(GUI_BUILDMODE, "##clasbuild", &m_streamingConfig.clasBuildFlags); });
+        PE::end();
       }
-      ImGui::Text("Resident groups");
-      ImGui::TableNextColumn();
-      ImGui::TextColored(stats.couldNotAllocateGroup ? warn_color : text_color, "%s", formatMetric(stats.residentGroups).c_str());
-      ImGui::TableNextColumn();
-      ImGui::TextColored(stats.couldNotAllocateGroup ? warn_color : text_color, "%d%%",
-                         getUsagePct(stats.residentGroups, stats.maxGroups));
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
+    }
 
-      ImGui::Text("Resident clusters");
-      uint32_t pctClusters = getUsagePct(stats.residentClusters, stats.maxClusters);
-      ImGui::TableNextColumn();
-      ImGui::TextColored(pctClusters > 99 ? warn_color : text_color, "%s", formatMetric(stats.residentClusters).c_str());
-      ImGui::TableNextColumn();
-      ImGui::TextColored(pctClusters > 99 ? warn_color : text_color, "%d%%", pctClusters);
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
 
-      ImGui::Text("Last Completed Transfer");
-      ImGui::TableNextColumn();
-      ImGui::TextColored(stats.couldNotTransfer ? warn_color : text_color, "%s", formatMemorySize(stats.transferBytes).c_str());
-      ImGui::TableNextColumn();
-      ImGui::TextColored(stats.couldNotTransfer ? warn_color : text_color, "%d%%",
-                         getUsagePct(stats.transferBytes, stats.maxTransferBytes));
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
+    if(m_renderScene && ImGui::CollapsingHeader("Streaming", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
+    {
+      PE::begin("##Streaming", ImGuiTableFlags_Resizable);
+      if(m_renderSceneCanPreload)
+      {
+        ImGui::PushStyleColor(ImGuiCol_Text, recommendedColor);
+        PE::Checkbox("Enable", &m_tweak.useStreaming);
+        ImGui::PopStyleColor();
+      }
+
+      ImGui::BeginDisabled(m_renderScene == nullptr);
+      if(PE::entry("Streaming state", [&] { return ImGui::Button("Reset"); }, "resets the streaming state"))
+      {
+        m_renderScene->streamingReset();
+      }
+      ImGui::EndDisabled();
+
+
+      PE::InputIntClamped("Max Resident Groups", (int*)&m_streamingConfig.maxGroups,
+                          uint32_t(m_scene ? m_scene->getActiveGeometryCount() : 1024 * 1024), 1024 * 1024, 128, 128,
+                          ImGuiInputTextFlags_EnterReturnsTrue);
+
+      PE::InputIntClamped("Max Geometry MiB", (int*)&m_streamingConfig.maxGeometryMegaBytes, 128, 1024 * 48, 128, 128,
+                          ImGuiInputTextFlags_EnterReturnsTrue);
+      if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+      {
+        PE::InputIntClamped("Max CLAS MiB", (int*)&m_streamingConfig.maxClasMegaBytes, 128, 1024 * 48, 16, 16,
+                            ImGuiInputTextFlags_EnterReturnsTrue);
+
+        PE::Checkbox("Persistent CLAS Allocator", &m_streamingConfig.usePersistentClasAllocator,
+                     "Use persistent allocation on the device for CLAS memory, otherwise move based compaction");
+        if(PE::treeNode("Allocator settings"))
+        {
+          ImGui::BeginDisabled(!m_streamingConfig.usePersistentClasAllocator);
+          PE::InputIntClamped("Granularity shift bits", (int*)&m_streamingConfig.clasAllocatorGranularityShift, 0, 8, 1,
+                              1, ImGuiInputTextFlags_EnterReturnsTrue,
+                              "CLAS Allocation byte granularity: (CLAS alignment value) < shift");
+          PE::InputIntClamped("Sector shift bits", (int*)&m_streamingConfig.clasAllocatorSectorSizeShift, 5, 16, 1, 1,
+                              ImGuiInputTextFlags_EnterReturnsTrue,
+                              "CLAS Allocation is scanning for free gaps using unused bits is done per sector of (1 << shift) of 32-bit values");
+          PE::Text("Sector size", "%d", 1 << m_streamingConfig.clasAllocatorSectorSizeShift);
+          ImGui::EndDisabled();
+          PE::treePop();
+        }
+      }
+
+      if(PE::treeNode("Frame settings"))
+      {
+        PE::InputIntClamped("Unload frame delay", (int*)&m_frameConfig.streamingAgeThreshold, 2, 1024, 1, 1,
+                            ImGuiInputTextFlags_EnterReturnsTrue);
+
+        PE::InputIntClamped("Max Group Loads", (int*)&m_streamingConfig.maxPerFrameLoadRequests, 1, 16 * 1024 * 1024,
+                            128, 128, ImGuiInputTextFlags_EnterReturnsTrue);
+        PE::InputIntClamped("Max Group Unloads", (int*)&m_streamingConfig.maxPerFrameUnloadRequests, 1,
+                            16 * 1024 * 1024, 128, 128, ImGuiInputTextFlags_EnterReturnsTrue);
+
+        PE::InputIntClamped("Max Transfer MiB", (int*)&m_streamingConfig.maxTransferMegaBytes, 1, 1024, 1, 2,
+                            ImGuiInputTextFlags_EnterReturnsTrue);
+
+        PE::Checkbox("Async transfer", &m_streamingConfig.useAsyncTransfer, "Use asynchronous transfer queue for uploads");
+        ImGui::BeginDisabled(!m_streamingConfig.useAsyncTransfer);
+        PE::Checkbox("Decoupled transfer", &m_streamingConfig.useDecoupledAsyncTransfer,
+                     "Allow asynchronous transfers to take multiple frames");
+        ImGui::EndDisabled();
+        PE::treePop();
+      }
+
+      PE::end();
+
+      ImGui::Separator();
+
+      if(ImGui::BeginTable("Streaming stats", 3, ImGuiTableFlags_RowBg))
+      {
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 155.0f * ImGui::GetWindowDpiScale());
+        ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Percentage", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Text("Geometry");
+        ImGui::TableNextColumn();
+        ImGui::TextColored(stats.couldNotStore ? warn_color : text_color, "%s", formatMemorySize(stats.usedDataBytes).c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextColored(stats.couldNotStore ? warn_color : text_color, "%d %%",
+                           getUsagePct(stats.usedDataBytes, stats.maxDataBytes));
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+        {
+          ImGui::Text("CLAS memory");
+          ImGui::TableNextColumn();
+          ImGui::TextColored(stats.couldNotAllocateClas ? warn_color : text_color, "%s",
+                             formatMemorySize(stats.usedClasBytes).c_str());
+          ImGui::TableNextColumn();
+          ImGui::TextColored(stats.couldNotAllocateClas ? warn_color : text_color, "%d %%",
+                             getUsagePct(stats.usedClasBytes, stats.reservedClasBytes));
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+
+          ImGui::Text("CLAS waste");
+          ImGui::TableNextColumn();
+          ImGui::TextColored(text_color, "%s", formatMemorySize(stats.wastedClasBytes).c_str());
+          ImGui::TableNextColumn();
+          ImGui::TextColored(text_color, "%d %%", getUsagePct(stats.wastedClasBytes, stats.usedClasBytes));
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+
+          ImGui::Text("CLAS groups left");
+          ImGui::TableNextColumn();
+          ImGui::TextColored(stats.couldNotAllocateClas ? warn_color : text_color, "%s",
+                             formatMetric(stats.maxSizedLeft).c_str());
+          ImGui::TableNextColumn();
+          ImGui::TextColored(stats.couldNotAllocateClas ? warn_color : text_color, "%d %%",
+                             getUsagePct(stats.maxSizedLeft, stats.maxSizedReserved));
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+        }
+        ImGui::Text("Resident groups");
+        ImGui::TableNextColumn();
+        ImGui::TextColored(stats.couldNotAllocateGroup ? warn_color : text_color, "%s",
+                           formatMetric(stats.residentGroups).c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextColored(stats.couldNotAllocateGroup ? warn_color : text_color, "%d %%",
+                           getUsagePct(stats.residentGroups, stats.maxGroups));
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+
+        ImGui::Text("Resident clusters");
+        uint32_t pctClusters = getUsagePct(stats.residentClusters, stats.maxClusters);
+        ImGui::TableNextColumn();
+        ImGui::TextColored(pctClusters > 99 ? warn_color : text_color, "%s", formatMetric(stats.residentClusters).c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextColored(pctClusters > 99 ? warn_color : text_color, "%d %%", pctClusters);
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+
+        ImGui::Text("Last Completed Transfer");
+        ImGui::TableNextColumn();
+        ImGui::TextColored(stats.couldNotTransfer ? warn_color : text_color, "%s", formatMemorySize(stats.transferBytes).c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextColored(stats.couldNotTransfer ? warn_color : text_color, "%d %%",
+                           getUsagePct(stats.transferBytes, stats.maxTransferBytes));
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
 #if 0
       ImGui::Text("Last Completed Transfers");
       ImGui::TableNextColumn();
@@ -673,329 +788,375 @@ void LodClusters::onUIRender()
       ImGui::TableNextColumn();
 #endif
 
-      uint32_t pctLoad =
-          stats.loadCount == m_streamingConfig.maxPerFrameLoadRequests ?
-              100 :
-              std::min(99u, uint32_t(float(stats.loadCount) * 100.0f / float(m_streamingConfig.maxPerFrameLoadRequests)));
+        uint32_t pctLoad =
+            stats.loadCount == m_streamingConfig.maxPerFrameLoadRequests ?
+                100 :
+                std::min(99u, uint32_t(float(stats.loadCount) * 100.0f / float(m_streamingConfig.maxPerFrameLoadRequests)));
 
-      ImGui::Text("Last Completed Loads");
-      ImGui::TableNextColumn();
-      ImGui::TextColored(pctLoad == 100 ? warn_color : text_color, "%s", formatMetric(stats.loadCount).c_str());
-      ImGui::TableNextColumn();
-      ImGui::TextColored(pctLoad == 100 ? warn_color : text_color, "%d%%", pctLoad);
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
+        ImGui::Text("Last Completed Loads");
+        ImGui::TableNextColumn();
+        ImGui::TextColored(pctLoad == 100 ? warn_color : text_color, "%s", formatMetric(stats.loadCount).c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextColored(pctLoad == 100 ? warn_color : text_color, "%d %%", pctLoad);
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
 
-      uint32_t pctUnLoad =
-          stats.unloadCount == m_streamingConfig.maxPerFrameUnloadRequests ?
-              100 :
-              std::min(99u, uint32_t(float(stats.unloadCount) * 100.0f / float(m_streamingConfig.maxPerFrameUnloadRequests)));
+        uint32_t pctUnLoad =
+            stats.unloadCount == m_streamingConfig.maxPerFrameUnloadRequests ?
+                100 :
+                std::min(99u, uint32_t(float(stats.unloadCount) * 100.0f / float(m_streamingConfig.maxPerFrameUnloadRequests)));
 
-      ImGui::Text("Last Completed Unloads");
-      ImGui::TableNextColumn();
-      ImGui::TextColored(pctUnLoad == 100 ? warn_color : text_color, "%s", formatMetric(stats.unloadCount).c_str());
-      ImGui::TableNextColumn();
-      ImGui::TextColored(pctUnLoad == 100 ? warn_color : text_color, "%d%%", pctUnLoad);
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
+        ImGui::Text("Last Completed Unloads");
+        ImGui::TableNextColumn();
+        ImGui::TextColored(pctUnLoad == 100 ? warn_color : text_color, "%s", formatMetric(stats.unloadCount).c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextColored(pctUnLoad == 100 ? warn_color : text_color, "%d %%", pctUnLoad);
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
 
-      uint32_t pctUncompleted =
-          stats.uncompletedLoadCount == m_streamingConfig.maxPerFrameLoadRequests ?
-              100 :
-              std::min(99u, uint32_t(float(stats.unloadCount) * 100.0f / float(m_streamingConfig.maxPerFrameUnloadRequests)));
+        uint32_t pctUncompleted =
+            stats.uncompletedLoadCount == m_streamingConfig.maxPerFrameLoadRequests ?
+                100 :
+                std::min(99u, uint32_t(float(stats.unloadCount) * 100.0f / float(m_streamingConfig.maxPerFrameUnloadRequests)));
 
-      ImGui::Text("Last Uncompleted Loads");
-      ImGui::TableNextColumn();
-      ImGui::TextColored(stats.uncompletedLoadCount ? warn_color : text_color, "%s",
-                         formatMetric(stats.uncompletedLoadCount).c_str());
-      ImGui::TableNextColumn();
-      ImGui::TextColored(stats.uncompletedLoadCount ? warn_color : text_color, "%d%%", pctUncompleted);
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
+        ImGui::Text("Last Uncompleted Loads");
+        ImGui::TableNextColumn();
+        ImGui::TextColored(stats.uncompletedLoadCount ? warn_color : text_color, "%s",
+                           formatMetric(stats.uncompletedLoadCount).c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextColored(stats.uncompletedLoadCount ? warn_color : text_color, "%d %%", pctUncompleted);
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
 
-      ImGui::EndTable();
+        ImGui::EndTable();
+      }
     }
   }
+  ImGui::End();
 
   Renderer::ResourceUsageInfo resourceActual = m_renderer ? m_renderer->getResourceUsage(false) : Renderer::ResourceUsageInfo();
   Renderer::ResourceUsageInfo resourceReserved = m_renderer ? m_renderer->getResourceUsage(true) : Renderer::ResourceUsageInfo();
 
-  ImGui::Begin("Streaming memory");
-  const uint32_t maxSlots = 512;
-  if(m_streamGeometryHistogram.empty() == m_tweak.useStreaming)
+  if(ImGui::Begin("Streaming memory"))
   {
-    m_streamGeometryHistogramMax = 0;
-    m_streamHistogramOffset      = 0;
-    m_streamGeometryHistogram.resize(m_tweak.useStreaming ? maxSlots : 0, 0);
-    m_streamClasHistogram.resize(m_tweak.useStreaming ? maxSlots : 0, 0);
-  }
-
-  if(!m_streamGeometryHistogram.empty())
-  {
-    m_renderScene->sceneStreaming.getStats(stats);
-
-    uint32_t mbGeometry          = uint32_t((stats.usedDataBytes + 999999) / 1000000);
-    uint32_t mbClas              = uint32_t((stats.usedClasBytes + 999999) / 1000000);
-    m_streamGeometryHistogramMax = std::max(m_streamGeometryHistogramMax, mbGeometry);
-    m_streamClasHistogramMax     = std::max(m_streamClasHistogramMax, mbClas);
+    const uint32_t maxSlots = 512;
+    if(m_streamGeometryHistogram.empty() == m_tweak.useStreaming)
     {
-      m_streamHistogramOffset = (m_streamHistogramOffset + 1) % maxSlots;
-      m_streamGeometryHistogram[(m_streamHistogramOffset + maxSlots - 1) % maxSlots] = mbGeometry;
-      m_streamClasHistogram[(m_streamHistogramOffset + maxSlots - 1) % maxSlots]     = mbClas;
+      m_streamGeometryHistogramMax = 0;
+      m_streamHistogramOffset      = 0;
+      m_streamGeometryHistogram.resize(m_tweak.useStreaming ? maxSlots : 0, 0);
+      m_streamClasHistogram.resize(m_tweak.useStreaming ? maxSlots : 0, 0);
     }
 
-    uiPlot(std::string("Streaming Geometry Memory (MB)"), std::string("past %d MB %d"), m_streamGeometryHistogram,
-           m_streamGeometryHistogramMax, m_streamHistogramOffset);
-    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+    if(m_renderScene && !m_streamGeometryHistogram.empty())
     {
-      uiPlot(std::string("Streaming CLAS Memory (MB)"), std::string("past %d MB %d"), m_streamClasHistogram,
-             m_streamClasHistogramMax, m_streamHistogramOffset);
+      m_renderScene->sceneStreaming.getStats(stats);
+
+#if MEMORY_WITH_BINARY_PREFIXES
+      size_t divisor = 1024 * 1024;
+#define MEMORY_MB "MiB"
+#else
+      size_t divisor = 1000000;
+#define MEMORY_MB "MB"
+#endif
+
+
+      uint32_t mbGeometry          = uint32_t((stats.usedDataBytes + divisor - 1) / divisor);
+      uint32_t mbClas              = uint32_t((stats.usedClasBytes + divisor - 1) / divisor);
+      m_streamGeometryHistogramMax = std::max(m_streamGeometryHistogramMax, mbGeometry);
+      m_streamClasHistogramMax     = std::max(m_streamClasHistogramMax, mbClas);
+      {
+        m_streamHistogramOffset = (m_streamHistogramOffset + 1) % maxSlots;
+        m_streamGeometryHistogram[(m_streamHistogramOffset + maxSlots - 1) % maxSlots] = mbGeometry;
+        m_streamClasHistogram[(m_streamHistogramOffset + maxSlots - 1) % maxSlots]     = mbClas;
+      }
+
+      uiPlot(std::string("Streaming Geometry Memory (" MEMORY_MB ")"), std::string("past %d " MEMORY_MB " %d"),
+             m_streamGeometryHistogram, m_streamGeometryHistogramMax, m_streamHistogramOffset);
+      if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+      {
+        uiPlot(std::string("Streaming CLAS Memory (" MEMORY_MB ")"), std::string("past % d " MEMORY_MB " % d"),
+               m_streamClasHistogram, m_streamClasHistogramMax, m_streamHistogramOffset);
+      }
     }
   }
   ImGui::End();
 
-  ImGui::Begin("Statistics");
-  if(ImGui::CollapsingHeader("Scene", nullptr, ImGuiTreeNodeFlags_DefaultOpen) && m_renderer)
+  if(ImGui::Begin("Statistics"))
   {
-    if(ImGui::BeginTable("Scene stats", 3, ImGuiTableFlags_None))
+    if(m_scene && ImGui::CollapsingHeader("Scene", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {
-      ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
-      ImGui::TableSetupColumn("Scene", ImGuiTableColumnFlags_WidthStretch);
-      ImGui::TableSetupColumn("Model", ImGuiTableColumnFlags_WidthStretch);
-      ImGui::TableHeadersRow();
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      ImGui::Text("Triangles");
-      ImGui::TableNextColumn();
-      ImGui::Text("%s", formatMetric(m_scene->m_hiTrianglesCountInstanced * m_sceneGridConfig.numCopies).c_str());
-      ImGui::TableNextColumn();
-      ImGui::Text("%s", formatMetric(m_scene->m_hiTrianglesCount).c_str());
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      ImGui::Text("Clusters");
-      ImGui::TableNextColumn();
-      ImGui::Text("%s", formatMetric(m_scene->m_hiClustersCountInstanced * m_sceneGridConfig.numCopies).c_str());
-      ImGui::TableNextColumn();
-      ImGui::Text("%s", formatMetric(m_scene->m_hiClustersCount).c_str());
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      ImGui::Text("Instances");
-      ImGui::TableNextColumn();
-      ImGui::Text("%s", formatMetric(m_scene->m_instances.size()).c_str());
-      ImGui::TableNextColumn();
-      ImGui::Text("%s", formatMetric(m_scene->m_originalInstanceCount).c_str());
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      ImGui::Text("Geometries");
-      ImGui::TableNextColumn();
-      ImGui::Text("%s", formatMetric(m_scene->getActiveGeometryCount()).c_str());
-      ImGui::TableNextColumn();
-      ImGui::Text("%s", formatMetric(m_scene->m_originalGeometryCount).c_str());
-      ImGui::EndTable();
+      if(ImGui::BeginTable("Scene stats", 3, ImGuiTableFlags_None))
+      {
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Scene", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Model", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableHeadersRow();
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Text("Triangles");
+        ImGui::TableNextColumn();
+        ImGui::Text("%s", formatMetric(m_scene->m_hiTrianglesCountInstanced * m_sceneGridConfig.numCopies).c_str());
+        ImGui::TableNextColumn();
+        ImGui::Text("%s", formatMetric(m_scene->m_hiTrianglesCount).c_str());
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Text("Clusters");
+        ImGui::TableNextColumn();
+        ImGui::Text("%s", formatMetric(m_scene->m_hiClustersCountInstanced * m_sceneGridConfig.numCopies).c_str());
+        ImGui::TableNextColumn();
+        ImGui::Text("%s", formatMetric(m_scene->m_hiClustersCount).c_str());
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Text("Instances");
+        ImGui::TableNextColumn();
+        ImGui::Text("%s", formatMetric(m_scene->m_instances.size()).c_str());
+        ImGui::TableNextColumn();
+        ImGui::Text("%s", formatMetric(m_scene->m_originalInstanceCount).c_str());
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Text("Geometries");
+        ImGui::TableNextColumn();
+        ImGui::Text("%s", formatMetric(m_scene->getActiveGeometryCount()).c_str());
+        ImGui::TableNextColumn();
+        ImGui::Text("%s", formatMetric(m_scene->m_originalGeometryCount).c_str());
+        ImGui::EndTable();
+      }
+    }
+    if(m_renderer && ImGui::CollapsingHeader("Traversal", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
+    {
+      if(ImGui::BeginTable("Traversal stats", 3, ImGuiTableFlags_RowBg))
+      {
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Requested", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Reserved", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableHeadersRow();
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Text("Tasks");
+        ImGui::TableNextColumn();
+        ImGui::TextColored(pct.pctTasks > 100 ? warn_color : text_color, "%s", formatMetric(readback.numTraversalTasks).c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextColored(pct.pctTasks > 100 ? warn_color : text_color, "%d %%", pct.pctTasks);
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Text("Clusters");
+        ImGui::TableNextColumn();
+        ImGui::TextColored(pct.pctClusters > 100 ? warn_color : text_color, "%s",
+                           formatMetric(readback.numRenderClusters).c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextColored(pct.pctClusters > 100 ? warn_color : text_color, "%d %%", pct.pctClusters);
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Text("BLAS Builds");
+        ImGui::TableNextColumn();
+        ImGui::Text("%s", formatMetric(readback.numBlasBuilds).c_str());
+        ImGui::TableNextColumn();
+        ImGui::Text("%d %%", pct.pctBlas);
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::EndTable();
+      }
+    }
+    if(m_renderer && ImGui::CollapsingHeader("Memory", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
+    {
+      if(ImGui::BeginTable("Memory stats", 3, ImGuiTableFlags_RowBg))
+      {
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Actual", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Reserved", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableHeadersRow();
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Text("Geometry");
+        ImGui::TableNextColumn();
+        ImGui::Text("%s", formatMemorySize(resourceActual.geometryMemBytes).c_str());
+        ImGui::TableNextColumn();
+        ImGui::Text("%s", formatMemorySize(resourceReserved.geometryMemBytes).c_str());
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Text("CLAS");
+        ImGui::TableNextColumn();
+        ImGui::Text("%s", formatMemorySize(resourceActual.rtClasMemBytes).c_str());
+        ImGui::TableNextColumn();
+        ImGui::Text("%s", formatMemorySize(resourceReserved.rtClasMemBytes).c_str());
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Text("BLAS");
+        ImGui::TableNextColumn();
+        ImGui::Text("%s", formatMemorySize(resourceActual.rtBlasMemBytes).c_str());
+        ImGui::TableNextColumn();
+        ImGui::Text("%s", formatMemorySize(resourceReserved.rtBlasMemBytes).c_str());
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Text("TLAS");
+        ImGui::TableNextColumn();
+        ImGui::Text("%s", formatMemorySize(resourceActual.rtTlasMemBytes).c_str());
+        ImGui::TableNextColumn();
+        ImGui::Text("==");
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Text("Operations");
+        ImGui::TableNextColumn();
+        ImGui::Text("%s", formatMemorySize(resourceActual.operationsMemBytes).c_str());
+        ImGui::TableNextColumn();
+        ImGui::Text("==");
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Text("Total");
+        ImGui::TableNextColumn();
+        ImGui::Text("%s", formatMemorySize(resourceActual.getTotalSum()).c_str());
+        ImGui::TableNextColumn();
+        ImGui::Text("%s", formatMemorySize(resourceReserved.getTotalSum()).c_str());
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::EndTable();
+      }
+    }
+
+    if(m_scene && ImGui::CollapsingHeader("Model Cluster Stats"))  //, nullptr, ImGuiTreeNodeFlags_DefaultOpen))
+    {
+      ImGui::Text("Cluster max triangles: %d", m_scene->m_maxClusterTriangles);
+      ImGui::Text("Cluster max vertices: %d", m_scene->m_maxClusterVertices);
+      ImGui::Text("Cluster count: %" PRIu64, m_scene->m_totalClustersCount);
+      ImGui::Text("Clusters with config (%u) triangles: %u (%.1f%%)", m_scene->m_config.clusterTriangles,
+                  m_scene->m_clusterTriangleHistogram.back(),
+                  float(m_scene->m_clusterTriangleHistogram.back()) * 100.f / float(m_scene->m_totalClustersCount));
+      ImGui::Text("Geometry max lod levels: %d", m_scene->m_maxLodLevelsCount);
+
+      uiPlot(std::string("Cluster Triangles Histogram"), std::string("Cluster count with %d triangles: %u"),
+             m_scene->m_clusterTriangleHistogram, m_scene->m_clusterTriangleHistogramMax);
+      uiPlot(std::string("Cluster Vertices Histogram"), std::string("Cluster count with %d vertices: %u"),
+             m_scene->m_clusterVertexHistogram, m_scene->m_clusterVertexHistogramMax);
+      uiPlot(std::string("Lod-Group Clusters Histogram"), std::string("Group count with %d clusters: %u"),
+             m_scene->m_groupClusterHistogram, m_scene->m_groupClusterHistogramMax);
+      uiPlot(std::string("Lod-Node Children Histogram"), std::string("Node count with %d children: %u"),
+             m_scene->m_nodeChildrenHistogram, m_scene->m_nodeChildrenHistogramMax);
+      uiPlot(std::string("Geometry Lod Levels Histogram"), std::string("Geometry count with %d lod levels: %u"),
+             m_scene->m_lodLevelsHistogram, m_scene->m_lodLevelsHistogramMax);
     }
   }
-  if(ImGui::CollapsingHeader("Memory", nullptr, ImGuiTreeNodeFlags_DefaultOpen) && m_renderer)
+  ImGui::End();
+
+  if(ImGui::Begin("Misc Settings"))
   {
-    if(ImGui::BeginTable("Memory stats", 3, ImGuiTableFlags_RowBg))
+    if(ImGui::CollapsingHeader("Camera", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {
-      ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
-      ImGui::TableSetupColumn("Actual", ImGuiTableColumnFlags_WidthStretch);
-      ImGui::TableSetupColumn("Reserved", ImGuiTableColumnFlags_WidthStretch);
-      ImGui::TableHeadersRow();
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      ImGui::Text("Geometry");
-      ImGui::TableNextColumn();
-      ImGui::Text("%s", formatMemorySize(resourceActual.geometryMemBytes).c_str());
-      ImGui::TableNextColumn();
-      ImGui::Text("==");
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      ImGui::Text("TLAS");
-      ImGui::TableNextColumn();
-      ImGui::Text("%s", formatMemorySize(resourceActual.rtTlasMemBytes).c_str());
-      ImGui::TableNextColumn();
-      ImGui::Text("-");
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      ImGui::Text("BLAS");
-      ImGui::TableNextColumn();
-      ImGui::Text("%s", formatMemorySize(resourceActual.rtBlasMemBytes).c_str());
-      ImGui::TableNextColumn();
-      ImGui::Text("%s", formatMemorySize(resourceReserved.rtBlasMemBytes).c_str());
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      ImGui::Text("CLAS");
-      ImGui::TableNextColumn();
-      ImGui::Text("%s", formatMemorySize(resourceActual.rtClasMemBytes).c_str());
-      ImGui::TableNextColumn();
-      ImGui::Text("%s", formatMemorySize(resourceReserved.rtClasMemBytes).c_str());
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      ImGui::Text("Operations");
-      ImGui::TableNextColumn();
-      ImGui::Text("%s", formatMemorySize(resourceActual.operationsMemBytes).c_str());
-      ImGui::TableNextColumn();
-      ImGui::Text("-");
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      ImGui::Text("Total");
-      ImGui::TableNextColumn();
-      ImGui::Text("%s", formatMemorySize(resourceActual.getTotalSum()).c_str());
-      ImGui::TableNextColumn();
-      ImGui::Text("%s", formatMemorySize(resourceReserved.getTotalSum()).c_str());
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      ImGui::EndTable();
+      nvgui::CameraWidget(m_info.cameraManipulator, false);
+      namespace PE = nvgui::PropertyEditor;
+      PE::begin("misc", ImGuiTableFlags_Resizable);
+      PE::InputFloat("Speed distance factor", &m_tweak.clickSpeedScale, 0, 0, "%.2f", 0,
+                     "double click causes speed to be based on this percentage of the distance to hit point");
+      PE::end();
     }
-  }
 
-  if(m_scene && ImGui::CollapsingHeader("Model Cluster Stats"))  //, nullptr, ImGuiTreeNodeFlags_DefaultOpen))
-  {
-    ImGui::Text("Cluster max triangles: %d", m_scene->m_maxClusterTriangles);
-    ImGui::Text("Cluster max vertices: %d", m_scene->m_maxClusterVertices);
-    ImGui::Text("Cluster count: %llu", m_scene->m_totalClustersCount);
-    ImGui::Text("Clusters with config (%u) triangles: %u (%.1f%%)", m_scene->m_config.clusterTriangles,
-                m_scene->m_clusterTriangleHistogram.back(),
-                float(m_scene->m_clusterTriangleHistogram.back()) * 100.f / float(m_scene->m_totalClustersCount));
-    ImGui::Text("Geometry max lod levels: %d", m_scene->m_maxLodLevelsCount);
-
-    uiPlot(std::string("Cluster Triangles Histogram"), std::string("Cluster count with %d triangles: %u"),
-           m_scene->m_clusterTriangleHistogram, m_scene->m_clusterTriangleHistogramMax);
-    uiPlot(std::string("Cluster Vertices Histogram"), std::string("Cluster count with %d vertices: %u"),
-           m_scene->m_clusterVertexHistogram, m_scene->m_clusterVertexHistogramMax);
-    uiPlot(std::string("Lod-Group Clusters Histogram"), std::string("Group count with %d clusters: %u"),
-           m_scene->m_groupClusterHistogram, m_scene->m_groupClusterHistogramMax);
-    uiPlot(std::string("Lod-Node Children Histogram"), std::string("Node count with %d children: %u"),
-           m_scene->m_nodeChildrenHistogram, m_scene->m_nodeChildrenHistogramMax);
-    uiPlot(std::string("Geometry Lod Levels Histogram"), std::string("Geometry count with %d lod levels: %u"),
-           m_scene->m_lodLevelsHistogram, m_scene->m_lodLevelsHistogramMax);
-  }
-  ImGui::End();
-  ImGui::End();
-
-  ImGui::Begin("Misc Settings");
-
-  if(ImGui::CollapsingHeader("Camera", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
-  {
-    nvgui::CameraWidget(m_info.cameraManipulator);
-    namespace PE = nvgui::PropertyEditor;
-    PE::begin();
-    PE::InputFloat("Speed distance factor", &m_tweak.clickSpeedScale, 0, 0, "%.2f", 0,
-                   "double click causes speed to be based on this percentage of the distance to hit point");
-    PE::end();
-  }
-
-  if(ImGui::CollapsingHeader("Lighting", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
-  {
-    namespace PE = nvgui::PropertyEditor;
-    PE::begin();
-    PE::SliderFloat("Light Mixer", &m_frameConfig.frameConstants.lightMixer, 0.0f, 1.0f, "%.3f", 0,
-                    "Mix between flashlight and sun light");
-    PE::end();
-    ImGui::TextDisabled("Sun & Sky");
-    nvgui::skySimpleParametersUI(m_frameConfig.frameConstants.skyParams);
-  }
-
-  if(ImGui::CollapsingHeader("Mirror Box", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
-  {
-    namespace PE = nvgui::PropertyEditor;
-    PE::begin();
-    PE::Checkbox("Use", (bool*)&m_frameConfig.frameConstants.useMirrorBox);
-    PE::InputFloat3("Position", &m_frameConfig.frameConstants.wMirrorBox.x);
-    PE::InputFloat("Size", &m_frameConfig.frameConstants.wMirrorBox.w);
-    PE::InputFloat("Size distance factor", &m_tweak.mirrorBoxScale, 0, 0, "%.3f", 0,
-                   "When event is used, determine mirror box size based on `distance * factor`");
-    PE::end();
-  }
-
-  if(ImGui::CollapsingHeader("Rendering Advanced", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
-  {
-    PE::begin("##Renderer Advanced");
-    PE::InputIntClamped("Persistent traversal threads", (int*)&m_frameConfig.traversalPersistentThreads, 128,
-                        256 * 1024, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue);
-    PE::end();
-  }
-
-  ImGui::End();
-
-  if(m_showDebugUI)
-  {
-    ImGui::Begin("Debug");
-    if(ImGui::CollapsingHeader("Misc settings", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
+    if(ImGui::CollapsingHeader("Lighting", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {
-      PE::begin("##HiddenID");
+      namespace PE = nvgui::PropertyEditor;
+      PE::begin("misc", ImGuiTableFlags_Resizable);
+      PE::SliderFloat("Light Mixer", &m_frameConfig.frameConstants.lightMixer, 0.0f, 1.0f, "%.3f", 0,
+                      "Mix between flashlight and sun light");
+      PE::end();
+      ImGui::Text("Sun & Sky");
+      nvgui::skySimpleParametersUI(m_frameConfig.frameConstants.skyParams, "misc", ImGuiTableFlags_Resizable);
+    }
+
+    if(ImGui::CollapsingHeader("Mirror Box", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
+    {
+      namespace PE = nvgui::PropertyEditor;
+      PE::begin("misc", ImGuiTableFlags_Resizable);
+      PE::Checkbox("Use", (bool*)&m_frameConfig.frameConstants.useMirrorBox);
+      PE::InputFloat3("Position", &m_frameConfig.frameConstants.wMirrorBox.x);
+      PE::InputFloat("Size", &m_frameConfig.frameConstants.wMirrorBox.w);
+      PE::InputFloat("Size distance factor", &m_tweak.mirrorBoxScale, 0, 0, "%.3f", 0,
+                     "When event is used, determine mirror box size based on `distance * factor`");
+      PE::end();
+    }
+
+    if(ImGui::CollapsingHeader("Advanced", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
+    {
+      PE::begin("misc", ImGuiTableFlags_Resizable);
+      PE::InputIntClamped("Persistent traversal threads", (int*)&m_frameConfig.traversalPersistentThreads, 128,
+                          256 * 1024, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue);
       PE::InputInt("Colorize xor", (int*)&m_frameConfig.frameConstants.colorXor);
       PE::Checkbox("Auto reset timer", &m_tweak.autoResetTimers);
       PE::end();
     }
-    if(ImGui::CollapsingHeader("Debug Shader Values", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
+  }
+  ImGui::End();
+
+  if(m_showDebugUI)
+  {
+    if(ImGui::Begin("Debug"))
     {
-      PE::begin("##HiddenID");
-      PE::InputInt("dbgInt", (int*)&m_frameConfig.frameConstants.dbgUint, 1, 100, ImGuiInputTextFlags_EnterReturnsTrue);
-      PE::InputFloat("dbgFloat", &m_frameConfig.frameConstants.dbgFloat, 0.1f, 1.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
-      PE::end();
-
-      ImGui::Text(" debugI :  %10d", readback.debugI);
-      ImGui::Text(" debugUI:  %10u", readback.debugUI);
-      ImGui::Text(" debugU64:  %llX", readback.debugU64);
-      static bool debugFloat = false;
-      static bool debugHex   = false;
-      static bool debugAll   = false;
-      ImGui::Checkbox(" as float", &debugFloat);
-      ImGui::SameLine();
-      ImGui::Checkbox("hex", &debugHex);
-      ImGui::SameLine();
-      ImGui::Checkbox("all", &debugAll);
-      //ImGui::SameLine();
-      //bool     doPrint = ImGui::Button("print");
-      uint32_t count = debugAll ? 64 : 32;
-
-      if(ImGui::BeginTable("##Debug", 4, ImGuiTableFlags_BordersOuter))
+      if(ImGui::CollapsingHeader("Debug Shader Values", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
       {
-        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 32);
-        ImGui::TableSetupColumn("A", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("B", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("C", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableHeadersRow();
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        for(uint32_t i = 0; i < count; i++)
-        {
-          ImGui::Text("%2d", i);
-          if(debugFloat)
-          {
-            ImGui::TableNextColumn();
-            ImGui::Text("%f", *(float*)&readback.debugA[i]);
-            ImGui::TableNextColumn();
-            ImGui::Text("%f", *(float*)&readback.debugB[i]);
-            ImGui::TableNextColumn();
-            ImGui::Text("%f", *(float*)&readback.debugC[i]);
-          }
-          else if(debugHex)
-          {
-            ImGui::TableNextColumn();
-            ImGui::Text("%X", readback.debugA[i]);
-            ImGui::TableNextColumn();
-            ImGui::Text("%X", readback.debugB[i]);
-            ImGui::TableNextColumn();
-            ImGui::Text("%X", readback.debugC[i]);
-          }
-          else
-          {
-            ImGui::TableNextColumn();
-            ImGui::Text("%d", readback.debugA[i]);
-            ImGui::TableNextColumn();
-            ImGui::Text("%d", readback.debugB[i]);
-            ImGui::TableNextColumn();
-            ImGui::Text("%d", readback.debugC[i]);
-          }
+        PE::begin("##HiddenID");
+        PE::InputInt("dbgInt", (int*)&m_frameConfig.frameConstants.dbgUint, 1, 100, ImGuiInputTextFlags_EnterReturnsTrue);
+        PE::InputFloat("dbgFloat", &m_frameConfig.frameConstants.dbgFloat, 0.1f, 1.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
+        PE::end();
 
+        ImGui::Text(" debugI :  %10d", readback.debugI);
+        ImGui::Text(" debugUI:  %10u", readback.debugUI);
+        ImGui::Text(" debugU64:  %" PRIX64, readback.debugU64);
+        static bool debugFloat = false;
+        static bool debugHex   = false;
+        static bool debugAll   = false;
+        ImGui::Checkbox(" as float", &debugFloat);
+        ImGui::SameLine();
+        ImGui::Checkbox("hex", &debugHex);
+        ImGui::SameLine();
+        ImGui::Checkbox("all", &debugAll);
+        //ImGui::SameLine();
+        //bool     doPrint = ImGui::Button("print");
+        uint32_t count = debugAll ? 64 : 32;
+
+        if(ImGui::BeginTable("##Debug", 4, ImGuiTableFlags_BordersOuter))
+        {
+          ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 32);
+          ImGui::TableSetupColumn("A", ImGuiTableColumnFlags_WidthStretch);
+          ImGui::TableSetupColumn("B", ImGuiTableColumnFlags_WidthStretch);
+          ImGui::TableSetupColumn("C", ImGuiTableColumnFlags_WidthStretch);
+          ImGui::TableHeadersRow();
           ImGui::TableNextRow();
           ImGui::TableNextColumn();
-        }
+          for(uint32_t i = 0; i < count; i++)
+          {
+            ImGui::Text("%2d", i);
+            if(debugFloat)
+            {
+              ImGui::TableNextColumn();
+              ImGui::Text("%f", *(float*)&readback.debugA[i]);
+              ImGui::TableNextColumn();
+              ImGui::Text("%f", *(float*)&readback.debugB[i]);
+              ImGui::TableNextColumn();
+              ImGui::Text("%f", *(float*)&readback.debugC[i]);
+            }
+            else if(debugHex)
+            {
+              ImGui::TableNextColumn();
+              ImGui::Text("%X", readback.debugA[i]);
+              ImGui::TableNextColumn();
+              ImGui::Text("%X", readback.debugB[i]);
+              ImGui::TableNextColumn();
+              ImGui::Text("%X", readback.debugC[i]);
+            }
+            else
+            {
+              ImGui::TableNextColumn();
+              ImGui::Text("%d", readback.debugA[i]);
+              ImGui::TableNextColumn();
+              ImGui::Text("%d", readback.debugB[i]);
+              ImGui::TableNextColumn();
+              ImGui::Text("%d", readback.debugC[i]);
+            }
 
-        ImGui::EndTable();
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+          }
+
+          ImGui::EndTable();
+        }
       }
     }
     ImGui::End();
@@ -1004,63 +1165,130 @@ void LodClusters::onUIRender()
   handleChanges();
 
   // Rendered image displayed fully in 'Viewport' window
-  ImGui::Begin("Viewport");
-  ImVec2 corner = ImGui::GetCursorScreenPos();  // Corner of the viewport
-  ImGui::Image((ImTextureID)m_imguiTexture, ImGui::GetContentRegionAvail());
-  viewportUI(corner);
+  if(ImGui::Begin("Viewport"))
+  {
+    ImVec2 corner = ImGui::GetCursorScreenPos();  // Corner of the viewport
+    ImGui::Image((ImTextureID)m_imguiTexture, ImGui::GetContentRegionAvail());
+    viewportUI(corner);
+  }
   ImGui::End();
 }
 
 void LodClusters::onUIMenu()
 {
+  bool vsync = m_app->isVsync();
+
+  bool doOpenFile        = ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O);
+  bool doSaveCacheFile   = ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S);
+  bool doReloadFile      = ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_R);
+  bool doDeleteCacheFile = ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_D);
+  bool doCloseApp        = ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Q);
+  bool doToggleVsync     = ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_V);
+
+  bool hasCache = m_scene && !m_scene->isMemoryMappedCache() && std::filesystem::exists(m_scene->getCacheFilePath());
+
+
   if(ImGui::BeginMenu("File"))
   {
-    if(ImGui::MenuItem("Open", "Ctrl+O"))
+    if(ImGui::MenuItem(ICON_MS_FILE_OPEN "Open", "Ctrl+O"))
     {
-      std::filesystem::path filename =
-          nvgui::windowOpenFileDialog(m_app->getWindowHandle(), "Load glTF", "glTF(.gltf, .glb)|*.gltf;*.glb");
-      if(!filename.empty())
-      {
-        onFileDrop(filename);
-      }
+      doOpenFile = true;
     }
     if(m_scene)
     {
-      if(ImGui::MenuItem("Reload", "Ctrl+R"))
+      if(ImGui::MenuItem(ICON_MS_REFRESH "Reload File", "Ctrl+R"))
       {
-        std::filesystem::path filePath = m_scene->getFilePath();
-        onFileDrop(filePath);
+        doReloadFile = true;
       }
 
       if(!m_scene->m_loadedFromCache)
       {
-        if(ImGui::MenuItem("Save Cache", "Ctrl+S"))
+        if(ImGui::MenuItem(ICON_MS_FILE_SAVE "Save Cache", "Ctrl+S"))
         {
-          saveCacheFile();
+          doSaveCacheFile = true;
         }
       }
 
-      if(!m_scene->isMemoryMappedCache() && std::filesystem::exists(m_scene->getCacheFilePath()))
+      if(hasCache)
       {
-        if(ImGui::MenuItem("Delete Cache", "Ctrl+D"))
+        if(ImGui::MenuItem(ICON_MS_DELETE "Delete Cache", "Ctrl+D"))
         {
-          try
-          {
-            if(std::filesystem::remove(m_scene->getCacheFilePath()))
-            {
-              LOGI("Cache file deleted successfully.\n");
-            }
-          }
-          catch(const std::filesystem::filesystem_error& e)
-          {
-            LOGW("Problem deleting cache file: %s\n", e.what());
-          }
+          doDeleteCacheFile = true;
         }
       }
     }
-
+    if(ImGui::MenuItem(ICON_MS_DIRECTORY_SYNC "Reload Shaders", "R"))
+    {
+      m_reloadShaders = true;
+    }
+    if(ImGui::MenuItem(ICON_MS_POWER_SETTINGS_NEW "Exit", "Ctrl+Q"))
+    {
+      doCloseApp = true;
+    }
 
     ImGui::EndMenu();
+  }
+
+  if(ImGui::BeginMenu("View"))
+  {
+    if(ImGui::MenuItem(ICON_MS_BOTTOM_PANEL_OPEN "V-Sync", "Ctrl+Shift+V", &vsync))
+    {
+      doToggleVsync = true;
+    }
+
+    ImGui::EndMenu();
+  }
+
+  if(doToggleVsync)
+  {
+    vsync = !vsync;
+    m_app->setVsync(vsync);
+  }
+
+  if(doOpenFile)
+  {
+    std::filesystem::path filename =
+        nvgui::windowOpenFileDialog(m_app->getWindowHandle(), "Load supported",
+                                    "Supported Files|*.gltf;*.glb;*.cfg|glTF(.gltf, .glb)|*.gltf;*.glb|config file(.cfg)|*.cfg");
+    if(!filename.empty())
+    {
+      onFileDrop(filename);
+    }
+  }
+
+  if(m_scene && doReloadFile)
+  {
+    std::filesystem::path filePath = m_scene->getFilePath();
+    onFileDrop(filePath);
+  }
+
+  if(m_scene)
+  {
+    if(!m_scene->m_loadedFromCache && doSaveCacheFile)
+    {
+      saveCacheFile();
+    }
+
+    if(hasCache && doDeleteCacheFile)
+    {
+      try
+      {
+        if(std::filesystem::remove(m_scene->getCacheFilePath()))
+        {
+          LOGI("Cache file deleted successfully.\n");
+        }
+      }
+      catch(const std::filesystem::filesystem_error& e)
+      {
+        LOGW("Problem deleting cache file: %s\n", e.what());
+      }
+    }
+  }
+
+
+  if(doCloseApp)
+  {
+    m_app->close();
   }
 }
 

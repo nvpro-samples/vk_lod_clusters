@@ -83,20 +83,29 @@ vec3 visualizeColor(uint visData, uint instanceID)
     return pow(unpackUnorm4x8(instances[instanceID].packedColor).xyz * 0.95 + 0.05, vec3(1.0/2.2));
   }
 #if TARGETS_RAY_TRACING
-  else if (view.visualize == VISUALIZE_BLAS) {
+  else if (view.visualize == VISUALIZE_BLAS || view.visualize == VISUALIZE_BLAS_CACHED) {
     uint blasBuildIndex = build.instanceBuildInfos.d[instanceID].blasBuildIndex;
     
+    bool lowDetail = false;
     if (blasBuildIndex == BLAS_BUILD_INDEX_LOWDETAIL)
     {
-      return vec3(0.9, 0.1, 0.1);
+      lowDetail = true;
     }
   #if USE_BLAS_SHARING
-    else if ((blasBuildIndex & BLAS_BUILD_INDEX_SHARE_BIT) != 0)
+    else if ((blasBuildIndex & (BLAS_BUILD_INDEX_SHARE_BIT | BLAS_BUILD_INDEX_CACHE_BIT)) != 0)
     {
+      // intentionally keep CACHE_BIT here for colorization
       instanceID = blasBuildIndex & ~(BLAS_BUILD_INDEX_SHARE_BIT);
     }
   #endif
-    return colorizeID(instanceID).xyz;
+    if (view.visualize == VISUALIZE_BLAS_CACHED)
+    {
+      return lowDetail || ((blasBuildIndex & BLAS_BUILD_INDEX_CACHE_BIT) != 0) ? vec3(0.1, 0.9, 0.1) : vec3(0.9, 0.1, 0.1);
+    }
+    else 
+    {
+      return lowDetail ? vec3(0.9, 0.1, 0.1) : colorizeID(instanceID).xyz;
+    }
   }
 #endif
   else
@@ -111,7 +120,6 @@ vec4 shading(uint instanceID, vec3 wPos, vec3 wNormal, uint visData, float overh
 #endif
 )
 {
-  const vec3 sunColor           = vec3(0.99f, 1.f, 0.71f);
   const vec3 skyColor           = view.skyParams.skyColor;
   const vec3 groundColor        = view.skyParams.groundColor;
   const float materialRoughness = 0;
@@ -130,8 +138,8 @@ vec4 shading(uint instanceID, vec3 wPos, vec3 wNormal, uint visData, float overh
 
   // Ambient
   float ambientIntensity = 1.f;
-  vec3  ambientLighting  = ambientOcclusion * materialAlbedo* ambientIntensity
-                         * mix(groundColor, skyColor, dot(normal, view.wUpDir.xyz) * 0.5 + 0.5) ;
+  vec3  ambientLighting  = ambientOcclusion * materialAlbedo * ambientIntensity
+                         * mix(mix(groundColor, skyColor, dot(normal, view.wUpDir.xyz) * 0.5 + 0.5), vec3(0.5), 0.5) ;
 
   // Light mixer
   float lightMixer             = view.lightMixer;
@@ -149,7 +157,7 @@ vec4 shading(uint instanceID, vec3 wPos, vec3 wNormal, uint visData, float overh
     flashlightLighting = flashlightIntensity * materialAlbedo * bsdf;
   }
 
-  // Overhead light
+  // Sky light
   vec3 overheadLightColor = view.skyParams.sunColor * view.skyParams.sunIntensity;
   vec3 overheadLighting   = vec3(overheadLightIntensity * overheadLight * overheadLightColor);
   {

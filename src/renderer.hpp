@@ -55,6 +55,7 @@ public:
 
   const nvvk::BufferTyped<shaderio::Geometry>& getShaderGeometriesBuffer() const;
   size_t                                       getClasSize(bool reserved) const;
+  size_t                                       getBlasSize(bool reserved) const;
   size_t                                       getOperationsSize() const;
   size_t                                       getGeometrySize(bool reserved) const;
 };
@@ -67,8 +68,11 @@ struct RendererConfig
   bool useRenderStats        = false;
   bool useCulling            = true;
   bool useBlasSharing        = true;
+  bool useBlasMerging        = true;
+  bool useBlasCaching        = false;
   bool useDebugVisualization = true;
   bool useSeparateGroups     = true;
+
 #if USE_DLSS
   bool                        useDlss     = false;
   NVSDK_NGX_PerfQuality_Value dlssQuality = NVSDK_NGX_PerfQuality_Value_MaxQuality;
@@ -119,6 +123,10 @@ public:
     return reserved ? m_resourceReservedUsage : m_resourceActualUsage;
   };
 
+  uint32_t getMaxRenderClusters() const { return m_maxRenderClusters; }
+  uint32_t getMaxTraversalTasks() const { return m_maxTraversalTasks; }
+  uint32_t getMaxBlasBuilds() const { return m_maxBlasBuilds; }
+
 protected:
   void initBasics(Resources& res, RenderScene& rscene, const RendererConfig& config);
   void deinitBasics(Resources& res);
@@ -147,6 +155,11 @@ protected:
     VkPipeline background{};
     VkPipeline renderInstanceBboxes{};
   };
+
+  RendererConfig m_config;
+  uint32_t       m_maxRenderClusters = 0;
+  uint32_t       m_maxTraversalTasks = 0;
+  uint32_t       m_maxBlasBuilds     = 0;
 
   BasicShaders   m_basicShaders;
   BasicPipelines m_basicPipelines;

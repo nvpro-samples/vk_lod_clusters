@@ -94,6 +94,14 @@ size_t RenderScene::getClasSize(bool reserved) const
     return scenePreloaded.getClasSize();
 }
 
+size_t RenderScene::getBlasSize(bool reserved) const
+{
+  if(useStreaming)
+    return sceneStreaming.getBlasSize(reserved);
+  else
+    return scenePreloaded.getBlasSize();
+}
+
 size_t RenderScene::getGeometrySize(bool reserved) const
 {
   if(useStreaming)

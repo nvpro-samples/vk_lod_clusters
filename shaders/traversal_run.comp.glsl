@@ -236,6 +236,9 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   TraversalInfo traversalInfo;
   traversalInfo.instanceID               = subgroupShuffle(subgroupTasks.instanceID, taskID);
   traversalInfo.packedNode               = subgroupShuffle(subgroupTasks.packedNode, taskID);
+  
+  uint instanceID     = traversalInfo.instanceID;
+  bool forceCluster   = false;
 
   // identify type of item: node or group
   bool isNode  = PACKED_GET(traversalInfo.packedNode, Node_packed_isGroup) == 0;
@@ -244,7 +247,7 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   isNode = true;
 #endif
 
-  uint geometryID   = instances[traversalInfo.instanceID].geometryID;
+  uint geometryID   = instances[instanceID].geometryID;
   Geometry geometry = geometries[geometryID];
 
   // retrieve traversal & culling related information from the child node or cluster
@@ -252,8 +255,6 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
 #if USE_CULLING && TARGETS_RASTERIZATION
   BBox bbox;
 #endif
-
-  bool forceCluster = false;
 
   if (isNode)
   {
@@ -278,7 +279,11 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
     // The later `if (traverseNode)` branch ensured that this pointer is valid
     // and we never traverse to a group that isn't resident.
     Group group = Group_in(geometry.streamingGroupAddresses.d[groupIndex]).d;
-    streaming.resident.groups.d[group.residentID].age = 0;
+    #if USE_BLAS_MERGING
+      // handled further down see `if (traverseNode)`
+    #else
+      streaming.resident.groups.d[group.residentID].age = uint16_t(0);
+    #endif
   #else
     // can directly access the group
     Group group = geometry.preloadedGroups.d[groupIndex];
@@ -341,26 +346,38 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   
   // perform traversal & culling logic
   
-  mat4 worldMatrix   = instances[traversalInfo.instanceID].worldMatrix;
+  mat4 worldMatrix   = instances[instanceID].worldMatrix;
   float uniformScale = computeUniformScale(worldMatrix);
   float errorScale   = 1.0;
 #if USE_CULLING && TARGETS_RASTERIZATION
   isValid            = isValid && queryWasVisible(worldMatrix, bbox);
-#elif USE_CULLING && TARGETS_RAY_TRACING
-  uint visibilityState = build.instanceVisibility.d[traversalInfo.instanceID];
-  // instance is not primary visible, apply different error scale
-  if (visibilityState == 0) errorScale = build.culledErrorScale;
+#elif (USE_CULLING || USE_BLAS_MERGING) && TARGETS_RAY_TRACING
+  uint visibilityState = build.instanceVisibility.d[instanceID];
+  #if USE_CULLING
+    // instance is not primary visible, apply different error scale
+    if ((visibilityState & INSTANCE_VISIBLE_BIT) == 0) errorScale = build.culledErrorScale;
+  #endif  
 #endif
   bool traverse      = testForTraversal(mat4x3(build.traversalViewMatrix * worldMatrix), uniformScale, traversalMetric, errorScale);
-  bool traverseNode  = isValid && isNode && traverse;    // nodes test if we can descend
+  bool traverseNode  = isValid && isNode && (traverse);                    // nodes test if we can descend
   bool renderCluster = isValid && !isNode && (!traverse || forceCluster);  // clusters use negated test or are forced
+  
+  bool isGroup = false;
 
-#if USE_STREAMING
+#if USE_STREAMING || USE_BLAS_MERGING || USE_SEPARATE_GROUPS
   if (traverseNode)
   {
     // when streaming we might need to bail out here, if the child group isn't resident
-    bool isGroup    = PACKED_GET(traversalInfo.packedNode, Node_packed_isGroup) != 0;
+         isGroup    = PACKED_GET(traversalInfo.packedNode, Node_packed_isGroup) != 0;
     uint groupIndex = PACKED_GET(traversalInfo.packedNode, Node_packed_groupIndex);
+    
+  #if USE_BLAS_MERGING
+    if (isGroup && ((visibilityState & INSTANCE_USES_MERGED_BIT) != 0))
+    {
+      // no need to actually traverse the group
+      traverseNode = false;
+    }
+  #endif
   
   #if USE_STREAMING
     // streamingGroupAddresses[groupIndex] encodes two things:
@@ -381,27 +398,37 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
         // not streamed in yet, cannot process this group.
         traverseNode = false;
         
-        // This operation is uncached, since we use it to test if a request was made within this frame to the same address already.
-        // requestFrameIndex is always >= STREAMING_INVALID_ADDRESS_START
-        uint64_t lastRequestFrameIndex = atomicMax(geometry.streamingGroupAddresses.d[groupIndex], streaming.request.frameIndex);
-        
-        // we haven't made the request this frame, so trigger it
-        bool triggerRequest = lastRequestFrameIndex != streaming.request.frameIndex;
-        
-        uvec4 voteRequested  = subgroupBallot(triggerRequest);
-        uint  countRequested = subgroupBallotBitCount(voteRequested);
-        uint offsetRequested = 0;
-        if (subgroupElect()) {
-          offsetRequested = atomicAdd(streamingRW.request.loadCounter, countRequested);
-        }
-        offsetRequested = subgroupBroadcastFirst(offsetRequested);
-        offsetRequested += subgroupBallotExclusiveBitCount(voteRequested);
-        
-        if (triggerRequest && offsetRequested <= streaming.request.maxLoads) {
-          // while streaming data is based on geometry 
-          streaming.request.loadGeometryGroups.d[offsetRequested] = uvec2(geometryID, groupIndex);
+        {
+          // This operation is uncached, since we use it to test if a request was made within this frame to the same address already.
+          // requestFrameIndex is always >= STREAMING_INVALID_ADDRESS_START
+          uint64_t lastRequestFrameIndex = atomicMax(geometry.streamingGroupAddresses.d[groupIndex], streaming.request.frameIndex);
+          
+          // we haven't made the request this frame, so trigger it
+          bool triggerRequest = lastRequestFrameIndex != streaming.request.frameIndex;
+          
+          uvec4 voteRequested  = subgroupBallot(triggerRequest);
+          uint  countRequested = subgroupBallotBitCount(voteRequested);
+          uint offsetRequested = 0;
+          if (subgroupElect()) {
+            offsetRequested = atomicAdd(streamingRW.request.loadCounter, countRequested);
+          }
+          offsetRequested = subgroupBroadcastFirst(offsetRequested);
+          offsetRequested += subgroupBallotExclusiveBitCount(voteRequested);
+          
+          if (triggerRequest && offsetRequested <= streaming.request.maxLoads) {
+            // while streaming data is based on geometry 
+            streaming.request.loadGeometryGroups.d[offsetRequested] = uvec2(geometryID, groupIndex);
+          }
         }
       }
+    #if USE_BLAS_MERGING
+      else
+      {
+        // keep alive, unless mergedBuild which is not allowed to affect residency
+        Group group = Group_in(groupAddress).d;
+        streaming.resident.groups.d[group.residentID].age = uint16_t(0);
+      }
+    #endif
     }
   #endif
   }
@@ -413,7 +440,7 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   //
   // `renderCluster` now means `traverseGroup`
   
-  renderCluster = isValid && traverseNode && PACKED_GET(traversalInfo.packedNode, Node_packed_isGroup) != 0;
+  renderCluster = isValid && traverseNode && isGroup;
   if (renderCluster)
     traverseNode = false;
 #endif
@@ -469,7 +496,7 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
       // this will help us determine the list length for each blas.
       // The `blas_setup_insertion.comp.glsl` kernel then sub-allocates space for the lists
       // based on this counter.
-      atomicAdd(build.instanceBuildInfos.d[traversalInfo.instanceID].clusterReferencesCount, 1);
+      atomicAdd(build.instanceBuildInfos.d[instanceID].clusterReferencesCount, 1);
       // the render list we write below is filled in an unsorted manner with clusters
       // from different instances. We later use the `blas_insert_clusters.comp.glsl` kernel to build
       // the list for each blas.

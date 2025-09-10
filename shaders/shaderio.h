@@ -29,7 +29,6 @@
 /////////////////////////////////////////
 
 #define ALLOW_SHADING 1
-#define ALLOW_VERTEX_NORMALS 1
 
 /////////////////////////////////////////
 
@@ -40,6 +39,7 @@
 #define VISUALIZE_LOD 4
 #define VISUALIZE_TRIANGLE 5
 #define VISUALIZE_BLAS 6
+#define VISUALIZE_BLAS_CACHED 7
 
 #define BBOXES_PER_MESHLET 8
 
@@ -78,11 +78,14 @@
 #define TRAVERSAL_INIT_WORKGROUP 64
 #define TRAVERSAL_RUN_WORKGROUP 64
 #define TRAVERSAL_GROUPS_WORKGROUP 64
+#define TRAVERSAL_BLAS_MERGING_WORKGROUP 64
 #define BLAS_SETUP_INSERTION_WORKGROUP 64
 #define BLAS_INSERT_CLUSTERS_WORKGROUP 64
 #define INSTANCES_ASSIGN_BLAS_WORKGROUP 64
 #define INSTANCES_CLASSIFY_LOD_WORKGROUP 64
 #define GEOMETRY_BLAS_SHARING_WORKGROUP 64
+#define BLAS_CACHING_SETUP_BUILD_WORKGROUP 64
+#define BLAS_CACHING_SETUP_COPY_WORKGROUP 64
 
 // must be power of 2
 #define STREAM_UPDATE_SCENE_WORKGROUP 64
@@ -96,6 +99,16 @@
 #define STREAM_ALLOCATOR_SETUP_INSERTION_WORKGROUP 64
 
 /////////////////////////////////////////
+
+#ifdef __cplusplus
+namespace shaderio {
+using namespace glm;
+
+#else
+
+#ifndef ALLOW_VERTEX_NORMALS
+#define ALLOW_VERTEX_NORMALS 1
+#endif
 
 #ifndef USE_RENDER_STATS
 #define USE_RENDER_STATS 1
@@ -117,6 +130,14 @@
 #define USE_BLAS_SHARING 1
 #endif
 
+#ifndef USE_BLAS_MERGING
+#define USE_BLAS_MERGING 1
+#endif
+
+#ifndef USE_BLAS_CACHING
+#define USE_BLAS_CACHING 1
+#endif
+
 #ifndef USE_STREAMING
 #define USE_STREAMING 1
 #endif
@@ -130,14 +151,6 @@
 #endif
 
 #define TARGETS_RAY_TRACING (!(TARGETS_RASTERIZATION))
-
-/////////////////////////////////////////
-
-#ifdef __cplusplus
-namespace shaderio {
-using namespace glm;
-
-#else
 
 #ifndef USE_DLSS
 #define USE_DLSS 1
@@ -243,9 +256,9 @@ struct FrameConstants
 struct Readback
 {
   uint     numRenderClusters;
-  uint     numTraversalInfos;
-  uint     numRenderedClusters;
+  uint     numTraversalTasks;
   uint     numBlasBuilds;
+  uint     numRenderedClusters;
   uint64_t numRenderedTriangles;
 
   uint64_t blasActualSizes;

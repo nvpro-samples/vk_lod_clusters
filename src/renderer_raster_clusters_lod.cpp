@@ -45,6 +45,7 @@ private:
     shaderc::SpvCompilationResult computeTraversalInit;
     shaderc::SpvCompilationResult computeTraversalRun;
     shaderc::SpvCompilationResult computeTraversalGroups;
+
     shaderc::SpvCompilationResult computeBuildSetup;
   };
 
@@ -58,7 +59,6 @@ private:
     VkPipeline computeBuildSetup       = nullptr;
   };
 
-  RendererConfig     m_config;
   Shaders            m_shaders;
   Pipelines          m_pipelines;
   VkShaderStageFlags m_stageFlags{};
@@ -90,6 +90,10 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
   options.AddMacroDefinition("USE_RENDER_STATS", config.useRenderStats ? "1" : "0");
   options.AddMacroDefinition("USE_SEPARATE_GROUPS", config.useSeparateGroups ? "1" : "0");
   options.AddMacroDefinition("USE_DLSS", "0");
+  options.AddMacroDefinition("USE_BLAS_SHARING", "0");
+  options.AddMacroDefinition("USE_BLAS_MERGING", "0");
+  options.AddMacroDefinition("USE_BLAS_CACHING", "0");
+  options.AddMacroDefinition("ALLOW_VERTEX_NORMALS", rscene.scene->m_hasVertexNormals ? "1" : "0");
   options.AddMacroDefinition("DEBUG_VISUALIZATION", config.useDebugVisualization ? "1" : "0");
   options.AddMacroDefinition("MESHSHADER_WORKGROUP_SIZE", "32");
 
@@ -116,7 +120,11 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
 
 bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const RendererConfig& config)
 {
-  m_config = config;
+  m_resourceReservedUsage = {};
+  m_config                = config;
+  m_maxRenderClusters     = 1u << config.numRenderClusterBits;
+  m_maxTraversalTasks     = 1u << config.numTraversalTaskBits;
+
 
   if(!initShaders(res, rscene, config))
   {
@@ -182,6 +190,11 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sceneTraversalBuffer.bufferSize, "operations", "build traversal");
 
     m_sceneBuildShaderio.traversalNodeInfos = m_sceneTraversalBuffer.address;
+  }
+
+  if(rscene.useStreaming)
+  {
+    rscene.sceneStreaming.updateBindings(m_sceneBuildBuffer);
   }
 
   {
@@ -301,8 +314,10 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
 
   if(rscene.useStreaming)
   {
-    rscene.sceneStreaming.cmdBeginFrame(cmd, res.m_queueStates.primary, res.m_queueStates.transfer,
-                                        frame.streamingAgeThreshold, profiler);
+    SceneStreaming::FrameSettings settings;
+    settings.ageThreshold = frame.streamingAgeThreshold;
+
+    rscene.sceneStreaming.cmdBeginFrame(cmd, res.m_queueStates.primary, res.m_queueStates.transfer, settings, profiler);
   }
 
   memBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -396,7 +411,7 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
 
   if(rscene.useStreaming)
   {
-    rscene.sceneStreaming.cmdPostTraversal(cmd, 0, profiler);
+    rscene.sceneStreaming.cmdPostTraversal(cmd, 0, true, profiler);
   }
 
   {

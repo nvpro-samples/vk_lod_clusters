@@ -22,15 +22,22 @@
 #ifndef _SHADERIO_BUILDING_H_
 #define _SHADERIO_BUILDING_H_
 
+#define TRAVERSAL_INVALID_LOD_LEVEL 0xFF
+
 #ifdef __cplusplus
 namespace shaderio {
 using namespace glm;
 #else
 
 #define INSTANCE_VISIBLE_BIT 1
+#define INSTANCE_USES_MERGED_BIT 2
 
 #define BLAS_BUILD_INDEX_LOWDETAIL (uint(~0))
 #define BLAS_BUILD_INDEX_SHARE_BIT (uint(1 << 31))
+#define BLAS_BUILD_INDEX_CACHE_BIT (uint(1 << 30))
+
+// disabling is more for testing
+#define TRAVERSAL_ALLOW_LOW_DETAIL_BLAS true
 
 #endif
 
@@ -43,20 +50,6 @@ struct TraversalInfo
   uint32_t instanceID;
   uint32_t packedNode;
 };
-#ifndef __cplusplus
-TraversalInfo unpackTraversalInfo(uint64_t packed64)
-{
-  u32vec2       data = unpack32(packed64);
-  TraversalInfo info;
-  info.instanceID = data.x;
-  info.packedNode = data.y;
-  return info;
-}
-uint64_t packTraversalInfo(TraversalInfo info)
-{
-  return pack64(u32vec2(info.instanceID, info.packedNode));
-}
-#endif
 
 // A renderable cluster
 // must fit in 64-bit, and can be overlayed with `TraversalInfo`
@@ -104,10 +97,15 @@ BUFFER_REF_DECLARE_ARRAY(GeometryBuildHistogram_inout, GeometryBuildHistogram, ,
 
 struct GeometryBuildInfo
 {
-  uint32_t shareLevelMin;    // highest potential detail
-  uint32_t shareLevelMax;    // lowest potential detail
+  // blas caching
+  uint32_t cachedBuildIndex;
+  uint16_t cachedLevel;
+  // blas sharing
+  uint8_t  shareLevelMin;    // highest potential detail
+  uint8_t  shareLevelMax;    // lowest potential detail
   uint32_t shareInstanceID;  // which instance to use for sharing (its lod range is expressed by the values above)
-  uint32_t shareUseCount;    // how many instances end up using the shareInstanceID's blas.
+  // blas merging
+  uint32_t mergedInstanceID;  // which instance to use for triggering the merged traversal
 };
 BUFFER_REF_DECLARE_ARRAY(GeometryBuildInfos_inout, GeometryBuildInfo, , 16);
 
@@ -126,8 +124,7 @@ struct InstanceBuildInfo
   uint8_t  lodLevelMin;          // highest potential detail
   uint8_t  lodLevelMax;          // lowest potential detail
   uint16_t geometryLodLevelMax;  // the highest lod level of the geometry
-  uint32_t instanceUseCount;     // how many instances use this instance's blas
-                                 // default 1, but in blas sharing case can be multiple.
+  uint32_t geometryID;
 };
 BUFFER_REF_DECLARE_ARRAY(InstanceBuildInfos_inout, InstanceBuildInfo, , 16);
 
@@ -147,19 +144,17 @@ struct SceneBuilding
   float errorOverDistanceThreshold;
   float culledErrorScale;
 
-  uint sharingMinInstances;
-  uint sharingMinLevel;
+  uint sharingEnabledLevels;
+  uint sharingTolerantLevels;
   uint sharingPushCulled;
-  uint sharingToleranceLevel;
 
   uint renderClusterCounter;
+
   int  traversalTaskCounter;
   uint traversalInfoReadCounter;
   uint traversalInfoWriteCounter;
-
   // only used for USE_SEPARATE_GROUPS
   uint traversalGroupCounter;
-  uint _pad;
 
   // result of traversal init & scratch for traversal run
   // array size is [maxTraversalInfos]
@@ -228,6 +223,12 @@ struct SceneBuilding
   // ------------
   BUFFER_REF(GeometryBuildInfos_inout) geometryBuildInfos;
   BUFFER_REF(GeometryBuildHistogram_inout) geometryHistograms;
+
+  // for USE_BLAS_CACHING
+  BUFFER_REF(uint64s_inout) cachedBlasClusterAddressesSrc;
+  BUFFER_REF(uint64s_inout) cachedBlasClusterAddressesDst;
+
+  uint32_t cachedBlasCopyCounter;
 };
 
 
