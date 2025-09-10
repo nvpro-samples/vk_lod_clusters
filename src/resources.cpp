@@ -234,8 +234,9 @@ void Resources::deinit()
   deinitFramebuffer();
   m_hbaoPass.deinit();
   m_hiz.deinit();
+#if USE_DLSS
   m_frameBuffer.dlssDenoiser.deinit();
-
+#endif
   vrdxDestroySorter(m_vrdxSorter);
   m_queueStates.primary.deinit();
   m_queueStates.transfer.deinit();

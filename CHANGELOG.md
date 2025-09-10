@@ -1,5 +1,5 @@
 # Changelog for vk_lod_clusters
-* 2025-9-xx:
+* 2025-9-10:
   * Added ["BLAS Caching"](docs/blas_caching.md). This option enhances "BLAS Sharing" so that fully resident lod levels
     are kept in a dedicated BLAS that can be re-used many frames. Any instance whose minimum lod level is higher or 
     equal than this BLAS's lod level can use it. Therefore we can further reduce the number of BLAS built per frame.
@@ -18,6 +18,7 @@
   * `--processingonly 1` mode now skips Vulkan context and application window creation.
   * `--processingmode <int>` 0 auto, -1 inner (within geometry), +1 outer (over geometries) parallelism. default 0.
   * Added `Scene::buildGeometryDedupVertices` which is triggered when we detect that a mesh as fully independent triangles (some exports do this).
+  * Bugfix CMAKE USE_DLSS off case
 * 2025-8-24:
   * Updated `meshoptimizer` submodule to `v 0.25`
 * 2025-8-5:
