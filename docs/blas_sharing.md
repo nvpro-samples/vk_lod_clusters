@@ -88,7 +88,9 @@ at a later LoD level, cause they are guaranteed to be coarser (higher error or b
 
 **Adjusting the LoD levels**
 
-The current implementation implements some fudging of the LoD ranges to allow
+![image illustrating the adjustments of instances based on position relative to camera and occlusion](blas_sharing_adjustments.png)
+
+The current implementation implements some adjustments of the LoD ranges to allow
 sharing at lower detail, compared to what is actually required. This can be enabled
 beginning from certain LoD level onwards for any instance.
 Furthermore lower detail requirements can be enabled for instances that do not
