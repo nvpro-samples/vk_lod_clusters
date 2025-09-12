@@ -1,5 +1,24 @@
 # BLAS Sharing for ray tracing cluster-based continous level of detail
 
+> [!NOTE]
+> Please have a look at the documentation of [nv_cluster_lod_builder](https://github.com/nvpro-samples/nv_cluster_lod_builder/blob/main/README.md) on how the cluster-based LoD system works, specifically the interaction between clusters, cluster groups and determining which clusters to render during LoD traversal.
+
+We are presenting a few techniques that reduce the number of BLAS to build for
+cluster-based continous level of detail (LoD). They are all based
+around sharing a reduced set of BLAS among the instances.
+
+![image illustrating the BLAS techniques](blas_techniques.png)
+
+There are three independent techniques, however they all require a fast way to classify the LoD range of an instance without doing a full traversal of its LoD DAG, which is described in this document. In all techniques the user can define the LoD levels in which they become effective. 
+
+- **BLAS Sharing**: One instance will share its BLAS with other instances because it is detailed enough for their use-case. The other instances, which share that BLAS, do not need to traverse the LoD in detail. Described in this document.
+- **BLAS Caching**: Instead of using another instance's BLAS, we cache a discrete LoD level BLAS. This allows re-use over time, and also for geometries that don't have multiple instances (cannot share among instances). The instances using the cached BLAS, do not need to traverse the LoD in detail. Described in a [separate document](blas_caching.md).
+- **BLAS Merging**: All instances up to a certain LoD level use a single BLAS. This BLAS is built using the highest available detail. Therefore it's guaranteed to be compatible with any instance in the scene. The instances that use the merged BLAS still need to traverse the LoD in detail, to drive streaming requests, however they can skip some parts of the traversal. Described in a [separate document](blas_merging.md).
+
+We recommend to combine BLAS merging with either BLAS caching or BLAS sharing to reduce the LoD traversal work.
+
+## BLAS Sharing
+
 ![image illustrating the benefits of BLAS sharing](blas_sharing_benefit.jpg)
 
 **BLAS Sharing** enables the re-use of a BLAS from a higher detailed instance

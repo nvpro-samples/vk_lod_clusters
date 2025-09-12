@@ -128,6 +128,11 @@ private:
 bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscene, const RendererConfig& config)
 {
   shaderc::CompileOptions options = res.makeCompilerOptions();
+#if USE_DLSS
+  bool supportsDLSS = true;
+#else
+  bool supportsDLSS = false;
+#endif
 
   options.AddMacroDefinition("CLUSTER_VERTEX_COUNT", fmt::format("{}", rscene.scene->m_maxClusterVertices));
   options.AddMacroDefinition("CLUSTER_TRIANGLE_COUNT", fmt::format("{}", rscene.scene->m_maxClusterTriangles));
@@ -140,7 +145,7 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("USE_BLAS_CACHING", config.useBlasSharing && config.useBlasCaching ? "1" : "0");
   options.AddMacroDefinition("USE_RENDER_STATS", config.useRenderStats ? "1" : "0");
   options.AddMacroDefinition("USE_SEPARATE_GROUPS", config.useSeparateGroups ? "1" : "0");
-  options.AddMacroDefinition("USE_DLSS", config.useDlss ? "1" : "0");
+  options.AddMacroDefinition("USE_DLSS", supportsDLSS && config.useDlss ? "1" : "0");
   options.AddMacroDefinition("ALLOW_VERTEX_NORMALS", rscene.scene->m_hasVertexNormals ? "1" : "0");
   options.AddMacroDefinition("DEBUG_VISUALIZATION", config.useDebugVisualization ? "1" : "0");
 
