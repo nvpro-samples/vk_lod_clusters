@@ -50,8 +50,6 @@
 #extension GL_KHR_shader_subgroup_clustered : require
 #extension GL_KHR_shader_subgroup_arithmetic : require
 
-#extension GL_NV_shader_subgroup_partitioned : require
-
 #include "shaderio.h"
 
 ////////////////////////////////////////////

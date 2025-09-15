@@ -1,4 +1,8 @@
 # Changelog for vk_lod_clusters
+* 2025-9-15:
+  * Added `VK_EXT_mesh_shader` support (still default to NV if available).
+  * Removed unnecessary `VK_NV_SHADER_SUBGROUP_PARTITIONED` requirements
+  * Split README a bit.
 * 2025-9-10:
   * Added ["BLAS Caching"](docs/blas_caching.md). This option enhances "BLAS Sharing" so that fully resident lod levels
     are kept in a dedicated BLAS that can be re-used many frames. Any instance whose minimum lod level is higher or 

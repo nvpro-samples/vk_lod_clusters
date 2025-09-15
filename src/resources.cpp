@@ -111,6 +111,21 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
   m_physicalDeviceInfo.init(physicalDevice);
   vkGetPhysicalDeviceMemoryProperties(physicalDevice, &m_memoryProperties);
 
+  if(m_supportsMeshShaderEXT || m_supportsMeshShaderNV)
+  {
+    VkPhysicalDeviceProperties2 props2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    if(m_supportsMeshShaderEXT)
+    {
+      props2.pNext = &m_meshShaderPropsEXT;
+    }
+    if(m_supportsMeshShaderNV)
+    {
+      m_meshShaderPropsNV.pNext = props2.pNext;
+      props2.pNext              = &m_meshShaderPropsNV;
+    }
+    vkGetPhysicalDeviceProperties2(physicalDevice, &props2);
+  }
+
   {
     VmaAllocatorCreateInfo allocatorInfo = {
         .flags          = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,

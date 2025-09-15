@@ -28,7 +28,11 @@
 #extension GL_EXT_buffer_reference2 : enable
 #extension GL_EXT_scalar_block_layout : enable
 
+#if USE_EXT_MESH_SHADER
+#extension GL_EXT_mesh_shader : require
+#else
 #extension GL_NV_mesh_shader : require
+#endif
 #extension GL_EXT_control_flow_attributes: require
 
 #include "shaderio.h"
@@ -62,13 +66,16 @@ layout(location=0) out Interpolants {
 
 ////////////////////////////////////////////
 
-#define MESH_WORKGROUP_SIZE  32
+#ifndef MESHSHADER_WORKGROUP_SIZE
+#define MESHSHADER_WORKGROUP_SIZE  32
+#endif
 
 #define BOX_VERTICES     8
 #define BOX_LINES        12
-#define BOX_LINE_THREADS 4
+#define BOX_LINE_THREADS MESHSHADER_BBOX_THREADS
+#define BBOXES_PER_MESHLET (MESHSHADER_WORKGROUP_SIZE / BOX_LINE_THREADS)
 
-layout(local_size_x=MESH_WORKGROUP_SIZE) in;
+layout(local_size_x=MESHSHADER_WORKGROUP_SIZE) in;
 layout(max_vertices=BBOXES_PER_MESHLET * BOX_VERTICES, max_primitives=BBOXES_PER_MESHLET * BOX_LINES) out;
 layout(lines) out;
 
@@ -76,8 +83,12 @@ layout(lines) out;
 
 void writePrimitiveLineIndices(uint idx, uvec2 vertexIndices)
 {
+#if USE_EXT_MESH_SHADER
+  gl_PrimitiveLineIndicesEXT[idx] = vertexIndices;
+#else
   gl_PrimitiveIndicesNV[idx * 2 + 0] = vertexIndices.x;
   gl_PrimitiveIndicesNV[idx * 2 + 1] = vertexIndices.y;
+#endif
 }
 
 void main()
@@ -85,17 +96,21 @@ void main()
   uint baseID   = gl_WorkGroupID.x * BBOXES_PER_MESHLET;  
   uint numBoxes = min(push.numRenderInstances, baseID + BBOXES_PER_MESHLET) - baseID;
   
+#if USE_EXT_MESH_SHADER
+  SetMeshOutputsEXT(numBoxes * BOX_VERTICES, numBoxes * BOX_LINES);
+#else
   if (gl_LocalInvocationID.x == 0)
   {
     gl_PrimitiveCountNV = numBoxes * BOX_LINES;
   }
-  
-  const uint vertexRuns = ((BBOXES_PER_MESHLET * BOX_VERTICES) + MESH_WORKGROUP_SIZE-1) / MESH_WORKGROUP_SIZE;
+#endif
+
+  const uint vertexRuns = ((BBOXES_PER_MESHLET * BOX_VERTICES) + MESHSHADER_WORKGROUP_SIZE-1) / MESHSHADER_WORKGROUP_SIZE;
   
   [[unroll]]
   for (uint32_t run = 0; run < vertexRuns; run++)
   {
-    uint vert   = gl_LocalInvocationID.x + run * MESH_WORKGROUP_SIZE;
+    uint vert   = gl_LocalInvocationID.x + run * MESHSHADER_WORKGROUP_SIZE;
     uint box    = vert / BOX_VERTICES;
     uint corner = vert % BOX_VERTICES;
     
@@ -109,7 +124,12 @@ void main()
     
     if (box < numBoxes)
     {
-      gl_MeshVerticesNV[vert].gl_Position = view.viewProjMatrix * (instance.worldMatrix * vec4(cornerPos,1));
+    #if USE_EXT_MESH_SHADER
+      gl_MeshVerticesEXT[vert].gl_Position = 
+    #else
+      gl_MeshVerticesNV[vert].gl_Position = 
+    #endif
+        view.viewProjMatrix * (instance.worldMatrix * vec4(cornerPos,1));
       OUT[vert].instanceID = baseID + box;
     }
   }

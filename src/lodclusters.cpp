@@ -92,6 +92,7 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"rendertraversalbits"}, &m_rendererConfig.numTraversalTaskBits);
   m_info.parameterRegistry->add({"visualize"}, &m_frameConfig.visualize);
   m_info.parameterRegistry->add({"renderstats"}, &m_rendererConfig.useRenderStats);
+  m_info.parameterRegistry->add({"extmeshshader"}, &m_rendererConfig.useEXTmeshShader);
 
   m_info.parameterRegistry->add({"facetshading"}, &m_tweak.facetShading);
   m_info.parameterRegistry->add({"flipwinding"}, &m_rendererConfig.flipWinding);
@@ -422,6 +423,15 @@ void LodClusters::onAttach(nvapp::Application* app)
 
   updatedClusterConfig();
 
+  if(!m_resources.m_supportsMeshShaderEXT)
+  {
+    m_rendererConfig.useEXTmeshShader = false;
+  }
+  if(!m_resources.m_supportsMeshShaderNV)
+  {
+    m_rendererConfig.useEXTmeshShader = true;
+  }
+
   // Search for default scene if none was provided on the command line
   if(m_sceneFilePath.empty())
   {
@@ -611,6 +621,15 @@ void LodClusters::handleChanges()
     updatedClusterConfig();
   }
 
+  if(!m_resources.m_supportsMeshShaderNV)
+  {
+    m_rendererConfig.useEXTmeshShader = true;
+  }
+  if(!m_resources.m_supportsMeshShaderEXT)
+  {
+    m_rendererConfig.useEXTmeshShader = false;
+  }
+
   if(m_rendererConfig.useBlasSharing && m_scene && m_scene->m_instances.size() > (1 << 27))
   {
     m_rendererConfig.useBlasSharing = false;
@@ -687,9 +706,10 @@ void LodClusters::handleChanges()
        || rendererCfgChanged(m_rendererConfig.flipWinding) || rendererCfgChanged(m_rendererConfig.useDebugVisualization)
        || rendererCfgChanged(m_rendererConfig.useCulling) || rendererCfgChanged(m_rendererConfig.twoSided)
        || rendererCfgChanged(m_rendererConfig.useSorting) || rendererCfgChanged(m_rendererConfig.numRenderClusterBits)
-       || rendererCfgChanged(m_rendererConfig.numTraversalTaskBits) || rendererCfgChanged(m_rendererConfig.useBlasSharing)
-       || rendererCfgChanged(m_rendererConfig.useRenderStats) || rendererCfgChanged(m_rendererConfig.useSeparateGroups)
-       || rendererCfgChanged(m_rendererConfig.useBlasMerging) || rendererCfgChanged(m_rendererConfig.useBlasCaching))
+       || rendererCfgChanged(m_rendererConfig.numTraversalTaskBits)
+       || rendererCfgChanged(m_rendererConfig.useBlasSharing) || rendererCfgChanged(m_rendererConfig.useRenderStats)
+       || rendererCfgChanged(m_rendererConfig.useSeparateGroups) || rendererCfgChanged(m_rendererConfig.useBlasMerging)
+       || rendererCfgChanged(m_rendererConfig.useBlasCaching) || rendererCfgChanged(m_rendererConfig.useEXTmeshShader))
     {
       if(rendererCfgChanged(m_rendererConfig.useBlasCaching))
       {

@@ -37,7 +37,12 @@
 #extension GL_EXT_buffer_reference2 : enable
 #extension GL_EXT_scalar_block_layout : enable
 
+#if USE_EXT_MESH_SHADER
+#extension GL_EXT_mesh_shader : require
+#else
 #extension GL_NV_mesh_shader : require
+#endif
+
 #extension GL_EXT_control_flow_attributes : require
 
 #include "shaderio.h"
@@ -139,12 +144,19 @@ void main()
   uint vertMax = cluster.vertexCountMinusOne;
   uint triMax  = cluster.triangleCountMinusOne;
 
+#if USE_EXT_MESH_SHADER
+  SetMeshOutputsEXT(vertMax + 1, triMax + 1);
+#else
   if (gl_LocalInvocationID.x == 0) {
     gl_PrimitiveCountNV = triMax + 1;
-  #if USE_RENDER_STATS
-    atomicAdd(readback.numRenderedTriangles, uint(triMax + 1));
-  #endif
   }
+#endif
+
+#if USE_RENDER_STATS
+  if (gl_LocalInvocationID.x == 0) {
+    atomicAdd(readback.numRenderedTriangles, uint(triMax + 1));
+  }
+#endif
 
   vec4s_in  oVertices      = vec4s_in(cluster.vertices);
   uint8s_in localTriangles = uint8s_in(cluster.localTriangles);
@@ -168,7 +180,12 @@ void main()
 
     if(vert <= vertMax)
     {
-      gl_MeshVerticesNV[vert].gl_Position = view.viewProjMatrix * wPos;
+    #if USE_EXT_MESH_SHADER
+      gl_MeshVerticesEXT[vert].gl_Position = 
+    #else
+      gl_MeshVerticesNV[vert].gl_Position = 
+    #endif
+                                            view.viewProjMatrix * wPos;
     #if ALLOW_SHADING
       OUT[vert].wPos                      = wPos.xyz;
     #if ALLOW_VERTEX_NORMALS
@@ -191,10 +208,15 @@ void main()
 
     if(tri <= triMax)
     {
+    #if USE_EXT_MESH_SHADER
+      gl_PrimitiveTriangleIndicesEXT[tri] = indices;
+      gl_MeshPrimitivesEXT[tri].gl_PrimitiveID = int(tri);
+    #else
       gl_PrimitiveIndicesNV[tri * 3 + 0] = indices.x;
       gl_PrimitiveIndicesNV[tri * 3 + 1] = indices.y;
       gl_PrimitiveIndicesNV[tri * 3 + 2] = indices.z;
       gl_MeshPrimitivesNV[tri].gl_PrimitiveID = int(tri);
+    #endif
     }
   }
 }

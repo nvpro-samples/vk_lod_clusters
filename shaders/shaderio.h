@@ -41,7 +41,7 @@
 #define VISUALIZE_BLAS 6
 #define VISUALIZE_BLAS_CACHED 7
 
-#define BBOXES_PER_MESHLET 8
+#define MESHSHADER_BBOX_THREADS 4
 
 /////////////////////////////////////////
 

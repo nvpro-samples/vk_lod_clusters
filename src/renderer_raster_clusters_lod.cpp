@@ -75,6 +75,11 @@ private:
 
 bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene, const RendererConfig& config)
 {
+  if(!initBasicShaders(res, rscene, config))
+  {
+    return false;
+  }
+
   shaderc::CompileOptions options = res.makeCompilerOptions();
 
   uint32_t meshletTriangles = shaderio::adjustClusterProperty(rscene.scene->m_maxClusterTriangles);
@@ -93,9 +98,10 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
   options.AddMacroDefinition("USE_BLAS_SHARING", "0");
   options.AddMacroDefinition("USE_BLAS_MERGING", "0");
   options.AddMacroDefinition("USE_BLAS_CACHING", "0");
+  options.AddMacroDefinition("USE_EXT_MESH_SHADER", fmt::format("{}", config.useEXTmeshShader ? 1 : 0));
+  options.AddMacroDefinition("MESHSHADER_WORKGROUP_SIZE", fmt::format("{}", m_meshShaderWorkgroupSize));
   options.AddMacroDefinition("ALLOW_VERTEX_NORMALS", rscene.scene->m_hasVertexNormals ? "1" : "0");
   options.AddMacroDefinition("DEBUG_VISUALIZATION", config.useDebugVisualization ? "1" : "0");
-  options.AddMacroDefinition("MESHSHADER_WORKGROUP_SIZE", "32");
 
   res.compileShader(m_shaders.graphicsMesh, VK_SHADER_STAGE_MESH_BIT_NV, "render_raster_clusters.mesh.glsl", &options);
   res.compileShader(m_shaders.graphicsFragment, VK_SHADER_STAGE_FRAGMENT_BIT, "render_raster.frag.glsl", &options);
@@ -115,7 +121,7 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
     return false;
   }
 
-  return initBasicShaders(res, rscene, config);
+  return true;
 }
 
 bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const RendererConfig& config)
@@ -304,6 +310,16 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
       nvclusterlodErrorOverDistance(frame.lodPixelError * pixelScale, frame.frameConstants.fov,
                                     frame.frameConstants.viewportf.y);
 
+  if(m_config.useEXTmeshShader)
+  {
+    m_sceneBuildShaderio.indirectDrawClustersEXT.gridY = 1;
+    m_sceneBuildShaderio.indirectDrawClustersEXT.gridZ = 1;
+  }
+  else
+  {
+    m_sceneBuildShaderio.indirectDrawClustersNV.first = 0;
+  }
+
   const bool useSky = true;  // When using Sky, the sky is rendered first and the rest of the scene is rendered on top of it.
 
   vkCmdUpdateBuffer(cmd, res.m_commonBuffers.frameConstants.buffer, 0, sizeof(shaderio::FrameConstants) * 2,
@@ -429,7 +445,17 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelines.graphicsMesh);
-    vkCmdDrawMeshTasksIndirectNV(cmd, m_sceneBuildBuffer.buffer, offsetof(shaderio::SceneBuilding, indirectDrawClusters), 1, 0);
+
+    if(m_config.useEXTmeshShader)
+    {
+      vkCmdDrawMeshTasksIndirectEXT(cmd, m_sceneBuildBuffer.buffer,
+                                    offsetof(shaderio::SceneBuilding, indirectDrawClustersEXT), 1, 0);
+    }
+    else
+    {
+      vkCmdDrawMeshTasksIndirectNV(cmd, m_sceneBuildBuffer.buffer,
+                                   offsetof(shaderio::SceneBuilding, indirectDrawClustersNV), 1, 0);
+    }
 
     if(frame.showInstanceBboxes)
     {

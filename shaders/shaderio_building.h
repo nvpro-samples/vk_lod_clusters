@@ -173,7 +173,8 @@ struct SceneBuilding
   // rasterization related
   //////////////////////////////////////////////////
 
-  DrawMeshTasksIndirectCommandNV indirectDrawClusters;
+  DrawMeshTasksIndirectCommandNV  indirectDrawClustersNV;
+  DrawMeshTasksIndirectCommandEXT indirectDrawClustersEXT;
 
   // ray tracing related
   //////////////////////////////////////////////////

@@ -481,8 +481,13 @@ public:
   size_t                           m_fboChangeID        = ~0;
   glm::vec4                        m_bgColor            = {0.1, 0.13, 0.15, 1.0};
 
-  bool m_supportsClusters = false;
-  bool m_dumpSpirv        = false;
+  VkPhysicalDeviceMeshShaderPropertiesEXT m_meshShaderPropsEXT = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT};
+  VkPhysicalDeviceMeshShaderPropertiesNV m_meshShaderPropsNV = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_NV};
+
+  bool m_supportsMeshShaderEXT = false;
+  bool m_supportsMeshShaderNV  = false;
+  bool m_supportsClusters      = false;
+  bool m_dumpSpirv             = false;
 
   bool            m_hbaoFullRes = false;
   HbaoPass        m_hbaoPass;

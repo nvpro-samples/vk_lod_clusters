@@ -124,6 +124,13 @@ struct DrawMeshTasksIndirectCommandNV
   uint first;
 };
 
+struct DrawMeshTasksIndirectCommandEXT
+{
+  uint gridX;
+  uint gridY;
+  uint gridZ;
+};
+
 #ifdef __cplusplus
 }
 #endif

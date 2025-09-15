@@ -122,10 +122,17 @@ size_t RenderScene::getOperationsSize() const
 
 bool Renderer::initBasicShaders(Resources& res, RenderScene& rscene, const RendererConfig& config)
 {
+  m_meshShaderWorkgroupSize = config.useEXTmeshShader ? res.m_meshShaderPropsEXT.maxPreferredMeshWorkGroupInvocations :
+                                                        res.m_meshShaderPropsNV.maxMeshWorkGroupSize[0];
+  shaderc::CompileOptions options = res.makeCompilerOptions();
+  options.AddMacroDefinition("USE_EXT_MESH_SHADER", fmt::format("{}", config.useEXTmeshShader ? 1 : 0));
+  options.AddMacroDefinition("MESHSHADER_WORKGROUP_SIZE", fmt::format("{}", m_meshShaderWorkgroupSize));
+
   res.compileShader(m_basicShaders.fullScreenVertexShader, VK_SHADER_STAGE_VERTEX_BIT, "fullscreen.vert.glsl");
   res.compileShader(m_basicShaders.fullScreenWriteDepthFragShader, VK_SHADER_STAGE_FRAGMENT_BIT, "fullscreen_write_depth.frag.glsl");
   res.compileShader(m_basicShaders.fullScreenBackgroundFragShader, VK_SHADER_STAGE_FRAGMENT_BIT, "fullscreen_background.frag.glsl");
-  res.compileShader(m_basicShaders.renderInstanceBboxesMeshShader, VK_SHADER_STAGE_MESH_BIT_NV, "render_instance_bbox.mesh.glsl");
+  res.compileShader(m_basicShaders.renderInstanceBboxesMeshShader, VK_SHADER_STAGE_MESH_BIT_NV,
+                    "render_instance_bbox.mesh.glsl", &options);
   res.compileShader(m_basicShaders.renderInstanceBboxesFragmentShader, VK_SHADER_STAGE_FRAGMENT_BIT, "render_instance_bbox.frag.glsl");
 
   if(!res.verifyShaders(m_basicShaders))
@@ -259,7 +266,15 @@ void Renderer::renderInstanceBboxes(VkCommandBuffer cmd)
   uint32_t numRenderInstances = uint32_t(m_renderInstances.size());
   vkCmdPushConstants(cmd, m_basicPipelineLayout, m_basicShaderFlags, 0, sizeof(uint32_t), &numRenderInstances);
 
-  vkCmdDrawMeshTasksNV(cmd, (numRenderInstances + BBOXES_PER_MESHLET - 1) / BBOXES_PER_MESHLET, 0);
+  uint32_t bboxesPerMeshlet = m_meshShaderWorkgroupSize / MESHSHADER_BBOX_THREADS;
+  if(m_config.useEXTmeshShader)
+  {
+    vkCmdDrawMeshTasksEXT(cmd, (numRenderInstances + bboxesPerMeshlet - 1) / bboxesPerMeshlet, 1, 1);
+  }
+  else
+  {
+    vkCmdDrawMeshTasksNV(cmd, (numRenderInstances + bboxesPerMeshlet - 1) / bboxesPerMeshlet, 0);
+  }
 }
 
 void Renderer::writeRayTracingDepthBuffer(VkCommandBuffer cmd)

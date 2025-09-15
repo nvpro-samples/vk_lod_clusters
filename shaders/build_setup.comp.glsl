@@ -116,9 +116,11 @@ void main()
     // set drawindirect for actual rendered clusters
     uint numRenderedClusters = min(renderClusterCounter, build.maxRenderClusters);
     
-    buildRW.indirectDrawClusters.count = numRenderedClusters;
-    buildRW.indirectDrawClusters.first = 0;
-
+#if USE_EXT_MESH_SHADER
+    buildRW.indirectDrawClustersEXT.gridX = numRenderedClusters;
+#else
+    buildRW.indirectDrawClustersNV.count = numRenderedClusters;
+#endif
     // keep originals for array size warnings 
     readback.numRenderClusters    = renderClusterCounter;
   #if USE_SEPARATE_GROUPS

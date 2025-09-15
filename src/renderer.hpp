@@ -72,6 +72,7 @@ struct RendererConfig
   bool useBlasCaching        = false;
   bool useDebugVisualization = true;
   bool useSeparateGroups     = true;
+  bool useEXTmeshShader      = false;
 
   bool useDlss = false;
 #if USE_DLSS
@@ -159,9 +160,10 @@ protected:
   };
 
   RendererConfig m_config;
-  uint32_t       m_maxRenderClusters = 0;
-  uint32_t       m_maxTraversalTasks = 0;
-  uint32_t       m_maxBlasBuilds     = 0;
+  uint32_t       m_maxRenderClusters       = 0;
+  uint32_t       m_maxTraversalTasks       = 0;
+  uint32_t       m_maxBlasBuilds           = 0;
+  uint32_t       m_meshShaderWorkgroupSize = 0;
 
   BasicShaders   m_basicShaders;
   BasicPipelines m_basicPipelines;

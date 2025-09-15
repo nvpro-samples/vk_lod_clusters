@@ -129,6 +129,8 @@ public:
   void onFileDrop(const std::filesystem::path& filename) override;
 
   void setSupportsClusters(bool supported) { m_resources.m_supportsClusters = supported; }
+  void setSupportsMeshShaderEXT(bool supported) { m_resources.m_supportsMeshShaderEXT = supported; }
+  void setSupportsMeshShaderNV(bool supported) { m_resources.m_supportsMeshShaderNV = supported; }
   bool getShowDebugUI() const { return m_showDebugUI; }
 
   bool isProcessingOnly() const { return !m_sceneFilePath.empty() && m_sceneConfig.processingOnly; }
