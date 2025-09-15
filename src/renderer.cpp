@@ -20,10 +20,11 @@
 #include <random>
 #include <vector>
 
+#include <fmt/format.h>
+
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/ext/scalar_constants.hpp>
-#include "glm/gtc/matrix_transform.hpp"
 
 #include "renderer.hpp"
 #include "../shaders/shaderio.h"
@@ -122,11 +123,23 @@ size_t RenderScene::getOperationsSize() const
 
 bool Renderer::initBasicShaders(Resources& res, RenderScene& rscene, const RendererConfig& config)
 {
+  uint32_t maxPrimitiveOutputs = config.useEXTmeshShader ? res.m_meshShaderPropsEXT.maxMeshOutputPrimitives :
+                                                           res.m_meshShaderPropsNV.maxMeshOutputPrimitives;
+
+  uint32_t maxVertexOutputs = config.useEXTmeshShader ? res.m_meshShaderPropsEXT.maxMeshOutputVertices :
+                                                        res.m_meshShaderPropsNV.maxMeshOutputVertices;
+
   m_meshShaderWorkgroupSize = config.useEXTmeshShader ? res.m_meshShaderPropsEXT.maxPreferredMeshWorkGroupInvocations :
                                                         res.m_meshShaderPropsNV.maxMeshWorkGroupSize[0];
+
+  m_meshShaderBoxes =
+      std::min(m_meshShaderWorkgroupSize / MESHSHADER_BBOX_THREADS,
+               std::min(maxPrimitiveOutputs / MESHSHADER_BBOX_LINES, maxVertexOutputs / MESHSHADER_BBOX_VERTICES));
+
   shaderc::CompileOptions options = res.makeCompilerOptions();
   options.AddMacroDefinition("USE_EXT_MESH_SHADER", fmt::format("{}", config.useEXTmeshShader ? 1 : 0));
   options.AddMacroDefinition("MESHSHADER_WORKGROUP_SIZE", fmt::format("{}", m_meshShaderWorkgroupSize));
+  options.AddMacroDefinition("MESHSHADER_BBOX_COUNT", fmt::format("{}", m_meshShaderBoxes));
 
   res.compileShader(m_basicShaders.fullScreenVertexShader, VK_SHADER_STAGE_VERTEX_BIT, "fullscreen.vert.glsl");
   res.compileShader(m_basicShaders.fullScreenWriteDepthFragShader, VK_SHADER_STAGE_FRAGMENT_BIT, "fullscreen_write_depth.frag.glsl");
@@ -266,14 +279,13 @@ void Renderer::renderInstanceBboxes(VkCommandBuffer cmd)
   uint32_t numRenderInstances = uint32_t(m_renderInstances.size());
   vkCmdPushConstants(cmd, m_basicPipelineLayout, m_basicShaderFlags, 0, sizeof(uint32_t), &numRenderInstances);
 
-  uint32_t bboxesPerMeshlet = m_meshShaderWorkgroupSize / MESHSHADER_BBOX_THREADS;
   if(m_config.useEXTmeshShader)
   {
-    vkCmdDrawMeshTasksEXT(cmd, (numRenderInstances + bboxesPerMeshlet - 1) / bboxesPerMeshlet, 1, 1);
+    vkCmdDrawMeshTasksEXT(cmd, (numRenderInstances + m_meshShaderBoxes - 1) / m_meshShaderBoxes, 1, 1);
   }
   else
   {
-    vkCmdDrawMeshTasksNV(cmd, (numRenderInstances + bboxesPerMeshlet - 1) / bboxesPerMeshlet, 0);
+    vkCmdDrawMeshTasksNV(cmd, (numRenderInstances + m_meshShaderBoxes - 1) / m_meshShaderBoxes, 0);
   }
 }
 

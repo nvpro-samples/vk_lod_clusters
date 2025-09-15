@@ -164,6 +164,7 @@ protected:
   uint32_t       m_maxTraversalTasks       = 0;
   uint32_t       m_maxBlasBuilds           = 0;
   uint32_t       m_meshShaderWorkgroupSize = 0;
+  uint32_t       m_meshShaderBoxes         = 0;
 
   BasicShaders   m_basicShaders;
   BasicPipelines m_basicPipelines;

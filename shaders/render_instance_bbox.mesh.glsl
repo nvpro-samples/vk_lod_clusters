@@ -70,13 +70,14 @@ layout(location=0) out Interpolants {
 #define MESHSHADER_WORKGROUP_SIZE  32
 #endif
 
-#define BOX_VERTICES     8
-#define BOX_LINES        12
-#define BOX_LINE_THREADS MESHSHADER_BBOX_THREADS
-#define BBOXES_PER_MESHLET (MESHSHADER_WORKGROUP_SIZE / BOX_LINE_THREADS)
+#ifndef MESHSHADER_BBOX_COUNT
+#define MESHSHADER_BBOX_COUNT 8
+#endif
+
+
 
 layout(local_size_x=MESHSHADER_WORKGROUP_SIZE) in;
-layout(max_vertices=BBOXES_PER_MESHLET * BOX_VERTICES, max_primitives=BBOXES_PER_MESHLET * BOX_LINES) out;
+layout(max_vertices=MESHSHADER_BBOX_COUNT * MESHSHADER_BBOX_VERTICES, max_primitives=MESHSHADER_BBOX_COUNT * MESHSHADER_BBOX_LINES) out;
 layout(lines) out;
 
 ////////////////////////////////////////////
@@ -93,26 +94,26 @@ void writePrimitiveLineIndices(uint idx, uvec2 vertexIndices)
 
 void main()
 {
-  uint baseID   = gl_WorkGroupID.x * BBOXES_PER_MESHLET;  
-  uint numBoxes = min(push.numRenderInstances, baseID + BBOXES_PER_MESHLET) - baseID;
+  uint baseID   = gl_WorkGroupID.x * MESHSHADER_BBOX_COUNT;  
+  uint numBoxes = min(push.numRenderInstances, baseID + MESHSHADER_BBOX_COUNT) - baseID;
   
 #if USE_EXT_MESH_SHADER
-  SetMeshOutputsEXT(numBoxes * BOX_VERTICES, numBoxes * BOX_LINES);
+  SetMeshOutputsEXT(numBoxes * MESHSHADER_BBOX_VERTICES, numBoxes * MESHSHADER_BBOX_LINES);
 #else
   if (gl_LocalInvocationID.x == 0)
   {
-    gl_PrimitiveCountNV = numBoxes * BOX_LINES;
+    gl_PrimitiveCountNV = numBoxes * MESHSHADER_BBOX_LINES;
   }
 #endif
 
-  const uint vertexRuns = ((BBOXES_PER_MESHLET * BOX_VERTICES) + MESHSHADER_WORKGROUP_SIZE-1) / MESHSHADER_WORKGROUP_SIZE;
+  const uint vertexRuns = ((MESHSHADER_BBOX_COUNT * MESHSHADER_BBOX_VERTICES) + MESHSHADER_WORKGROUP_SIZE-1) / MESHSHADER_WORKGROUP_SIZE;
   
   [[unroll]]
   for (uint32_t run = 0; run < vertexRuns; run++)
   {
     uint vert   = gl_LocalInvocationID.x + run * MESHSHADER_WORKGROUP_SIZE;
-    uint box    = vert / BOX_VERTICES;
-    uint corner = vert % BOX_VERTICES;
+    uint box    = vert / MESHSHADER_BBOX_VERTICES;
+    uint corner = vert % MESHSHADER_BBOX_VERTICES;
     
     uint boxLoad = min(box,numBoxes-1);
     
@@ -139,19 +140,19 @@ void main()
       uvec2(0,1),uvec2(1,3),uvec2(3,2),uvec2(2,0)
     );
   
-    uint subID = gl_LocalInvocationID.x & (BOX_LINE_THREADS-1);
-    uint box   = gl_LocalInvocationID.x / BOX_LINE_THREADS;
+    uint subID = gl_LocalInvocationID.x & (MESHSHADER_BBOX_THREADS-1);
+    uint box   = gl_LocalInvocationID.x / MESHSHADER_BBOX_THREADS;
   
     uvec2 circle = boxIndices[subID];
     
     if (box < numBoxes)
     {  
       // lower
-      writePrimitiveLineIndices(box * 12 + subID + 0, circle + box * BOX_VERTICES);
+      writePrimitiveLineIndices(box * 12 + subID + 0, circle + box * MESHSHADER_BBOX_VERTICES);
       // upper
-      writePrimitiveLineIndices(box * 12 + subID + 4, circle + 4 + box * BOX_VERTICES);
+      writePrimitiveLineIndices(box * 12 + subID + 4, circle + 4 + box * MESHSHADER_BBOX_VERTICES);
       // connectors
-      writePrimitiveLineIndices(box * 12 + subID + 8, uvec2(subID, subID + 4) + box * BOX_VERTICES);
+      writePrimitiveLineIndices(box * 12 + subID + 8, uvec2(subID, subID + 4) + box * MESHSHADER_BBOX_VERTICES);
     }
   }
 }

@@ -41,6 +41,8 @@
 #define VISUALIZE_BLAS 6
 #define VISUALIZE_BLAS_CACHED 7
 
+#define MESHSHADER_BBOX_VERTICES 8
+#define MESHSHADER_BBOX_LINES 12
 #define MESHSHADER_BBOX_THREADS 4
 
 /////////////////////////////////////////
