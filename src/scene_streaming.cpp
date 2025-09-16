@@ -18,6 +18,7 @@
 */
 
 #include <volk.h>
+#include <fmt/format.h>
 
 #include "scene_streaming.hpp"
 
@@ -1711,15 +1712,16 @@ bool SceneStreaming::initShadersAndPipelines()
 {
   Resources& res = *m_resources;
 
-  shaderc::CompileOptions optionsRaster = res.makeCompilerOptions();
+  shaderc::CompileOptions options = res.makeCompilerOptions();
+  options.AddMacroDefinition("SUBGROUP_SIZE", fmt::format("{}", res.m_physicalDeviceInfo.properties11.subgroupSize));
+
+  shaderc::CompileOptions optionsRaster = options;
   optionsRaster.AddMacroDefinition("TARGETS_RASTERIZATION", "1");
-  shaderc::CompileOptions optionsRay = res.makeCompilerOptions();
+  shaderc::CompileOptions optionsRay = options;
   optionsRay.AddMacroDefinition("TARGETS_RASTERIZATION", "0");
 
-  res.compileShader(m_shaders.computeAgeFilterGroups, VK_SHADER_STAGE_COMPUTE_BIT, "stream_agefilter_groups.comp.glsl");
-
-  res.compileShader(m_shaders.computeAgeFilterGroups, VK_SHADER_STAGE_COMPUTE_BIT, "stream_agefilter_groups.comp.glsl");
-  res.compileShader(m_shaders.computeSetup, VK_SHADER_STAGE_COMPUTE_BIT, "stream_setup.comp.glsl");
+  res.compileShader(m_shaders.computeAgeFilterGroups, VK_SHADER_STAGE_COMPUTE_BIT, "stream_agefilter_groups.comp.glsl", &options);
+  res.compileShader(m_shaders.computeSetup, VK_SHADER_STAGE_COMPUTE_BIT, "stream_setup.comp.glsl", &options);
   res.compileShader(m_shaders.computeUpdateSceneRaster, VK_SHADER_STAGE_COMPUTE_BIT, "stream_update_scene.comp.glsl", &optionsRaster);
   res.compileShader(m_shaders.computeUpdateSceneRay, VK_SHADER_STAGE_COMPUTE_BIT, "stream_update_scene.comp.glsl", &optionsRay);
 
@@ -1727,16 +1729,23 @@ bool SceneStreaming::initShadersAndPipelines()
 
   if(m_config.usePersistentClasAllocator)
   {
-    res.compileShader(m_shaders.computeAllocatorBuildFreeGaps, VK_SHADER_STAGE_COMPUTE_BIT, "stream_allocator_build_freegaps.comp.glsl");
-    res.compileShader(m_shaders.computeAllocatorFreeGapsInsert, VK_SHADER_STAGE_COMPUTE_BIT, "stream_allocator_freegaps_insert.comp.glsl");
-    res.compileShader(m_shaders.computeAllocatorLoadGroups, VK_SHADER_STAGE_COMPUTE_BIT, "stream_allocator_load_groups.comp.glsl");
-    res.compileShader(m_shaders.computeAllocatorSetupInsertion, VK_SHADER_STAGE_COMPUTE_BIT, "stream_allocator_setup_insertion.comp.glsl");
-    res.compileShader(m_shaders.computeAllocatorUnloadGroups, VK_SHADER_STAGE_COMPUTE_BIT, "stream_allocator_unload_groups.comp.glsl");
+    res.compileShader(m_shaders.computeAllocatorBuildFreeGaps, VK_SHADER_STAGE_COMPUTE_BIT,
+                      "stream_allocator_build_freegaps.comp.glsl", &options);
+    res.compileShader(m_shaders.computeAllocatorFreeGapsInsert, VK_SHADER_STAGE_COMPUTE_BIT,
+                      "stream_allocator_freegaps_insert.comp.glsl", &options);
+    res.compileShader(m_shaders.computeAllocatorLoadGroups, VK_SHADER_STAGE_COMPUTE_BIT,
+                      "stream_allocator_load_groups.comp.glsl", &options);
+    res.compileShader(m_shaders.computeAllocatorSetupInsertion, VK_SHADER_STAGE_COMPUTE_BIT,
+                      "stream_allocator_setup_insertion.comp.glsl", &options);
+    res.compileShader(m_shaders.computeAllocatorUnloadGroups, VK_SHADER_STAGE_COMPUTE_BIT,
+                      "stream_allocator_unload_groups.comp.glsl", &options);
   }
   else
   {
-    res.compileShader(m_shaders.computeCompactionClasOld, VK_SHADER_STAGE_COMPUTE_BIT, "stream_compaction_old_clas.comp.glsl");
-    res.compileShader(m_shaders.computeCompactionClasNew, VK_SHADER_STAGE_COMPUTE_BIT, "stream_compaction_new_clas.comp.glsl");
+    res.compileShader(m_shaders.computeCompactionClasOld, VK_SHADER_STAGE_COMPUTE_BIT,
+                      "stream_compaction_old_clas.comp.glsl", &options);
+    res.compileShader(m_shaders.computeCompactionClasNew, VK_SHADER_STAGE_COMPUTE_BIT,
+                      "stream_compaction_new_clas.comp.glsl", &options);
   }
 
   if(!res.verifyShaders(m_shaders))

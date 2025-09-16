@@ -1,4 +1,6 @@
 # Changelog for vk_lod_clusters
+* 2025-9-16:
+  * Added support for subgroup size 64 (untested).
 * 2025-9-15:
   * Added `VK_EXT_mesh_shader` support (still default to NV if available).
   * Removed unnecessary `VK_NV_SHADER_SUBGROUP_PARTITIONED` requirements

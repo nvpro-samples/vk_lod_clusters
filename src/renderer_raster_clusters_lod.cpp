@@ -86,6 +86,7 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
   uint32_t meshletVertices  = shaderio::adjustClusterProperty(rscene.scene->m_maxClusterVertices);
   LOGI("mesh shader config: %d triangles %d vertices\n", meshletTriangles, meshletVertices);
 
+  options.AddMacroDefinition("SUBGROUP_SIZE", fmt::format("{}", res.m_physicalDeviceInfo.properties11.subgroupSize));
   options.AddMacroDefinition("CLUSTER_VERTEX_COUNT", fmt::format("{}", meshletVertices));
   options.AddMacroDefinition("CLUSTER_TRIANGLE_COUNT", fmt::format("{}", meshletTriangles));
   options.AddMacroDefinition("TARGETS_RASTERIZATION", "1");
@@ -116,12 +117,7 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
                       "traversal_run_separate_groups.comp.glsl", &options);
   }
 
-  if(!res.verifyShaders(m_shaders))
-  {
-    return false;
-  }
-
-  return true;
+  return res.verifyShaders(m_shaders);
 }
 
 bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const RendererConfig& config)

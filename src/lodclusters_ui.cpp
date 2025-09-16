@@ -1080,7 +1080,7 @@ void LodClusters::onUIRender()
                           256 * 1024, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue);
       PE::InputInt("Colorize xor", (int*)&m_frameConfig.frameConstants.colorXor);
       PE::Checkbox("Auto reset timer", &m_tweak.autoResetTimers);
-      if(m_resources.m_supportsMeshShaderNV && m_resources.m_supportsMeshShaderNV)
+      if(m_resources.m_supportsMeshShaderNV && m_resources.m_supportsMeshShaderEXT)
       {
         PE::Checkbox("Use EXT Mesh shader", &m_rendererConfig.useEXTmeshShader);
       }

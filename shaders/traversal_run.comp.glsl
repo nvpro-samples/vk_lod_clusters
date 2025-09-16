@@ -574,8 +574,8 @@ void processAllSubTasks(inout TraversalInfo traversalInfo, bool threadRunnable, 
   
   int endOffset    = subgroupInclusiveAdd(threadSubCount);
   int startOffset  = endOffset - threadSubCount;
-  int totalThreads = subgroupShuffle(endOffset, SUBGROUP_SIZE-1);
-  int totalRuns    = (totalThreads + SUBGROUP_SIZE-1) / SUBGROUP_SIZE;
+  int totalThreads = subgroupShuffle(endOffset, SUBGROUP_SIZE - 1);
+  int totalRuns    = (totalThreads + SUBGROUP_SIZE - 1) / SUBGROUP_SIZE;
   
   const uint subgroupOffset = gl_SubgroupID * gl_SubgroupSize;
 
@@ -606,10 +606,16 @@ void processAllSubTasks(inout TraversalInfo traversalInfo, bool threadRunnable, 
     int t      = tFirst + int(gl_SubgroupInvocationID);
     
     int  relStart      = startOffset - tFirst;
-    // set bit where task starts if within current run
-    uint startBits     = subgroupOr(threadRunnable && relStart >= 0 && relStart < 32 ? (1 << relStart) : 0);
     
+#if SUBGROUP_SIZE > 32
+    uvec2 startBits    = subgroupOr(unpack32(threadRunnable && relStart >= 0 && relStart < SUBGROUP_SIZE ? (uint64_t(1) << relStart) : uint64_t(0)));
+    int  task          = bitCount(startBits.x & gl_SubgroupLeMask.x) + bitCount(startBits.y & gl_SubgroupLeMask.y) + taskBase;
+#else
+    // set bit where task starts if within current run
+    uint startBits     = subgroupOr(threadRunnable && relStart >= 0 && relStart < SUBGROUP_SIZE ? (1 << relStart) : 0);
     int  task          = bitCount(startBits & gl_SubgroupLeMask.x) + taskBase;
+#endif
+    
     uint taskID        = s_tasks[subgroupOffset + task].taskID;
     
     uint taskSubID     = t - subgroupShuffle(startOffset, taskID);
@@ -620,7 +626,7 @@ void processAllSubTasks(inout TraversalInfo traversalInfo, bool threadRunnable, 
   #else
     uint taskReadIndex = 0;
   #endif
-    taskBase           = subgroupShuffle(task, 31); // for next iteration
+    taskBase           = subgroupShuffle(task, SUBGROUP_SIZE - 1); // for next iteration
     
     bool taskValid     = taskSubID < taskSubCount;
     

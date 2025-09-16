@@ -127,6 +127,11 @@ private:
 
 bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscene, const RendererConfig& config)
 {
+  if(!initBasicShaders(res, rscene, config))
+  {
+    return false;
+  }
+
   shaderc::CompileOptions options = res.makeCompilerOptions();
 #if USE_DLSS
   bool supportsDLSS = true;
@@ -134,6 +139,7 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   bool supportsDLSS = false;
 #endif
 
+  options.AddMacroDefinition("SUBGROUP_SIZE", fmt::format("{}", res.m_physicalDeviceInfo.properties11.subgroupSize));
   options.AddMacroDefinition("CLUSTER_VERTEX_COUNT", fmt::format("{}", rscene.scene->m_maxClusterVertices));
   options.AddMacroDefinition("CLUSTER_TRIANGLE_COUNT", fmt::format("{}", rscene.scene->m_maxClusterTriangles));
   options.AddMacroDefinition("TARGETS_RASTERIZATION", "0");
@@ -201,12 +207,7 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
     }
   }
 
-  if(!res.verifyShaders(m_shaders))
-  {
-    return false;
-  }
-
-  return initBasicShaders(res, rscene, config);
+  return res.verifyShaders(m_shaders);
 }
 
 bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, const RendererConfig& config)
