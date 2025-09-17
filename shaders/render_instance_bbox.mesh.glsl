@@ -48,6 +48,11 @@ layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuff
   FrameConstants view;
 };
 
+layout(scalar,binding=BINDINGS_READBACK_SSBO,set=0) buffer readbackBuffer
+{
+  Readback readback;
+};
+
 layout(scalar, binding = BINDINGS_RENDERINSTANCES_SSBO, set = 0) buffer renderInstancesBuffer
 {
   RenderInstance instances[];
@@ -94,11 +99,20 @@ void writePrimitiveLineIndices(uint idx, uvec2 vertexIndices)
 
 void main()
 {
-  uint baseID   = gl_WorkGroupID.x * MESHSHADER_BBOX_COUNT;  
+#if USE_EXT_MESH_SHADER
+  uint workGroupID = getWorkGroupIndexLinearized(gl_WorkGroupID);
+  uint threadID    = getGlobalInvocationIndexLinearized(gl_GlobalInvocationID);
+  if (threadID != (workGroupID * MESHSHADER_WORKGROUP_SIZE + gl_LocalInvocationID.x))
+    readback.debugUI = threadID;
+#else
+  uint workGroupID = gl_WorkGroupID.x;
+#endif
+  uint baseID   = workGroupID * MESHSHADER_BBOX_COUNT;  
   uint numBoxes = min(push.numRenderInstances, baseID + MESHSHADER_BBOX_COUNT) - baseID;
   
 #if USE_EXT_MESH_SHADER
   SetMeshOutputsEXT(numBoxes * MESHSHADER_BBOX_VERTICES, numBoxes * MESHSHADER_BBOX_LINES);
+  if (numBoxes == 0) return;
 #else
   if (gl_LocalInvocationID.x == 0)
   {

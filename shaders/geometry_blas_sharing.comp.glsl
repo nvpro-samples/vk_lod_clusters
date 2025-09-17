@@ -108,7 +108,7 @@ layout(local_size_x=GEOMETRY_BLAS_SHARING_WORKGROUP) in;
 
 void main()
 {
-  uint geometryID = gl_GlobalInvocationID.x;
+  uint geometryID = getGlobalInvocationIndex(gl_GlobalInvocationID);
   
   if (geometryID < build.numGeometries)
   {

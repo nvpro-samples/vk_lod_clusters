@@ -757,12 +757,23 @@ void main()
   run();
   
 #if USE_SEPARATE_GROUPS
-  if (gl_GlobalInvocationID.x == 0) {
+  
+  uint threadID = getGlobalInvocationIndex(gl_GlobalInvocationID);
+
+  if (threadID == 0) {
     // this sets up the grid for `traversal_run_separate_groups.comp.glsl`
   
     uint groupCount = atomicAdd(buildRW.traversalGroupCounter,0);
     groupCount = min(groupCount,build.maxTraversalInfos);
-    buildRW.indirectDispatchGroups.gridX = (groupCount + TRAVERSAL_GROUPS_WORKGROUP - 1) / TRAVERSAL_GROUPS_WORKGROUP;
+    uint workGroupCount = (groupCount + TRAVERSAL_GROUPS_WORKGROUP - 1) / TRAVERSAL_GROUPS_WORKGROUP;
+  #if USE_16BIT_DISPATCH
+    uvec3 grid = fit16bitLaunchGrid(workGroupCount); 
+    buildRW.indirectDispatchGroups.gridX = grid.x;
+    buildRW.indirectDispatchGroups.gridY = grid.y;
+    buildRW.indirectDispatchGroups.gridZ = grid.z;
+  #else
+    buildRW.indirectDispatchGroups.gridX = workGroupCount;
+  #endif
   }
 #endif
 }

@@ -111,6 +111,8 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
   m_physicalDeviceInfo.init(physicalDevice);
   vkGetPhysicalDeviceMemoryProperties(physicalDevice, &m_memoryProperties);
 
+  m_use16bitDispatch = m_physicalDeviceInfo.properties10.limits.maxComputeWorkGroupCount[0] < (1 << 30);
+
   if(m_supportsMeshShaderEXT || m_supportsMeshShaderNV)
   {
     VkPhysicalDeviceProperties2 props2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};

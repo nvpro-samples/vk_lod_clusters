@@ -127,7 +127,15 @@ const uint MESHLET_TRIANGLE_ITERATIONS = ((CLUSTER_TRIANGLE_COUNT + MESHSHADER_W
 
 void main()
 {
-  ClusterInfo cinfo = build.renderClusterInfos.d[gl_WorkGroupID.x];
+#if USE_EXT_MESH_SHADER
+  // EXT mesh shader's launch grid can overshoot actual work
+  uint workGroupID  = getGlobalInvocationIndexLinearized(gl_WorkGroupID);
+  bool isValid      = workGroupID < build.numRenderedClusters;
+  ClusterInfo cinfo = build.renderClusterInfos.d[min(workGroupID, build.numRenderedClusters-1)];
+#else
+  uint workGroupID  = gl_WorkGroupID.x;
+  ClusterInfo cinfo = build.renderClusterInfos.d[workGroupID];
+#endif
 
   uint instanceID = cinfo.instanceID;
   uint clusterID  = cinfo.clusterID;
@@ -145,7 +153,12 @@ void main()
   uint triMax  = cluster.triangleCountMinusOne;
 
 #if USE_EXT_MESH_SHADER
-  SetMeshOutputsEXT(vertMax + 1, triMax + 1);
+  uint vertCount = isValid ? vertMax + 1 : 0;
+  uint triCount  = isValid ? triMax + 1 : 0;
+  
+  SetMeshOutputsEXT(vertCount, triCount);
+  if (triCount == 0)
+    return;
 #else
   if (gl_LocalInvocationID.x == 0) {
     gl_PrimitiveCountNV = triMax + 1;

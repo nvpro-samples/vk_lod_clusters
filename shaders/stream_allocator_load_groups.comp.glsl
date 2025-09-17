@@ -163,7 +163,7 @@ void main()
   // loads are stored after unloads within the patch array
   const uint patchLoadGroupsCount = streaming.update.patchGroupsCount - streaming.update.patchUnloadGroupsCount;  
 
-  const uint threadID             = gl_GlobalInvocationID.x;
+  const uint threadID             = getGlobalInvocationIndex(gl_GlobalInvocationID);
   const bool valid                = threadID < patchLoadGroupsCount;
   
   // treat invalid as found, this avoids threads contributing to our

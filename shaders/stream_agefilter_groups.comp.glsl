@@ -94,9 +94,11 @@ layout(local_size_x=STREAM_AGEFILTER_GROUPS_WORKGROUP) in;
 
 void main()
 {
+  uint threadID = getGlobalInvocationIndex(gl_GlobalInvocationID);
+
   // can load pre-emptively given the array is guaranteed to be sized as multiple of STREAM_AGEFILTER_CLUSTERS_WORKGROUP
-  uint residentID = streaming.resident.activeGroups.d[gl_GlobalInvocationID.x];
-  if (gl_GlobalInvocationID.x < streaming.resident.activeGroupsCount)
+  uint residentID = streaming.resident.activeGroups.d[threadID];
+  if (threadID < streaming.resident.activeGroupsCount)
   {
     Group_in groupRef = streaming.resident.groups.d[residentID].group;
     uint geometryID   = streaming.resident.groups.d[residentID].geometryID;

@@ -93,7 +93,7 @@ layout(local_size_x=BLAS_SETUP_INSERTION_WORKGROUP) in;
 
 void main()
 {
-  uint instanceID = gl_GlobalInvocationID.x;
+  uint instanceID = getGlobalInvocationIndex(gl_GlobalInvocationID);
   
   if (instanceID < build.numRenderInstances)
   {

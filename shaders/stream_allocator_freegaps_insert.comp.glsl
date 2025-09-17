@@ -90,7 +90,7 @@ layout(local_size_x=STREAM_ALLOCATOR_FREEGAPS_INSERT_WORKGROUP) in;
 
 void main()
 {
-  uint threadID = gl_GlobalInvocationID.x;
+  uint threadID = getGlobalInvocationIndex(gl_GlobalInvocationID);
   bool valid    = threadID < streaming.clasAllocator.freeGapsCounter;
 
   if (valid)

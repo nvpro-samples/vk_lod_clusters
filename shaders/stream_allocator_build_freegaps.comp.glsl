@@ -127,7 +127,9 @@ void main()
   // looping over them while linearly scanning and merging free gaps into regions up to
   // maxAllocationSize
   
-  const uint sectorID      = gl_WorkGroupID.x * SUBGROUP_COUNT + gl_SubgroupID;
+  const uint workGroupID   = getWorkGroupIndex(gl_WorkGroupID);
+  
+  const uint sectorID      = workGroupID * SUBGROUP_COUNT + gl_SubgroupID;
   // each sector operates on this many 32-bit values
   const uint sectorSize32  = 1 << streaming.clasAllocator.sectorSizeShift;
   // where the sector starts in the global `usedBits` array that represents the entire memory

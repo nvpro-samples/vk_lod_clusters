@@ -87,7 +87,7 @@ void main()
 {
   // can load pre-emptively given the array is guaranteed to be sized as multiple of STREAM_MOVE_OLD_CLAS_WORKGROUP
 
-  uint threadID        = gl_GlobalInvocationID.x;
+  uint threadID        = getGlobalInvocationIndex(gl_GlobalInvocationID);
   uint groupResidentID = streaming.resident.activeGroups.d[threadID];
   
   // old resident groups come first, then after this offset are the newly loaded,

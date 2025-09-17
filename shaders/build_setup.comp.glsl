@@ -117,9 +117,14 @@ void main()
     uint numRenderedClusters = min(renderClusterCounter, build.maxRenderClusters);
     
 #if USE_EXT_MESH_SHADER
-    buildRW.indirectDrawClustersEXT.gridX = numRenderedClusters;
+    uvec3 grid = fit16bitLaunchGrid(numRenderedClusters);  
+    buildRW.indirectDrawClustersEXT.gridX = grid.x;
+    buildRW.indirectDrawClustersEXT.gridY = grid.y;
+    buildRW.indirectDrawClustersEXT.gridZ = grid.z;
+    buildRW.numRenderedClusters = numRenderedClusters;
 #else
     buildRW.indirectDrawClustersNV.count = numRenderedClusters;
+    buildRW.indirectDrawClustersNV.first = 0;
 #endif
     // keep originals for array size warnings 
     readback.numRenderClusters    = renderClusterCounter;
@@ -144,9 +149,16 @@ void main()
     uint numRenderedClusters = min(renderClusterCounter, build.maxRenderClusters);
     
     buildRW.renderClusterCounter = numRenderedClusters;
-    buildRW.indirectDispatchBlasInsertion.gridX = (numRenderedClusters + BLAS_INSERT_CLUSTERS_WORKGROUP-1) / BLAS_INSERT_CLUSTERS_WORKGROUP;
-    buildRW.indirectDispatchBlasInsertion.gridY = 1;
-    buildRW.indirectDispatchBlasInsertion.gridZ = 1;
+  
+    uint numWorkGroups =  (numRenderedClusters + BLAS_INSERT_CLUSTERS_WORKGROUP-1) / BLAS_INSERT_CLUSTERS_WORKGROUP;
+  #if USE_16BIT_DISPATCH
+    uvec3 grid = fit16bitLaunchGrid(numWorkGroups);  
+    buildRW.indirectDispatchBlasInsertion.gridX = grid.x;
+    buildRW.indirectDispatchBlasInsertion.gridY = grid.y;
+    buildRW.indirectDispatchBlasInsertion.gridZ = grid.z;
+  #else
+    buildRW.indirectDispatchBlasInsertion.gridX = numWorkGroups;
+  #endif
 
     // keep originals for array size warnings 
     readback.numRenderClusters    = renderClusterCounter;

@@ -107,7 +107,7 @@ layout(local_size_x=INSTANCES_CLASSIFY_LOD_WORKGROUP) in;
 
 void main()
 {
-  uint instanceID   = gl_GlobalInvocationID.x;
+  uint instanceID   = getGlobalInvocationIndex(gl_GlobalInvocationID);
   uint instanceLoad = min(build.numRenderInstances-1, instanceID);
   bool isValid      = instanceID == instanceLoad;
 

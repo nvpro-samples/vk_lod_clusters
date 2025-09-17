@@ -125,12 +125,19 @@ bool Renderer::initBasicShaders(Resources& res, RenderScene& rscene, const Rende
 {
   uint32_t maxPrimitiveOutputs = config.useEXTmeshShader ? res.m_meshShaderPropsEXT.maxMeshOutputPrimitives :
                                                            res.m_meshShaderPropsNV.maxMeshOutputPrimitives;
-
-  uint32_t maxVertexOutputs = config.useEXTmeshShader ? res.m_meshShaderPropsEXT.maxMeshOutputVertices :
-                                                        res.m_meshShaderPropsNV.maxMeshOutputVertices;
-
-  m_meshShaderWorkgroupSize = config.useEXTmeshShader ? res.m_meshShaderPropsEXT.maxPreferredMeshWorkGroupInvocations :
-                                                        res.m_meshShaderPropsNV.maxMeshWorkGroupSize[0];
+  uint32_t maxVertexOutputs    = config.useEXTmeshShader ? res.m_meshShaderPropsEXT.maxMeshOutputVertices :
+                                                           res.m_meshShaderPropsNV.maxMeshOutputVertices;
+  if(config.useEXTmeshShader)
+  {
+    m_meshShaderWorkgroupSize =
+        std::min(res.m_meshShaderPropsEXT.maxPreferredMeshWorkGroupInvocations,
+                 std::min(res.m_meshShaderPropsEXT.maxMeshWorkGroupSize[0], res.m_meshShaderPropsEXT.maxMeshWorkGroupInvocations));
+  }
+  else
+  {
+    m_meshShaderWorkgroupSize =
+        std::min(res.m_meshShaderPropsNV.maxMeshWorkGroupSize[0], res.m_meshShaderPropsNV.maxMeshWorkGroupInvocations);
+  }
 
   m_meshShaderBoxes =
       std::min(m_meshShaderWorkgroupSize / MESHSHADER_BBOX_THREADS,
@@ -210,6 +217,7 @@ void Renderer::updateBasicDescriptors(Resources& res, RenderScene& scene)
 {
   nvvk::WriteSetContainer writeSets;
   writeSets.append(m_basicDset.makeWrite(BINDINGS_FRAME_UBO), res.m_commonBuffers.frameConstants);
+  writeSets.append(m_basicDset.makeWrite(BINDINGS_READBACK_SSBO), res.m_commonBuffers.readBack);
   writeSets.append(m_basicDset.makeWrite(BINDINGS_RAYTRACING_DEPTH), res.m_frameBuffer.imgRaytracingDepth.descriptor);
   writeSets.append(m_basicDset.makeWrite(BINDINGS_GEOMETRIES_SSBO), scene.getShaderGeometriesBuffer());
   writeSets.append(m_basicDset.makeWrite(BINDINGS_RENDERINSTANCES_SSBO), m_renderInstanceBuffer);
@@ -223,6 +231,7 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& scene, const Rend
 
   nvvk::DescriptorBindings bindings;
   bindings.addBinding(BINDINGS_FRAME_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_basicShaderFlags);
+  bindings.addBinding(BINDINGS_READBACK_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
   bindings.addBinding(BINDINGS_RAYTRACING_DEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_basicShaderFlags);
   bindings.addBinding(BINDINGS_GEOMETRIES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
   bindings.addBinding(BINDINGS_RENDERINSTANCES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
@@ -279,13 +288,15 @@ void Renderer::renderInstanceBboxes(VkCommandBuffer cmd)
   uint32_t numRenderInstances = uint32_t(m_renderInstances.size());
   vkCmdPushConstants(cmd, m_basicPipelineLayout, m_basicShaderFlags, 0, sizeof(uint32_t), &numRenderInstances);
 
+  uint32_t workGroupCount = (numRenderInstances + m_meshShaderBoxes - 1) / m_meshShaderBoxes;
   if(m_config.useEXTmeshShader)
   {
-    vkCmdDrawMeshTasksEXT(cmd, (numRenderInstances + m_meshShaderBoxes - 1) / m_meshShaderBoxes, 1, 1);
+    glm::uvec3 grid = shaderio::fit16bitLaunchGrid(workGroupCount);
+    vkCmdDrawMeshTasksEXT(cmd, grid.x, grid.y, grid.z);
   }
   else
   {
-    vkCmdDrawMeshTasksNV(cmd, (numRenderInstances + m_meshShaderBoxes - 1) / m_meshShaderBoxes, 0);
+    vkCmdDrawMeshTasksNV(cmd, workGroupCount, 0);
   }
 }
 

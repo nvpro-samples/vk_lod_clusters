@@ -102,7 +102,7 @@ layout(local_size_x=BLAS_INSERT_CLUSTERS_WORKGROUP) in;
 
 void main()
 {
-  uint renderClusterIndex = gl_GlobalInvocationID.x;
+  uint renderClusterIndex = getGlobalInvocationIndex(gl_GlobalInvocationID);
   
   if (renderClusterIndex < build.renderClusterCounter)
   {

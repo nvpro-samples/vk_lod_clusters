@@ -97,7 +97,7 @@ shared uint s_buildIndex;
 
 void main()
 {
-  uint patchID       = gl_WorkGroupID.x;
+  uint patchID       = getWorkGroupIndex(gl_WorkGroupID);
   uint localThreadID = gl_LocalInvocationID.x;
   
   StreamingGeometryPatch sgpatch = streaming.update.geometryPatches.d[patchID];

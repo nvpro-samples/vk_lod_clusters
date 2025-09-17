@@ -87,6 +87,7 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
   LOGI("mesh shader config: %d triangles %d vertices\n", meshletTriangles, meshletVertices);
 
   options.AddMacroDefinition("SUBGROUP_SIZE", fmt::format("{}", res.m_physicalDeviceInfo.properties11.subgroupSize));
+  options.AddMacroDefinition("USE_16BIT_DISPATCH", fmt::format("{}", res.m_use16bitDispatch ? 1 : 0));
   options.AddMacroDefinition("CLUSTER_VERTEX_COUNT", fmt::format("{}", meshletVertices));
   options.AddMacroDefinition("CLUSTER_TRIANGLE_COUNT", fmt::format("{}", meshletTriangles));
   options.AddMacroDefinition("TARGETS_RASTERIZATION", "1");
@@ -158,8 +159,10 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     m_sceneBuildShaderio.maxRenderClusters  = uint32_t(1u << config.numRenderClusterBits);
     m_sceneBuildShaderio.maxTraversalInfos  = uint32_t(1u << config.numTraversalTaskBits);
 
-    m_sceneBuildShaderio.indirectDispatchGroups.gridY = 1;
-    m_sceneBuildShaderio.indirectDispatchGroups.gridZ = 1;
+    m_sceneBuildShaderio.indirectDispatchGroups.gridY  = 1;
+    m_sceneBuildShaderio.indirectDispatchGroups.gridZ  = 1;
+    m_sceneBuildShaderio.indirectDrawClustersEXT.gridZ = 1;
+    m_sceneBuildShaderio.indirectDrawClustersNV.first  = 0;
 
     BufferRanges mem = {};
     m_sceneBuildShaderio.renderClusterInfos =
@@ -306,16 +309,6 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
       nvclusterlodErrorOverDistance(frame.lodPixelError * pixelScale, frame.frameConstants.fov,
                                     frame.frameConstants.viewportf.y);
 
-  if(m_config.useEXTmeshShader)
-  {
-    m_sceneBuildShaderio.indirectDrawClustersEXT.gridY = 1;
-    m_sceneBuildShaderio.indirectDrawClustersEXT.gridZ = 1;
-  }
-  else
-  {
-    m_sceneBuildShaderio.indirectDrawClustersNV.first = 0;
-  }
-
   const bool useSky = true;  // When using Sky, the sky is rendered first and the rest of the scene is rendered on top of it.
 
   vkCmdUpdateBuffer(cmd, res.m_commonBuffers.frameConstants.buffer, 0, sizeof(shaderio::FrameConstants) * 2,
@@ -349,7 +342,7 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
     if(m_config.useSorting)
     {
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalPresort);
-      vkCmdDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TRAVERSAL_PRESORT_WORKGROUP), 1, 1);
+      res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TRAVERSAL_PRESORT_WORKGROUP));
 
       memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
       memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
@@ -369,7 +362,7 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
 
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalInit);
-    vkCmdDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TRAVERSAL_INIT_WORKGROUP), 1, 1);
+    res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TRAVERSAL_INIT_WORKGROUP));
 
     // this barrier covers init & streaming pre traversal
     memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -390,7 +383,7 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
     auto timerSection = profiler.cmdFrameSection(cmd, "Traversal Run");
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalRun);
-    vkCmdDispatch(cmd, getWorkGroupCount(frame.traversalPersistentThreads, TRAVERSAL_RUN_WORKGROUP), 1, 1);
+    res.cmdLinearDispatch(cmd, getWorkGroupCount(frame.traversalPersistentThreads, TRAVERSAL_RUN_WORKGROUP));
 
     if(m_config.useSeparateGroups)
     {

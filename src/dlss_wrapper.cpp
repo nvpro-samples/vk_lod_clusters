@@ -79,7 +79,7 @@ static NVSDK_NGX_Result checkNgxResult(NVSDK_NGX_Result result, const char* func
     std::ostringstream str;
     str << "NGX Error: " << wstringToString(GetNGXResultAsString(result)) << " at " << func << ":" << line;
 
-    LOGE("%s\n", str.str().c_str());
+    LOGI("%s\n", str.str().c_str());
   }
 
   return result;

@@ -24,6 +24,10 @@
 #define SUBGROUP_SIZE 32
 #endif
 
+#ifndef USE_16BIT_DISPATCH
+#define USE_16BIT_DISPATCH 0
+#endif
+
 #ifdef __cplusplus
 namespace shaderio {
 using namespace glm;
@@ -46,6 +50,19 @@ static uint32_t inline adjustClusterProperty(uint32_t in)
   static_assert(sizeof(typ) == size_t(size), "GLSL vs C++ size mismatch: " #typ)
 
 #else  // GLSL
+
+
+#if USE_16BIT_DISPATCH
+#define getGlobalInvocationIndex getGlobalInvocationIndexLinearized
+#define getWorkGroupIndex getWorkGroupIndexLinearized
+#else
+#define getGlobalInvocationIndex(globalInvocationID) (globalInvocationID.x)
+#define getWorkGroupIndex(workGroupID) (workGroupID.x)
+#endif
+
+#define getGlobalInvocationIndexLinearized(globalInvocationID)                                                         \
+  (globalInvocationID.x + (globalInvocationID.y * gl_NumWorkGroups.x * gl_WorkGroupSize.x))
+#define getWorkGroupIndexLinearized(workGroupID) (workGroupID.x + (workGroupID.y * gl_NumWorkGroups.x))
 
 uint murmurHash(uint idx)
 {
@@ -130,6 +147,29 @@ struct DrawMeshTasksIndirectCommandEXT
   uint gridY;
   uint gridZ;
 };
+
+#ifdef __cplusplus
+static inline
+#endif
+    uvec3
+    fit16bitLaunchGrid(uint count)
+{
+  // output grid dimensions must be <= 16 bit
+  // input count typically <= 24 bits
+
+  // keep 1D
+  if(count <= 0xFFFF)
+    return uvec3(count, 1, 1);
+
+  // find the next best square that has an area
+  // greater than count.
+  // at the cost of wasting "area".
+  uint side = uint(ceil(sqrt(float(count))));
+
+  //if (side * side < count) side++;
+
+  return uvec3(side, side, 1);
+}
 
 #ifdef __cplusplus
 }

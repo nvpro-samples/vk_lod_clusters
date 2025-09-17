@@ -1,4 +1,7 @@
 # Changelog for vk_lod_clusters
+* 2025-9-17:
+  * Fix `VK_EXT_mesh_shader` respecting 16 bit grid dispatch limit.
+  * Added support for 16 bit limit of gridX dispatch dimension for all compute shaders as well.
 * 2025-9-16:
   * Added support for subgroup size 64 (untested).
 * 2025-9-15:

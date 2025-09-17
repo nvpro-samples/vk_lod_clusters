@@ -140,6 +140,7 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
 #endif
 
   options.AddMacroDefinition("SUBGROUP_SIZE", fmt::format("{}", res.m_physicalDeviceInfo.properties11.subgroupSize));
+  options.AddMacroDefinition("USE_16BIT_DISPATCH", fmt::format("{}", res.m_use16bitDispatch ? 1 : 0));
   options.AddMacroDefinition("CLUSTER_VERTEX_COUNT", fmt::format("{}", rscene.scene->m_maxClusterVertices));
   options.AddMacroDefinition("CLUSTER_TRIANGLE_COUNT", fmt::format("{}", rscene.scene->m_maxClusterTriangles));
   options.AddMacroDefinition("TARGETS_RASTERIZATION", "0");
@@ -217,7 +218,13 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
   m_maxRenderClusters     = 1u << config.numRenderClusterBits;
   m_maxTraversalTasks     = 1u << config.numTraversalTaskBits;
 
-  if(!initShaders(res, rscene, config))
+  if(!rscene.useStreaming)
+  {
+    m_config.useBlasMerging = false;
+    m_config.useBlasCaching = false;
+  }
+
+  if(!initShaders(res, rscene, m_config))
   {
     LOGE("RendererRayTraceClustersLod shaders failed\n");
     return false;
@@ -292,8 +299,10 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     m_sceneBuildShaderio.tlasInstances      = m_tlasInstancesBuffer.address;
     m_sceneBuildShaderio.numGeometries      = uint32_t(rscene.scene->getActiveGeometryCount());
 
-    m_sceneBuildShaderio.indirectDispatchGroups.gridY = 1;
-    m_sceneBuildShaderio.indirectDispatchGroups.gridZ = 1;
+    m_sceneBuildShaderio.indirectDispatchGroups.gridY        = 1;
+    m_sceneBuildShaderio.indirectDispatchGroups.gridZ        = 1;
+    m_sceneBuildShaderio.indirectDispatchBlasInsertion.gridY = 1;
+    m_sceneBuildShaderio.indirectDispatchBlasInsertion.gridZ = 1;
 
     BufferRanges mem = {};
     m_sceneBuildShaderio.renderClusterInfos =
@@ -619,7 +628,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     if(m_config.useSorting)
     {
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalPresort);
-      vkCmdDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TRAVERSAL_PRESORT_WORKGROUP), 1, 1);
+      res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TRAVERSAL_PRESORT_WORKGROUP));
 
       memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
       memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
@@ -640,7 +649,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeInstanceClassifyLod);
-        vkCmdDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, INSTANCES_CLASSIFY_LOD_WORKGROUP), 1, 1);
+        res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, INSTANCES_CLASSIFY_LOD_WORKGROUP));
 
         memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
@@ -651,7 +660,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
         auto timerSection = profiler.cmdFrameSection(cmd, "Geometry Blas Sharing");
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeGeometryBlasSharing);
-        vkCmdDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numGeometries, GEOMETRY_BLAS_SHARING_WORKGROUP), 1, 1);
+        res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numGeometries, GEOMETRY_BLAS_SHARING_WORKGROUP));
 
         memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
         memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
@@ -671,7 +680,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     // we prepare traversal by filling in instance root nodes into the traversal queue
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalInit);
-    vkCmdDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TRAVERSAL_INIT_WORKGROUP), 1, 1);
+    res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TRAVERSAL_INIT_WORKGROUP));
 
     memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
@@ -698,7 +707,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     // it returns a list of render clusters
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalRun);
-    vkCmdDispatch(cmd, getWorkGroupCount(frame.traversalPersistentThreads, TRAVERSAL_RUN_WORKGROUP), 1, 1);
+    res.cmdLinearDispatch(cmd, getWorkGroupCount(frame.traversalPersistentThreads, TRAVERSAL_RUN_WORKGROUP));
 
     bool useBlasMerging = m_config.useBlasSharing && m_config.useBlasMerging;
     if(useBlasMerging || m_config.useSeparateGroups)
@@ -719,7 +728,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
       const shaderio::SceneStreaming& shaderData = rscene.sceneStreaming.getShaderStreamingData();
 
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalMerge);
-      vkCmdDispatch(cmd, getWorkGroupCount(shaderData.resident.activeGroupsCount, TRAVERSAL_BLAS_MERGING_WORKGROUP), 1, 1);
+      res.cmdLinearDispatch(cmd, getWorkGroupCount(shaderData.resident.activeGroupsCount, TRAVERSAL_BLAS_MERGING_WORKGROUP));
     }
 
     if(m_config.useSeparateGroups)
@@ -761,7 +770,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     // it also resets the per-blas clas counters.
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeBlasSetupInsertion);
-    vkCmdDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, BLAS_SETUP_INSERTION_WORKGROUP), 1, 1);
+    res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, BLAS_SETUP_INSERTION_WORKGROUP));
 
     memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
@@ -784,7 +793,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeBlasCachingSetupBuild);
         // one work group per geometry
-        vkCmdDispatch(cmd, shaderData.update.patchCachedBlasCount, 1, 1);
+        res.cmdLinearDispatch(cmd, shaderData.update.patchCachedBlasCount);
       }
     }
 
@@ -860,7 +869,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
       {
         // prepare copy and then execute copy
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeBlasCachingSetupCopy);
-        vkCmdDispatch(cmd, getWorkGroupCount(shaderData.update.patchCachedBlasCount, BLAS_CACHING_SETUP_COPY_WORKGROUP), 1, 1);
+        res.cmdLinearDispatch(cmd, getWorkGroupCount(shaderData.update.patchCachedBlasCount, BLAS_CACHING_SETUP_COPY_WORKGROUP));
 
         memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
@@ -905,7 +914,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     auto timerSection = profiler.cmdFrameSection(cmd, "Tlas Preparation");
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeInstanceAssignBlas);
-    vkCmdDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, INSTANCES_ASSIGN_BLAS_WORKGROUP), 1, 1);
+    res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, INSTANCES_ASSIGN_BLAS_WORKGROUP));
 
     memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
     memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;

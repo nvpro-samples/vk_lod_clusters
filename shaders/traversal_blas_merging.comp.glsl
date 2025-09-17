@@ -101,9 +101,11 @@ layout(local_size_x=TRAVERSAL_BLAS_MERGING_WORKGROUP) in;
 
 void main()
 {
+  uint threadID = getGlobalInvocationIndex(gl_GlobalInvocationID);
+
   // can load pre-emptively given the array is guaranteed to be sized as multiple of STREAM_AGEFILTER_CLUSTERS_WORKGROUP
-  uint residentID   = streaming.resident.activeGroups.d[gl_GlobalInvocationID.x];
-  bool isValid      = gl_GlobalInvocationID.x < streaming.resident.activeGroupsCount;
+  uint residentID   = streaming.resident.activeGroups.d[threadID];
+  bool isValid      = threadID < streaming.resident.activeGroupsCount;
 
   if (isValid)
   {

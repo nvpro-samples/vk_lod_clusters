@@ -242,6 +242,25 @@ public:
   void cmdBuildHiz(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler);
   void cmdHBAO(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler);
 
+  // some vulkan implementations only support 16 bit per grid component
+  // need to convert the 1D intended launch into a grid.
+  void cmdLinearDispatch(VkCommandBuffer cmd, uint32_t count) const
+  {
+    if(!count)
+      return;
+
+    if(!m_use16bitDispatch || count <= 0xFFFF)
+    {
+      vkCmdDispatch(cmd, count, 1, 1);
+    }
+    else
+    {
+      glm::uvec3 grid = shaderio::fit16bitLaunchGrid(count);
+      assert(grid.x <= 0xFFFF && grid.y <= 0xFFFF && grid.z <= 0xFFFF);
+      vkCmdDispatch(cmd, grid.x, grid.y, grid.z);
+    }
+  }
+
   void getReadbackData(shaderio::Readback& readback);
 
   //////////////////////////////////////////////////////////////////////////
@@ -484,6 +503,7 @@ public:
   VkPhysicalDeviceMeshShaderPropertiesEXT m_meshShaderPropsEXT = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT};
   VkPhysicalDeviceMeshShaderPropertiesNV m_meshShaderPropsNV = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_NV};
 
+  bool m_use16bitDispatch      = false;
   bool m_supportsMeshShaderEXT = false;
   bool m_supportsMeshShaderNV  = false;
   bool m_supportsClusters      = false;

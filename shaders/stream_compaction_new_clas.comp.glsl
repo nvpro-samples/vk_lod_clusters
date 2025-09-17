@@ -89,7 +89,7 @@ void main()
 {
   // can load pre-emptively given the array is guaranteed to be sized as multiple of STREAM_MOVE_NEW_CLAS_WORKGROUP
 
-  uint newID             = gl_GlobalInvocationID.x;
+  uint newID             = getGlobalInvocationIndex(gl_GlobalInvocationID);
   uint clusterResidentID = streaming.update.newClasResidentIDs.d[newID];
   bool valid             = newID < streaming.update.newClasCount;
   

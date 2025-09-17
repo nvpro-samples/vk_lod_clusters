@@ -1175,6 +1175,7 @@ static uint32_t getWorkGroupCount(uint32_t numThreads, uint32_t workGroupSize)
 
 void SceneStreaming::cmdPreTraversal(VkCommandBuffer cmd, VkDeviceAddress clasScratchBuffer, nvvk::ProfilerGpuTimer& profiler)
 {
+  Resources& res = *m_resources;
   // Prior traversal we run the update task.
   // This modifies the device address array of geometry groups so that
   // traversal knows whether a geometry group is resident or not and where to
@@ -1200,8 +1201,7 @@ void SceneStreaming::cmdPreTraversal(VkCommandBuffer cmd, VkDeviceAddress clasSc
     {
       // this dispatch will handle giving back clas memory of unloaded groups
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeAllocatorUnloadGroups);
-      vkCmdDispatch(cmd, getWorkGroupCount(m_shaderData.update.patchUnloadGroupsCount, STREAM_ALLOCATOR_UNLOAD_GROUPS_WORKGROUP),
-                    1, 1);
+      res.cmdLinearDispatch(cmd, getWorkGroupCount(m_shaderData.update.patchUnloadGroupsCount, STREAM_ALLOCATOR_UNLOAD_GROUPS_WORKGROUP));
 
       // must not overlap with the next dispatch that actually removes groups, as our pointers would be invalid
       memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -1217,10 +1217,8 @@ void SceneStreaming::cmdPreTraversal(VkCommandBuffer cmd, VkDeviceAddress clasSc
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                       m_requiresClas ? m_pipelines.computeUpdateSceneRay : m_pipelines.computeUpdateSceneRaster);
 
-    vkCmdDispatch(cmd,
-                  getWorkGroupCount(std::max(m_shaderData.update.patchGroupsCount, m_shaderData.update.patchCachedBlasCount),
-                                    STREAM_UPDATE_SCENE_WORKGROUP),
-                  1, 1);
+    res.cmdLinearDispatch(cmd, getWorkGroupCount(std::max(m_shaderData.update.patchGroupsCount, m_shaderData.update.patchCachedBlasCount),
+                                                 STREAM_UPDATE_SCENE_WORKGROUP));
 
     // with the update also comes a new compacted list of resident objects
     m_resident.cmdRunTask(cmd, m_shaderData.update.taskIndex);
@@ -1298,8 +1296,8 @@ void SceneStreaming::cmdPreTraversal(VkCommandBuffer cmd, VkDeviceAddress clasSc
     {
       // there are load or unload operations, so compute the free gaps
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeAllocatorBuildFreeGaps);
-      vkCmdDispatch(cmd, getWorkGroupCount(m_shaderData.clasAllocator.sectorCount, STREAM_ALLOCATOR_BUILD_FREEGAPS_WORKGROUP / SUBGROUP_SIZE),
-                    1, 1);
+      res.cmdLinearDispatch(cmd, getWorkGroupCount(m_shaderData.clasAllocator.sectorCount,
+                                                   STREAM_ALLOCATOR_BUILD_FREEGAPS_WORKGROUP / SUBGROUP_SIZE));
 
       // if we need to allocate new group clusters (loaded new groups) then we need the full detail
       // binned list of free gaps, otherwise we are fine with just knowing the counters
@@ -1327,8 +1325,8 @@ void SceneStreaming::cmdPreTraversal(VkCommandBuffer cmd, VkDeviceAddress clasSc
 
         // this dispatch handles the offset computation where each size-based free range starts
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeAllocatorSetupInsertion);
-        vkCmdDispatch(cmd, getWorkGroupCount(m_shaderData.clasAllocator.maxAllocationSize, STREAM_ALLOCATOR_SETUP_INSERTION_WORKGROUP),
-                      1, 1);
+        res.cmdLinearDispatch(cmd, getWorkGroupCount(m_shaderData.clasAllocator.maxAllocationSize,
+                                                     STREAM_ALLOCATOR_SETUP_INSERTION_WORKGROUP));
 
         memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
@@ -1355,7 +1353,7 @@ void SceneStreaming::cmdPreTraversal(VkCommandBuffer cmd, VkDeviceAddress clasSc
       // Only run compaction if we had unloads.
       // Compute compaction of old clusters here, however the actual move is performed in `cmdPostTraversal`
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeCompactionClasOld);
-      vkCmdDispatch(cmd, getWorkGroupCount(m_shaderData.update.loadActiveGroupsOffset, STREAM_COMPACTION_OLD_CLAS_WORKGROUP), 1, 1);
+      res.cmdLinearDispatch(cmd, getWorkGroupCount(m_shaderData.update.loadActiveGroupsOffset, STREAM_COMPACTION_OLD_CLAS_WORKGROUP));
     }
     else
     {
@@ -1371,6 +1369,8 @@ void SceneStreaming::cmdPreTraversal(VkCommandBuffer cmd, VkDeviceAddress clasSc
 
 void SceneStreaming::cmdPostTraversal(VkCommandBuffer cmd, VkDeviceAddress clasScratchBuffer, bool runAgeFilter, nvvk::ProfilerGpuTimer& profiler)
 {
+  Resources& res = *m_resources;
+
   // After traversal was performed, this function filters resident cluster groups
   // by age to append to the unload request list.
   // The traversal itself will have appended load requests and reset the age of
@@ -1390,7 +1390,7 @@ void SceneStreaming::cmdPostTraversal(VkCommandBuffer cmd, VkDeviceAddress clasS
     // age filter resident groups, writes unload request array
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeAgeFilterGroups);
-    vkCmdDispatch(cmd, getWorkGroupCount(m_shaderData.resident.activeGroupsCount, STREAM_AGEFILTER_GROUPS_WORKGROUP), 1, 1);
+    res.cmdLinearDispatch(cmd, getWorkGroupCount(m_shaderData.resident.activeGroupsCount, STREAM_AGEFILTER_GROUPS_WORKGROUP));
   }
 
   // rasterization ends here
@@ -1413,7 +1413,7 @@ void SceneStreaming::cmdPostTraversal(VkCommandBuffer cmd, VkDeviceAddress clasS
     if(patchLoadGroupsCount)
     {
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeAllocatorLoadGroups);
-      vkCmdDispatch(cmd, getWorkGroupCount(patchLoadGroupsCount, STREAM_ALLOCATOR_LOAD_GROUPS_WORKGROUP), 1, 1);
+      res.cmdLinearDispatch(cmd, getWorkGroupCount(patchLoadGroupsCount, STREAM_ALLOCATOR_LOAD_GROUPS_WORKGROUP));
     }
   }
   else
@@ -1478,7 +1478,7 @@ void SceneStreaming::cmdPostTraversal(VkCommandBuffer cmd, VkDeviceAddress clasS
 
       // compute the move operations for newly built clas
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeCompactionClasNew);
-      vkCmdDispatch(cmd, getWorkGroupCount(m_shaderData.update.newClasCount, STREAM_COMPACTION_NEW_CLAS_WORKGROUP), 1, 1);
+      res.cmdLinearDispatch(cmd, getWorkGroupCount(m_shaderData.update.newClasCount, STREAM_COMPACTION_NEW_CLAS_WORKGROUP));
     }
   }
 
@@ -1714,6 +1714,7 @@ bool SceneStreaming::initShadersAndPipelines()
 
   shaderc::CompileOptions options = res.makeCompilerOptions();
   options.AddMacroDefinition("SUBGROUP_SIZE", fmt::format("{}", res.m_physicalDeviceInfo.properties11.subgroupSize));
+  options.AddMacroDefinition("USE_16BIT_DISPATCH", fmt::format("{}", res.m_use16bitDispatch ? 1 : 0));
 
   shaderc::CompileOptions optionsRaster = options;
   optionsRaster.AddMacroDefinition("TARGETS_RASTERIZATION", "1");

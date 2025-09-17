@@ -93,7 +93,7 @@ void main()
 {
   // can load pre-emptively given the array is guaranteed to be sized as multiple of STREAM_UPDATE_SCENE_WORKGROUP
   
-  uint threadID = gl_GlobalInvocationID.x;  
+  uint threadID = getGlobalInvocationIndex(gl_GlobalInvocationID);  
 
   // works for both load and unload
   StreamingPatch spatch = streaming.update.patches.d[threadID];

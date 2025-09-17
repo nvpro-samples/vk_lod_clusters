@@ -153,7 +153,7 @@ bool queryWasVisible(mat4 instanceTransform, BBox bbox)
 
 void main()
 {
-  uint threadReadIndex = gl_GlobalInvocationID.x;  
+  uint threadReadIndex = getGlobalInvocationIndex(gl_GlobalInvocationID);  
   if (threadReadIndex >= min(build.traversalGroupCounter, build.maxTraversalInfos)) return;
   
   // load group and test its clusters

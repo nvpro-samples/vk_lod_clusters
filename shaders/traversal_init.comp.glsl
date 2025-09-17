@@ -99,7 +99,7 @@ layout(local_size_x=TRAVERSAL_INIT_WORKGROUP) in;
 
 void main()
 {
-  uint instanceID   = gl_GlobalInvocationID.x;
+  uint instanceID   = getGlobalInvocationIndex(gl_GlobalInvocationID);
   uint instanceLoad = min(build.numRenderInstances-1, instanceID);
   bool isValid      = instanceID == instanceLoad;
 

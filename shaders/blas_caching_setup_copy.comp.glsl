@@ -103,7 +103,7 @@ layout(local_size_x=BLAS_CACHING_SETUP_COPY_WORKGROUP) in;
 
 void main()
 {
-  uint threadID = gl_GlobalInvocationID.x;
+  uint threadID = getGlobalInvocationIndex(gl_GlobalInvocationID);
   
   // guaranteed to be loadable
   StreamingGeometryPatch sgpatch = streaming.update.geometryPatches.d[threadID];

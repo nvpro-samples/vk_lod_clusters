@@ -131,9 +131,15 @@ void main()
     
     // and setup actual dispatch that inserts the freegaps into the lists 
     // within `stream_allocator_freelist_insert.comp.glsl`
-    streamingRW.clasAllocator.dispatchFreeGapsInsert.gridX = (min(freeGaps,maxFreeGaps) + STREAM_ALLOCATOR_FREEGAPS_INSERT_WORKGROUP -1) / STREAM_ALLOCATOR_FREEGAPS_INSERT_WORKGROUP;
-    streamingRW.clasAllocator.dispatchFreeGapsInsert.gridY = 1;
-    streamingRW.clasAllocator.dispatchFreeGapsInsert.gridZ = 1;
+    uint workGroupCount = (min(freeGaps,maxFreeGaps) + STREAM_ALLOCATOR_FREEGAPS_INSERT_WORKGROUP -1) / STREAM_ALLOCATOR_FREEGAPS_INSERT_WORKGROUP;
+  #if USE_16BIT_DISPATCH
+    uvec3 grid = fit16bitLaunchGrid(workGroupCount);  
+    streamingRW.clasAllocator.dispatchFreeGapsInsert.gridX = grid.x;
+    streamingRW.clasAllocator.dispatchFreeGapsInsert.gridY = grid.y;
+    streamingRW.clasAllocator.dispatchFreeGapsInsert.gridZ = grid.z;
+  #else
+    streamingRW.clasAllocator.dispatchFreeGapsInsert.gridX = workGroupCount;
+  #endif
   #if STREAMING_DEBUG_USEDBITS_COUNT
     // error check allocation state prior adding new groups
     uint64_t allocatedSize = streaming.clasAllocator.stats.d.allocatedSize;    
