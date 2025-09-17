@@ -102,8 +102,6 @@ void main()
 #if USE_EXT_MESH_SHADER
   uint workGroupID = getWorkGroupIndexLinearized(gl_WorkGroupID);
   uint threadID    = getGlobalInvocationIndexLinearized(gl_GlobalInvocationID);
-  if (threadID != (workGroupID * MESHSHADER_WORKGROUP_SIZE + gl_LocalInvocationID.x))
-    readback.debugUI = threadID;
 #else
   uint workGroupID = gl_WorkGroupID.x;
 #endif
