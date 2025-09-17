@@ -91,22 +91,30 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
 
     res->createBufferTyped(preloadGeometry.localTriangles, sceneGeometry.localTriangles.size(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     res->createBufferTyped(preloadGeometry.vertices, sceneGeometry.vertices.size(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    NVVK_DBG_NAME(preloadGeometry.localTriangles.buffer);
+    NVVK_DBG_NAME(preloadGeometry.vertices.buffer);
 
     size_t numClusters = sceneGeometry.lodMesh.clusterTriangleRanges.size();
     res->createBufferTyped(preloadGeometry.clusters, numClusters, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     res->createBufferTyped(preloadGeometry.clusterBboxes, numClusters, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     res->createBufferTyped(preloadGeometry.clusterGeneratingGroups, numClusters, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    NVVK_DBG_NAME(preloadGeometry.clusters.buffer);
+    NVVK_DBG_NAME(preloadGeometry.clusterBboxes.buffer);
+    NVVK_DBG_NAME(preloadGeometry.clusterGeneratingGroups.buffer);
 
     size_t numGroups = sceneGeometry.lodMesh.groupClusterRanges.size();
     res->createBufferTyped(preloadGeometry.groups, numGroups, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    NVVK_DBG_NAME(preloadGeometry.groups.buffer);
 
     size_t numNodes = sceneGeometry.lodHierarchy.nodes.size();
     res->createBufferTyped(preloadGeometry.nodes, numNodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     res->createBufferTyped(preloadGeometry.nodeBboxes, numNodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    NVVK_DBG_NAME(preloadGeometry.nodes.buffer);
+    NVVK_DBG_NAME(preloadGeometry.nodeBboxes.buffer);
 
     uint32_t numLodLevels = sceneGeometry.lodLevelsCount;
     res->createBufferTyped(preloadGeometry.lodLevels, numLodLevels, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-
+    NVVK_DBG_NAME(preloadGeometry.lodLevels.buffer);
 
     m_geometrySize += preloadGeometry.localTriangles.bufferSize;
     m_geometrySize += preloadGeometry.vertices.bufferSize;
@@ -214,6 +222,7 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
   }
 
   res->createBufferTyped(m_shaderGeometriesBuffer, scene->getActiveGeometryCount(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+  NVVK_DBG_NAME(m_shaderGeometriesBuffer.buffer);
   m_operationsSize += logMemoryUsage(m_shaderGeometriesBuffer.bufferSize, "operations", "preloaded geo buffer");
 
   uploader.uploadBuffer(m_shaderGeometriesBuffer, m_shaderGeometries.data());
@@ -378,8 +387,10 @@ bool ScenePreloaded::initClas()
     size_t numClusters = sceneGeometry.totalClustersCount;
     res->createBufferTyped(preloadGeometry.clusterClasAddresses, numClusters,
                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+    NVVK_DBG_NAME(preloadGeometry.clusterClasAddresses.buffer);
     res->createBufferTyped(preloadGeometry.clusterClasSizes, numClusters,
                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+    NVVK_DBG_NAME(preloadGeometry.clusterClasSizes.buffer);
 
     m_clasOperationsSize += preloadGeometry.clusterClasAddresses.bufferSize;
     m_clasOperationsSize += preloadGeometry.clusterClasSizes.bufferSize;
@@ -438,6 +449,7 @@ bool ScenePreloaded::initClas()
       }
 
       res->createBuffer(preloadGeometry.clasData, sumClasSizes, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
+      NVVK_DBG_NAME(preloadGeometry.clasData.buffer);
 
       uint64_t  clasOffset    = 0;
       uint64_t* clasAddresses = buildAddressesHost.data();
@@ -491,6 +503,7 @@ bool ScenePreloaded::initClas()
   // create low detail blas
   {
     res->createBuffer(m_clasLowDetailBlasBuffer, blasSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
+    NVVK_DBG_NAME(m_clasLowDetailBlasBuffer.buffer);
     m_blasSize = blasSize;
 
     cmd = res->createTempCmdBuffer();

@@ -152,6 +152,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
   {
     res.createBuffer(m_sceneBuildBuffer, sizeof(shaderio::SceneBuilding),
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+    NVVK_DBG_NAME(m_sceneBuildBuffer.buffer);
     m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sceneBuildBuffer.bufferSize, "operations", "build shaderio");
 
     memset(&m_sceneBuildShaderio, 0, sizeof(m_sceneBuildShaderio));
@@ -180,6 +181,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     }
 
     res.createBuffer(m_sceneDataBuffer, mem.getSize(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    NVVK_DBG_NAME(m_sceneDataBuffer.buffer);
     m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sceneDataBuffer.bufferSize, "operations", "build data");
 
     m_sceneBuildShaderio.renderClusterInfos += m_sceneDataBuffer.address;
@@ -192,6 +194,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
 
     res.createBuffer(m_sceneTraversalBuffer, sizeof(uint64_t) * m_sceneBuildShaderio.maxTraversalInfos,
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    NVVK_DBG_NAME(m_sceneTraversalBuffer.buffer);
     m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sceneTraversalBuffer.bufferSize, "operations", "build traversal");
 
     m_sceneBuildShaderio.traversalNodeInfos = m_sceneTraversalBuffer.address;
@@ -326,13 +329,18 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
   }
 
   memBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-  memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &memBarrier, 0,
-                       nullptr, 0, nullptr);
+  memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       0, 1, &memBarrier, 0, nullptr, 0, nullptr);
 
   if(rscene.useStreaming)
   {
     rscene.sceneStreaming.cmdPreTraversal(cmd, 0, profiler);
+
+    memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                         &memBarrier, 0, nullptr, 0, nullptr);
   }
 
   {
@@ -366,7 +374,7 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
 
     // this barrier covers init & streaming pre traversal
     memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
+    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
                          &memBarrier, 0, nullptr, 0, nullptr);
 
@@ -408,9 +416,11 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
     vkCmdDispatch(cmd, 1, 1, 1);
 
     memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT
+                               | VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         VK_PIPELINE_STAGE_MESH_SHADER_BIT_NV | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                         VK_PIPELINE_STAGE_MESH_SHADER_BIT_NV | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                             | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
                          0, 1, &memBarrier, 0, nullptr, 0, nullptr);
   }
 

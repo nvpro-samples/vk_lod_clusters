@@ -267,6 +267,8 @@ bool SceneStreaming::init(Resources* resources, const Scene* scene, const Stream
   res.createBuffer(m_shaderBuffer, sizeof(shaderio::SceneStreaming),
                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT
                        | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+  NVVK_DBG_NAME(m_shaderBuffer.buffer);
+
   m_operationsSize += logMemoryUsage(m_shaderBuffer.bufferSize, "operations", "stream shaderio");
 
   // seed lo res geometry
@@ -371,13 +373,17 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
 
     size_t numGroups = sceneGeometry.lodMesh.groupClusterRanges.size();
     res.createBufferTyped(persistentGeometry.groupAddresses, numGroups, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    NVVK_DBG_NAME(persistentGeometry.groupAddresses.buffer);
 
     size_t numNodes = sceneGeometry.lodHierarchy.nodes.size();
     res.createBufferTyped(persistentGeometry.nodes, numNodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     res.createBufferTyped(persistentGeometry.nodeBboxes, numNodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    NVVK_DBG_NAME(persistentGeometry.nodes.buffer);
+    NVVK_DBG_NAME(persistentGeometry.nodeBboxes.buffer);
 
     uint32_t numLodLevels = sceneGeometry.lodLevelsCount;
     res.createBufferTyped(persistentGeometry.lodLevels, numLodLevels, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    NVVK_DBG_NAME(persistentGeometry.lodLevels.buffer);
 
     m_persistentGeometrySize += persistentGeometry.groupAddresses.bufferSize;
     m_persistentGeometrySize += persistentGeometry.nodes.bufferSize;
@@ -421,6 +427,7 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
     uint64_t         lastGroupSize     = dataOffsets.finalSize;
 
     res.createBuffer(persistentGeometry.lowDetailGroupsData, lastGroupSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    NVVK_DBG_NAME(persistentGeometry.lowDetailGroupsData.buffer);
     m_persistentGeometrySize += persistentGeometry.lowDetailGroupsData.bufferSize;
 
     assert(lastClustersCount <= 0xFFFFFFFF);
@@ -445,6 +452,7 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
   resetGeometryGroupAddresses(uploader);
 
   res.createBufferTyped(m_shaderGeometriesBuffer, scene->getActiveGeometryCount(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+  NVVK_DBG_NAME(m_shaderGeometriesBuffer.buffer);
   m_operationsSize += logMemoryUsage(m_shaderGeometriesBuffer.bufferSize, "operations", "stream geo buffer");
 
   uploader.uploadBuffer(m_shaderGeometriesBuffer, m_shaderGeometries.data());
@@ -2097,6 +2105,7 @@ bool SceneStreaming::initClas()
 
     res.createBuffer(m_clasLowDetailBuffer, clasSize,
                      VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
+    NVVK_DBG_NAME(m_clasLowDetailBuffer.buffer);
     m_clasLowDetailSize = clasSize;
 
     clasSize                       = 0;
@@ -2147,6 +2156,7 @@ bool SceneStreaming::initClas()
 
       // build low detail blas, one per low detail group
       res.createBuffer(m_clasLowDetailBlasBuffer, blasSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
+      NVVK_DBG_NAME(m_clasLowDetailBlasBuffer.buffer);
       m_blasSize += blasSize;
 
       cmdInfo.input        = blasInputInfo;

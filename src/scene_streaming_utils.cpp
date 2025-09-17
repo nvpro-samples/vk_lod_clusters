@@ -53,9 +53,11 @@ void StreamingRequests::init(Resources& res, const StreamingConfig& config, uint
   res.createBuffer(m_requestBuffer, (m_requestSize + sizeof(shaderio::StreamingRequest)) * STREAMING_MAX_ACTIVE_TASKS,
                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                    VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0, 0, sharingQueueFamilies);
+  NVVK_DBG_NAME(m_requestBuffer.buffer);
 
   res.createBuffer(m_requestHostBuffer, m_requestBuffer.bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_CPU_ONLY,
                    VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
+  NVVK_DBG_NAME(m_requestHostBuffer.buffer);
 
   for(uint32_t c = 0; c < STREAMING_MAX_ACTIVE_TASKS; c++)
   {
@@ -157,10 +159,12 @@ void StreamingResident::init(Resources& res, const StreamingConfig& config, uint
 
   res.createBuffer(m_residentBuffer, ranges.getSize(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                    VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0, 0, sharingQueueFamilies);
+  NVVK_DBG_NAME(m_residentBuffer.buffer);
 
   res.createBufferTyped(m_residentActiveHostBuffer, (m_maxGroups)*STREAMING_MAX_ACTIVE_TASKS,
                         VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY,
                         VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
+  NVVK_DBG_NAME(m_residentActiveHostBuffer.buffer);
 
   m_shaderData              = {};
   m_shaderData.groups       = m_residentBuffer.address + m_residentGroupsOffset;
@@ -206,6 +210,7 @@ const StreamingResident::Group* StreamingResident::initClas(Resources&          
 
   // one buffer for organization
   res.createBuffer(m_clasManageBuffer, ranges.getSize(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+  NVVK_DBG_NAME(m_clasManageBuffer.buffer);
 
   m_shaderData.clasAddresses += m_clasManageBuffer.address;
   m_shaderData.clasSizes += m_clasManageBuffer.address;
@@ -219,6 +224,8 @@ const StreamingResident::Group* StreamingResident::initClas(Resources&          
   // one buffer for actual storage, allow > 4 GB
   res.createLargeBuffer(m_clasDataBuffer, m_maxClasBytes,
                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
+  NVVK_DBG_NAME(m_clasDataBuffer.buffer);
+
   m_shaderData.clasBaseAddress = m_clasDataBuffer.address;
   m_shaderData.clasMaxSize     = m_maxClasBytes;
 
@@ -542,6 +549,7 @@ void StreamingAllocator::init(Resources&                    res,
   m_shaderData.stats             = ranges.append(sizeof(shaderio::AllocatorStats), 8);
 
   res.createBuffer(m_managementBuffer, ranges.getSize(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+  NVVK_DBG_NAME(m_managementBuffer.buffer);
 
   m_shaderData.freeGapsPos += m_managementBuffer.address;
   m_shaderData.freeGapsSize += m_managementBuffer.address;
@@ -633,10 +641,11 @@ void StreamingUpdates::init(Resources& res, const StreamingConfig& config, uint3
 
   res.createBufferTyped(m_patchesBuffer, framePatchCount * STREAMING_MAX_ACTIVE_TASKS, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                         VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0, 0, sharingQueueFamilies);
-
+  NVVK_DBG_NAME(m_patchesBuffer.buffer);
 
   res.createBufferTyped(m_patchesHostBuffer, framePatchCount * STREAMING_MAX_ACTIVE_TASKS, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                         VMA_MEMORY_USAGE_CPU_ONLY, VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
+  NVVK_DBG_NAME(m_patchesHostBuffer.buffer);
 
   m_shaderData.patches = m_patchesBuffer.address;
 
@@ -678,6 +687,7 @@ void StreamingUpdates::initClas(Resources& res, const StreamingConfig& config, c
 
   res.createBuffer(m_clasBuffer, ranges.getSize(),
                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
+  NVVK_DBG_NAME(m_clasBuffer.buffer);
 
   m_shaderData.newClasBuilds += m_clasBuffer.address;
   m_shaderData.newClasAddresses += m_clasBuffer.address;
@@ -872,6 +882,7 @@ void StreamingStorage::init(Resources& res, const StreamingConfig& config)
 
   res.createBuffer(m_transferHostBuffer, m_maxTransferBytes * STREAMING_MAX_ACTIVE_TASKS, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                    VMA_MEMORY_USAGE_CPU_ONLY, VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
+  NVVK_DBG_NAME(m_transferHostBuffer.buffer);
 
   m_dataInfo.blockSize         = m_blockBytes;
   m_dataInfo.memoryUsage       = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;

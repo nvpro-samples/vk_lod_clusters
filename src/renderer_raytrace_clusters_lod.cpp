@@ -277,6 +277,8 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     // streaming also stores newly built clas in scratch
     res.createBuffer(m_scratchBuffer, scratchSize,
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
+    NVVK_DBG_NAME(m_scratchBuffer.buffer);
+
     m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_scratchBuffer.bufferSize, "operations", "rt scratch");
 
     // Update tlas build information
@@ -290,6 +292,7 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
   {
     res.createBuffer(m_sceneBuildBuffer, sizeof(shaderio::SceneBuilding),
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+    NVVK_DBG_NAME(m_sceneBuildBuffer.buffer);
     m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sceneBuildBuffer.bufferSize, "operations", "build shaderio");
 
     memset(&m_sceneBuildShaderio, 0, sizeof(m_sceneBuildShaderio));
@@ -352,6 +355,7 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
 
     res.createBuffer(m_sceneDataBuffer, mem.getSize(),
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
+    NVVK_DBG_NAME(m_sceneDataBuffer.buffer);
     m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sceneDataBuffer.bufferSize, "operations", "build data");
 
     m_sceneBuildShaderio.renderClusterInfos += m_sceneDataBuffer.address;
@@ -379,17 +383,20 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
 
     res.createBuffer(m_sceneTraversalBuffer, sizeof(uint64_t) * m_sceneBuildShaderio.maxTraversalInfos,
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    NVVK_DBG_NAME(m_sceneTraversalBuffer.buffer);
     m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sceneTraversalBuffer.bufferSize, "operations", "build traversal");
 
     m_sceneBuildShaderio.traversalNodeInfos = m_sceneTraversalBuffer.address;
 
     res.createLargeBuffer(m_sceneBlasDataBuffer, m_blasDataSize,
                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
+    NVVK_DBG_NAME(m_sceneBlasDataBuffer.buffer);
 
     if(m_config.useBlasSharing)
     {
       res.createBuffer(m_sceneGeometryHistogramBuffer, sizeof(shaderio::GeometryBuildHistogram) * m_sceneBuildShaderio.numGeometries,
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+      NVVK_DBG_NAME(m_sceneGeometryHistogramBuffer.buffer);
       m_resourceReservedUsage.operationsMemBytes +=
           logMemoryUsage(m_sceneGeometryHistogramBuffer.bufferSize, "operations", "build geo");
 
@@ -609,9 +616,9 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
 
 
   memBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-  memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &memBarrier, 0,
-                       nullptr, 0, nullptr);
+  memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       0, 1, &memBarrier, 0, nullptr, 0, nullptr);
   res.cmdImageTransition(cmd, res.m_frameBuffer.imgColor, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
 
 
@@ -683,7 +690,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TRAVERSAL_INIT_WORKGROUP));
 
     memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
+    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
                          &memBarrier, 0, nullptr, 0, nullptr);
 
@@ -798,9 +805,11 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     }
 
     memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT
+                               | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_TRANSFER_READ_BIT;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR
+                             | VK_PIPELINE_STAGE_TRANSFER_BIT,
                          0, 1, &memBarrier, 0, nullptr, 0, nullptr);
   }
 
@@ -929,7 +938,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     m_tlasDoBuild = false;
 
     memBarrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
-    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_SHADER_WRITE_BIT;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
                          VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 1, &memBarrier, 0, nullptr, 0, nullptr);
   }
@@ -946,6 +955,8 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
                       frame.frameConstants.viewport.x, frame.frameConstants.viewport.y, 1);
 #endif
     res.cmdBeginRendering(cmd, false, VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_LOAD_OP_DONT_CARE);
+    res.cmdImageTransition(cmd, res.m_frameBuffer.imgRaytracingDepth, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL, true);
+
     writeRayTracingDepthBuffer(cmd);
     if(frame.showInstanceBboxes)
     {

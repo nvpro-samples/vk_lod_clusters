@@ -187,6 +187,7 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
 
   res.createBuffer(m_renderInstanceBuffer, sizeof(shaderio::RenderInstance) * m_renderInstances.size(),
                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+  NVVK_DBG_NAME(m_renderInstanceBuffer.buffer);
   res.simpleUploadBuffer(m_renderInstanceBuffer, m_renderInstances.data());
 
   if(config.useSorting)
@@ -195,7 +196,7 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
     vrdxGetSorterKeyValueStorageRequirements(res.m_vrdxSorter, uint32_t(m_renderInstances.size()), &sorterRequirements);
 
     res.createBuffer(m_sortingAuxBuffer, sorterRequirements.size, sorterRequirements.usage);
-
+    NVVK_DBG_NAME(m_sortingAuxBuffer.buffer);
     m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sortingAuxBuffer.bufferSize, "operations", "traversal sorting");
   }
 

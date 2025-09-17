@@ -448,7 +448,7 @@ void HbaoPass::cmdCompute(VkCommandBuffer cmd, const Frame& frame, const Setting
 
   VkMemoryBarrier memBarrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
   memBarrier.srcAccessMask   = VK_ACCESS_TRANSFER_WRITE_BIT;
-  memBarrier.dstAccessMask   = VK_ACCESS_SHADER_READ_BIT;
+  memBarrier.dstAccessMask   = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
   updateUbo(cmd, frame, settings);
   vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &memBarrier, 0,
                        nullptr, 0, nullptr);

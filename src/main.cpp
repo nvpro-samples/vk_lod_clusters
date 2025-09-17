@@ -91,7 +91,10 @@ int main(int argc, char** argv)
   nvutils::ParameterRegistry parameterRegistry;
   nvutils::ParameterParser   parameterParser;
 
+  nvvk::ValidationSettings::LayerPresets validationPreset = nvvk::ValidationSettings::LayerPresets::eStandard;
+
   parameterRegistry.add({"validation"}, &vkSetup.enableValidationLayers);
+  parameterRegistry.add({"validationpreset"}, (int*)&validationPreset);
   parameterRegistry.add({"vsync"}, &appInfo.vSync);
   parameterRegistry.add({"device", "force a vulkan device via index into the device list"}, &vkSetup.forceGPU);
 
@@ -115,6 +118,8 @@ int main(int argc, char** argv)
   nvvk::ValidationSettings validationSettings;
   if(vkSetup.enableValidationLayers)
   {
+    validationSettings.setPreset(validationPreset);
+    validationSettings.duplicate_message_limit = 3;
     validationSettings.message_id_filter = {"VUID-RuntimeSpirv-storageInputOutput16-06334", "VUID-VkShaderModuleCreateInfo-pCode-08740"};
 
     vkSetup.instanceCreateInfoExt = validationSettings.buildPNextChain();
