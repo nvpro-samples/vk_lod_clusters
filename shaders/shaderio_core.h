@@ -161,14 +161,24 @@ static inline
   if(count <= 0xFFFF)
     return uvec3(count, 1, 1);
 
-  // find the next best square that has an area
-  // greater than count.
-  // at the cost of wasting "area".
+  // Find the first n such that n^2 >= count.
+#if 0
   uint side = uint(ceil(sqrt(float(count))));
-
-  //if (side * side < count) side++;
-
+  
   return uvec3(side, side, 1);
+#else
+
+  // The bit casting here makes sure we round up in case the cast to
+  // float rounded down:
+  float countF = float(count);
+  uint  n      = uint(ceil(uintBitsToFloat(floatBitsToUint(sqrt(countF)) + 1)));
+  // Now we find the last m such that n^2 - m^2 >= count.
+  // Then we can factorize the left-hand side as (n-m) * (n+m), and get an
+  // error that's m^2 better.
+  uint m = uint(sqrt(float(n * n - count)));
+
+  return uvec3(n - m, n + m, 1);
+#endif
 }
 
 #ifdef __cplusplus

@@ -129,7 +129,7 @@ void main()
 {
 #if USE_EXT_MESH_SHADER
   // EXT mesh shader's launch grid can overshoot actual work
-  uint workGroupID  = getGlobalInvocationIndexLinearized(gl_WorkGroupID);
+  uint workGroupID  = getWorkGroupIndexLinearized(gl_WorkGroupID);
   bool isValid      = workGroupID < build.numRenderedClusters;
   ClusterInfo cinfo = build.renderClusterInfos.d[min(workGroupID, build.numRenderedClusters-1)];
 #else

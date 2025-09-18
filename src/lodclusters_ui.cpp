@@ -501,7 +501,10 @@ void LodClusters::onUIRender()
         {
           PE::Checkbox("Facet shading", &m_tweak.facetShading);
         }
-        PE::Checkbox("Wireframe", (bool*)&m_frameConfig.frameConstants.doWireframe);
+        if(m_resources.m_supportsBarycentrics || m_resources.m_supportsClusterRaytracing)
+        {
+          PE::Checkbox("Wireframe", (bool*)&m_frameConfig.frameConstants.doWireframe);
+        }
         PE::Checkbox("Instance BBoxes", &m_frameConfig.showInstanceBboxes);
         PE::Checkbox("Reflective box", (bool*)&m_frameConfig.frameConstants.useMirrorBox);
         PE::treePop();
@@ -1080,7 +1083,7 @@ void LodClusters::onUIRender()
                           256 * 1024, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue);
       PE::InputInt("Colorize xor", (int*)&m_frameConfig.frameConstants.colorXor);
       PE::Checkbox("Auto reset timer", &m_tweak.autoResetTimers);
-      if(m_resources.m_supportsMeshShaderNV && m_resources.m_supportsMeshShaderEXT)
+      if(m_resources.m_supportsMeshShaderNV)
       {
         PE::Checkbox("Use EXT Mesh shader", &m_rendererConfig.useEXTmeshShader);
       }

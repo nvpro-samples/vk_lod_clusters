@@ -352,6 +352,7 @@ void LodClusters::onAttach(nvapp::Application* app)
   m_info.cameraManipulator->setMode(nvutils::CameraManipulator::Fly);
   m_renderer = nullptr;
 
+  if(m_resources.m_supportsSmBuiltinsNV)
   {
     VkPhysicalDeviceProperties2 physicalProperties = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
     VkPhysicalDeviceShaderSMBuiltinsPropertiesNV smProperties = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SM_BUILTINS_PROPERTIES_NV};
@@ -374,9 +375,9 @@ void LodClusters::onAttach(nvapp::Application* app)
     m_ui.enumAdd(GUI_BUILDMODE, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR, "fast build");
     m_ui.enumAdd(GUI_BUILDMODE, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR, "fast trace");
 
-    if(!m_resources.m_supportsClusters)
+    if(!m_resources.m_supportsClusterRaytracing)
     {
-      LOGW("WARNING: Cluster raytracing extension not supported\n");
+      LOGW("WARNING: Cluster raytracing not supported\n");
       if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
       {
         m_tweak.renderer = RENDERER_RASTER_CLUSTERS_LOD;
@@ -423,10 +424,6 @@ void LodClusters::onAttach(nvapp::Application* app)
 
   updatedClusterConfig();
 
-  if(!m_resources.m_supportsMeshShaderEXT)
-  {
-    m_rendererConfig.useEXTmeshShader = false;
-  }
   if(!m_resources.m_supportsMeshShaderNV)
   {
     m_rendererConfig.useEXTmeshShader = true;
@@ -624,10 +621,6 @@ void LodClusters::handleChanges()
   if(!m_resources.m_supportsMeshShaderNV)
   {
     m_rendererConfig.useEXTmeshShader = true;
-  }
-  if(!m_resources.m_supportsMeshShaderEXT)
-  {
-    m_rendererConfig.useEXTmeshShader = false;
   }
 
   if(m_rendererConfig.useBlasSharing && m_scene && m_scene->m_instances.size() > (1 << 27))

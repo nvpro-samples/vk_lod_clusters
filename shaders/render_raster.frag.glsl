@@ -28,8 +28,9 @@
 #extension GL_EXT_buffer_reference2 : enable
 #extension GL_EXT_scalar_block_layout : enable
 #extension GL_EXT_shader_atomic_int64 : enable
+#if DEBUG_VISUALIZATION
 #extension GL_EXT_fragment_shader_barycentric : enable
-
+#endif
 #include "shaderio.h"
 
 layout(push_constant) uniform pushData

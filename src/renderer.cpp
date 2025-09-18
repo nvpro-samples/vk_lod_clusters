@@ -149,7 +149,10 @@ bool Renderer::initBasicShaders(Resources& res, RenderScene& rscene, const Rende
   options.AddMacroDefinition("MESHSHADER_BBOX_COUNT", fmt::format("{}", m_meshShaderBoxes));
 
   res.compileShader(m_basicShaders.fullScreenVertexShader, VK_SHADER_STAGE_VERTEX_BIT, "fullscreen.vert.glsl");
-  res.compileShader(m_basicShaders.fullScreenWriteDepthFragShader, VK_SHADER_STAGE_FRAGMENT_BIT, "fullscreen_write_depth.frag.glsl");
+  if(res.m_supportsClusterRaytracing)
+  {
+    res.compileShader(m_basicShaders.fullScreenWriteDepthFragShader, VK_SHADER_STAGE_FRAGMENT_BIT, "fullscreen_write_depth.frag.glsl");
+  }
   res.compileShader(m_basicShaders.fullScreenBackgroundFragShader, VK_SHADER_STAGE_FRAGMENT_BIT, "fullscreen_background.frag.glsl");
   res.compileShader(m_basicShaders.renderInstanceBboxesMeshShader, VK_SHADER_STAGE_MESH_BIT_NV,
                     "render_instance_bbox.mesh.glsl", &options);
@@ -219,7 +222,10 @@ void Renderer::updateBasicDescriptors(Resources& res, RenderScene& scene)
   nvvk::WriteSetContainer writeSets;
   writeSets.append(m_basicDset.makeWrite(BINDINGS_FRAME_UBO), res.m_commonBuffers.frameConstants);
   writeSets.append(m_basicDset.makeWrite(BINDINGS_READBACK_SSBO), res.m_commonBuffers.readBack);
-  writeSets.append(m_basicDset.makeWrite(BINDINGS_RAYTRACING_DEPTH), res.m_frameBuffer.imgRaytracingDepth.descriptor);
+  if(res.m_supportsClusterRaytracing)
+  {
+    writeSets.append(m_basicDset.makeWrite(BINDINGS_RAYTRACING_DEPTH), res.m_frameBuffer.imgRaytracingDepth.descriptor);
+  }
   writeSets.append(m_basicDset.makeWrite(BINDINGS_GEOMETRIES_SSBO), scene.getShaderGeometriesBuffer());
   writeSets.append(m_basicDset.makeWrite(BINDINGS_RENDERINSTANCES_SSBO), m_renderInstanceBuffer);
   vkUpdateDescriptorSets(res.m_device, writeSets.size(), writeSets.data(), 0, nullptr);
@@ -233,7 +239,10 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& scene, const Rend
   nvvk::DescriptorBindings bindings;
   bindings.addBinding(BINDINGS_FRAME_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_basicShaderFlags);
   bindings.addBinding(BINDINGS_READBACK_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
-  bindings.addBinding(BINDINGS_RAYTRACING_DEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_basicShaderFlags);
+  if(res.m_supportsClusterRaytracing)
+  {
+    bindings.addBinding(BINDINGS_RAYTRACING_DEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_basicShaderFlags);
+  }
   bindings.addBinding(BINDINGS_GEOMETRIES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
   bindings.addBinding(BINDINGS_RENDERINSTANCES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
   m_basicDset.init(bindings, res.m_device);
@@ -270,15 +279,18 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& scene, const Rend
 
   graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_basicPipelines.background);
 
-  state.colorWriteMasks = {0};
+  if(res.m_supportsClusterRaytracing)
+  {
+    state.colorWriteMasks = {0};
 
-  graphicsGen.clearShaders();
-  graphicsGen.addShader(VK_SHADER_STAGE_VERTEX_BIT, "main",
-                        nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullScreenVertexShader));
-  graphicsGen.addShader(VK_SHADER_STAGE_FRAGMENT_BIT, "main",
-                        nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullScreenWriteDepthFragShader));
+    graphicsGen.clearShaders();
+    graphicsGen.addShader(VK_SHADER_STAGE_VERTEX_BIT, "main",
+                          nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullScreenVertexShader));
+    graphicsGen.addShader(VK_SHADER_STAGE_FRAGMENT_BIT, "main",
+                          nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullScreenWriteDepthFragShader));
 
-  graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_basicPipelines.writeDepth);
+    graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_basicPipelines.writeDepth);
+  }
 }
 
 void Renderer::renderInstanceBboxes(VkCommandBuffer cmd)

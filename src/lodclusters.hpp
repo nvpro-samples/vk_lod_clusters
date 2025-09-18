@@ -128,9 +128,10 @@ public:
   void onResize(VkCommandBuffer cmd, const VkExtent2D& size) override;
   void onFileDrop(const std::filesystem::path& filename) override;
 
-  void setSupportsClusters(bool supported) { m_resources.m_supportsClusters = supported; }
-  void setSupportsMeshShaderEXT(bool supported) { m_resources.m_supportsMeshShaderEXT = supported; }
+  void setSupportsClusterRaytracing(bool supported) { m_resources.m_supportsClusterRaytracing = supported; }
+  void setSupportsBarycentrics(bool supported) { m_resources.m_supportsBarycentrics = supported; }
   void setSupportsMeshShaderNV(bool supported) { m_resources.m_supportsMeshShaderNV = supported; }
+  void setSupportsSmBuiltinsNV(bool supported) { m_resources.m_supportsSmBuiltinsNV = supported; }
   bool getShowDebugUI() const { return m_showDebugUI; }
 
   bool isProcessingOnly() const { return !m_sceneFilePath.empty() && m_sceneConfig.processingOnly; }

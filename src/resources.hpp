@@ -503,11 +503,12 @@ public:
   VkPhysicalDeviceMeshShaderPropertiesEXT m_meshShaderPropsEXT = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT};
   VkPhysicalDeviceMeshShaderPropertiesNV m_meshShaderPropsNV = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_NV};
 
-  bool m_use16bitDispatch      = false;
-  bool m_supportsMeshShaderEXT = false;
-  bool m_supportsMeshShaderNV  = false;
-  bool m_supportsClusters      = false;
-  bool m_dumpSpirv             = false;
+  bool m_use16bitDispatch          = false;
+  bool m_supportsMeshShaderNV      = false;
+  bool m_supportsClusterRaytracing = false;
+  bool m_supportsBarycentrics      = false;
+  bool m_supportsSmBuiltinsNV      = false;
+  bool m_dumpSpirv                 = false;
 
   bool            m_hbaoFullRes = false;
   HbaoPass        m_hbaoPass;

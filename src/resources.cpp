@@ -113,13 +113,10 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
 
   m_use16bitDispatch = m_physicalDeviceInfo.properties10.limits.maxComputeWorkGroupCount[0] < (1 << 30);
 
-  if(m_supportsMeshShaderEXT || m_supportsMeshShaderNV)
   {
     VkPhysicalDeviceProperties2 props2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
-    if(m_supportsMeshShaderEXT)
-    {
-      props2.pNext = &m_meshShaderPropsEXT;
-    }
+    props2.pNext                       = &m_meshShaderPropsEXT;
+
     if(m_supportsMeshShaderNV)
     {
       m_meshShaderPropsNV.pNext = props2.pNext;
@@ -445,6 +442,7 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
   }
 
 
+  if(m_supportsClusterRaytracing)
   {
     // ray tracing depth
     VkImageCreateInfo imageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -542,7 +540,10 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
   }
 
   cmdImageTransition(cmd, m_frameBuffer.imgHizFar, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
-  cmdImageTransition(cmd, m_frameBuffer.imgRaytracingDepth, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
+  if(m_frameBuffer.imgRaytracingDepth.image)
+  {
+    cmdImageTransition(cmd, m_frameBuffer.imgRaytracingDepth, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
+  }
 
   {
     VkViewport vp;
@@ -727,7 +728,7 @@ void Resources::tempSyncSubmit(VkCommandBuffer cmd)
   };
 
   NVVK_CHECK(vkQueueSubmit2(m_queue.queue, 1, &submitInfo2, nullptr));
-  NVVK_CHECK(vkQueueWaitIdle(m_queue.queue));
+  NVVK_CHECK(vkDeviceWaitIdle(m_device));
 
   vkFreeCommandBuffers(m_device, m_tempCommandPool, 1, &cmd);
 }
