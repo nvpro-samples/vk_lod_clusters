@@ -43,13 +43,13 @@ struct FileMappingList
   };
   std::unordered_map<std::string, Entry>       m_nameToMapping;
   std::unordered_map<const void*, std::string> m_dataToName;
-#ifdef _DEBUG
+#ifndef NDEBUG
   int64_t m_openBias = 0;
 #endif
 
   bool open(const char* path, size_t* size, void** data)
   {
-#ifdef _DEBUG
+#ifndef NDEBUG
     m_openBias++;
 #endif
 
@@ -80,7 +80,7 @@ struct FileMappingList
 
   void close(void* data)
   {
-#ifdef _DEBUG
+#ifndef NDEBUG
     m_openBias--;
 #endif
     auto itName = m_dataToName.find(data);
@@ -102,7 +102,7 @@ struct FileMappingList
 
   ~FileMappingList()
   {
-#ifdef _DEBUG
+#ifndef NDEBUG
     assert(m_openBias == 0 && "open/close bias wrong");
 #endif
     assert(m_nameToMapping.empty() && m_dataToName.empty() && "not all opened files were closed");

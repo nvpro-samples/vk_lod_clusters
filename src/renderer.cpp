@@ -127,16 +127,19 @@ bool Renderer::initBasicShaders(Resources& res, RenderScene& rscene, const Rende
                                                            res.m_meshShaderPropsNV.maxMeshOutputPrimitives;
   uint32_t maxVertexOutputs    = config.useEXTmeshShader ? res.m_meshShaderPropsEXT.maxMeshOutputVertices :
                                                            res.m_meshShaderPropsNV.maxMeshOutputVertices;
+
+
   if(config.useEXTmeshShader)
   {
-    m_meshShaderWorkgroupSize =
-        std::min(res.m_meshShaderPropsEXT.maxPreferredMeshWorkGroupInvocations,
-                 std::min(res.m_meshShaderPropsEXT.maxMeshWorkGroupSize[0], res.m_meshShaderPropsEXT.maxMeshWorkGroupInvocations));
+    // don't go over 128, shaderc is using that limit and will fail to compile otherwise
+    m_meshShaderWorkgroupSize = std::min(128u, std::min(res.m_meshShaderPropsEXT.maxPreferredMeshWorkGroupInvocations,
+                                                        std::min(res.m_meshShaderPropsEXT.maxMeshWorkGroupSize[0],
+                                                                 res.m_meshShaderPropsEXT.maxMeshWorkGroupInvocations)));
   }
   else
   {
-    m_meshShaderWorkgroupSize =
-        std::min(res.m_meshShaderPropsNV.maxMeshWorkGroupSize[0], res.m_meshShaderPropsNV.maxMeshWorkGroupInvocations);
+    // set to 32, shaderc is using that limits and will fail to compile otherwise
+    m_meshShaderWorkgroupSize = 32u;
   }
 
   m_meshShaderBoxes =

@@ -17,7 +17,7 @@
 * SPDX-License-Identifier: Apache-2.0
 */
 
-#ifdef _DEBUG
+#ifndef NDEBUG
 #define VMA_LEAK_LOG_FORMAT(format, ...)                                                                               \
   do                                                                                                                   \
   {                                                                                                                    \

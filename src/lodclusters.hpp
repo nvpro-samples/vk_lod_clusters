@@ -157,7 +157,7 @@ private:
   nvutils::PerformanceTimer m_clock;
 
   bool m_reloadShaders = false;
-#ifdef _DEBUG
+#ifndef NDEBUG
   bool m_showDebugUI = true;
 #else
   bool m_showDebugUI = false;

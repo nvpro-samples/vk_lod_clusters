@@ -201,7 +201,7 @@ public:
   //  < 0 means all requests are handled (regular usage)
   // == 0 stops handling requests
   //  > 0 does as many requests until decremented to zero
-#ifdef _DEBUG
+#ifndef NDEBUG
   static const int32_t s_defaultDebugFrameLimit = -1;
 #else
   static const int32_t s_defaultDebugFrameLimit = -1;
