@@ -22,6 +22,10 @@ download_files(FILENAMES bunny_v2.zip EXTRACT)
 #####################################################################################
 # extra libraries
 
+if(NOT TARGET meshoptimizer)
+  add_subdirectory(external/meshoptimizer)
+endif()
+
 if(NOT TARGET nv_cluster_lod_builder)
   add_subdirectory(external/nv_cluster_lod_builder)
 endif()
@@ -76,7 +80,6 @@ endif()
 
 source_group("Shader Files" FILES ${SHADER_FILES})
 source_group("Source Files" FILES ${SOURCE_FILES})
-
 
 #####################################################################################
 # finalize project

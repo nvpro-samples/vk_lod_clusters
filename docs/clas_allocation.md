@@ -2,7 +2,7 @@
 
 ![image illustrating the streaming operations](lod_allocation.png)
 
-The goal of the persistent CLAS allocator is to provide a persistent 
+The goal of the persistent CLAS (Cluster Level Acceleration Structure) allocator is to provide a persistent 
 CLAS memory location with a fixed budget CLAS buffer. This means we need
 to move the CLAS only once from its scratch space to a permanent location.
 We later reclaim that memory when the group owning the CLAS is unloaded.

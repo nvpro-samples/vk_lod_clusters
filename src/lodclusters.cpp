@@ -60,7 +60,11 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"gridunique"}, &m_sceneGridConfig.uniqueGeometriesForCopies);
   m_info.parameterRegistry->add({"clusterconfig"}, (int*)&m_tweak.clusterConfig);
   m_info.parameterRegistry->add({"clustergroupsize"}, &m_sceneConfig.clusterGroupSize);
+  m_info.parameterRegistry->add({"loderrormergeprevious"}, &m_sceneConfig.lodErrorMergePrevious);
+  m_info.parameterRegistry->add({"loderrormergeadditive"}, &m_sceneConfig.lodErrorMergeAdditive);
+  m_info.parameterRegistry->add({"lodnodewidth"}, &m_sceneConfig.preferredNodeWidth);
   m_info.parameterRegistry->add({"loddecimationfactor"}, &m_sceneConfig.lodLevelDecimationFactor);
+  m_info.parameterRegistry->add({"meshoptpreferrt"}, &m_sceneConfig.meshoptPreferRayTracing);
   m_info.parameterRegistry->add({"loderror"}, &m_frameConfig.lodPixelError);
   m_info.parameterRegistry->add({"ao"}, &m_tweak.hbaoActive);  // use same as hbao
   m_info.parameterRegistry->add({"aoradius"}, &m_frameConfig.frameConstants.ambientOcclusionRadius);
@@ -93,6 +97,8 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"visualize"}, &m_frameConfig.visualize);
   m_info.parameterRegistry->add({"renderstats"}, &m_rendererConfig.useRenderStats);
   m_info.parameterRegistry->add({"extmeshshader"}, &m_rendererConfig.useEXTmeshShader);
+  m_info.parameterRegistry->add({"nvclusterlod"}, &m_sceneConfig.useNvLib);
+  m_info.parameterRegistry->add({"forcepreprocessmegabytes"}, (uint32_t*)&m_sceneConfig.forcePreprocessMiB);
 
   m_info.parameterRegistry->add({"facetshading"}, &m_tweak.facetShading);
   m_info.parameterRegistry->add({"flipwinding"}, &m_rendererConfig.flipWinding);
@@ -155,7 +161,7 @@ void LodClusters::initScene(const std::filesystem::path& filePath, bool configCh
 
     std::thread([=, this]() {
       auto scene = std::make_unique<Scene>();
-      if(!scene->init(filePath, m_sceneConfig, configChange))
+      if(scene->init(filePath, m_sceneConfig, configChange) != Scene::SCENE_RESULT_SUCCESS)
       {
         scene = nullptr;
         LOGW("Loading scene failed\n");
@@ -504,6 +510,13 @@ void LodClusters::onFileDrop(const std::filesystem::path& filePath)
   if(filePath.empty())
     return;
 
+  if(filePath != m_sceneFilePath && !m_sceneLoadFromConfig)
+  {
+    // reset grid parameter (in case scene is too large to be replicated)
+    m_sceneGridConfig.numCopies                 = 1;
+    m_sceneGridConfig.uniqueGeometriesForCopies = false;
+  }
+
   if(filePath.extension() == ".cfg")
   {
     LOGI("Loading config: %s\n", nvutils::utf8FromPath(filePath).c_str());
@@ -526,17 +539,12 @@ void LodClusters::onFileDrop(const std::filesystem::path& filePath)
       std::filesystem::path newPath = m_sceneFilePath;
       m_sceneFilePath               = oldPath;
 
+      m_sceneLoadFromConfig = true;
       onFileDrop(newPath);
+      m_sceneLoadFromConfig = false;
     }
 
     return;
-  }
-
-  if(filePath != m_sceneFilePathDefault)
-  {
-    // reset grid parameter (in case scene is too large to be replicated)
-    m_sceneGridConfig.numCopies                 = 1;
-    m_sceneGridConfig.uniqueGeometriesForCopies = false;
   }
 
   LOGI("Loading model: %s\n", nvutils::utf8FromPath(filePath).c_str());

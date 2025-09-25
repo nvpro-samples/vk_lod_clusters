@@ -1,6 +1,6 @@
 # BLAS Caching for ray tracing cluster-based continous level of detail
 
-This technique builds upon and enhances ["BLAS Sharing"](blas_sharing.md).
+This technique builds upon and enhances ["BLAS Sharing"](blas_sharing.md) (Bottom Level Acceleration Structure).
 
 **BLAS Sharing** enabled the re-use of BLAS within a frame across instances that use the same geometry.
 With **Blas Caching** a BLAS is re-used over multiple frames and can therefore be useful for geometry that isn't instanced much.
@@ -32,7 +32,7 @@ The streaming system uses the exsiting scene level patching to provide informati
 
 ![image presenting the list of device operations](blas_caching_device.png)
 
-On the device we do some BLAS build prepartion, gatherhing the CLAS addresses used for the cached BLAS.
+On the device we do some BLAS build prepartion, gatherhing the CLAS (Cluster Level Acceleration Structure) addresses used for the cached BLAS.
 Furthermore we determine if an instance's minimum LoD level is equal or greater than the cached level and can therefore use the cached BLAS instead of the per-frame BLAS.
 
 Since BLAS caching skips instance traversal, which resets the age of groups for streaming, we need to manage the age reset elsewhere. During age filtering, all streaming groups are iterated through. We check if they are part of a cached BLAS and ensure their LoD (Level of Detail) level remains active by resetting their age. The LoD level is determined by the minimum LoD level of any instance using the cached BLAS, not the cached level itself. Otherwise, unloading would never be triggered.

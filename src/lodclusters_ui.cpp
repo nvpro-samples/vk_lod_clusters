@@ -619,8 +619,29 @@ void LodClusters::onUIRender()
       PE::begin("##Clusters", ImGuiTableFlags_Resizable);
       PE::entry("Cluster/meshlet size",
                 [&]() { return m_ui.enumCombobox(GUI_MESHLET, "##cluster", &m_tweak.clusterConfig); });
-      PE::InputIntClamped("LoD group size", (int*)&m_sceneConfig.clusterGroupSize, 8, 256, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
-                          "number of clusters that make lod group. Their triangles are decimated together and they share a common error property");
+      if(PE::treeNode("Other settings"))
+      {
+        PE::Checkbox("Use NV lod library", &m_sceneConfig.useNvLib,
+                     "uses nv_cluster_lod_builder library. Warning: slower and significantly more RAM usage during processing. Less control.");
+
+        PE::InputIntClamped("LoD group size", (int*)&m_sceneConfig.clusterGroupSize, 8, 256, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
+                            "number of clusters that make lod group. Their triangles are decimated together and they share a common error property");
+        if(!m_sceneConfig.useNvLib)
+        {
+          PE::InputIntClamped("Preferred node width", (int*)&m_sceneConfig.preferredNodeWidth, 4, 32, 1, 1,
+                              ImGuiInputTextFlags_EnterReturnsTrue,
+                              "number of children a lod node should have (max is always 32). Currently _not_ implemented for nv_cluster_lod_builder.");
+          PE::InputFloat("Error merge previous", &m_sceneConfig.lodErrorMergePrevious, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
+                         "Mesh error propagation: scales previous lod error before combining it with the current error to compute the group error as max(previous_error * factor, error).");
+          PE::InputFloat("Error merge additive", &m_sceneConfig.lodErrorMergeAdditive, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
+                         "Mesh error propagation: adds scaled current error to the group error after the maximum computation.");
+          PE::Checkbox("Prefer ray tracing", &m_sceneConfig.meshoptPreferRayTracing,
+                       "Configures meshoptimizer's lod cluster builder to prefer ray tracing over rasterization.");
+        }
+        m_sceneConfig.lodErrorMergePrevious = std::max(1.0f, m_sceneConfig.lodErrorMergePrevious);
+        m_sceneConfig.lodErrorMergeAdditive = std::max(0.0f, m_sceneConfig.lodErrorMergeAdditive);
+        PE::treePop();
+      }
       PE::end();
       ImGui::EndDisabled();
 
@@ -1254,18 +1275,18 @@ void LodClusters::onUIMenu()
 
   if(doOpenFile)
   {
-    std::filesystem::path filename =
+    std::filesystem::path filePath =
         nvgui::windowOpenFileDialog(m_app->getWindowHandle(), "Load supported",
                                     "Supported Files|*.gltf;*.glb;*.cfg|glTF(.gltf, .glb)|*.gltf;*.glb|config file(.cfg)|*.cfg");
-    if(!filename.empty())
+    if(!filePath.empty())
     {
-      onFileDrop(filename);
+      onFileDrop(filePath);
     }
   }
 
   if(m_scene && doReloadFile)
   {
-    std::filesystem::path filePath = m_scene->getFilePath();
+    std::filesystem::path filePath = m_sceneFilePath;
     onFileDrop(filePath);
   }
 

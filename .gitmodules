@@ -2,3 +2,7 @@
 	path = external/nv_cluster_lod_builder
 	url = https://github.com/nvpro-samples/nv_cluster_lod_builder.git
 	branch = main
+[submodule "external/meshoptimizer"]
+	path = external/meshoptimizer
+	url = https://github.com/zeux/meshoptimizer.git
+	branch = master

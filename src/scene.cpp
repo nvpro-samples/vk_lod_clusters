@@ -93,6 +93,11 @@ void Scene::ProcessingInfo::logBegin()
        numOuterThreads, numInnerThreads);
 
   startTime = clock.getMicroseconds();
+
+  progressGeometriesCompleted = 0;
+  progressLastPercentage      = 0;
+  numTotalTriangles           = 0;
+  numTotalStrips              = 0;
 }
 
 uint32_t Scene::ProcessingInfo::logCompletedGeometry()
@@ -133,7 +138,44 @@ void Scene::ProcessingInfo::deinit()
     nvutils::get_thread_pool().reset(numPoolThreadsOriginal);
 }
 
-bool Scene::init(const std::filesystem::path& filePath, const SceneConfig& config, bool skipCache)
+void Scene::openCache()
+{
+  if(m_cacheFileMapping.open(m_cacheFilePath))
+  {
+    m_cacheFileView.init(m_cacheFileMapping.size(), m_cacheFileMapping.data());
+    if(m_cacheFileView.isValid())
+    {
+      // when loading results from the cache, we cannot change the cluster or lod settings of a scene,
+      // it's considered read only.
+      m_loadedFromCache = true;
+      m_cacheFileSize   = m_cacheFileMapping.size();
+
+      std::string cacheFileName = nvutils::utf8FromPath(m_cacheFilePath);
+      LOGI("Scene::init using cache file:\n  %s\n", cacheFileName.c_str());
+
+      if(m_cacheFileSize > size_t(2) * 1024 * 1024 * 1024)
+      {
+        m_config.memoryMappedCache = true;
+      }
+    }
+    else
+    {
+      m_cacheFileView.deinit();
+      m_cacheFileMapping.close();
+    }
+  }
+}
+
+void Scene::closeCache()
+{
+  if(m_cacheFileView.isValid())
+  {
+    m_cacheFileView.deinit();
+    m_cacheFileMapping.close();
+  }
+}
+
+Scene::Result Scene::init(const std::filesystem::path& filePath, const SceneConfig& config, bool skipCache)
 {
   *this = {};
 
@@ -148,47 +190,37 @@ bool Scene::init(const std::filesystem::path& filePath, const SceneConfig& confi
   m_cacheFilePath.replace_extension(oldExtension + ".nvsngeo");
   m_cachePartialFilePath.replace_extension(oldExtension + ".nvsngeo_partial");
 
-  std::string cacheFileName = nvutils::utf8FromPath(m_cacheFilePath);
-
-  if(!skipCache && !m_config.processingOnly && m_config.autoLoadCache && m_cacheFileMapping.open(m_cacheFilePath))
+  if(!skipCache && !m_config.processingOnly && m_config.autoLoadCache)
   {
-    m_cacheFileView.init(m_cacheFileMapping.size(), m_cacheFileMapping.data());
-    if(m_cacheFileView.isValid())
-    {
-      // when loading results from the cache, we cannot change the cluster or lod settings of a scene,
-      // it's considered read only.
-      m_loadedFromCache = true;
-      m_cacheFileSize   = m_cacheFileMapping.size();
-      LOGI("Scene::init using cache file:\n  %s\n", cacheFileName.c_str());
-
-      if(m_cacheFileSize > size_t(2) * 1024 * 1024 * 1024)
-      {
-        m_config.memoryMappedCache = true;
-      }
-    }
-    else
-    {
-      m_cacheFileView.deinit();
-      m_cacheFileMapping.close();
-    }
+    openCache();
   }
 
   ProcessingInfo processingInfo;
   processingInfo.init(m_config.processingThreadsPct);
 
-  bool loadSuccess = loadGLTF(processingInfo, filePath);
+  Result loadResult = loadGLTF(processingInfo, filePath);
+  if(loadResult == SCENE_RESULT_NEEDS_PREPROCESS || loadResult == SCENE_RESULT_CACHE_INVALID)
+  {
+    LOGI("Scene::init large scene or invalid cache detected\n  using dedicated preprocess pass\n");
+    closeCache();
+
+    m_config.processingOnly = true;
+    loadResult              = loadGLTF(processingInfo, filePath);
+    m_config.processingOnly = false;
+    if(loadResult == SCENE_RESULT_PREPROCESS_COMPLETED)
+    {
+      openCache();
+      loadResult = loadGLTF(processingInfo, filePath);
+    }
+  }
 
   processingInfo.deinit();
 
-  if(!loadSuccess)
+  if(loadResult != SCENE_RESULT_SUCCESS)
   {
-    if(m_cacheFileView.isValid())
-    {
-      m_cacheFileView.deinit();
-      m_cacheFileMapping.close();
-    }
+    closeCache();
 
-    return false;
+    return loadResult;
   }
 
   m_originalInstanceCount = m_instances.size();
@@ -238,11 +270,10 @@ bool Scene::init(const std::filesystem::path& filePath, const SceneConfig& confi
   {
     // everything was loaded into system memory,
     // close file mappings
-    m_cacheFileView.deinit();
-    m_cacheFileMapping.close();
+    closeCache();
   }
 
-  return true;
+  return loadResult;
 }
 
 void Scene::deinit()
@@ -540,7 +571,7 @@ void Scene::processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex
         buildGeometryDedupVertices(processingInfo, geometryStorage);
       }
 
-      buildGeometryClusters(processingInfo, geometryStorage);
+      buildGeometryClusterLod(processingInfo, geometryStorage);
 
       // The dedup might change the vertex count of the mesh, but for the cache file
       // comparison we actually want to use the original vertex count
@@ -589,242 +620,6 @@ void Scene::processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex
   {
     saveProcessingOnly(processingInfo, geometryIndex);
   }
-}
-
-void Scene::buildGeometryClusters(const ProcessingInfo& processingInfo, GeometryStorage& geometry)
-{
-  nvclusterlod_Result result;
-
-  nvclusterlod_MeshInput lodMeshInput;
-  lodMeshInput.decimationFactor = m_config.lodLevelDecimationFactor;
-  lodMeshInput.triangleCount    = uint32_t(geometry.globalTriangles.size());
-  lodMeshInput.triangleVertices = reinterpret_cast<const nvclusterlod_Vec3u*>(geometry.globalTriangles.data());
-  lodMeshInput.vertexCount      = uint32_t(geometry.vertices.size());
-  lodMeshInput.vertexStride     = sizeof(glm::vec4);
-  lodMeshInput.vertexPositions  = reinterpret_cast<const nvcluster_Vec3f*>(geometry.vertices.data());
-
-  lodMeshInput.clusterConfig = getClusterConfig();
-  lodMeshInput.groupConfig   = getGroupConfig();
-
-  geometry.lodInfo.clusterConfig            = lodMeshInput.clusterConfig;
-  geometry.lodInfo.groupConfig              = lodMeshInput.groupConfig;
-  geometry.lodInfo.decimationFactor         = lodMeshInput.decimationFactor;
-  geometry.lodInfo.inputTriangleCount       = geometry.globalTriangles.size();
-  geometry.lodInfo.inputVertexCount         = geometry.vertices.size();
-  geometry.lodInfo.inputTriangleIndicesHash = 0;
-  geometry.lodInfo.inputVerticesHash        = 0;
-
-  result = nvclusterlod::generateLodMesh(processingInfo.lodContext, lodMeshInput, geometry.lodMesh);
-  if(result != NVCLUSTERLOD_SUCCESS)
-  {
-    assert(0);
-    LOGE("nvclusterlod::generateLodMesh failed: %d\n", result);
-    std::exit(-1);
-  }
-
-  // vectors are resized at end of lod processing,
-  // but might still occupy a lot of memory
-  geometry.lodMesh.triangleVertices.shrink_to_fit();
-  geometry.lodMesh.clusterTriangleRanges.shrink_to_fit();
-  geometry.lodMesh.clusterGeneratingGroups.shrink_to_fit();
-  geometry.lodMesh.clusterBoundingSpheres.shrink_to_fit();
-  geometry.lodMesh.groupQuadricErrors.shrink_to_fit();
-  geometry.lodMesh.groupClusterRanges.shrink_to_fit();
-  geometry.lodMesh.lodLevelGroupRanges.shrink_to_fit();
-
-
-  nvclusterlod_HierarchyInput hierarchyInput = {};
-  hierarchyInput.clusterCount                = uint32_t(geometry.lodMesh.clusterBoundingSpheres.size());
-  hierarchyInput.clusterBoundingSpheres      = geometry.lodMesh.clusterBoundingSpheres.data();
-  hierarchyInput.clusterGeneratingGroups     = geometry.lodMesh.clusterGeneratingGroups.data();
-  hierarchyInput.groupClusterRanges          = geometry.lodMesh.groupClusterRanges.data();
-  hierarchyInput.groupQuadricErrors          = geometry.lodMesh.groupQuadricErrors.data();
-  hierarchyInput.lodLevelGroupRanges         = geometry.lodMesh.lodLevelGroupRanges.data();
-  hierarchyInput.lodLevelCount               = uint32_t(geometry.lodMesh.lodLevelGroupRanges.size());
-  hierarchyInput.groupCount                  = int32_t(geometry.lodMesh.groupClusterRanges.size());
-
-  // required to later traverse the lod hierarchy in parallel
-  // Note we build hierarchies over each lod level's groups
-  // and then join them together to a single hierarchy.
-  // This is key to the parallel traversal algorithm that traverse multiple lod levels
-  // at once.
-
-  result = nvclusterlod::generateLodHierarchy(processingInfo.lodContext, hierarchyInput, geometry.lodHierarchy);
-  if(result != NVCLUSTERLOD_SUCCESS)
-  {
-    assert(0);
-    LOGE("nvclusterlod::generateLodHierarchy failed: %d\n", result);
-    std::exit(-1);
-  }
-
-  // vectors are resized at end of lod processing,
-  // but might still occupy a lot of memory
-  geometry.lodHierarchy.nodes.shrink_to_fit();
-  geometry.lodHierarchy.groupCumulativeBoundingSpheres.shrink_to_fit();
-  geometry.lodHierarchy.groupCumulativeQuadricError.shrink_to_fit();
-
-  // build localized index buffers
-
-  geometry.localTriangles.resize(geometry.lodMesh.triangleVertices.size() * 3);
-  geometry.localVertices.resize(geometry.lodMesh.triangleVertices.size() * 3);
-  geometry.clusterVertexRanges.resize(geometry.lodMesh.clusterTriangleRanges.size());
-
-  std::vector<uint32_t> threadClusterMaxVertices(processingInfo.numInnerThreads, 0);
-  std::vector<uint32_t> threadClusterMaxTriangles(processingInfo.numInnerThreads, 0);
-  std::vector<uint32_t> threadCacheEarly(processingInfo.numInnerThreads * 256 * 2);
-
-  nvutils::parallel_batches_pooled(
-      geometry.lodMesh.clusterTriangleRanges.size(),
-      [&](uint64_t idx, uint32_t threadInnerIdx) {
-        nvcluster_Range& vertexRange             = geometry.clusterVertexRanges[idx];
-        nvcluster_Range  triangleRange           = geometry.lodMesh.clusterTriangleRanges[idx];
-        const uint32_t* __restrict inputTriangle = &geometry.lodMesh.triangleVertices[triangleRange.offset].x;
-        uint8_t* __restrict outputTriangle       = &geometry.localTriangles[triangleRange.offset * 3];
-        uint32_t* __restrict outVertices         = &geometry.localVertices[triangleRange.offset * 3];
-        uint32_t* vertexCacheEarlyValue          = &threadCacheEarly[threadInnerIdx * 256 * 2];
-        uint32_t* vertexCacheEarlyPos            = vertexCacheEarlyValue + 256;
-        memset(vertexCacheEarlyValue, ~0, sizeof(uint32_t) * 256);
-
-        uint32_t count = 0;
-
-        for(uint32_t i = 0; i < triangleRange.count * 3; i++)
-        {
-          uint32_t vertexIndex = inputTriangle[i];
-          uint32_t cacheIndex  = ~0;
-
-          // quick early out, have we seen the index
-          uint32_t cacheEarlyValue = vertexCacheEarlyValue[vertexIndex & 0xFF];
-          if(cacheEarlyValue == vertexIndex)
-          {
-            cacheIndex = vertexCacheEarlyPos[vertexIndex & 0xFF];
-          }
-          else
-          {
-            // look for it serially
-            for(uint32_t v = 0; v < count; v++)
-            {
-              if(outVertices[v] == vertexIndex)
-              {
-                cacheIndex = v;
-              }
-            }
-          }
-
-          if(cacheIndex == ~0)
-          {
-            cacheIndex                                = count++;
-            outVertices[cacheIndex]                   = vertexIndex;
-            vertexCacheEarlyValue[vertexIndex & 0xFF] = vertexIndex;
-            vertexCacheEarlyPos[vertexIndex & 0xFF]   = cacheIndex;
-          }
-          outputTriangle[i] = uint8_t(cacheIndex);
-        }
-
-        vertexRange.count = count;
-        threadClusterMaxVertices[threadInnerIdx] = std::max(threadClusterMaxVertices[threadInnerIdx], vertexRange.count);
-        threadClusterMaxTriangles[threadInnerIdx] = std::max(threadClusterMaxTriangles[threadInnerIdx], triangleRange.count);
-
-        assert(triangleRange.count <= m_config.clusterTriangles);
-        assert(vertexRange.count <= m_config.clusterVertices);
-      },
-      processingInfo.numInnerThreads);
-
-  // no longer needed
-  geometry.lodMesh.triangleVertices = {};
-
-  geometry.clusterMaxVerticesCount  = 0;
-  geometry.clusterMaxTrianglesCount = 0;
-  for(uint32_t t = 0; t < processingInfo.numInnerThreads; t++)
-  {
-    geometry.clusterMaxVerticesCount  = std::max(geometry.clusterMaxVerticesCount, threadClusterMaxVertices[t]);
-    geometry.clusterMaxTrianglesCount = std::max(geometry.clusterMaxTrianglesCount, threadClusterMaxTriangles[t]);
-  }
-
-  // compaction pass
-  uint32_t* localVertices = geometry.localVertices.data();
-
-  uint32_t offset = 0;
-  for(size_t c = 0; c < geometry.lodMesh.clusterTriangleRanges.size(); c++)
-  {
-    nvcluster_Range& vertexRange   = geometry.clusterVertexRanges[c];
-    nvcluster_Range  triangleRange = geometry.lodMesh.clusterTriangleRanges[c];
-
-    vertexRange.offset = offset;
-
-    memmove(&localVertices[offset], &localVertices[triangleRange.offset * 3], sizeof(uint32_t) * vertexRange.count);
-
-    offset += vertexRange.count;
-  }
-
-  geometry.localVertices.resize(offset);
-  geometry.localVertices.shrink_to_fit();
-
-  shaderio::LodLevel initLevel{};
-  initLevel.minBoundingSphereRadius = FLT_MAX;
-  initLevel.minMaxQuadricError      = FLT_MAX;
-
-  geometry.lodLevelsCount = uint32_t(geometry.lodMesh.lodLevelGroupRanges.size());
-  geometry.lodLevels.resize(geometry.lodMesh.lodLevelGroupRanges.size(), initLevel);
-
-  // for later, easier access
-  geometry.groupLodLevels.resize(geometry.lodMesh.groupClusterRanges.size());
-
-  geometry.hiClustersCount = 0;
-  geometry.hiTriangleCount = 0;
-  geometry.hiVerticesCount = 0;
-
-  for(size_t level = 0; level < geometry.lodMesh.lodLevelGroupRanges.size(); level++)
-  {
-    nvcluster_Range groupRange = geometry.lodMesh.lodLevelGroupRanges[level];
-
-    geometry.lodLevels[level].groupCount  = groupRange.count;
-    geometry.lodLevels[level].groupOffset = groupRange.offset;
-
-    for(size_t g = groupRange.offset; g < groupRange.offset + groupRange.count; g++)
-    {
-      nvcluster_Range clusterRange = geometry.lodMesh.groupClusterRanges[g];
-
-      geometry.groupLodLevels[g] = uint8_t(level);
-
-      // USE_BLAS_SHARING
-      //
-      // For the BLAS sharing technique we need to figure out the conservative
-      // lod range that an instance may cover. We store for each lod level
-      // the smallest possible group bounding sphere as well as the smallest
-      // maximum error found in any group.
-
-      // The technique will use these values to artificially place a lod sphere
-      // at the far end of an instance and evaluate its lod metric. The minima
-      // ensure that there can't be any group in the instance's sphere that would
-      // behave such a way that it requires lower detail.
-      //
-      // See `instance_classify_lod.comp.glsl` shader.
-
-      geometry.lodLevels[level].minBoundingSphereRadius =
-          std::min(geometry.lodLevels[level].minBoundingSphereRadius,
-                   geometry.lodHierarchy.groupCumulativeBoundingSpheres[g].radius);
-      geometry.lodLevels[level].minMaxQuadricError =
-          std::min(geometry.lodLevels[level].minMaxQuadricError, geometry.lodHierarchy.groupCumulativeQuadricError[g]);
-
-      if(level == 0)
-      {
-        uint32_t lastCluster  = clusterRange.offset + clusterRange.count - 1;
-        uint32_t firstCluster = clusterRange.offset;
-
-        geometry.hiClustersCount += clusterRange.count;
-        geometry.hiTriangleCount += geometry.lodMesh.clusterTriangleRanges[lastCluster].count
-                                    + geometry.lodMesh.clusterTriangleRanges[lastCluster].offset
-                                    - geometry.lodMesh.clusterTriangleRanges[firstCluster].offset;
-        geometry.hiVerticesCount += geometry.clusterVertexRanges[lastCluster].count
-                                    + geometry.clusterVertexRanges[lastCluster].offset
-                                    - geometry.clusterVertexRanges[firstCluster].offset;
-      }
-    }
-  }
-
-  geometry.totalTriangleCount = uint32_t(geometry.localTriangles.size() / 3);
-  geometry.totalVerticesCount = uint32_t(geometry.localVertices.size());
-  geometry.totalClustersCount = uint32_t(geometry.lodMesh.clusterTriangleRanges.size());
 }
 
 void Scene::computeLodBboxes_recursive(GeometryStorage& geometry, size_t i)

@@ -225,7 +225,7 @@ void addInstancesFromNode(std::vector<lodclusters::Scene::Instance>&     instanc
 
 
 namespace lodclusters {
-bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path& filePath)
+Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path& filePath)
 {
   std::string fileName = nvutils::utf8FromPath(filePath);
 
@@ -252,12 +252,12 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
     LOGE(
         "loadGLTF: This glTF file is an unsupported legacy file - probably glTF 1.0, while cgltf only supports glTF "
         "2.0 files. Please load a glTF 2.0 file instead.\n");
-    return false;
+    return SCENE_RESULT_ERROR;
   }
   else if((cgltfResult != cgltf_result_success) || (data == nullptr))
   {
     LOGE("loadGLTF: cgltf_parse_file failed. Is this a valid glTF file? (cgltf result: %d)\n", cgltfResult);
-    return false;
+    return SCENE_RESULT_ERROR;
   }
 
   // Perform additional validation.
@@ -269,7 +269,7 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
         "https://github.khronos.org/glTF-Validator/ to see if the non-displacement parts of the glTF file are correct. "
         "(cgltf result: %d)\n",
         cgltfResult);
-    return false;
+    return SCENE_RESULT_ERROR;
   }
 
   // For now, also tell cgltf to go ahead and load all buffers.
@@ -280,7 +280,7 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
         "loadGLTF: The glTF file was valid, but cgltf_load_buffers failed. Are the glTF file's referenced file paths "
         "valid? (cgltf result: %d)\n",
         cgltfResult);
-    return false;
+    return SCENE_RESULT_ERROR;
   }
 
   // glTF doesn't have trivial instancing of meshes with different materials.
@@ -291,6 +291,8 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
   std::vector<size_t> uniqueMeshes;
   std::vector<size_t> meshToGeometry(data->meshes_count, -1);
 
+  size_t geometryMemoryEstimate = 0;
+
   {
     std::unordered_map<std::string, size_t> mapUniqueMeshes;
 
@@ -298,6 +300,7 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
     {
       const cgltf_mesh gltfMesh = data->meshes[meshIndex];
 
+      size_t      meshMemoryEstimate = 0;
       std::string meshIdentifier;
 
       for(size_t primIdx = 0; primIdx < gltfMesh.primitives_count; primIdx++)
@@ -330,6 +333,7 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
           if(strcmp(gltfAttrib.name, "POSITION") == 0)
           {
             meshAccessors.pos = accessor;
+            meshMemoryEstimate += sizeof(glm::vec4) * accessor->count;
           }
           else if(strcmp(gltfAttrib.name, "TEXCOORD_0") == 0)
           {
@@ -343,6 +347,8 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
 
         meshAccessors.index = gltfPrim->indices;
 
+        meshMemoryEstimate += sizeof(uint32_t) * gltfPrim->indices->count;
+
         // just serialize the pointer values as identifier for the mesh
         meshIdentifier +=
             fmt::format("{},{},{},{},", meshAccessors.pos, meshAccessors.normal, meshAccessors.index, meshAccessors.tex);
@@ -354,12 +360,19 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
       {
         meshToGeometry[meshIndex] = uniqueMeshes.size();
         uniqueMeshes.push_back(meshIndex);
+        geometryMemoryEstimate += meshMemoryEstimate;
       }
       else
       {
         meshToGeometry[meshIndex] = pair.first->second;
       }
     }
+  }
+
+  if(!m_cacheFileView.isValid() && !m_config.processingOnly
+     && (geometryMemoryEstimate > size_t(m_config.forcePreprocessMiB) * 1024 * 1024))
+  {
+    return SCENE_RESULT_NEEDS_PREPROCESS;
   }
 
   m_geometryStorages.resize(uniqueMeshes.size());
@@ -435,6 +448,13 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
 
     // test if this mesh exists in the cache
     bool isCached = checkCache(geometry.lodInfo, geometryIndex);
+
+    // invalid cache
+    if(m_cacheFileView.isValid() && !isCached)
+    {
+      LOGW("geometry mismatches scene cache file\n");
+      return;
+    }
 
     // load vertices & index data
     if(!isCached)
@@ -568,6 +588,10 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
   };
 
   processingInfo.logBegin();
+  if(m_config.progressPct)
+  {
+    m_config.progressPct->store(0);
+  }
 
   nvutils::parallel_batches_pooled<1>(uniqueMeshes.size(), fnLoadAndProcessGeometry, processingInfo.numOuterThreads);
 
@@ -585,13 +609,12 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
 
   if(endProcessingOnly(notCompleted))
   {
-    // while not an error, on processing only we also early out with false
-    return false;
+    return notCompleted ? SCENE_RESULT_ERROR : SCENE_RESULT_PREPROCESS_COMPLETED;
   }
 
   if(notCompleted)
   {
-    return false;
+    return m_cacheFileView.isValid() ? SCENE_RESULT_CACHE_INVALID : SCENE_RESULT_ERROR;
   }
 
   if(data->scenes_count > 0)
@@ -632,6 +655,6 @@ bool Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path
     }
   }
 
-  return true;
+  return SCENE_RESULT_SUCCESS;
 }
 }  // namespace lodclusters

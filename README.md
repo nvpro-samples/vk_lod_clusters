@@ -28,7 +28,7 @@ In principle the rendering loop is similar for rasterization and ray tracing.
 The traversal of the LoD hierarchy and the interaction with the streaming system are the same.
 
 One key difference is that for ray tracing the cluster level acceleration structures (CLAS) need to be built,
-as well as the BLAS that reflects which clusters are used in an instance.
+as well as the bottom level acceleration structure (BLAS) that reflects which clusters are used in an instance.
 Rasterization can render directly from the original geometry data and can render from the global list of clusters
 of any instance.
 
@@ -52,11 +52,12 @@ The sample also showcases a ray tracing specific optimization for [BLAS Sharing]
 
 ### Model processing
 
-This sample is using [nv_cluster_lod_builder](https://github.com/nvpro-samples/nv_cluster_lod_builder) for generating the clusters and 
-the level of detail data structures. We recommend looking at its documentation for further details.
+This sample provides two options to build the cluster level of detail data structures:
+* A custom fork of [meshoptimizer's](https://github.com/zeux/meshoptimizer) single header [clusterlod.h](src/meshopt_clusterlod.h) to support parallelism. This builder is the default as it is faster and uses a lot less memory at time of writing. The builder is deterministic.
+* The [nv_cluster_lod_builder](https://github.com/nvpro-samples/nv_cluster_lod_builder) research library. We recommend looking at its documentation for the basics of how the cluster lod building works. In both builders the principle operations are the same. `--nvclusterlod 1` to enable. The builder is _not_ deterministic.
 
-Inside [scene.cpp](/src/scene.cpp) the `Scene:buildGeometryClusters(...)` function covers the usage of the library and what data we need
-to extract from it. All key processing steps are within `Scene:processGeometry(...)`.
+
+Inside [scene_cluster_lod.cpp](/src/scene_cluster_lod.cpp) the `Scene:buildGeometryClusterLod(...)` function covers the usage of the libraries and what data we need to extract from them. All key processing steps are within `Scene:processGeometry(...)` inside [scene.cpp](/src/scene.cpp).
 
 In the UI you can influence the size of clusters and the LoD grouping of them in _"Clusters & LoDs generation"_.
 
@@ -64,7 +65,7 @@ In the UI you can influence the size of clusters and the LoD grouping of them in
 > The processing of larger scenes can take a while, even on CPUs with many cores. Therefore the application will save
 > an uncompressed cache file of the results automatically. This file is a simple memory mappable binary file that can take a lot of space
 > and is placed next to the original file with a `.nvsngeo` file ending.
-> If disk space is a concern use `--autosavecache 0` to avoid the automatic storage.
+> If disk space is a concern use `--autosavecache 0` to avoid the automatic storage, however it is not recommended.
 >
 > With the `--processingonly 1` command-line option one can reduce peak memory consumption during processing of scenes with many geometries.
 > In this mode saving to the cache file is interleaved with the processing and resources are deallocated immediately once saved.
@@ -149,13 +150,14 @@ You can use the commandline to change some defaults:
 * `--supersample 0` disables the super sampling that otherwise doubles rendering resolution in each dimension. 
 * `--clasallocator 0` disables the more complex gpu-driven allocator when streaming
 * `--gridcopies N` set the number of model copies in the scene.
-* `--gridunique 0` disables the generation of unique geometries for every model copy. Greatly reduces memory consumption by truly instancing everything. By default on to stress streaming.
+* `--gridunique 0` disables the generation of unique geometries for every model copy. Greatly reduces memory consumption by truly instancing everything. It's on for the sample bunny scene by default, but off otherwise.
 * `--streaming 0` disables streaming system and uses preloaded scene (warning this can use a lot of memory, use above `--gridunique 0` to reduce)
 * `--vsync 0` disable vsync. If changing vsync via UI does not work, try to use the driver's *NVIDIA Control Panel* and set `Vulkan/OpenGL present method: native`.
 * `--autoloadcache 0` disables loading scenes from cache file.
 * `--mappedcache 1` keeps memory mapped cache file persistently, otherwise loads cache to system memory. Useful to save RAM on very large scenes.
 * `--autosavecache 0` disables saving the cache file.
 * `--processingonly 1 --processingthreadpct 0.25 --processingpartial 1` when processing big scenes, the dedicated processing only mode is better and one can reduce the memory consumption by lowering the amount of threads used.
+* `--forcepreprocessmegabytes 1024` if a scene's raw geometry (vertex & indices) is greater than this cutoff, use a dedicated preprocess pass. Can be quicker and allows using memory mapped cache file. Default is 2048 for 2 GiB.
 
 ## Limitations
 
@@ -166,8 +168,9 @@ You can use the commandline to change some defaults:
 
 ## Future Improvements
 
-* Better streaming behavior when a memory mapped cache is used.
+* Redesigning the file cache for less size and potential use of `VK_NV_memory_decompression` during streaming
 * Implement sorting of streaming requests based on distance of instance. Sorting instances alone is not sufficient.
+* Fallback for persistent traversal kernel.
 * Allowing the use of a compute shader to do rasterization of smaller/non-clipped triangles.
 
 ## Building and Running
@@ -222,8 +225,8 @@ This is a glTF export of the highly detailed raw geometry from the [NVIDIA RTX K
   - **~ 19 GB 7z**, unpacks to **~ 58.7 GB on disk**
   - Ensure that the `zorah_main_public.gltf.nvsngeo` is in the same directory as `zorah_main_public.gltf`.
   - If you want to avoid this big download and do the pre-processing for the cluster lod manually, use the following command-line:
-    - `vk_lod_cluster.exe "zorah_main_public.gltf" --clusterconfig 4 --processingonly 1 --processingthreadpct 0.2 --processingpartial 1`
-    - This will use 20% of the local PC's supported concurrency to process the model and allow to abort and resume the processing. On a 16-core Ryzen 9 a value of `0.4` will yield around 12 threads and require 128 GB RAM and take around half an hour. We recommend lower thread percentages on machines with less RAM.
+    - `vk_lod_cluster.exe "zorah_main_public.gltf" --clusterconfig 4 --processingonly 1 --processingthreadpct 0.5 --processingpartial 1 --nvclusterlod 0`
+    - This will use 50% of the local PC's supported concurrency to process the model and allow to abort and resume the processing. On a 16-core Ryzen 9 a value of `0.5` will yield 16 threads, requires 21 GB RAM and takes around 10 minutes. We recommend lower thread percentages on machines with less RAM. At the time of writing the downloadable cache file was built with the `--nvclusterlib 1` option, which we don't recommend anymore.
 
 Make sure to use an NVME or SSD drive for storing these files. We recommend GPUs with at least 8 GB VRAM.
 
@@ -236,7 +239,7 @@ Known Issues:
 * Some objects float a bit strangely in the air and lack animation, this is expected for this scene and sample.
 * The vegetation will appear to fade out a bit quickly, especially the grass. This is a known limitation for mesh-based simplifcation on
   sparse geometry like this. We do not use any techniques that preserve volume during decimation.
-* Trees can appear a bit blurry with DLSS and very noisy without it. We will try to improve future versions of DLSS denoising this scenario. 
+* Trees can appear a bit blurry with DLSS and very noisy without it. We will try to improve future versions of DLSS denoising this scenario.
 
 ### Threedscans Statues
 
@@ -252,11 +255,11 @@ These scenes are based on models from [https://threedscans.com/](https://threeds
   - ~ 1.3 GB preloaded memory
   - 116 MB zip 2025/7/11 (original was 280 MB zip, slow to load)
 
-On a "AMD Ryzen 9 7950X 16-Core Processor" processing time for `threedscans_animals` took around 11 seconds (5 unique geometries). That scene has few geometries and many triangles per geometry. Due to the few geometries the heuristic chose "inner" parallelism within operations for a single geometry at a time. Scenes with many objects will typically use "outer" parallelism over the unique geometries and tend to be processed faster overall.
+On a "AMD Ryzen 9 7950X 16-Core Processor" processing time for `threedscans_animals` took around 10 seconds (5 unique geometries). That scene has few geometries and many triangles per geometry. Due to the few geometries the heuristic chose "inner" parallelism within operations for a single geometry at a time. Scenes with many objects will typically use "outer" parallelism over the unique geometries and tend to be processed faster overall.
 By default the application now stores a cache file of the last processing (`--autosavecache 1`).
 
 ## Third Party
 
-[meshoptimizer](https://github.com/zeux/meshoptimizer) is used during the mesh simplification process and when the triangles within a cluster are re-ordered to improve triangle strips.
+[meshoptimizer](https://github.com/zeux/meshoptimizer) is used for various operations, such as building the cluster lod data structures along with the mesh simplification as re-ordering triangles within clusters to improve triangle strips.
 
 [vulkan_radix_sort](https://github.com/jaesung-cs/vulkan_radix_sort) is used when "Instance Sorting" is activated prior traversal.

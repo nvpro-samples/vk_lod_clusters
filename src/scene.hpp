@@ -31,6 +31,7 @@
 #include <nvclusterlod/nvclusterlod_mesh_storage.hpp>
 #include <nvclusterlod/nvclusterlod_cache.hpp>
 
+#include "meshopt_clusterlod.h"
 #include "../shaders/shaderio_scene.h"
 
 namespace lodclusters {
@@ -38,12 +39,29 @@ namespace lodclusters {
 struct SceneConfig
 {
   // cluster and cluster group settings
-  uint32_t clusterVertices  = 128;
-  uint32_t clusterTriangles = 128;
-  uint32_t clusterGroupSize = 32;
+  uint32_t clusterVertices    = 128;
+  uint32_t clusterTriangles   = 128;
+  uint32_t clusterGroupSize   = 32;
+  uint32_t preferredNodeWidth = 32;
 
   // at each lod step reduce cluster group triangles by this factor
   float lodLevelDecimationFactor = 0.5f;
+
+  // uses nv_cluster_lod_builder library
+  // at time of writing slower/more memory
+  bool useNvLib = false;
+
+  // lod error propagation for meshoptimizer's clusterlod
+  // These control the error propagation across lod levels to
+  // account for simplifying an already simplified mesh.
+  // To get closer to nv_cluster_lod_builder:
+  // previous 1.0f, additive 0.7f
+  // but causes about 50% more triangles during traversal.
+  float lodErrorMergePrevious = 1.5;
+  float lodErrorMergeAdditive = 0.0f;
+
+  // default lod options to use ray tracing preset
+  bool meshoptPreferRayTracing = true;
 
   // build triangle strips within clusters
   bool clusterStripify = true;
@@ -67,6 +85,10 @@ struct SceneConfig
   // when loading from cache file, memory map it,
   // rather than loading it into system RAM.
   bool memoryMappedCache = false;
+
+  // if a scenes geometry data exceeds this, then always do a separate preprocess pass
+  // and use the cache file afterwards
+  size_t forcePreprocessMiB = size_t(2) * 1024;
 
   std::atomic_uint32_t* progressPct = nullptr;
 };
@@ -97,6 +119,33 @@ public:
     glm::vec4      color{0.8, 0.8, 0.8, 1.0f};
   };
 
+  // for backwards compatibility of scene caches
+  // designed to match cluster version 2 config binary size
+  struct GeometryClusterConfig
+  {
+    uint32_t _reservedA = 0;
+
+    uint32_t maxClusterSize     = 0;
+    uint32_t maxClusterVertices = 0;
+
+    uint32_t _reservedB[5] = {};
+  };
+
+  // designed to match `nvclusterlod::LodGeometryInfo` for
+  struct GeometryLodInput
+  {
+    uint64_t inputTriangleCount       = 0;
+    uint64_t inputVertexCount         = 0;
+    uint64_t inputTriangleIndicesHash = 0;
+    uint64_t inputVerticesHash        = 0;
+
+    // a bit weird layout due to backwards compatibility
+    GeometryClusterConfig clusterConfig;
+    GeometryClusterConfig groupConfig;
+
+    float decimationFactor = 0;
+  };
+
   struct GeometryBase
   {
     uint32_t clusterMaxVerticesCount{};
@@ -116,7 +165,7 @@ public:
 
     shaderio::BBox bbox{};
 
-    nvclusterlod::LodGeometryInfo lodInfo;
+    GeometryLodInput lodInfo;
 
     uint32_t instanceReferenceCount{};
   };
@@ -167,9 +216,18 @@ public:
     float     fovy;
   };
 
-  bool init(const std::filesystem::path& filePath, const SceneConfig& config, bool skipCache);
-  bool saveCache() const;
-  void deinit();
+  enum Result
+  {
+    SCENE_RESULT_SUCCESS,
+    SCENE_RESULT_CACHE_INVALID,
+    SCENE_RESULT_NEEDS_PREPROCESS,
+    SCENE_RESULT_PREPROCESS_COMPLETED,
+    SCENE_RESULT_ERROR,
+  };
+
+  Result init(const std::filesystem::path& filePath, const SceneConfig& config, bool skipCache);
+  bool   saveCache() const;
+  void   deinit();
 
   void updateSceneGrid(const SceneGridConfig& gridConfig);
 
@@ -290,8 +348,8 @@ private:
       uint64_t magic          = 0x006f65676e73766eULL;  // nvsngeo
       uint32_t geoVersion     = 5;
       uint32_t structSize     = uint32_t(sizeof(GeometryView));
-      uint32_t lodVersion     = NVCLUSTERLOD_VERSION;
-      uint32_t clusterVersion = NVCLUSTER_VERSION;
+      uint32_t lodVersion     = 3;  // hardcode for forward compatibility
+      uint32_t clusterVersion = 2;  // hardcode for forward compatibility
       uint64_t alignment      = nvclusterlod::detail::ALIGNMENT;
 
       // geoVersion history:
@@ -434,7 +492,7 @@ private:
     void     logEnd();
   };
 
-  bool loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path& filePath);
+  Result loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path& filePath);
 
   nvcluster_Config getClusterConfig() const
   {
@@ -457,12 +515,18 @@ private:
     return groupConfig;
   }
 
-  bool checkCache(const nvclusterlod::LodGeometryInfo& info, size_t geometryIndex);
+  void openCache();
+  void closeCache();
+
+  bool checkCache(const GeometryLodInput& info, size_t geometryIndex);
 
   void processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex, bool isCached);
   void loadCachedGeometry(GeometryStorage& geometry, size_t geometryIndex);
 
-  void buildGeometryClusters(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
+  void buildGeometryClusterLod(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
+  void buildGeometryClusterLodNvLib(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
+  void buildGeometryClusterLodMeshoptimizer(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
+
   void computeLodBboxes_recursive(GeometryStorage& geometry, size_t nodeIdx);
   void buildGeometryDedupVertices(ProcessingInfo& processingInfo, GeometryStorage& geometry);
   void buildGeometryBboxes(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
@@ -476,6 +540,21 @@ private:
   void computeClusterStats();
   void computeHistograms();
   void computeInstanceBBoxes();
+
+  struct MeshoptContext
+  {
+    const ProcessingInfo& processingInfo;
+    GeometryStorage&      geometry;
+    int                   depth = -1;
+
+    std::mutex clusterMutex;
+    std::mutex groupMutex;
+  };
+
+  void buildGeometryLodHierarchyMeshoptimizer(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
+
+  static void clodIterationMeshoptimizer(void* iteration_context, void* output_context, int depth, size_t task_count);
+  static int clodGroupMeshoptimizer(void* output_context, clodGroup group, const clodCluster* clusters, size_t cluster_count);
 };
 
 }  // namespace lodclusters

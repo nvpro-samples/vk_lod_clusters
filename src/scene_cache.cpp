@@ -246,7 +246,7 @@ bool Scene::CacheFileView::getGeometryView(GeometryView& view, uint64_t geometry
   return Scene::loadCached(view, geometryTotalSize, geoData);
 }
 
-bool Scene::checkCache(const nvclusterlod::LodGeometryInfo& info, size_t geometryIndex)
+bool Scene::checkCache(const GeometryLodInput& info, size_t geometryIndex)
 {
   if(m_cacheFileView.isValid() && geometryIndex < m_cacheFileView.getGeometryCount())
   {
@@ -258,10 +258,10 @@ bool Scene::checkCache(const nvclusterlod::LodGeometryInfo& info, size_t geometr
 
     // ignore these during compare
     cacheView.lodInfo.decimationFactor = info.decimationFactor;
-    cacheView.lodInfo.groupConfig      = info.groupConfig;
     cacheView.lodInfo.clusterConfig    = info.clusterConfig;
+    cacheView.lodInfo.groupConfig      = info.groupConfig;
 
-    return memcmp(&info, &cacheView.lodInfo, sizeof(nvclusterlod::LodGeometryInfo)) == 0;
+    return memcmp(&info, &cacheView.lodInfo, sizeof(cacheView.lodInfo)) == 0;
   }
   return false;
 }
@@ -499,9 +499,13 @@ bool Scene::endProcessingOnly(bool hadError)
     fclose(m_processingOnlyPartialFile);
   }
 
+  m_geometryStorages.clear();
+  m_geometryViews.clear();
+
   m_processingOnlyFile             = nullptr;
   m_processingOnlyPartialFile      = nullptr;
   m_processingOnlyPartialCompleted = 0;
+  m_processingOnlyGeometryOffsets.clear();
 
   std::string outFilename        = nvutils::utf8FromPath(m_cacheFilePath);
   std::string outPartialFilename = nvutils::utf8FromPath(m_cachePartialFilePath);

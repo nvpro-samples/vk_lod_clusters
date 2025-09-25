@@ -178,8 +178,9 @@ private:
   glm::vec3              m_sceneUpVector = glm::vec3(0, 1, 0);
   SceneGridConfig        m_sceneGridConfig;
   SceneGridConfig        m_sceneGridConfigLast;
-  std::atomic_bool       m_sceneLoading  = false;
-  std::atomic_uint32_t   m_sceneProgress = 0;
+  std::atomic_bool       m_sceneLoading        = false;
+  std::atomic_uint32_t   m_sceneProgress       = 0;
+  bool                   m_sceneLoadFromConfig = false;
 
 
   std::string m_cameraString;

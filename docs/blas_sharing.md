@@ -3,7 +3,7 @@
 > [!NOTE]
 > Please have a look at the documentation of [nv_cluster_lod_builder](https://github.com/nvpro-samples/nv_cluster_lod_builder/blob/main/README.md) on how the cluster-based LoD system works, specifically the interaction between clusters, cluster groups and determining which clusters to render during LoD traversal.
 
-We are presenting a few techniques that reduce the number of BLAS to build for
+We are presenting a few techniques that reduce the number of BLAS (Bottom Level Acceleration Structure) to build for
 cluster-based continous level of detail (LoD). They are all based
 around sharing a reduced set of BLAS among the instances.
 
