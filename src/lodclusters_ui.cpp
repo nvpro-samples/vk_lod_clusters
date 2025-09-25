@@ -604,19 +604,15 @@ void LodClusters::onUIRender()
     }
     if(ImGui::CollapsingHeader("Clusters & LoDs generation", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {
+      ImGui::Text("Changes can take significant time");
       bool largeCache = m_scene && m_scene->m_cacheFileSize > size_t(512) * 1024 * 1024;
+
+      PE::begin("##Clusters", ImGuiTableFlags_Resizable);
       if(largeCache)
       {
-        ImGui::Text("Loaded from a large cache file");
-        ImGui::Text("Disabled live processing");
+        PE::Checkbox("Allow large file processing", &m_sceneAllowLarge);
       }
-      else
-      {
-        ImGui::Text("Changes can take significant time");
-      }
-
-      ImGui::BeginDisabled(largeCache);
-      PE::begin("##Clusters", ImGuiTableFlags_Resizable);
+      ImGui::BeginDisabled(largeCache && !m_sceneAllowLarge);
       PE::entry("Cluster/meshlet size",
                 [&]() { return m_ui.enumCombobox(GUI_MESHLET, "##cluster", &m_tweak.clusterConfig); });
       if(PE::treeNode("Other settings"))
@@ -642,8 +638,8 @@ void LodClusters::onUIRender()
         m_sceneConfig.lodErrorMergeAdditive = std::max(0.0f, m_sceneConfig.lodErrorMergeAdditive);
         PE::treePop();
       }
-      PE::end();
       ImGui::EndDisabled();
+      PE::end();
 
       if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
       {

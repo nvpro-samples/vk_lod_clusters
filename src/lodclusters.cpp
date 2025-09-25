@@ -347,6 +347,7 @@ void LodClusters::postInitNewScene()
     m_tweak.facetShading = true;
 
   m_frameConfig.frameConstants.skyParams.sunDirection = glm::normalize(m_frameConfig.frameConstants.skyParams.sunDirection);
+  m_sceneAllowLarge = false;
 }
 
 

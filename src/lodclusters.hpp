@@ -181,6 +181,7 @@ private:
   std::atomic_bool       m_sceneLoading        = false;
   std::atomic_uint32_t   m_sceneProgress       = 0;
   bool                   m_sceneLoadFromConfig = false;
+  bool                   m_sceneAllowLarge     = false;
 
 
   std::string m_cameraString;
