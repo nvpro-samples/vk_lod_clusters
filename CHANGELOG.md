@@ -1,4 +1,7 @@
 # Changelog for vk_lod_clusters
+* 2025-9-30:
+  * Improved processing of large scenes through the ordering of the processing of geometries by descending triangle counts. This yields better work distribution across threads. Thanks to Arseny Kapoulkine for this suggestion. As result the zorah scene can be processed in around 6 minutes on a 16-core AMD Ryzen 9.
+  * added `partition_spatial_average` to the local [modified meshoptimizer clusterlod builder](src/meshopt_clusterlod.h). Improves number of clusters per group, which is better for streaming in this sample and also increases the chance that the last lod level is a single cluster, which is mandatory for this sample.
 * 2025-9-25:
   * All new cluster lod hierarchy builder based on [meshoptimizer's clusterlod.h](https://github.com/zeux/meshoptimizer/blob/master/demo/clusterlod.h). It is about 5x faster and 20x less memory during processing, also deterministic and the new default. Special thanks to Arseny Kapoulkine. This sample still uses a slightly [modified version](src/meshopt_clusterlod.h) of his work, to allow optional parallel processing. At the moment of writing `nv_cluster_lod_library` does perform better on meshes made of topology with little connectivity (leaves, rubble).
   * Moved cluster lod building into [scene_cluster_lod.cpp](src/scene_cluster_lod.cpp).

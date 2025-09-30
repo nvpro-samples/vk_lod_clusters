@@ -91,6 +91,7 @@ private:
   };
 
   VkPhysicalDeviceRayTracingPipelinePropertiesKHR m_rtProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
+  VkPhysicalDeviceAccelerationStructurePropertiesKHR m_accProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
   VkPhysicalDeviceClusterAccelerationStructurePropertiesNV m_rtClasProperties{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV};
 
@@ -254,8 +255,9 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
   {
     // get ray tracing properties
 
-    VkPhysicalDeviceProperties2 prop2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &m_rtProperties};
-    m_rtProperties.pNext = &m_rtClasProperties;
+    VkPhysicalDeviceProperties2 prop2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &m_accProperties};
+    m_accProperties.pNext = &m_rtProperties;
+    m_rtProperties.pNext  = &m_rtClasProperties;
     vkGetPhysicalDeviceProperties2(res.m_physicalDevice, &prop2);
 
     VkDeviceSize scratchSize = 0;
@@ -276,7 +278,8 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
 
     // streaming also stores newly built clas in scratch
     res.createBuffer(m_scratchBuffer, scratchSize,
-                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
+                     VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0, m_accProperties.minAccelerationStructureScratchOffsetAlignment);
     NVVK_DBG_NAME(m_scratchBuffer.buffer);
 
     m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_scratchBuffer.bufferSize, "operations", "rt scratch");

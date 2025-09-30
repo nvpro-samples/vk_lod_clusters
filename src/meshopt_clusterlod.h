@@ -15,6 +15,7 @@
 // and was modified by NVIDIA CORPORATION
 //
 // - multi-threading support through the `clodIteration` callback and `clodBuild_iterationTask`
+// - `partition_spatial_average` support to keep larger cluster groups when topological adjacency is poor
 
 #pragma once
 
@@ -30,6 +31,9 @@ struct clodConfig
 	// partition size; maps to meshopt_partitionClusters parameter
 	// note: this is the target size; actual partitions may be up to 1/3 larger (e.g. target 24 results in maximum 32)
 	size_t partition_size;
+	// if the average partition size in an iteration is below this value,
+	// we will group clusters spatially, trying to keep topological groups with more clusters than this value together.
+	size_t partition_spatial_average;
 
 	// clusterization setup; maps to meshopt_buildMeshletsSpatial / meshopt_buildMeshletsFlex
 	bool cluster_spatial;
@@ -204,6 +208,41 @@ struct Cluster
 	clodBounds bounds;
 };
 
+
+struct ClusterAnchor
+{
+	float pos[3];
+};
+
+ClusterAnchor clusterAnchor(const clodMesh& mesh, const std::vector<unsigned int>& indices)
+{
+	float pos_min[3] = {FLT_MAX, FLT_MAX, FLT_MAX};
+	float pos_max[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+
+	size_t stride = mesh.vertex_positions_stride / sizeof(float);
+
+	for (size_t i = 0; i < indices.size(); i++)
+	{
+		size_t index = indices[i];
+		float pos[3];
+		pos[0] = mesh.vertex_positions[index * stride + 0];
+		pos[1] = mesh.vertex_positions[index * stride + 1];
+		pos[2] = mesh.vertex_positions[index * stride + 2];
+		pos_min[0] = std::min(pos_min[0], pos[0]);
+		pos_min[1] = std::min(pos_min[1], pos[1]);
+		pos_min[2] = std::min(pos_min[2], pos[2]);
+		pos_max[0] = std::min(pos_max[0], pos[0]);
+		pos_max[1] = std::min(pos_max[1], pos[1]);
+		pos_max[2] = std::min(pos_max[2], pos[2]);
+	}
+
+	ClusterAnchor anchor;
+	anchor.pos[0] = (pos_max[0] + pos_min[0]) * 0.5f;
+	anchor.pos[1] = (pos_max[1] + pos_min[1]) * 0.5f;
+	anchor.pos[2] = (pos_max[2] + pos_min[2]) * 0.5f;
+	return anchor;
+}
+
 static clodBounds boundsCompute(const clodMesh& mesh, const std::vector<unsigned int>& indices, float error)
 {
 	meshopt_Bounds bounds = meshopt_computeClusterBounds(&indices[0], indices.size(), mesh.vertex_positions, mesh.vertex_count, mesh.vertex_positions_stride);
@@ -284,7 +323,7 @@ static std::vector<Cluster> clusterize(const clodConfig& config, const clodMesh&
 	return clusters;
 }
 
-static std::vector<std::vector<int> > partition(size_t partition_size, const clodMesh& mesh, const std::vector<Cluster>& clusters, const std::vector<int>& pending, const std::vector<unsigned int>& remap)
+static std::vector<std::vector<int> > partition(size_t partition_size, size_t partition_spatial_average, const clodMesh& mesh, const std::vector<Cluster>& clusters, const std::vector<int>& pending, std::vector<ClusterAnchor>& pending_anchors, const std::vector<unsigned int>& remap)
 {
 	if (pending.size() <= partition_size)
 		return {pending};
@@ -311,14 +350,79 @@ static std::vector<std::vector<int> > partition(size_t partition_size, const clo
 	std::vector<unsigned int> cluster_part(pending.size());
 	size_t partition_count = meshopt_partitionClusters(&cluster_part[0], &cluster_indices[0], cluster_indices.size(), &cluster_counts[0], cluster_counts.size(), mesh.vertex_positions, remap.size(), mesh.vertex_positions_stride, partition_size);
 
-	std::vector<std::vector<int> > partitions(partition_count);
-	for (size_t i = 0; i < partition_count; ++i)
-		partitions[i].reserve(partition_size + partition_size / 2);
+	// heuristic to use spatial grouping instead, if average is low
+	if ((pending.size() / partition_count) < partition_spatial_average)
+	{
+		// recycle memory of cluster_indices for anchors
+		cluster_indices.resize((sizeof(ClusterAnchor) / sizeof(unsigned int)) * partition_count);
+		ClusterAnchor* partition_anchors = (ClusterAnchor*)cluster_indices.data();
+		memset(partition_anchors, 0, sizeof(ClusterAnchor) * partition_count);
+		// recycle memory of cluster_counts for averaging
+		cluster_counts.resize(partition_count);
+		memset(cluster_counts.data(), 0, sizeof(unsigned int) * partition_count);
 
-	for (size_t i = 0; i < pending.size(); ++i)
-		partitions[cluster_part[i]].push_back(pending[i]);
+		// build average cluster anchor of existing partitions
+		for (size_t i = 0; i < pending.size(); i++)
+		{
+			unsigned int part = cluster_part[i];
+			partition_anchors[part].pos[0] += pending_anchors[i].pos[0];
+			partition_anchors[part].pos[1] += pending_anchors[i].pos[1];
+			partition_anchors[part].pos[2] += pending_anchors[i].pos[2];
+			cluster_counts[part] += 1;
+		}
 
-	return partitions;
+		for (size_t i = 0; i < partition_count; i++)
+		{
+			partition_anchors[i].pos[0] /= cluster_counts[i];
+			partition_anchors[i].pos[1] /= cluster_counts[i];
+			partition_anchors[i].pos[2] /= cluster_counts[i];
+		}
+
+		// redistribute those anchors back when group is large enough
+		for (size_t i = 0; i < pending.size(); i++)
+		{
+			unsigned int part = cluster_part[i];
+			if (cluster_counts[part] > partition_spatial_average)
+			{
+				pending_anchors[i] = partition_anchors[part];
+			}
+		}
+
+		size_t spatial_partition_size = partition_size + partition_size / 3;
+
+		// cluster_counts will contain a spatial ordering to fill the partitions linearly
+		meshopt_spatialClusterPoints(cluster_part.data(), &pending_anchors[0].pos[0], pending.size(), sizeof(ClusterAnchor), spatial_partition_size);
+
+		partition_count = (pending.size() + spatial_partition_size - 1) / spatial_partition_size;
+
+		// fill partitions from indices in cluster_part array.
+		std::vector<std::vector<int> > partitions(partition_count);
+
+		size_t cluster_index = 0;
+		for (size_t i = 0; i < partition_count; ++i)
+		{
+			size_t part_size = std::min((i + 1) * spatial_partition_size, pending.size()) -  i * spatial_partition_size;
+
+			partitions[i].resize(part_size);
+			for (size_t j = 0; j < part_size; ++j)
+			{
+				partitions[i][j] =  pending[cluster_part[cluster_index++]];
+			}
+		}
+
+		return partitions;
+	}
+	else
+	{
+		std::vector<std::vector<int> > partitions(partition_count);
+		for (size_t i = 0; i < partition_count; ++i)
+			partitions[i].reserve(partition_size + partition_size / 2);
+
+		for (size_t i = 0; i < pending.size(); ++i)
+			partitions[cluster_part[i]].push_back(pending[i]);
+
+		return partitions;
+	}
 }
 
 static void lockBoundary(std::vector<unsigned char>& locks, const std::vector<std::vector<int> >& groups, const std::vector<Cluster>& clusters, const std::vector<unsigned int>& remap, const unsigned char* vertex_lock)
@@ -462,6 +566,7 @@ struct IterationContext
 
 	// reset every iteration
 	std::vector<std::vector<int>> groups;
+	std::vector<ClusterAnchor> pending_anchors;
 
 	std::vector<int>    pending;
 	std::atomic<size_t> next_pending = {}; // lock free allocation index into above
@@ -569,6 +674,8 @@ void clodBuild_iterationTask(void* iteration_context, void* output_context, size
 		cluster.bounds = bounds;
 
 		// enqueue new cluster for further processing
+		context.pending_anchors[pending_index] = clusterAnchor(mesh, cluster.indices);
+
 		context.pending[pending_index++]  = int(cluster_index);
 		context.clusters[cluster_index++] = std::move(cluster);
 	}
@@ -612,17 +719,24 @@ size_t clodBuild(clodConfig config, clodMesh mesh, void* output_context, clodOut
 	context.next_cluster = context.clusters.size();
 
 	// compute initial precise bounds; subsequent bounds will be using group-merged bounds
-	for (Cluster& cluster : context.clusters)
+	context.pending_anchors.resize(context.clusters.size());
+	for (size_t i = 0; i < context.clusters.size(); ++i)
+	{
+		Cluster& cluster = context.clusters[i];
 		cluster.bounds = boundsCompute(mesh, cluster.indices, 0.f);
+		context.pending_anchors[i] = {{cluster.bounds.center[0],cluster.bounds.center[1],cluster.bounds.center[2]}};
+	}
 
 	context.pending.resize(context.clusters.size());
 	for (size_t i = 0; i < context.clusters.size(); ++i)
 		context.pending[i] = int(i);
 
+
+
 	// merge and simplify clusters until we can't merge anymore
 	while (context.pending.size() > 1)
 	{
-		context.groups = partition(config.partition_size, mesh, context.clusters, context.pending, context.remap);
+		context.groups = partition(config.partition_size, config.partition_spatial_average, mesh, context.clusters, context.pending, context.pending_anchors, context.remap);
 
 		// lock-free allocation assumes we will not create more new clusters than pending
 		context.clusters.resize(context.clusters.size() + context.pending.size());
@@ -646,6 +760,7 @@ size_t clodBuild(clodConfig config, clodMesh mesh, void* output_context, clodOut
 
 		// adjust sizes of arrays to actual usage
 		context.pending.resize(context.next_pending);
+		context.pending_anchors.resize(context.next_pending);
 		context.clusters.resize(context.next_cluster);
 
 		context.depth++;

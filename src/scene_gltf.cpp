@@ -288,19 +288,22 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
   // these become our unique geometries that we can then instance under different
   // materials as well.
 
-  std::vector<size_t> uniqueMeshes;
+  std::vector<size_t> geometryToMesh;
+  std::vector<size_t> geometryTriangleCount;
+  std::vector<size_t> taskToGeometry;
   std::vector<size_t> meshToGeometry(data->meshes_count, -1);
 
-  size_t geometryMemoryEstimate = 0;
-
   {
-    std::unordered_map<std::string, size_t> mapUniqueMeshes;
+    size_t geometryMemoryEstimate = 0;
+
+    std::unordered_map<std::string, size_t> mapMeshToGeometry;
 
     for(size_t meshIndex = 0; meshIndex < data->meshes_count; meshIndex++)
     {
       const cgltf_mesh gltfMesh = data->meshes[meshIndex];
 
       size_t      meshMemoryEstimate = 0;
+      size_t      meshTriangleCount  = 0;
       std::string meshIdentifier;
 
       for(size_t primIdx = 0; primIdx < gltfMesh.primitives_count; primIdx++)
@@ -348,6 +351,7 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
         meshAccessors.index = gltfPrim->indices;
 
         meshMemoryEstimate += sizeof(uint32_t) * gltfPrim->indices->count;
+        meshTriangleCount += gltfPrim->indices->count;
 
         // just serialize the pointer values as identifier for the mesh
         meshIdentifier +=
@@ -355,11 +359,14 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
       }
 
       // find canonical string in map
-      auto pair = mapUniqueMeshes.try_emplace(meshIdentifier, uniqueMeshes.size());
+      auto pair = mapMeshToGeometry.try_emplace(meshIdentifier, geometryToMesh.size());
       if(pair.second)
       {
-        meshToGeometry[meshIndex] = uniqueMeshes.size();
-        uniqueMeshes.push_back(meshIndex);
+        size_t geometryIndex      = geometryToMesh.size();
+        meshToGeometry[meshIndex] = geometryIndex;
+        geometryToMesh.push_back(meshIndex);
+        taskToGeometry.push_back(geometryIndex);
+        geometryTriangleCount.push_back(meshTriangleCount);
         geometryMemoryEstimate += meshMemoryEstimate;
       }
       else
@@ -367,24 +374,36 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
         meshToGeometry[meshIndex] = pair.first->second;
       }
     }
+
+    // if there is too much geometry memory in the scene and we are not in processing only mode, early out
+    if(!m_cacheFileView.isValid() && !m_config.processingOnly
+       && (geometryMemoryEstimate > size_t(m_config.forcePreprocessMiB) * 1024 * 1024))
+    {
+      return SCENE_RESULT_NEEDS_PREPROCESS;
+    }
   }
 
-  if(!m_cacheFileView.isValid() && !m_config.processingOnly
-     && (geometryMemoryEstimate > size_t(m_config.forcePreprocessMiB) * 1024 * 1024))
-  {
-    return SCENE_RESULT_NEEDS_PREPROCESS;
-  }
+  m_geometryStorages.resize(geometryToMesh.size());
+  m_geometryViews.resize(geometryToMesh.size());
 
-  m_geometryStorages.resize(uniqueMeshes.size());
-  m_geometryViews.resize(uniqueMeshes.size());
-
-  beginProcessingOnly(uniqueMeshes.size());
+  beginProcessingOnly(geometryToMesh.size());
 
   // when we are resuming in processingOnly mode, we might have completed several geometries already,
   // which is passed to influence the decision about the parallelism mode.
-  processingInfo.setupParallelism(uniqueMeshes.size(), m_processingOnlyPartialCompleted, m_config.processingMode);
+  processingInfo.setupParallelism(geometryToMesh.size(), m_processingOnlyPartialCompleted, m_config.processingMode);
 
-  auto fnLoadAndProcessGeometry = [&](uint64_t geometryIndex, uint32_t threadOuterIdx) {
+  if(processingInfo.numOuterThreads > processingInfo.numInnerThreads)
+  {
+    // let's do the actual processing in a slightly different order (large meshes first).
+    // This gives better work distribution across threads, avoids few long running threads
+    // at the end. Thanks Arseny Kapoulkine for this suggestion.
+    std::sort(taskToGeometry.begin(), taskToGeometry.end(),
+              [&](size_t l, size_t r) { return geometryTriangleCount[l] > geometryTriangleCount[r]; });
+  }
+
+  auto fnLoadAndProcessGeometry = [&](uint64_t taskIndex, uint32_t threadOuterIdx) {
+    uint64_t geometryIndex = taskToGeometry[taskIndex];
+
     // when resuming a partial processing, early out if it was already processed
     // second entry is dataSize
     if(m_processingOnlyPartialFile && m_processingOnlyGeometryOffsets[geometryIndex * 2 + 1])
@@ -399,7 +418,7 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
     }
 
     // map back from unique geometry to gltf mesh
-    size_t meshIndex = uniqueMeshes[geometryIndex];
+    size_t meshIndex = geometryToMesh[geometryIndex];
 
     const cgltf_mesh gltfMesh = data->meshes[meshIndex];
     GeometryStorage& geometry = m_geometryStorages[geometryIndex];
@@ -593,7 +612,7 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
     m_config.progressPct->store(0);
   }
 
-  nvutils::parallel_batches_pooled<1>(uniqueMeshes.size(), fnLoadAndProcessGeometry, processingInfo.numOuterThreads);
+  nvutils::parallel_batches_pooled<1>(geometryToMesh.size(), fnLoadAndProcessGeometry, processingInfo.numOuterThreads);
 
   processingInfo.logEnd();
   if(m_config.progressPct)
@@ -601,7 +620,7 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
     m_config.progressPct->store(100);
   }
 
-  bool notCompleted = processingInfo.progressGeometriesCompleted != uniqueMeshes.size();
+  bool notCompleted = processingInfo.progressGeometriesCompleted != geometryToMesh.size();
   if(notCompleted)
   {
     LOGW("Error in processing geometries, completed / required mismatch\nTry using `--processingonly 1`\n");
