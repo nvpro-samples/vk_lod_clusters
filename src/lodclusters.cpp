@@ -66,6 +66,7 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"loddecimationfactor"}, &m_sceneConfig.lodLevelDecimationFactor);
   m_info.parameterRegistry->add({"meshoptpreferrt"}, &m_sceneConfig.meshoptPreferRayTracing);
   m_info.parameterRegistry->add({"loderror"}, &m_frameConfig.lodPixelError);
+  m_info.parameterRegistry->add({"shadowray"}, &m_frameConfig.frameConstants.doShadow);
   m_info.parameterRegistry->add({"ao"}, &m_tweak.hbaoActive);  // use same as hbao
   m_info.parameterRegistry->add({"aoradius"}, &m_frameConfig.frameConstants.ambientOcclusionRadius);
   m_info.parameterRegistry->add({"hbao"}, &m_tweak.hbaoActive);

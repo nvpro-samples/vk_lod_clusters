@@ -290,17 +290,15 @@ void Scene::buildGeometryClusterLodMeshoptimizer(const ProcessingInfo& processin
   clodConfig clodInfo = m_config.meshoptPreferRayTracing ? clodDefaultConfigRT(m_config.clusterTriangles) :
                                                            clodDefaultConfig(m_config.clusterTriangles);
 
-  clodInfo.max_vertices              = m_config.clusterVertices;
-  clodInfo.partition_size            = m_config.clusterGroupSize;
-  clodInfo.partition_spatial_average = m_config.clusterGroupSize / 2;
+  clodInfo.max_vertices      = m_config.clusterVertices;
+  clodInfo.partition_size    = m_config.clusterGroupSize;
+  clodInfo.partition_spatial = true;
 
   // account for meshopt_partitionClusters's using a target value with a higher worst case
   while((clodInfo.partition_size + clodInfo.partition_size / 3) > m_config.clusterGroupSize)
   {
     clodInfo.partition_size--;
   }
-
-  clodInfo.partition_spatial_average = std::min(clodInfo.partition_spatial_average, clodInfo.partition_size - 1);
 
   // These control the error propagation across lod levels to
   // account for simplifying an already simplified mesh.

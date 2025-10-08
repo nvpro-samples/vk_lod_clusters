@@ -1,4 +1,6 @@
 # Changelog for vk_lod_clusters
+* 2025-10-8:
+  * Updated meshoptimizer to use its [improved partitioner](https://github.com/zeux/meshoptimizer/pull/964) that supports spatial partitioning. As a result removed the `partition_spatial_average` logic from our local version.
 * 2025-9-30:
   * Improved processing of large scenes through the ordering of the processing of geometries by descending triangle counts. This yields better work distribution across threads. Thanks to Arseny Kapoulkine for this suggestion. As result the zorah scene can be processed in around 6 minutes on a 16-core AMD Ryzen 9.
   * added `partition_spatial_average` to the local [modified meshoptimizer clusterlod builder](src/meshopt_clusterlod.h). Improves number of clusters per group, which is better for streaming in this sample and also increases the chance that the last lod level is a single cluster, which is mandatory for this sample.

@@ -259,6 +259,6 @@ By default the application now stores a cache file of the last processing (`--au
 
 ## Third Party
 
-[meshoptimizer](https://github.com/zeux/meshoptimizer) is used for various operations, such as building the cluster lod data structures along with the mesh simplification as re-ordering triangles within clusters to improve triangle strips.
+[meshoptimizer](https://github.com/zeux/meshoptimizer) is used for various operations, such as building the cluster lod data structures along with the mesh simplification and re-ordering triangles within clusters to improve triangle strips.
 
 [vulkan_radix_sort](https://github.com/jaesung-cs/vulkan_radix_sort) is used when "Instance Sorting" is activated prior traversal.
