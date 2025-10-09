@@ -53,8 +53,8 @@ The sample also showcases a ray tracing specific optimization for [BLAS Sharing]
 ### Model processing
 
 This sample provides two options to build the cluster level of detail data structures:
-* A custom fork of [meshoptimizer's](https://github.com/zeux/meshoptimizer) single header [clusterlod.h](src/meshopt_clusterlod.h) to support parallelism. This builder is the default as it is faster and uses a lot less memory at time of writing. The builder is deterministic.
-* The [nv_cluster_lod_builder](https://github.com/nvpro-samples/nv_cluster_lod_builder) research library. We recommend looking at its documentation for the basics of how the cluster lod building works. In both builders the principle operations are the same. `--nvclusterlod 1` to enable. The builder is _not_ deterministic. At the moment of writing it does, however, perform better on meshes made of topology with little connectivity (leaves, rubble), as the cluster grouping makes more use of spatial connectivity, rather than favoring only topological adjacency.
+* A custom fork of [meshoptimizer's](https://github.com/zeux/meshoptimizer) single header [clusterlod.h](src/meshopt_clusterlod.h) to support parallelism. This builder is the default as it is faster and uses a lot less memory at time of writing. The builder is deterministic and we recommend its usage going forward.
+* The [nv_cluster_lod_builder](https://github.com/nvpro-samples/nv_cluster_lod_builder) research library. We recommend looking at its documentation for the basics of how the cluster lod building works. In both builders the principle operations are the same. `--nvclusterlod 1` to enable or via UI (off by default). The builder is _not_ deterministic.
 
 Inside [scene_cluster_lod.cpp](/src/scene_cluster_lod.cpp) the `Scene:buildGeometryClusterLod(...)` function covers the usage of the libraries and what data we need to extract from them. All key processing steps are within `Scene:processGeometry(...)` inside [scene.cpp](/src/scene.cpp).
 
