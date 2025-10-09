@@ -623,6 +623,9 @@ void LodClusters::updatedSceneGrid()
 
 void LodClusters::handleChanges()
 {
+  if(m_sceneLoading)
+    return;
+
   if(m_tweak.clusterConfig != m_tweakLast.clusterConfig)
   {
     updatedClusterConfig();
