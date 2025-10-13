@@ -227,8 +227,7 @@ void main()
 #endif
 
 #if DEBUG_VISUALIZATION
-
-  if(view.doWireframe != 0 || (view.visFilterInstanceID == instanceID && view.visFilterClusterID == clusterID))
+  if(view.doWireframe != 0)
   {
     vec3 derivativeTargetX = gl_WorldToObjectEXT * vec4(gl_WorldRayOriginEXT + rayHit.color.xyz, 1);
     vec3 derivativeDirX    = derivativeTargetX.xyz - gl_ObjectRayOriginEXT;

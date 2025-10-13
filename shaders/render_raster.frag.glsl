@@ -163,9 +163,9 @@ void main()
 #endif
 
 #if DEBUG_VISUALIZATION
-  if(view.doWireframe != 0 || (view.visFilterInstanceID == IN.instanceID && view.visFilterClusterID == IN.clusterID))
+  if(view.doWireframe != 0)
   {
-    out_Color.xyz = addWireframe(out_Color.xyz, gl_BaryCoordEXT, gl_FrontFacing, fwidthFine(gl_BaryCoordEXT), view.wireColor);
+    out_Color.xyz = addWireframe(out_Color.xyz, gl_BaryCoordEXT, true, fwidthFine(gl_BaryCoordEXT), view.wireColor);
   }
 #endif
 
