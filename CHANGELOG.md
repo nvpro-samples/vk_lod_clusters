@@ -1,4 +1,10 @@
 # Changelog for vk_lod_clusters
+* 2025-10-17:
+  * Added `Cluster BBoxes` visualization to "Rendering -> Other settings". Note the bounding box visualizations don't work for ray tracing when DLSS is active, and they will only show clusters that are part of BLAS builds in that frame.
+  * Bugfix supersampling change in UI causing some rendering artifacts.
+  * Reduce risk of out of memory in the local modified meshoptimizer clusterlod builder. Rarely hit a case at the end of the mip chain where more clusters were generated after simplification than input cluster count.
+  * Added option to compute simple metric for occupancy within cluster bounding boxes.
+  * Expose `RA split factor` in "Clusterization -> Other settings" to influence the correspondign value in meshoptimizer's clusterizer when it is set to prefer rasterization.
 * 2025-10-8:
   * Updated meshoptimizer to use its [improved partitioner](https://github.com/zeux/meshoptimizer/pull/964) that supports spatial partitioning. As a result removed the `partition_spatial_average` logic from our local version.
 * 2025-9-30:

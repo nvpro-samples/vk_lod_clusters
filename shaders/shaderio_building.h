@@ -175,9 +175,11 @@ struct SceneBuilding
 
   // nv
   DrawMeshTasksIndirectCommandNV indirectDrawClustersNV;
+  DrawMeshTasksIndirectCommandNV indirectDrawClusterBoxesNV;
 
   // ext
   DrawMeshTasksIndirectCommandEXT indirectDrawClustersEXT;
+  DrawMeshTasksIndirectCommandEXT indirectDrawClusterBoxesEXT;
   uint                            numRenderedClusters;
 
   // ray tracing related

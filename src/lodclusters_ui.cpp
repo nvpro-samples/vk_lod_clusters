@@ -506,6 +506,7 @@ void LodClusters::onUIRender()
           PE::Checkbox("Wireframe", (bool*)&m_frameConfig.frameConstants.doWireframe);
         }
         PE::Checkbox("Instance BBoxes", &m_frameConfig.showInstanceBboxes);
+        PE::Checkbox("Cluster BBoxes", &m_frameConfig.showClusterBboxes);
         PE::Checkbox("Reflective box", (bool*)&m_frameConfig.frameConstants.useMirrorBox);
         PE::treePop();
       }
@@ -631,8 +632,12 @@ void LodClusters::onUIRender()
                          "Mesh error propagation: scales previous lod error before combining it with the current error to compute the group error as max(previous_error * factor, error).");
           PE::InputFloat("Error merge additive", &m_sceneConfig.lodErrorMergeAdditive, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
                          "Mesh error propagation: adds scaled current error to the group error after the maximum computation.");
-          PE::Checkbox("Prefer ray tracing", &m_sceneConfig.meshoptPreferRayTracing,
+          PE::Checkbox("Prefer ray tracing (RT)", &m_sceneConfig.meshoptPreferRayTracing,
                        "Configures meshoptimizer's lod cluster builder to prefer ray tracing over rasterization.");
+          PE::InputFloat("RT fill weight", &m_sceneConfig.meshoptFillWeight, 0, 0, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue,
+                         "If ray tracing is preferred, influences weight between SAH optimized (towards zero), or filling clusters (higher value).");
+          PE::InputFloat("RA split factor", &m_sceneConfig.meshoptSplitFactor, 0, 0, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue,
+                         "If raster is preferred, influences the maximum size of a cluster prior splitting it up.");
         }
         m_sceneConfig.lodErrorMergePrevious = std::max(1.0f, m_sceneConfig.lodErrorMergePrevious);
         m_sceneConfig.lodErrorMergeAdditive = std::max(0.0f, m_sceneConfig.lodErrorMergeAdditive);

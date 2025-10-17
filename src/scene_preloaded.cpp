@@ -217,6 +217,7 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
         clusters[clusterIndex].lodLevel        = uint8_t(lodLevel);
         clusters[clusterIndex].groupChildIndex = uint8_t(c);
         clusters[clusterIndex].groupID         = uint32_t(g);
+        clusters[clusterIndex].bbox            = preloadGeometry.clusterBboxes.addressAt(clusterRange.offset + c, 1);
       }
     }
   }

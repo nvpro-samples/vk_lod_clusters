@@ -587,6 +587,9 @@ void clodBuild_iterationTask(void* iteration_context, void* output_context, size
 		cluster.bounds = bounds;
 
 		// enqueue new cluster for further processing
+		assert(pending_index < context.pending.size());
+		assert(cluster_index < context.clusters.size());
+
 		context.pending[pending_index++]  = int(cluster_index);
 		context.clusters[cluster_index++] = std::move(cluster);
 	}
@@ -644,8 +647,9 @@ size_t clodBuild(clodConfig config, clodMesh mesh, void* output_context, clodOut
 	{
 		context.groups = partition(config, mesh, context.clusters, context.pending, context.remap);
 
-		// lock-free allocation assumes we will not create more new clusters than pending
-		context.clusters.resize(context.clusters.size() + context.pending.size());
+		// lock-free allocation assumes we will not create much more new clusters than pending
+		context.clusters.resize(context.clusters.size() + context.pending.size() + context.groups.size());
+		context.pending.resize(context.pending.size() + context.groups.size());
 		context.next_pending = 0;
 
 		// mark boundaries between groups with a lock bit to avoid gaps in simplified result

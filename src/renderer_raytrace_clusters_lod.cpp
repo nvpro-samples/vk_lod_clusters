@@ -156,6 +156,9 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("USE_DLSS", supportsDLSS && config.useDlss ? "1" : "0");
   options.AddMacroDefinition("ALLOW_VERTEX_NORMALS", rscene.scene->m_hasVertexNormals ? "1" : "0");
   options.AddMacroDefinition("DEBUG_VISUALIZATION", config.useDebugVisualization ? "1" : "0");
+  options.AddMacroDefinition("USE_EXT_MESH_SHADER", fmt::format("{}", config.useEXTmeshShader ? 1 : 0));
+  options.AddMacroDefinition("MESHSHADER_WORKGROUP_SIZE", fmt::format("{}", m_meshShaderWorkgroupSize));
+  options.AddMacroDefinition("MESHSHADER_BBOX_COUNT", fmt::format("{}", m_meshShaderBoxes));
 
   shaderc::CompileOptions optionsAO = options;
   options.AddMacroDefinition("RAYTRACING_PAYLOAD_INDEX", "0");
@@ -406,6 +409,8 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
       m_sceneBuildShaderio.geometryHistograms = m_sceneGeometryHistogramBuffer.address;
     }
   }
+
+  updateBasicDescriptors(res, rscene, &m_sceneBuildBuffer);
 
   if(rscene.useStreaming)
   {
@@ -940,10 +945,12 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     updateRayTracingTlas(cmd, res, !m_tlasDoBuild);
     m_tlasDoBuild = false;
 
-    memBarrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
-    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_SHADER_WRITE_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-                         VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+    memBarrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_SHADER_WRITE_BIT;
+    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR
+                               | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 1,
+                         &memBarrier, 0, nullptr, 0, nullptr);
   }
 #endif
 
@@ -964,6 +971,10 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     if(frame.showInstanceBboxes)
     {
       renderInstanceBboxes(cmd);
+    }
+    if(frame.showClusterBboxes)
+    {
+      renderClusterBboxes(cmd, m_sceneBuildBuffer);
     }
     vkCmdEndRendering(cmd);
   }

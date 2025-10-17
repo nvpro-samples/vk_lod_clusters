@@ -136,11 +136,12 @@ protected:
 
   bool initBasicShaders(Resources& res, RenderScene& rscene, const RendererConfig& config);
   void initBasicPipelines(Resources& res, RenderScene& rscene, const RendererConfig& config);
-  void updateBasicDescriptors(Resources& res, RenderScene& scene);
+  void updateBasicDescriptors(Resources& res, RenderScene& scene, const nvvk::Buffer* sceneBuildBuffer = nullptr);
 
   void writeRayTracingDepthBuffer(VkCommandBuffer cmd);
   void writeBackgroundSky(VkCommandBuffer cmd);
   void renderInstanceBboxes(VkCommandBuffer cmd);
+  void renderClusterBboxes(VkCommandBuffer cmd, nvvk::Buffer sceneBuildBuffer);
 
   struct BasicShaders
   {
@@ -150,6 +151,9 @@ protected:
 
     shaderc::SpvCompilationResult renderInstanceBboxesFragmentShader;
     shaderc::SpvCompilationResult renderInstanceBboxesMeshShader;
+
+    shaderc::SpvCompilationResult renderClusterBboxesMeshShader;
+    shaderc::SpvCompilationResult renderClusterBboxesFragmentShader;
   };
 
   struct BasicPipelines
@@ -157,6 +161,7 @@ protected:
     VkPipeline writeDepth{};
     VkPipeline background{};
     VkPipeline renderInstanceBboxes{};
+    VkPipeline renderClusterBboxes{};
   };
 
   RendererConfig m_config;

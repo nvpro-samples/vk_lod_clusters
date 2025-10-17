@@ -94,6 +94,10 @@ layout(local_size_x=1) in;
 
 ////////////////////////////////////////////
 
+#ifndef MESHSHADER_BBOX_COUNT
+#define MESHSHADER_BBOX_COUNT 8
+#endif
+
 void main()
 {  
   // special operations for setting up indirect dispatches
@@ -121,11 +125,20 @@ void main()
     buildRW.indirectDrawClustersEXT.gridX = grid.x;
     buildRW.indirectDrawClustersEXT.gridY = grid.y;
     buildRW.indirectDrawClustersEXT.gridZ = grid.z;
-    buildRW.numRenderedClusters = numRenderedClusters;
+    
+    grid = fit16bitLaunchGrid((numRenderedClusters + MESHSHADER_BBOX_COUNT - 1) / MESHSHADER_BBOX_COUNT);  
+    buildRW.indirectDrawClusterBoxesEXT.gridX = grid.x;
+    buildRW.indirectDrawClusterBoxesEXT.gridY = grid.y;
+    buildRW.indirectDrawClusterBoxesEXT.gridZ = grid.z;
 #else
     buildRW.indirectDrawClustersNV.count = numRenderedClusters;
     buildRW.indirectDrawClustersNV.first = 0;
+    
+    buildRW.indirectDrawClusterBoxesNV.count = (numRenderedClusters + MESHSHADER_BBOX_COUNT - 1) / MESHSHADER_BBOX_COUNT;
+    buildRW.indirectDrawClusterBoxesNV.first = 0;
 #endif
+    buildRW.numRenderedClusters = numRenderedClusters;
+
     // keep originals for array size warnings 
     readback.numRenderClusters    = renderClusterCounter;
   #if USE_SEPARATE_GROUPS
@@ -171,6 +184,17 @@ void main()
   #if USE_RENDER_STATS
     readback.numRenderedClusters  = numRenderedClusters;
   #endif
+  
+  #if USE_EXT_MESH_SHADER
+    uvec3 grid = fit16bitLaunchGrid((numRenderedClusters + MESHSHADER_BBOX_COUNT - 1) / MESHSHADER_BBOX_COUNT);  
+    buildRW.indirectDrawClusterBoxesEXT.gridX = grid.x;
+    buildRW.indirectDrawClusterBoxesEXT.gridY = grid.y;
+    buildRW.indirectDrawClusterBoxesEXT.gridZ = grid.z;
+  #else
+    buildRW.indirectDrawClusterBoxesNV.count = (numRenderedClusters + MESHSHADER_BBOX_COUNT - 1) / MESHSHADER_BBOX_COUNT;
+    buildRW.indirectDrawClusterBoxesNV.first = 0;
+  #endif
+    buildRW.numRenderedClusters = numRenderedClusters;
   }
 #endif
 }

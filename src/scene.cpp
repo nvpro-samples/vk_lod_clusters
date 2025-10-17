@@ -247,6 +247,8 @@ Scene::Result Scene::init(const std::filesystem::path& filePath, const SceneConf
     m_hiTrianglesCount += geometry.hiTriangleCount;
     m_hiClustersCount += geometry.hiClustersCount;
     m_totalClustersCount += geometry.totalClustersCount;
+    m_totalTrianglesCount += geometry.totalTriangleCount;
+    m_totalVerticesCount += geometry.totalVerticesCount;
   }
   for(size_t i = 0; i < m_instances.size(); i++)
   {
@@ -260,6 +262,15 @@ Scene::Result Scene::init(const std::filesystem::path& filePath, const SceneConf
     LOGI("Average triangles per strip %.2f\n",
          double(processingInfo.numTotalTriangles.load()) / double(processingInfo.numTotalStrips.load()));
   }
+
+  LOGI("clusters:  %" PRIu64 "\n", m_totalClustersCount);
+  LOGI("triangles: %" PRIu64 "\n", m_totalTrianglesCount);
+  LOGI("triangles/cluster: %.2f\n", double(m_totalTrianglesCount) / double(m_totalClustersCount));
+  LOGI("vertices: %" PRIu64 "\n", m_totalVerticesCount);
+  LOGI("vertices/cluster: %.2f\n", double(m_totalVerticesCount) / double(m_totalClustersCount));
+  LOGI("hi clusters:  %" PRIu64 "\n", m_hiClustersCount);
+  LOGI("hi triangles: %" PRIu64 "\n", m_hiTrianglesCount);
+  LOGI("hi triangles/cluster: %.2f\n", double(m_hiTrianglesCount) / double(m_hiClustersCount));
 
   if(!m_loadedFromCache && m_config.autoSaveCache)
   {
@@ -742,6 +753,11 @@ void Scene::computeHistograms()
 
   m_maxLodLevelsCount = 0;
 
+  double sumOccupancy = 0;
+  double numOccupancy = 0;
+  double minOccupancy = FLT_MAX;
+  double maxOccupancy = 0;
+
   for(GeometryView& geometry : m_geometryViews)
   {
     assert(geometry.lodLevelsCount < SHADERIO_MAX_LOD_LEVELS);
@@ -756,6 +772,53 @@ void Scene::computeHistograms()
 
       m_clusterTriangleHistogram[triangleRange.count]++;
       m_clusterVertexHistogram[vertexRange.count]++;
+    }
+
+    if(m_config.computeClusterBBoxOccupancy)
+    {
+      for(size_t c = 0; c < geometry.lodMesh.clusterTriangleRanges.size(); c++)
+      {
+        const nvcluster_Range& vertexRange   = geometry.clusterVertexRanges[c];
+        const nvcluster_Range& triangleRange = geometry.lodMesh.clusterTriangleRanges[c];
+
+        const uint8_t*   indices  = geometry.localTriangles.data() + triangleRange.offset * 3;
+        const glm::vec4* vertices = geometry.vertices.data() + vertexRange.offset;
+
+        glm::vec3 boxDim = geometry.clusterBboxes[c].hi - geometry.clusterBboxes[c].lo;
+
+        double triangleArea = 0.0;
+
+        for(uint32_t t = 0; t < triangleRange.count; t++)
+        {
+          glm::vec3 a = glm::vec3(vertices[indices[t * 3 + 0]]);
+          glm::vec3 b = glm::vec3(vertices[indices[t * 3 + 1]]);
+          glm::vec3 c = glm::vec3(vertices[indices[t * 3 + 2]]);
+
+          float e0 = glm::distance(a, b);
+          float e1 = glm::distance(b, c);
+          float e2 = glm::distance(c, a);
+
+          float s = ((e0 + e1 + e2) / 2.0f);
+          float h = s * (s - e0) * (s - e1) * (s - e2);
+
+          if(h > 0.0f)
+          {
+            float area = sqrtf(h);
+            triangleArea += double(area);
+          }
+        }
+
+        double occupancy = triangleArea / (double(boxDim.x * boxDim.y + boxDim.y * boxDim.z + boxDim.x * boxDim.z));
+
+        if(triangleArea && occupancy)
+        {
+          sumOccupancy += occupancy;
+
+          minOccupancy = std::min(occupancy, minOccupancy);
+          maxOccupancy = std::max(occupancy, maxOccupancy);
+          numOccupancy++;
+        }
+      }
     }
 
     for(size_t g = 0; g < geometry.lodMesh.groupClusterRanges.size(); g++)
@@ -782,6 +845,13 @@ void Scene::computeHistograms()
       }
       m_nodeChildrenHistogram[node.children.childCountMinusOne + 1]++;
     }
+  }
+
+  if(m_config.computeClusterBBoxOccupancy)
+  {
+    LOGI("avg cluster bbox occupancy: %.9f\n", sumOccupancy / numOccupancy);
+    LOGI("min cluster bbox occupancy: %.9f\n", minOccupancy);
+    LOGI("max cluster bbox occupancy: %.9f\n", maxOccupancy);
   }
 
   m_lodLevelsHistogram.resize(m_maxLodLevelsCount + 1);

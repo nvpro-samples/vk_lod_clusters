@@ -63,10 +63,23 @@ layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffe
   Geometry geometries[];
 };
 
+layout(scalar, binding = BINDINGS_SCENEBUILDING_UBO, set = 0) uniform buildBuffer
+{
+  SceneBuilding build;  
+};
+
+#if USE_STREAMING
+layout(scalar, binding = BINDINGS_STREAMING_UBO, set = 0) uniform streamingBuffer
+{
+  SceneStreaming streaming;
+};
+
+#endif
+
 ////////////////////////////////////////////
 
 layout(location=0) out Interpolants {
-  flat uint instanceID;
+  flat uint clusterID;
 } OUT[];
 
 ////////////////////////////////////////////
@@ -104,8 +117,9 @@ void main()
 #else
   uint workGroupID = gl_WorkGroupID.x;
 #endif
+  uint numRenderedClusters = build.numRenderedClusters;
   uint baseID   = workGroupID * MESHSHADER_BBOX_COUNT;  
-  uint numBoxes = min(push.numRenderInstances, baseID + MESHSHADER_BBOX_COUNT) - baseID;
+  uint numBoxes = min(numRenderedClusters, baseID + MESHSHADER_BBOX_COUNT) - baseID;
   
 #if USE_EXT_MESH_SHADER
   SetMeshOutputsEXT(numBoxes * MESHSHADER_BBOX_VERTICES, numBoxes * MESHSHADER_BBOX_LINES);
@@ -127,9 +141,17 @@ void main()
     uint corner = vert % MESHSHADER_BBOX_VERTICES;
     
     uint boxLoad = min(box,numBoxes-1);
+  
+    ClusterInfo cinfo = build.renderClusterInfos.d[boxLoad + baseID];
+    uint clusterID = cinfo.clusterID;
+  #if USE_STREAMING
+    Cluster cluster = Cluster_in(streaming.resident.clusters.d[clusterID]).d;
+  #else
+    Cluster cluster = geometry.preloadedClusters.d[clusterID];
+  #endif
     
-    RenderInstance instance = instances[boxLoad + baseID];
-    BBox bbox = geometries[instance.geometryID].bbox;
+    RenderInstance instance = instances[cinfo.instanceID];
+    BBox bbox = cluster.bbox.d;
     
     bvec3 weight   = bvec3((corner & 1) != 0, (corner & 2) != 0, (corner & 4) != 0);
     vec3 cornerPos = mix(bbox.lo, bbox.hi, weight);
@@ -142,7 +164,7 @@ void main()
       gl_MeshVerticesNV[vert].gl_Position = 
     #endif
         view.viewProjMatrix * (instance.worldMatrix * vec4(cornerPos,1));
-      OUT[vert].instanceID = baseID + box;
+      OUT[vert].clusterID = clusterID;
     }
   }
   

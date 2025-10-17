@@ -164,6 +164,7 @@ You can use the commandline to change some defaults:
   We use `GL_EXT_spirv_intrinsics` rather than dedicated GLSL extension support that may come at a later time.
 * Few error checks are performed on out of memory situations, which can happen on higher _"render copies"_ values, or the complexity of the loaded scene
 * The number of threads used in the persistent kernel is based on a crude heuristic for now and was not evaluated to be the optimal amount.
+* The bounding box visualizations don't show for ray tracing when DLSS is active, and they will only show clusters that are part of BLAS builds in the current frame. Prefer using rasterization to see them.
 
 ## Future Improvements
 

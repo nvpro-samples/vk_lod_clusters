@@ -161,6 +161,7 @@ static void fillGroupData(const Scene::GeometryView& sceneGeometry,
 
     cluster.vertices       = addresses.vertices.offset + sizeof(glm::vec4) * offsetVertices;
     cluster.localTriangles = addresses.localTriangles.offset + sizeof(uint8_t) * offsetTriangles * 3;
+    cluster.bbox           = addresses.clusterBboxes.offset + sizeof(shaderio::BBox) * c;
 
     memcpy(pointers.vertices.pointer + (offsetVertices), &sceneGeometry.vertices[vertexRange.offset],
            vertexRange.count * sizeof(glm::vec4));

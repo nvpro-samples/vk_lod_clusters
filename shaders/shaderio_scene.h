@@ -48,6 +48,7 @@ struct BBox
   float shortestEdge;
   float longestEdge;
 };
+BUFFER_REF_DECLARE(BBox_in, BBox, readonly, 16);
 BUFFER_REF_DECLARE_ARRAY(BBoxes_in, BBox, readonly, 16);
 
 // A cluster contains a small number of triangles and vertices.
@@ -64,7 +65,7 @@ struct Cluster
   BUFFER_REF(vec4s_in) vertices;
   BUFFER_REF(uint8s_in) localTriangles;
 
-  uint64_t _pad;
+  BUFFER_REF(BBox_in) bbox;
 };
 BUFFER_REF_DECLARE(Cluster_in, Cluster, , 16);
 BUFFER_REF_DECLARE_ARRAY(Clusters_inout, Cluster, , 16);

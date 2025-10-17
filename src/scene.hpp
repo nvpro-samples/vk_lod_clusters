@@ -42,14 +42,14 @@ struct SceneConfig
   uint32_t clusterVertices    = 128;
   uint32_t clusterTriangles   = 128;
   uint32_t clusterGroupSize   = 32;
-  uint32_t preferredNodeWidth = 32;
+  uint32_t preferredNodeWidth = 8;
+
+  // uses nv_cluster_lod_builder library,
+  // will be deprecated in future.
+  bool useNvLib = false;
 
   // at each lod step reduce cluster group triangles by this factor
   float lodLevelDecimationFactor = 0.5f;
-
-  // uses nv_cluster_lod_builder library
-  // at time of writing slower/more memory
-  bool useNvLib = false;
 
   // lod error propagation for meshoptimizer's clusterlod
   // These control the error propagation across lod levels to
@@ -61,7 +61,9 @@ struct SceneConfig
   float lodErrorMergeAdditive = 0.0f;
 
   // default lod options to use ray tracing preset
-  bool meshoptPreferRayTracing = true;
+  bool  meshoptPreferRayTracing = true;
+  float meshoptFillWeight       = 0.5f;
+  float meshoptSplitFactor      = 2.0f;
 
   // build triangle strips within clusters
   bool clusterStripify = true;
@@ -90,6 +92,11 @@ struct SceneConfig
   // and use the cache file afterwards
   size_t forcePreprocessMiB = size_t(2) * 1024;
 
+  // very crude metric to judge how "dense" a cluster is filled.
+  // using the area of triangles divided by area of bbox sides
+  bool computeClusterBBoxOccupancy = false;
+
+  // optional thread-safe progress bar updates
   std::atomic_uint32_t* progressPct = nullptr;
 };
 
@@ -271,6 +278,8 @@ public:
   uint64_t m_hiClustersCountInstanced  = 0;
   uint64_t m_hiTrianglesCountInstanced = 0;
   uint64_t m_totalClustersCount        = 0;
+  uint64_t m_totalTrianglesCount       = 0;
+  uint64_t m_totalVerticesCount        = 0;
 
   std::vector<uint32_t> m_clusterTriangleHistogram;
   std::vector<uint32_t> m_clusterVertexHistogram;

@@ -60,6 +60,7 @@ struct FrameConfig
   VkExtent2D windowSize;
 
   bool  showInstanceBboxes = false;
+  bool  showClusterBboxes  = false;
   bool  freezeCulling      = false;
   bool  hbaoActive         = true;
   float lodPixelError      = 1.0f;

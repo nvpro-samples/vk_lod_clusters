@@ -65,6 +65,7 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"lodnodewidth"}, &m_sceneConfig.preferredNodeWidth);
   m_info.parameterRegistry->add({"loddecimationfactor"}, &m_sceneConfig.lodLevelDecimationFactor);
   m_info.parameterRegistry->add({"meshoptpreferrt"}, &m_sceneConfig.meshoptPreferRayTracing);
+  m_info.parameterRegistry->add({"meshoptfillweight"}, &m_sceneConfig.meshoptFillWeight);
   m_info.parameterRegistry->add({"loderror"}, &m_frameConfig.lodPixelError);
   m_info.parameterRegistry->add({"shadowray"}, &m_frameConfig.frameConstants.doShadow);
   m_info.parameterRegistry->add({"ao"}, &m_tweak.hbaoActive);  // use same as hbao
@@ -100,7 +101,7 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"extmeshshader"}, &m_rendererConfig.useEXTmeshShader);
   m_info.parameterRegistry->add({"nvclusterlod"}, &m_sceneConfig.useNvLib);
   m_info.parameterRegistry->add({"forcepreprocessmegabytes"}, (uint32_t*)&m_sceneConfig.forcePreprocessMiB);
-
+  m_info.parameterRegistry->add({"clusterbboxoccupancy"}, &m_sceneConfig.computeClusterBBoxOccupancy);
   m_info.parameterRegistry->add({"facetshading"}, &m_tweak.facetShading);
   m_info.parameterRegistry->add({"flipwinding"}, &m_rendererConfig.flipWinding);
   m_info.parameterRegistry->add({"twosided"}, &m_rendererConfig.twoSided);
@@ -705,7 +706,7 @@ void LodClusters::handleChanges()
       initRenderScene();
     }
 
-    if(sceneChanged || shaderChanged || renderSceneChanged || tweakChanged(m_tweak.renderer)
+    if(sceneChanged || shaderChanged || renderSceneChanged || tweakChanged(m_tweak.renderer) || tweakChanged(m_tweak.supersample)
 #if USE_DLSS
        || rendererCfgChanged(m_rendererConfig.useDlss) || rendererCfgChanged(m_rendererConfig.dlssQuality)
 #endif

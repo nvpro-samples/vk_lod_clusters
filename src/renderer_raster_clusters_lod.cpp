@@ -52,6 +52,7 @@ private:
   struct Pipelines
   {
     VkPipeline graphicsMesh            = nullptr;
+    VkPipeline graphicsBboxes          = nullptr;
     VkPipeline computeTraversalPresort = nullptr;
     VkPipeline computeTraversalInit    = nullptr;
     VkPipeline computeTraversalRun     = nullptr;
@@ -102,6 +103,7 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
   options.AddMacroDefinition("USE_BLAS_CACHING", "0");
   options.AddMacroDefinition("USE_EXT_MESH_SHADER", fmt::format("{}", config.useEXTmeshShader ? 1 : 0));
   options.AddMacroDefinition("MESHSHADER_WORKGROUP_SIZE", fmt::format("{}", m_meshShaderWorkgroupSize));
+  options.AddMacroDefinition("MESHSHADER_BBOX_COUNT", fmt::format("{}", m_meshShaderBoxes));
   options.AddMacroDefinition("ALLOW_VERTEX_NORMALS", rscene.scene->m_hasVertexNormals ? "1" : "0");
   options.AddMacroDefinition("DEBUG_VISUALIZATION", config.useDebugVisualization && res.m_supportsBarycentrics ? "1" : "0");
 
@@ -199,6 +201,8 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
 
     m_sceneBuildShaderio.traversalNodeInfos = m_sceneTraversalBuffer.address;
   }
+
+  updateBasicDescriptors(res, rscene, &m_sceneBuildBuffer);
 
   if(rscene.useStreaming)
   {
@@ -454,6 +458,11 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
     {
       vkCmdDrawMeshTasksIndirectNV(cmd, m_sceneBuildBuffer.buffer,
                                    offsetof(shaderio::SceneBuilding, indirectDrawClustersNV), 1, 0);
+    }
+
+    if(frame.showClusterBboxes)
+    {
+      renderClusterBboxes(cmd, m_sceneBuildBuffer);
     }
 
     if(frame.showInstanceBboxes)
