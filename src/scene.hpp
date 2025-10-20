@@ -514,6 +514,7 @@ private:
       clusterConfig.maxClusterVertices = m_config.clusterVertices;
       clusterConfig.itemVertexCount    = 3;
     }
+
     return clusterConfig;
   }
   nvcluster_Config getGroupConfig() const
