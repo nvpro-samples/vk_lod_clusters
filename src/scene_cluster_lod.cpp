@@ -28,16 +28,6 @@ namespace lodclusters {
 
 void Scene::buildGeometryClusterLod(const ProcessingInfo& processingInfo, GeometryStorage& geometry)
 {
-  // mostly for statistics / cache file
-  geometry.lodInfo.inputTriangleCount               = geometry.globalTriangles.size();
-  geometry.lodInfo.inputVertexCount                 = geometry.vertices.size();
-  geometry.lodInfo.inputTriangleIndicesHash         = 0;
-  geometry.lodInfo.inputVerticesHash                = 0;
-  geometry.lodInfo.decimationFactor                 = m_config.lodLevelDecimationFactor;
-  geometry.lodInfo.clusterConfig.maxClusterSize     = m_config.clusterTriangles;
-  geometry.lodInfo.clusterConfig.maxClusterVertices = m_config.clusterVertices;
-  geometry.lodInfo.groupConfig.maxClusterSize       = m_config.clusterGroupSize;
-
   if(m_config.useNvLib)
   {
     buildGeometryClusterLodNvLib(processingInfo, geometry);
@@ -295,6 +285,9 @@ void Scene::buildGeometryClusterLodMeshoptimizer(const ProcessingInfo& processin
   clodInfo.max_vertices         = m_config.clusterVertices;
   clodInfo.partition_size       = m_config.clusterGroupSize;
   clodInfo.partition_spatial    = true;
+
+  // this only reorders triangles within cluster, run it, if we don't do triangle strips
+  clodInfo.optimize_raster = !m_config.clusterStripify;
 
   // account for meshopt_partitionClusters's using a target value with a higher worst case
   while((clodInfo.partition_size + clodInfo.partition_size / 3) > m_config.clusterGroupSize)

@@ -574,19 +574,28 @@ void Scene::processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex
     }
     else
     {
+      // mostly for statistics / cache file
+
+      // The dedup might change the vertex count of the mesh, but for the cache file
+      // comparison we actually want to use the original vertex count
+      geometryStorage.lodInfo.inputTriangleCount               = geometryStorage.globalTriangles.size();
+      geometryStorage.lodInfo.inputVertexCount                 = geometryStorage.vertices.size();
+      geometryStorage.lodInfo.inputTriangleIndicesHash         = 0;
+      geometryStorage.lodInfo.inputVerticesHash                = 0;
+      geometryStorage.lodInfo.decimationFactor                 = m_config.lodLevelDecimationFactor;
+      geometryStorage.lodInfo.clusterConfig.maxClusterSize     = m_config.clusterTriangles;
+      geometryStorage.lodInfo.clusterConfig.maxClusterVertices = m_config.clusterVertices;
+      geometryStorage.lodInfo.groupConfig.maxClusterSize       = m_config.clusterGroupSize;
+
       size_t originalVertexCount = geometryStorage.vertices.size();
 
       // some exports give us independent triangles, clean those up
-      if(geometryStorage.vertices.size() >= geometryStorage.globalTriangles.size() * 3)
+      if(geometryStorage.vertices.size() >= (geometryStorage.globalTriangles.size() + geometryStorage.globalTriangles.size() / 2))
       {
         buildGeometryDedupVertices(processingInfo, geometryStorage);
       }
 
       buildGeometryClusterLod(processingInfo, geometryStorage);
-
-      // The dedup might change the vertex count of the mesh, but for the cache file
-      // comparison we actually want to use the original vertex count
-      geometryStorage.lodInfo.inputVertexCount = originalVertexCount;
 
       // no longer need original triangles
       geometryStorage.globalTriangles = {};
@@ -899,6 +908,8 @@ void Scene::buildGeometryClusterStrips(ProcessingInfo& processingInfo, GeometryS
       [&](uint64_t idx, uint32_t threadInnerIdx) {
         nvcluster_Range triangleRange = geometry.lodMesh.clusterTriangleRanges[idx];
         nvcluster_Range vertexRange   = geometry.clusterVertexRanges[idx];
+
+        if ( triangleRange.count == 0) return;
 
         uint32_t* meshletIndices      = &threadIndices[threadInnerIdx * numThreadIndices];
         uint32_t* meshletOptim        = meshletIndices + triangleRange.count * 3;
