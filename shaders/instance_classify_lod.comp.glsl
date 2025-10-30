@@ -110,10 +110,6 @@ void main()
   uint instanceID   = getGlobalInvocationIndex(gl_GlobalInvocationID);
   uint instanceLoad = min(build.numRenderInstances-1, instanceID);
   bool isValid      = instanceID == instanceLoad;
-
-  // TODO optimization:
-  // For better loading behavior when streaming, the instances should be sorted
-  // relative to camera position.
   
   RenderInstance instance = instances[instanceLoad];
   uint geometryID = instance.geometryID;

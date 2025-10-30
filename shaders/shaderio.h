@@ -112,6 +112,14 @@ using namespace glm;
 #define ALLOW_VERTEX_NORMALS 1
 #endif
 
+#ifndef ALLOW_VERTEX_UVS
+#define ALLOW_VERTEX_UVS 1
+#endif
+
+#ifndef ALLOW_VERTEX_TANGENTS
+#define ALLOW_VERTEX_TANGENTS 1
+#endif
+
 #ifndef USE_RENDER_STATS
 #define USE_RENDER_STATS 1
 #endif
@@ -141,7 +149,7 @@ using namespace glm;
 #endif
 
 #ifndef USE_STREAMING
-#define USE_STREAMING 1
+#define USE_STREAMING 0
 #endif
 
 #ifndef MAX_VISIBLE_CLUSTERS
@@ -155,7 +163,7 @@ using namespace glm;
 #define TARGETS_RAY_TRACING (!(TARGETS_RASTERIZATION))
 
 #ifndef USE_DLSS
-#define USE_DLSS 1
+#define USE_DLSS 0
 #endif
 
 struct RayPayload

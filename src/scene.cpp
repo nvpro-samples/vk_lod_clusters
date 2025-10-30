@@ -96,8 +96,6 @@ void Scene::ProcessingInfo::logBegin()
 
   progressGeometriesCompleted = 0;
   progressLastPercentage      = 0;
-  numTotalTriangles           = 0;
-  numTotalStrips              = 0;
 }
 
 uint32_t Scene::ProcessingInfo::logCompletedGeometry()
@@ -155,7 +153,7 @@ void Scene::openCache()
 
       if(m_cacheFileSize > size_t(2) * 1024 * 1024 * 1024)
       {
-        m_config.memoryMappedCache = true;
+        m_loaderConfig.memoryMappedCache = true;
       }
     }
     else
@@ -175,28 +173,51 @@ void Scene::closeCache()
   }
 }
 
-Scene::Result Scene::init(const std::filesystem::path& filePath, const SceneConfig& config, bool skipCache)
+void Scene::fillGroupRuntimeData(const GeometryView& sceneGeometry,
+                                 uint32_t            groupID,
+                                 uint32_t            groupResidentID,
+                                 uint32_t            clusterResidentID,
+                                 void*               dst,
+                                 size_t              dstSize)
+{
+  const GroupInfo groupInfo = sceneGeometry.groupInfos[groupID];
+  GroupView       groupView(sceneGeometry.groupData, groupInfo);
+
+  assert(dstSize <= groupView.rawSize);
+
+  memcpy(dst, groupView.raw, groupView.rawSize);
+
+  GroupStorage groupStorage(dst, groupInfo);
+  groupStorage.group->residentID        = groupResidentID;
+  groupStorage.group->clusterResidentID = clusterResidentID;
+}
+
+Scene::Result Scene::init(const std::filesystem::path& filePath, const SceneConfig& config, const SceneLoaderConfig& loaderConfig, bool skipCache)
 {
   *this = {};
 
   m_filePath             = filePath;
   m_config               = config;
+  m_loaderConfig         = loaderConfig;
   m_loadedFromCache      = false;
   m_cacheFilePath        = filePath;
   m_cachePartialFilePath = filePath;
   m_cacheFileSize        = 0;
 
+  // TODO compression, not yet implemented
+  m_config.useCompressedData = false;
+
   std::string oldExtension = filePath.extension().string();
   m_cacheFilePath.replace_extension(oldExtension + ".nvsngeo");
   m_cachePartialFilePath.replace_extension(oldExtension + ".nvsngeo_partial");
 
-  if(!skipCache && !m_config.processingOnly && m_config.autoLoadCache)
+  if(!skipCache && !m_loaderConfig.processingOnly && m_loaderConfig.autoLoadCache)
   {
     openCache();
   }
 
   ProcessingInfo processingInfo;
-  processingInfo.init(m_config.processingThreadsPct);
+  processingInfo.init(m_loaderConfig.processingThreadsPct);
 
   Result loadResult = loadGLTF(processingInfo, filePath);
   if(loadResult == SCENE_RESULT_NEEDS_PREPROCESS || loadResult == SCENE_RESULT_CACHE_INVALID)
@@ -204,9 +225,9 @@ Scene::Result Scene::init(const std::filesystem::path& filePath, const SceneConf
     LOGI("Scene::init large scene or invalid cache detected\n  using dedicated preprocess pass\n");
     closeCache();
 
-    m_config.processingOnly = true;
-    loadResult              = loadGLTF(processingInfo, filePath);
-    m_config.processingOnly = false;
+    m_loaderConfig.processingOnly = true;
+    loadResult                    = loadGLTF(processingInfo, filePath);
+    m_loaderConfig.processingOnly = false;
     if(loadResult == SCENE_RESULT_PREPROCESS_COMPLETED)
     {
       openCache();
@@ -257,12 +278,6 @@ Scene::Result Scene::init(const std::filesystem::path& filePath, const SceneConf
     m_hiClustersCountInstanced += geometry.hiClustersCount;
   }
 
-  if(m_config.clusterStripify && (processingInfo.numTotalStrips.load() > 0))
-  {
-    LOGI("Average triangles per strip %.2f\n",
-         double(processingInfo.numTotalTriangles.load()) / double(processingInfo.numTotalStrips.load()));
-  }
-
   LOGI("clusters:  %" PRIu64 "\n", m_totalClustersCount);
   LOGI("triangles: %" PRIu64 "\n", m_totalTrianglesCount);
   LOGI("triangles/cluster: %.2f\n", double(m_totalTrianglesCount) / double(m_totalClustersCount));
@@ -272,12 +287,12 @@ Scene::Result Scene::init(const std::filesystem::path& filePath, const SceneConf
   LOGI("hi triangles: %" PRIu64 "\n", m_hiTrianglesCount);
   LOGI("hi triangles/cluster: %.2f\n", double(m_hiTrianglesCount) / double(m_hiClustersCount));
 
-  if(!m_loadedFromCache && m_config.autoSaveCache)
+  if(!m_loadedFromCache && m_loaderConfig.autoSaveCache)
   {
     saveCache();
   }
 
-  if(m_loadedFromCache && !m_config.memoryMappedCache)
+  if(m_loadedFromCache && !m_loaderConfig.memoryMappedCache)
   {
     // everything was loaded into system memory,
     // close file mappings
@@ -516,31 +531,7 @@ void Scene::computeClusterStats()
   // reset settings in case we had a valid cache file
   if(m_cacheFileView.isValid())
   {
-    // override settings
-    m_config.clusterTriangles         = 0;
-    m_config.clusterVertices          = 0;
-    m_config.clusterGroupSize         = 0;
-    m_config.lodLevelDecimationFactor = 0;
-
-    for(size_t g = 0; g < m_geometryViews.size(); g++)
-    {
-      GeometryView& geometry = m_geometryViews[g];
-
-      m_config.clusterTriangles = std::max(m_config.clusterTriangles, geometry.lodInfo.clusterConfig.maxClusterSize);
-
-      // special case for vertices
-      if(geometry.lodInfo.clusterConfig.maxClusterVertices == ~0 || geometry.lodInfo.clusterConfig.maxClusterVertices == 0)
-      {
-        m_config.clusterVertices = std::max(m_config.clusterVertices, geometry.lodInfo.clusterConfig.maxClusterSize * 3);
-      }
-      else
-      {
-        m_config.clusterVertices = std::max(m_config.clusterVertices, geometry.lodInfo.clusterConfig.maxClusterVertices);
-      }
-
-      m_config.clusterGroupSize = std::max(m_config.clusterGroupSize, geometry.lodInfo.groupConfig.maxClusterSize);
-      m_config.lodLevelDecimationFactor = std::max(m_config.lodLevelDecimationFactor, geometry.lodInfo.decimationFactor);
-    }
+    m_cacheFileView.getSceneLodSettings(m_config);
   }
 
   computeHistograms();
@@ -555,7 +546,7 @@ void Scene::processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex
 
   if(isCached)
   {
-    if(m_config.memoryMappedCache)
+    if(m_loaderConfig.memoryMappedCache)
     {
       m_cacheFileView.getGeometryView(geometryView, geometryIndex);
 
@@ -568,52 +559,29 @@ void Scene::processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex
   }
   else
   {
-    if(geometryStorage.globalTriangles.empty())
+    if(geometryStorage.triangles.empty())
     {
       geometryStorage = {};
     }
     else
     {
-      // mostly for statistics / cache file
-
+      // for cache file
       // The dedup might change the vertex count of the mesh, but for the cache file
       // comparison we actually want to use the original vertex count
-      geometryStorage.lodInfo.inputTriangleCount               = geometryStorage.globalTriangles.size();
-      geometryStorage.lodInfo.inputVertexCount                 = geometryStorage.vertices.size();
-      geometryStorage.lodInfo.inputTriangleIndicesHash         = 0;
-      geometryStorage.lodInfo.inputVerticesHash                = 0;
-      geometryStorage.lodInfo.decimationFactor                 = m_config.lodLevelDecimationFactor;
-      geometryStorage.lodInfo.clusterConfig.maxClusterSize     = m_config.clusterTriangles;
-      geometryStorage.lodInfo.clusterConfig.maxClusterVertices = m_config.clusterVertices;
-      geometryStorage.lodInfo.groupConfig.maxClusterSize       = m_config.clusterGroupSize;
+      geometryStorage.lodInfo.inputTriangleCount       = geometryStorage.triangles.size();
+      geometryStorage.lodInfo.inputVertexCount         = geometryStorage.vertexPositions.size();
+      geometryStorage.lodInfo.inputTriangleIndicesHash = 0;
+      geometryStorage.lodInfo.inputVerticesHash        = 0;
 
-      size_t originalVertexCount = geometryStorage.vertices.size();
+      size_t originalVertexCount = geometryStorage.vertexPositions.size();
 
       // some exports give us independent triangles, clean those up
-      if(geometryStorage.vertices.size() >= (geometryStorage.globalTriangles.size() + geometryStorage.globalTriangles.size() / 2))
+      if(geometryStorage.vertexPositions.size() >= (geometryStorage.triangles.size() + geometryStorage.triangles.size() / 2))
       {
         buildGeometryDedupVertices(processingInfo, geometryStorage);
       }
 
       buildGeometryClusterLod(processingInfo, geometryStorage);
-
-      // no longer need original triangles
-      geometryStorage.globalTriangles = {};
-
-      if(geometryStorage.lodMesh.clusterTriangleRanges.empty())
-        return;
-
-      if(m_config.clusterStripify)
-      {
-        buildGeometryClusterStrips(processingInfo, geometryStorage);
-      }
-
-      buildGeometryClusterVertices(processingInfo, geometryStorage);
-
-      // no longer need vertex indirection
-      geometryStorage.localVertices = {};
-
-      buildGeometryBboxes(processingInfo, geometryStorage);
     }
   }
 
@@ -621,16 +589,12 @@ void Scene::processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex
   {
     (GeometryBase&)geometryView = geometryStorage;
 
-    geometryView.vertices            = geometryStorage.vertices;
-    geometryView.localTriangles      = geometryStorage.localTriangles;
-    geometryView.clusterVertexRanges = geometryStorage.clusterVertexRanges;
-    geometryView.clusterBboxes       = geometryStorage.clusterBboxes;
-    geometryView.groupLodLevels      = geometryStorage.groupLodLevels;
-    geometryView.lodLevels           = geometryStorage.lodLevels;
-
-    nvclusterlod::toView(geometryStorage.lodHierarchy, geometryView.lodHierarchy);
-    nvclusterlod::toView(geometryStorage.lodMesh, geometryView.lodMesh);
-    geometryView.nodeBboxes = geometryStorage.nodeBboxes;
+    geometryView.groupData        = geometryStorage.groupData;
+    geometryView.groupInfos       = geometryStorage.groupInfos;
+    geometryView.lodLevels        = geometryStorage.lodLevels;
+    geometryView.lodNodes         = geometryStorage.lodNodes;
+    geometryView.lodNodeBboxes    = geometryStorage.lodNodeBboxes;
+    geometryView.localMaterialIDs = geometryStorage.localMaterialIDs;
   }
 
   // always reset
@@ -644,31 +608,33 @@ void Scene::processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex
 
 void Scene::computeLodBboxes_recursive(GeometryStorage& geometry, size_t i)
 {
-  const nvclusterlod_HierarchyNode& node = geometry.lodHierarchy.nodes[i];
-  shaderio::BBox&                   bbox = geometry.nodeBboxes[i];
+  const shaderio::Node& node = geometry.lodNodes[i];
+  shaderio::BBox&       bbox = geometry.lodNodeBboxes[i];
 
   bbox = {{FLT_MAX, FLT_MAX, FLT_MAX}, {-FLT_MAX, -FLT_MAX, -FLT_MAX}, 0.0f, 0.0f};
 
-  if(node.children.isClusterGroup)
+  if(node.groupRange.isGroup)
   {
-    nvcluster_Range clusterRange = geometry.lodMesh.groupClusterRanges[node.clusterGroup.group];
-    for(size_t c = clusterRange.offset; c < clusterRange.offset + clusterRange.count; c++)
+    GroupInfo groupInfo = geometry.groupInfos[node.groupRange.groupIndex];
+    GroupView groupView(geometry.groupData, groupInfo);
+
+    for(uint32_t c = 0; c < groupInfo.clusterCount; c++)
     {
-      bbox.lo = glm::min(bbox.lo, geometry.clusterBboxes[c].lo);
-      bbox.hi = glm::max(bbox.hi, geometry.clusterBboxes[c].hi);
+      bbox.lo = glm::min(bbox.lo, groupView.clusterBboxes[c].lo);
+      bbox.hi = glm::max(bbox.hi, groupView.clusterBboxes[c].hi);
     }
   }
   else
   {
-    for(uint32_t n = 0; n <= node.children.childCountMinusOne; n++)
+    for(uint32_t n = 0; n <= node.nodeRange.childCountMinusOne; n++)
     {
-      computeLodBboxes_recursive(geometry, node.children.childOffset + n);
+      computeLodBboxes_recursive(geometry, node.nodeRange.childOffset + n);
     }
 
-    for(uint32_t n = 0; n <= node.children.childCountMinusOne; n++)
+    for(uint32_t n = 0; n <= node.nodeRange.childCountMinusOne; n++)
     {
-      bbox.lo = glm::min(bbox.lo, geometry.nodeBboxes[node.children.childOffset + n].lo);
-      bbox.hi = glm::max(bbox.hi, geometry.nodeBboxes[node.children.childOffset + n].hi);
+      bbox.lo = glm::min(bbox.lo, geometry.lodNodeBboxes[node.nodeRange.childOffset + n].lo);
+      bbox.hi = glm::max(bbox.hi, geometry.lodNodeBboxes[node.nodeRange.childOffset + n].hi);
     }
   }
 }
@@ -681,76 +647,75 @@ struct HashVertexRange
 
 static_assert(std::atomic_uint32_t::is_always_lock_free && sizeof(std::atomic_uint32_t) == sizeof(uint32_t));
 
-void Scene::buildGeometryDedupVertices(ProcessingInfo& processingInfo, GeometryStorage& geometry)
+void Scene::buildGeometryDedupVertices(const ProcessingInfo& processingInfo, GeometryStorage& geometry)
 {
-  std::vector<uint32_t> remap(geometry.vertices.size());
+  std::vector<uint32_t> remap(geometry.vertexPositions.size());
 
-  size_t uniqueVertices =
-      meshopt_generateVertexRemap(remap.data(), reinterpret_cast<const uint32_t*>(geometry.globalTriangles.data()),
-                                  geometry.globalTriangles.size() * 3, geometry.vertices.data(),
-                                  geometry.vertices.size(), sizeof(glm::vec4));
+  size_t uniqueVertices = 0;
 
-  std::vector<glm::vec4> newVertices(uniqueVertices);
-  meshopt_remapVertexBuffer(newVertices.data(), geometry.vertices.data(), geometry.vertices.size(), sizeof(glm::vec4),
-                            remap.data());
-  geometry.vertices = std::move(newVertices);
+  size_t attributeStride = geometry.vertexAttributes.size() / geometry.vertexPositions.size();
 
-  meshopt_remapIndexBuffer(reinterpret_cast<uint32_t*>(geometry.globalTriangles.data()),
-                           reinterpret_cast<uint32_t*>(geometry.globalTriangles.data()),
-                           geometry.globalTriangles.size() * 3, remap.data());
+  if(geometry.attributeBits)
+  {
+    uint32_t       texOffset = 0;
+    meshopt_Stream streams[4];
+    uint32_t       streamCount = 1;
+
+    streams[0].data   = geometry.vertexPositions.data();
+    streams[0].size   = sizeof(float) * 3;
+    streams[0].stride = sizeof(glm::vec3);
+    if(geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL)
+    {
+      streams[1].data   = geometry.vertexAttributes.data();
+      streams[1].size   = sizeof(float) * 3;
+      streams[1].stride = sizeof(float) * attributeStride;
+      streamCount++;
+      texOffset = 3;
+    }
+    if(geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_UV)
+    {
+      streams[streamCount].data   = geometry.vertexAttributes.data() + texOffset;
+      streams[streamCount].size   = sizeof(float) * 2;
+      streams[streamCount].stride = sizeof(float) * attributeStride;
+      streamCount++;
+    }
+    if(geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT)
+    {
+      streams[streamCount].data   = geometry.vertexAttributes.data() + texOffset + 2;
+      streams[streamCount].size   = sizeof(float) * 4;
+      streams[streamCount].stride = sizeof(float) * attributeStride;
+      streamCount++;
+    }
+
+    uniqueVertices =
+        meshopt_generateVertexRemapMulti(remap.data(), reinterpret_cast<const uint32_t*>(geometry.triangles.data()),
+                                         geometry.triangles.size() * 3, geometry.vertexPositions.size(), streams, streamCount);
+  }
+  else
+  {
+    uniqueVertices = meshopt_generateVertexRemap(remap.data(), reinterpret_cast<const uint32_t*>(geometry.triangles.data()),
+                                                 geometry.triangles.size() * 3, geometry.vertexPositions.data(),
+                                                 geometry.vertexPositions.size(), sizeof(glm::vec3));
+  }
+
+  {
+    std::vector<glm::vec3> newPositions(uniqueVertices);
+    meshopt_remapVertexBuffer(newPositions.data(), geometry.vertexPositions.data(), geometry.vertexPositions.size(),
+                              sizeof(glm::vec3), remap.data());
+    geometry.vertexPositions = std::move(newPositions);
+  }
+
+  if(geometry.attributeBits)
+  {
+    std::vector<float> newAttributes(uniqueVertices * attributeStride);
+    meshopt_remapVertexBuffer(newAttributes.data(), geometry.vertexAttributes.data(), geometry.vertexPositions.size(),
+                              sizeof(float) * attributeStride, remap.data());
+    geometry.vertexAttributes = std::move(newAttributes);
+  }
+
+  meshopt_remapIndexBuffer(reinterpret_cast<uint32_t*>(geometry.triangles.data()),
+                           reinterpret_cast<uint32_t*>(geometry.triangles.data()), geometry.triangles.size() * 3, remap.data());
 }
-
-void Scene::buildGeometryBboxes(const ProcessingInfo& processingInfo, GeometryStorage& geometry)
-{
-  geometry.clusterBboxes.resize(geometry.lodMesh.clusterTriangleRanges.size());
-
-  const glm::vec4* positions      = geometry.vertices.data();
-  const uint8_t*   localTriangles = geometry.localTriangles.data();
-
-  nvutils::parallel_batches_pooled(
-      geometry.lodMesh.clusterTriangleRanges.size(),
-      [&](uint64_t idx, uint32_t threadInnerIdx) {
-        nvcluster_Range& vertexRange   = geometry.clusterVertexRanges[idx];
-        nvcluster_Range& triangleRange = geometry.lodMesh.clusterTriangleRanges[idx];
-
-        shaderio::BBox bbox = {{FLT_MAX, FLT_MAX, FLT_MAX}, {-FLT_MAX, -FLT_MAX, -FLT_MAX}, FLT_MAX, -FLT_MAX};
-        for(uint32_t v = 0; v < vertexRange.count; v++)
-        {
-          uint32_t  vertexIndex = vertexRange.offset + v;
-          glm::vec3 pos         = positions[vertexIndex];
-
-          bbox.lo = glm::min(bbox.lo, pos);
-          bbox.hi = glm::max(bbox.hi, pos);
-        }
-
-        // find longest edge
-        for(uint32_t t = 0; t < triangleRange.count; t++)
-        {
-          glm::vec3 trianglePositions[3];
-
-          for(uint32_t v = 0; v < 3; v++)
-          {
-            trianglePositions[v] = positions[uint32_t(localTriangles[(triangleRange.offset + t) * 3 + v]) + vertexRange.offset];
-          }
-
-          for(uint32_t e = 0; e < 3; e++)
-          {
-            float distance    = glm::distance(trianglePositions[e], trianglePositions[(e + 1) % 3]);
-            bbox.shortestEdge = std::min(bbox.shortestEdge, distance);
-            bbox.longestEdge  = std::max(bbox.longestEdge, distance);
-          }
-        }
-
-        geometry.clusterBboxes[idx] = bbox;
-      },
-      processingInfo.numInnerThreads);
-
-
-  // now build lod node bounding boxes
-  geometry.nodeBboxes.resize(geometry.lodHierarchy.nodes.size());
-  computeLodBboxes_recursive(geometry, 0);
-}
-
 
 void Scene::computeHistograms()
 {
@@ -774,89 +739,90 @@ void Scene::computeHistograms()
 
     m_lodLevelsHistogram[geometry.lodLevelsCount]++;
 
-    for(size_t c = 0; c < geometry.lodMesh.clusterTriangleRanges.size(); c++)
+    for(size_t g = 0; g < geometry.groupInfos.size(); g++)
     {
-      const nvcluster_Range& vertexRange   = geometry.clusterVertexRanges[c];
-      const nvcluster_Range& triangleRange = geometry.lodMesh.clusterTriangleRanges[c];
+      const GroupInfo& groupInfo = geometry.groupInfos[g];
+      GroupView        group(geometry.groupData, groupInfo);
 
-      m_clusterTriangleHistogram[triangleRange.count]++;
-      m_clusterVertexHistogram[vertexRange.count]++;
-    }
-
-    if(m_config.computeClusterBBoxOccupancy)
-    {
-      for(size_t c = 0; c < geometry.lodMesh.clusterTriangleRanges.size(); c++)
+      // triangles
+      for(size_t c = 0; c < group.clusters.size(); c++)
       {
-        const nvcluster_Range& vertexRange   = geometry.clusterVertexRanges[c];
-        const nvcluster_Range& triangleRange = geometry.lodMesh.clusterTriangleRanges[c];
+        const shaderio::Cluster& cluster = group.clusters[c];
+        m_clusterTriangleHistogram[cluster.triangleCountMinusOne + 1]++;
+        m_clusterVertexHistogram[cluster.vertexCountMinusOne + 1]++;
+      }
 
-        const uint8_t*   indices  = geometry.localTriangles.data() + triangleRange.offset * 3;
-        const glm::vec4* vertices = geometry.vertices.data() + vertexRange.offset;
+      // group clusters
+      if(groupInfo.clusterCount + 1 > m_groupClusterHistogram.size())
+      {
+        m_groupClusterHistogram.resize(groupInfo.clusterCount + 1, 0);
+      }
+      m_groupClusterHistogram[groupInfo.clusterCount]++;
 
-        glm::vec3 boxDim = geometry.clusterBboxes[c].hi - geometry.clusterBboxes[c].lo;
-
-        double triangleArea = 0.0;
-
-        for(uint32_t t = 0; t < triangleRange.count; t++)
+      // occupancy
+      if(m_loaderConfig.computeClusterBBoxOccupancy && !m_config.useCompressedData)
+      {
+        for(size_t c = 0; c < group.clusters.size(); c++)
         {
-          glm::vec3 a = glm::vec3(vertices[indices[t * 3 + 0]]);
-          glm::vec3 b = glm::vec3(vertices[indices[t * 3 + 1]]);
-          glm::vec3 c = glm::vec3(vertices[indices[t * 3 + 2]]);
+          const shaderio::Cluster& cluster  = group.clusters[c];
+          const uint8_t*           indices  = group.getClusterIndices(c);
+          const glm::vec3*         vertices = group.getClusterVertices(c);
 
-          float e0 = glm::distance(a, b);
-          float e1 = glm::distance(b, c);
-          float e2 = glm::distance(c, a);
+          glm::vec3 boxDim = group.clusterBboxes[c].hi - group.clusterBboxes[c].lo;
 
-          float s = ((e0 + e1 + e2) / 2.0f);
-          float h = s * (s - e0) * (s - e1) * (s - e2);
+          double triangleArea = 0.0;
 
-          if(h > 0.0f)
+          for(uint32_t t = 0; t <= cluster.triangleCountMinusOne; t++)
           {
-            float area = sqrtf(h);
-            triangleArea += double(area);
+            glm::vec3 a = glm::vec3(vertices[indices[t * 3 + 0]]);
+            glm::vec3 b = glm::vec3(vertices[indices[t * 3 + 1]]);
+            glm::vec3 c = glm::vec3(vertices[indices[t * 3 + 2]]);
+
+            float e0 = glm::distance(a, b);
+            float e1 = glm::distance(b, c);
+            float e2 = glm::distance(c, a);
+
+            float s = ((e0 + e1 + e2) / 2.0f);
+            float h = s * (s - e0) * (s - e1) * (s - e2);
+
+            if(h > 0.0f)
+            {
+              float area = sqrtf(h);
+              triangleArea += double(area);
+            }
+          }
+
+          double occupancy = triangleArea / (double(boxDim.x * boxDim.y + boxDim.y * boxDim.z + boxDim.x * boxDim.z));
+
+          if(triangleArea && occupancy)
+          {
+            sumOccupancy += occupancy;
+
+            minOccupancy = std::min(occupancy, minOccupancy);
+            maxOccupancy = std::max(occupancy, maxOccupancy);
+            numOccupancy++;
           }
         }
-
-        double occupancy = triangleArea / (double(boxDim.x * boxDim.y + boxDim.y * boxDim.z + boxDim.x * boxDim.z));
-
-        if(triangleArea && occupancy)
-        {
-          sumOccupancy += occupancy;
-
-          minOccupancy = std::min(occupancy, minOccupancy);
-          maxOccupancy = std::max(occupancy, maxOccupancy);
-          numOccupancy++;
-        }
       }
     }
 
-    for(size_t g = 0; g < geometry.lodMesh.groupClusterRanges.size(); g++)
+    for(size_t n = 0; n < geometry.lodNodes.size(); n++)
     {
-      const nvcluster_Range& groupRange = geometry.lodMesh.groupClusterRanges[g];
-      if(groupRange.count + 1 > m_groupClusterHistogram.size())
-      {
-        m_groupClusterHistogram.resize(groupRange.count + 1, 0);
-      }
-      m_groupClusterHistogram[groupRange.count]++;
-    }
-
-    for(size_t n = 0; n < geometry.lodHierarchy.nodes.size(); n++)
-    {
-      const nvclusterlod_HierarchyNode& node = geometry.lodHierarchy.nodes[n];
-      if(node.children.isClusterGroup)
+      const shaderio::Node& node = geometry.lodNodes[n];
+      if(node.nodeRange.isGroup)
       {
         continue;
       }
 
-      if(node.children.childCountMinusOne + 1 + 1 > m_nodeChildrenHistogram.size())
+      if(node.nodeRange.childCountMinusOne + 1 + 1 > m_nodeChildrenHistogram.size())
       {
-        m_nodeChildrenHistogram.resize(node.children.childCountMinusOne + 1 + 1, 0);
+        m_nodeChildrenHistogram.resize(node.nodeRange.childCountMinusOne + 1 + 1, 0);
       }
-      m_nodeChildrenHistogram[node.children.childCountMinusOne + 1]++;
+      m_nodeChildrenHistogram[node.nodeRange.childCountMinusOne + 1]++;
     }
   }
 
-  if(m_config.computeClusterBBoxOccupancy)
+  if(m_loaderConfig.computeClusterBBoxOccupancy && !m_config.useCompressedData)
   {
     LOGI("avg cluster bbox occupancy: %.9f\n", sumOccupancy / numOccupancy);
     LOGI("min cluster bbox occupancy: %.9f\n", minOccupancy);
@@ -892,90 +858,5 @@ void Scene::computeHistograms()
     m_lodLevelsHistogramMax = std::max(m_lodLevelsHistogramMax, m_lodLevelsHistogram[i]);
   }
 }
-
-void Scene::buildGeometryClusterStrips(ProcessingInfo& processingInfo, GeometryStorage& geometry)
-{
-  uint32_t numMaxTriangles = m_config.clusterTriangles;
-  uint32_t numThreadIndices = numMaxTriangles * 3 + numMaxTriangles * 3 + uint32_t(meshopt_stripifyBound(numMaxTriangles * 3));
-  std::vector<uint32_t> threadIndices(processingInfo.numInnerThreads * numThreadIndices);
-
-  std::atomic_uint32_t numStrips = 0;
-
-  uint8_t* localTriangles = geometry.localTriangles.data();
-
-  nvutils::parallel_batches_pooled(
-      geometry.lodMesh.clusterTriangleRanges.size(),
-      [&](uint64_t idx, uint32_t threadInnerIdx) {
-        nvcluster_Range triangleRange = geometry.lodMesh.clusterTriangleRanges[idx];
-        nvcluster_Range vertexRange   = geometry.clusterVertexRanges[idx];
-
-        if ( triangleRange.count == 0) return;
-
-        uint32_t* meshletIndices      = &threadIndices[threadInnerIdx * numThreadIndices];
-        uint32_t* meshletOptim        = meshletIndices + triangleRange.count * 3;
-        uint32_t* meshletStripIndices = meshletOptim + triangleRange.count * 3;
-
-        // convert u8 to u32
-        for(uint32_t i = 0; i < triangleRange.count * 3; i++)
-        {
-          meshletIndices[i] = localTriangles[triangleRange.offset * 3 + i];
-        }
-
-        meshopt_optimizeVertexCache(meshletOptim, meshletIndices, triangleRange.count * 3, vertexRange.count);
-        size_t stripIndexCount =
-            meshopt_stripify(meshletStripIndices, meshletOptim, triangleRange.count * 3, vertexRange.count, ~0);
-        size_t newIndexCount = meshopt_unstripify(meshletIndices, meshletStripIndices, stripIndexCount, ~0);
-
-        triangleRange.count = uint32_t(newIndexCount / 3);
-
-        for(uint32_t i = 0; i < uint32_t(newIndexCount); i++)
-        {
-          localTriangles[triangleRange.offset * 3 + i] = uint8_t(meshletIndices[i]);
-        }
-
-        // just for stats
-        numStrips++;
-        for(uint32_t t = 1; t < uint32_t(triangleRange.count); t++)
-        {
-          const uint32_t* current = meshletIndices + t * 3;
-          const uint32_t* prev    = meshletIndices + (t - 1) * 3;
-
-          if(!((current[0] == prev[0] || current[0] == prev[2]) && (current[1] == prev[1] || current[1] == prev[2])))
-            numStrips++;
-        }
-      },
-      processingInfo.numInnerThreads);
-
-  processingInfo.numTotalTriangles += geometry.localTriangles.size();
-  processingInfo.numTotalStrips += numStrips;
-}
-
-void Scene::buildGeometryClusterVertices(const ProcessingInfo& processingInfo, GeometryStorage& geometry)
-{
-  // build per-cluster vertices
-  std::vector<glm::vec4> oldVerticesData = std::move(geometry.vertices);
-
-  geometry.vertices.resize(geometry.localVertices.size());
-  geometry.vertices.shrink_to_fit();
-
-  const glm::vec4* oldVertices          = oldVerticesData.data();
-  glm::vec4*       newVertices          = geometry.vertices.data();
-  uint32_t*        clusterLocalVertices = geometry.localVertices.data();
-
-  nvutils::parallel_batches_pooled(
-      geometry.clusterVertexRanges.size(),
-      [&](uint64_t c, uint32_t threadInnerIdx) {
-        nvcluster_Range& vertexRange = geometry.clusterVertexRanges[c];
-
-        for(uint32_t v = 0; v < vertexRange.count; v++)
-        {
-          uint32_t oldIdx                              = clusterLocalVertices[v + vertexRange.offset];
-          clusterLocalVertices[v + vertexRange.offset] = v + vertexRange.offset;
-          newVertices[v + vertexRange.offset]          = oldVertices[oldIdx];
-        }
-      },
-      processingInfo.numInnerThreads);
-}
-
 
 }  // namespace lodclusters

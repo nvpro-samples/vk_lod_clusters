@@ -52,7 +52,7 @@ void streamingAgeFilter(uint residentID, uint geometryID, Group_in groupRef, boo
   {    
     uint unloadOffset = atomicAdd(streamingRW.request.unloadCounter, 1);
     if (unloadOffset <= streaming.request.maxUnloads) {
-      streaming.request.unloadGeometryGroups.d[unloadOffset] = uvec2(geometryID, groupRef.d.groupID);
+      streaming.request.unloadGeometryGroups.d[unloadOffset] = uvec2(geometryID, streaming.resident.groupIDs.d[residentID]);
     }
   }
 }

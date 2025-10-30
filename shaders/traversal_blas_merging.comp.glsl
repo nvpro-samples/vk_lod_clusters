@@ -119,13 +119,13 @@ void main()
     uint mergedInstanceID = build.geometryBuildInfos.d[geometryID].mergedInstanceID;
     if (mergedInstanceID != ~0)
     {
-      Geometry geometry  = geometries[groupRef.d.geometryID];
+      Geometry geometry  = geometries[geometryID];
       
       uint renderClusterMask = 0;
     
       for (uint clusterIndex = 0; clusterIndex < groupRef.d.clusterCount; clusterIndex++)
       {
-        uint clusterGeneratingGroup = groupRef.d.clusterGeneratingGroups.d[clusterIndex];
+        uint clusterGeneratingGroup = Group_getGeneratingGroup(groupRef, clusterIndex);
         
         // add clusters if we are at the highest detail, or if the generating group is not resident.
         if (clusterGeneratingGroup == SHADERIO_ORIGINAL_MESH_GROUP

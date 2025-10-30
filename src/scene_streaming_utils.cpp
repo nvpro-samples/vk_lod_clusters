@@ -146,6 +146,7 @@ void StreamingResident::init(Resources& res, const StreamingConfig& config, uint
 
   BufferRanges ranges      = {};
   m_residentGroupsOffset   = ranges.append(sizeof(shaderio::StreamingGroup) * m_maxGroups, 16);
+  m_residentGroupIDsOffset = ranges.append(sizeof(shaderio::uint32_t) * m_maxGroups, 4);
   m_residentClustersOffset = ranges.append(sizeof(shaderio::uint64_t) * m_maxClusters, 8);
   m_residentActiveOffset   = ranges.append(sizeof(shaderio::uint32_t) * m_maxGroups, 4);
   m_residentActiveUpdateOffset = ranges.append(sizeof(shaderio::uint32_t) * m_maxGroups * STREAMING_MAX_ACTIVE_TASKS, 4);
@@ -168,6 +169,7 @@ void StreamingResident::init(Resources& res, const StreamingConfig& config, uint
 
   m_shaderData              = {};
   m_shaderData.groups       = m_residentBuffer.address + m_residentGroupsOffset;
+  m_shaderData.groupIDs     = m_residentBuffer.address + m_residentGroupIDsOffset;
   m_shaderData.clusters     = m_residentBuffer.address + m_residentClustersOffset;
   m_shaderData.activeGroups = m_residentBuffer.address + m_residentActiveOffset;
 }
@@ -612,7 +614,7 @@ void StreamingUpdates::init(Resources& res, const StreamingConfig& config, uint3
   uint32_t loadRequests   = nvutils::align_up(config.maxPerFrameLoadRequests, groupCountAlignment);
   uint32_t unloadRequests = nvutils::align_up(config.maxPerFrameUnloadRequests, groupCountAlignment);
 
-  static_assert(sizeof(shaderio::StreamingPatch) == sizeof(shaderio::StreamingGeometryPatch));
+  static_assert(sizeof(shaderio::StreamingGeometryPatch) <= sizeof(shaderio::StreamingPatch));
 
   m_shaderData                        = {};
   m_shaderData.patchGroupsCount       = loadRequests + unloadRequests;

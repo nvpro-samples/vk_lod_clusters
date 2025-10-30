@@ -290,6 +290,7 @@ private:
 
   nvvk::Buffer m_residentBuffer;
   uint64_t     m_residentGroupsOffset;
+  uint64_t     m_residentGroupIDsOffset;
   uint64_t     m_residentClustersOffset;
   uint64_t     m_residentActiveOffset;
   uint64_t     m_residentActiveUpdateOffset;

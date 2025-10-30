@@ -275,10 +275,12 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   
     uint clusterIndex = taskSubID;
     uint groupIndex   = PACKED_GET(traversalInfo.packedNode, Node_packed_groupIndex);
+    
   #if USE_STREAMING
     // The later `if (traverseNode)` branch ensured that this pointer is valid
     // and we never traverse to a group that isn't resident.
-    Group group = Group_in(geometry.streamingGroupAddresses.d[groupIndex]).d;
+    Group_in groupRef = Group_in(geometry.streamingGroupAddresses.d[groupIndex]);
+    Group group = groupRef.d;
     #if USE_BLAS_MERGING
       // handled further down see `if (traverseNode)`
     #else
@@ -286,11 +288,12 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
     #endif
   #else
     // can directly access the group
-    Group group = geometry.preloadedGroups.d[groupIndex];
+    Group_in groupRef = Group_in(geometry.preloadedGroups.d[groupIndex]);
+    Group group = groupRef.d;
   #endif
 
   #if USE_CULLING && TARGETS_RASTERIZATION
-    bbox        = group.clusterBboxes.d[clusterIndex];
+    bbox        = Group_getClusterBBox(groupRef, clusterIndex);
   #endif
     
     // The continous lod algorithm optimizes to get the lowest detail we can get away with.
@@ -315,7 +318,7 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
     // In streaming, it may also occur that the generating group isn't loaded, that also
     // means this cluster is the highest detail available.
     
-    uint32_t clusterGeneratingGroup = group.clusterGeneratingGroups.d[clusterIndex];
+    uint32_t clusterGeneratingGroup = Group_getGeneratingGroup(groupRef, clusterIndex);
   #if USE_STREAMING
     if (clusterGeneratingGroup != SHADERIO_ORIGINAL_MESH_GROUP
         && geometry.streamingGroupAddresses.d[clusterGeneratingGroup] < STREAMING_INVALID_ADDRESS_START)
@@ -327,7 +330,7 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   #else
     if (clusterGeneratingGroup != SHADERIO_ORIGINAL_MESH_GROUP)
     {
-      traversalMetric = geometry.preloadedGroups.d[clusterGeneratingGroup].traversalMetric;
+      traversalMetric = Group_in(geometry.preloadedGroups.d[clusterGeneratingGroup]).d.traversalMetric;
     }
   #endif
     else {

@@ -100,16 +100,14 @@ void main()
   
   if (threadID < streaming.update.patchGroupsCount)
   {
-    uint oldLevel = 0;
     uint oldResidentID = 0;
     if (threadID < streaming.update.patchUnloadGroupsCount)
     {
-      Group group = Group_in(geometries[spatch.geometryID].streamingGroupAddresses.d[spatch.groupIndex]).d;
+      Group group = Group_in(geometries[spatch.geometryID].streamingGroupAddresses.d[spatch.groupID]).d;
       oldResidentID = group.residentID;
-      oldLevel = group.lodLevel;
     }
     
-    geometries[spatch.geometryID].streamingGroupAddresses.d[spatch.groupIndex] = spatch.groupAddress;
+    geometries[spatch.geometryID].streamingGroupAddresses.d[spatch.groupID] = spatch.groupAddress;
     
     if (threadID < streaming.update.patchUnloadGroupsCount)
     {
@@ -120,15 +118,18 @@ void main()
     else
     {
       uint loadGroupIndex = threadID - streaming.update.patchUnloadGroupsCount;
+      Group_in groupRef = Group_in(spatch.groupAddress);
+      Group group = Group_in(groupRef).d;
 
-      Group group = Group_in(spatch.groupAddress).d;
+      uint groupResidentID  = spatch.groupResidentID;
+      groupRef.d.residentID = spatch.groupResidentID;
+      groupRef.d.clusterResidentID = spatch.clusterResidentID;
     
-      uint groupResidentID = group.residentID;
       StreamingGroup residentGroup;
       residentGroup.geometryID   = spatch.geometryID;
-      residentGroup.lodLevel     = group.lodLevel;
+      residentGroup.lodLevel     = spatch.lodLevel;
       residentGroup.age          = uint16_t(0);
-      residentGroup.group = Group_in(spatch.groupAddress);
+      residentGroup.group        = groupRef;
     #if STREAMING_DEBUG_ADDRESSES
       if (uint64_t(streaming.resident.groups.d[groupResidentID].group) < STREAMING_INVALID_ADDRESS_START)
         streamingRW.request.errorUpdate = groupResidentID;
@@ -136,6 +137,9 @@ void main()
       
       // update description in residency table
       streaming.resident.groups.d[groupResidentID] = residentGroup;
+
+      // retain original groupID, used for unloading
+      streaming.resident.groupIDs.d[groupResidentID] = spatch.groupID;
 
       // insert ourselves into the list of all active groups
       streaming.resident.activeGroups.d[streaming.update.loadActiveGroupsOffset + loadGroupIndex] = groupResidentID;
@@ -145,10 +149,10 @@ void main()
       // All new groups need to build new clusters.
       // These are built into scratch space first, and then moved to final locations.
       
-      uint newBuildOffset = group.streamingNewBuildOffset;
-      for (uint c = 0; c < group.clusterCount; c++)
+      uint newBuildOffset = spatch.clasBuildOffset;
+      for (uint c = 0; c < spatch.clusterCount; c++)
       {
-        uint clusterResidentID = group.clusterResidentID + c;
+        uint clusterResidentID = spatch.clusterResidentID + c;
         
         Cluster_in clusterRef = Cluster_in(spatch.groupAddress + Group_size + Cluster_size * c);
         streaming.resident.clusters.d[clusterResidentID] = uint64_t(clusterRef);
@@ -169,12 +173,12 @@ void main()
         buildInfo.baseGeometryIndexAndFlags = ClasGeometryFlag_OPAQUE_BIT_NV;
         
         buildInfo.indexBufferStride                 = uint16_t(1);
-        buildInfo.vertexBufferStride                = uint16_t(4 * 4);
+        buildInfo.vertexBufferStride                = uint16_t(4 * 3);
         buildInfo.geometryIndexAndFlagsBufferStride = uint16_t(0);
         buildInfo.opacityMicromapIndexBufferStride  = uint16_t(0);
-    
-        buildInfo.vertexBuffer = uint64_t(cluster.vertices);
-        buildInfo.indexBuffer  = uint64_t(cluster.localTriangles);
+        
+        buildInfo.vertexBuffer = uint64_t(Cluster_getVertexPositions(Cluster_in(clusterRef)));
+        buildInfo.indexBuffer  = uint64_t(Cluster_getTriangleIndices(Cluster_in(clusterRef)));
         
         buildInfo.geometryIndexAndFlagsBuffer = 0;
         buildInfo.opacityMicromapArray        = 0;

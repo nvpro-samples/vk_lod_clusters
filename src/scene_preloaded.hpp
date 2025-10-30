@@ -59,19 +59,13 @@ public:
 private:
   struct Geometry
   {
-    nvvk::BufferTyped<shaderio::Node> nodes;
-    nvvk::BufferTyped<shaderio::BBox> nodeBboxes;
-
-    nvvk::BufferTyped<shaderio::Group> groups;
-
-    nvvk::BufferTyped<uint8_t>   localTriangles;
-    nvvk::BufferTyped<glm::vec4> vertices;
-
-    nvvk::BufferTyped<shaderio::Cluster> clusters;
-    nvvk::BufferTyped<uint32_t>          clusterGeneratingGroups;
-    nvvk::BufferTyped<shaderio::BBox>    clusterBboxes;
-
     nvvk::BufferTyped<shaderio::LodLevel> lodLevels;
+    nvvk::BufferTyped<shaderio::Node>     lodNodes;
+    nvvk::BufferTyped<shaderio::BBox>     lodNodeBboxes;
+
+    nvvk::Buffer                groupData;
+    nvvk::BufferTyped<uint64_t> groupAddresses;
+    nvvk::BufferTyped<uint64_t> clusterAddresses;
 
     // for ray tracing
     nvvk::BufferTyped<uint64_t> clusterClasAddresses;

@@ -190,6 +190,7 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
 
     renderInstance                = {};
     renderInstance.worldMatrix    = sceneInstance.matrix;
+    renderInstance.worldMatrixI   = glm::inverse(sceneInstance.matrix);
     renderInstance.geometryID     = sceneInstance.geometryID;
     renderInstance.materialID     = sceneInstance.materialID;
     renderInstance.maxLodLevelRcp = geometry.lodLevelsCount > 1 ? 1.0f / float(geometry.lodLevelsCount - 1) : 0.0f;

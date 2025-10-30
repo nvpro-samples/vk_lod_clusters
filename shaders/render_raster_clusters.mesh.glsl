@@ -16,6 +16,7 @@
 * SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
+
 /*
   
   Shader Description
@@ -99,16 +100,22 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
 
 layout(location = 0) out Interpolants
 {
-#if ALLOW_SHADING
-  vec3      wPos;
-#if ALLOW_VERTEX_NORMALS
-  vec3      wNormal;
-#endif
-#endif
   flat uint clusterID;
   flat uint instanceID;
+#if ALLOW_SHADING
+  vec3      wPos;
+#endif
 }
 OUT[];
+
+
+#if ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_UVS)
+layout(location = 3) out Interpolants2
+{
+  flat uint vertexID;
+}
+OUTBARY[];
+#endif
 
 ////////////////////////////////////////////
 
@@ -144,10 +151,11 @@ void main()
   Geometry geometry       = geometries[instance.geometryID];
 
 #if USE_STREAMING
-  Cluster cluster = Cluster_in(streaming.resident.clusters.d[clusterID]).d;
+  Cluster_in clusterRef = Cluster_in(streaming.resident.clusters.d[clusterID]);
 #else
-  Cluster cluster = geometry.preloadedClusters.d[clusterID];
+  Cluster_in clusterRef = Cluster_in(geometry.preloadedClusters.d[clusterID]);
 #endif
+  Cluster cluster = clusterRef.d;
 
   uint vertMax = cluster.vertexCountMinusOne;
   uint triMax  = cluster.triangleCountMinusOne;
@@ -171,25 +179,16 @@ void main()
   }
 #endif
 
-  vec4s_in  oVertices      = vec4s_in(cluster.vertices);
-  uint8s_in localTriangles = uint8s_in(cluster.localTriangles);
-
-  mat4 worldMatrix   = instance.worldMatrix;
-  mat3 worldMatrixIT = transpose(inverse(mat3(worldMatrix)));
-
+  vec3s_in  oVertices    = vec3s_in(Cluster_getVertexPositions(clusterRef));
+  uint8s_in localIndices = uint8s_in(Cluster_getTriangleIndices(clusterRef));
 
   [[unroll]] for(uint i = 0; i < uint(MESHLET_VERTEX_ITERATIONS); i++)
   {
     uint vert        = gl_LocalInvocationID.x + i * MESHSHADER_WORKGROUP_SIZE;
     uint vertLoad    = min(vert, vertMax);
     
-    vec4 oVertex = oVertices.d[vertLoad];
-
-    vec3 oPos = oVertex.xyz;    
-    vec4 wPos = worldMatrix * vec4(oPos, 1.0f);
-  #if ALLOW_VERTEX_NORMALS
-    vec3 oNormal = oct32_to_vec(floatBitsToUint(oVertex.w));
-  #endif
+    vec3 oPos = oVertices.d[vertLoad]; 
+    vec4 wPos = instance.worldMatrix * vec4(oPos, 1.0f);
 
     if(vert <= vertMax)
     {
@@ -199,11 +198,12 @@ void main()
       gl_MeshVerticesNV[vert].gl_Position = 
     #endif
                                             view.viewProjMatrix * wPos;
+      
     #if ALLOW_SHADING
       OUT[vert].wPos                      = wPos.xyz;
-    #if ALLOW_VERTEX_NORMALS
-      OUT[vert].wNormal                   = normalize(worldMatrixIT * oNormal);
     #endif
+    #if ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_UVS)
+      OUTBARY[vert].vertexID              = vert;
     #endif
       OUT[vert].clusterID                 = clusterID;
       OUT[vert].instanceID                = instanceID;
@@ -215,9 +215,9 @@ void main()
     uint tri     = gl_LocalInvocationID.x + i * MESHSHADER_WORKGROUP_SIZE;
     uint triLoad = min(tri, triMax);
 
-    uvec3 indices = uvec3(localTriangles.d[triLoad * 3 + 0],
-                          localTriangles.d[triLoad * 3 + 1],
-                          localTriangles.d[triLoad * 3 + 2]);
+    uvec3 indices = uvec3(localIndices.d[triLoad * 3 + 0],
+                          localIndices.d[triLoad * 3 + 1],
+                          localIndices.d[triLoad * 3 + 2]);
 
     if(tri <= triMax)
     {

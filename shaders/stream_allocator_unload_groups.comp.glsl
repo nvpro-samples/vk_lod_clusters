@@ -98,7 +98,7 @@ void main()
   
   if (valid)
   {  
-    Group group = Group_in(geometries[spatch.geometryID].streamingGroupAddresses.d[spatch.groupIndex]).d;
+    Group group = Group_in(geometries[spatch.geometryID].streamingGroupAddresses.d[spatch.groupID]).d;
     
     // get the first clas address of the group, as all clas of a 
     // group are allocated together

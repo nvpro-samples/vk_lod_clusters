@@ -1,4 +1,18 @@
 # Changelog for vk_lod_clusters
+* 2025-10-30:
+  * Major refactoring of the scene cache file. It now stores the runtime data so that it can be easily streamed in
+    using a single binary blob for the whole group. The `shaderio::Cluster` and `shaderio::Group` data structures
+    were changed to allow more optional vertex attributes, as well as ease compatibility with HLSL / byte offsets
+    and not relying on 64-bit VAs.
+
+    Further work is being done on compressed representations for the disk cache that are decoded by compute shaders, and will be the next bigger update.
+
+    **WARNING** Old cache files will not be compatible anymore. First time loading such scenes will trigger processing and overwrite / delete them.
+  * Spatial sorting of cluster groups within a lod level to help with streaming locality. Thanks to
+    Arseny Kapoulkine for the `partition_sort` option that was added to `meshopt_clusterlod.h`
+  * Preparations for enhanced materials have been done. UV and tangent space vertex attributes were added.
+    All attributes are taken into account during mesh simplification according to meshoptimizers weight handling. The weights can be set by command-line, for example `--simplifynormalweight 1.0`. To ignore all attribute loading use `--attributes 0`. Default value is `1` which means only vertex normals are enabled (see `shaderio::ClusterAttributeBits`). Later versions will add more material features, such as texture loading etc.
+  * Moved optional vertex attribute loading into fragment shader. `VK_KHR_fragment_shader_barycentric` is now required for proper shading. This keeps the mesh shader smaller in its output size.
 * 2025-10-17:
   * Added `Cluster BBoxes` visualization to "Rendering -> Other settings". Note the bounding box visualizations don't work for ray tracing when DLSS is active, and they will only show clusters that are part of BLAS builds in that frame.
   * Bugfix supersampling change in UI causing some rendering artifacts.
@@ -61,7 +75,7 @@
   * Added ""Culled error scale" under "Traversal" to allow more control over the lod error allowed in indirectly visible instances (`--cullederrorscale <float>`).
   * Added "Rendered Statistics" option to enable/disable computation of rendering statistics under "Traversal", this was always on before but had quite the performance impact and is now disabled.
   * Allow changing of cluster & lod settings for files that were loaded with a cache, triggers processing again.
-  * Auto enable storing the file cache.
+  * Auto enable storing the cache file.
 * 2025-7-18:
   * Mirror Box: Double right-click or M key to investigate out of frustum / occluded object behavior. Under the "Settings" tab this box can be adjusted manually as well.
   * Improve ray offsets for shadows/ao in large scenes to avoid self-intersection.
@@ -116,11 +130,11 @@
   * Interleave geometry processing with loading to reduce peak memory consumption.
   * Add visualization of instance bounding boxes
 * 2025-4-7:
-  * Bugfix to file cache header detection.
-  * The file cache can be used via memory mapping, avoiding a copy into system memory. `--mappedcache 0/1` defaults to true.
+  * Bugfix to cache file header detection.
+  * The cache file can be used via memory mapping, avoiding a copy into system memory. `--mappedcache 0/1` defaults to true.
   * Use "octant" encoding for vertex normals according to [A Survey of Efficient Representations for Independent Unit Vectors](http://jcgt.org/published/0003/02/01/paper.pdf)
 * 2025-4-4: 
-  * The file cache format now stores everything geometry related for rendering. Instance and material information, as well as original vertex/triangle counts still comes from the gltf. The new file ending is `.nvsngeo`, the old `.nvcllod` files no longer work.
+  * The cache file format now stores everything geometry related for rendering. Instance and material information, as well as original vertex/triangle counts still comes from the gltf. The new file ending is `.nvsngeo`, the old `.nvcllod` files no longer work.
   * Added `--autoloadcache 0/1` option to disable loading from a cache file.
   * Some basic preparation to allow working from memory mapped cache files without loading into system memory.
 * 2025-2-7:

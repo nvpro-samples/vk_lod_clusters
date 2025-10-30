@@ -126,7 +126,7 @@ void main()
     #if USE_STREAMING
       uint numTriangles = Cluster_in(streaming.resident.clusters.d[clusterID]).d.triangleCountMinusOne + 1;
     #else
-      uint numTriangles = geometry.preloadedClusters.d[clusterID].triangleCountMinusOne + 1;
+      uint numTriangles = Cluster_in(geometry.preloadedClusters.d[clusterID]).d.triangleCountMinusOne + 1;
     #endif
     atomicAdd(readback.numRenderedTriangles, numTriangles);
   #endif

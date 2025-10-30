@@ -122,6 +122,8 @@ layout(location = 1) rayPayloadEXT float rayHitAO;
 #include "dlss_util.h"
 #endif
 
+#include "octant_encoding.h"
+#include "tangent_encoding.h"
 #include "render_shading.glsl"
 
 /////////////////////////////////
@@ -139,18 +141,20 @@ void main()
   // Fetch cluster header
 #if USE_STREAMING
   // dereference the cluster from the resident cluster table
-  Cluster cluster = Cluster_in(streaming.resident.clusters.d[clusterID]).d;
+  uint64_t clusterAddress = streaming.resident.clusters.d[clusterID];
 #else
   // access the cluster data directly from the preloaded array 
-  Cluster cluster = geometry.preloadedClusters.d[clusterID];
+  uint64_t clusterAddress = geometry.preloadedClusters.d[clusterID];
 #endif
+  Cluster_in clusterRef = Cluster_in(clusterAddress);
+  Cluster cluster = clusterRef.d;
 
-  vec4s_in  oVertices      = vec4s_in(cluster.vertices);
-  uint8s_in localTriangles = uint8s_in(cluster.localTriangles);
+  vec3s_in  oVertices      = vec3s_in(Cluster_getVertexPositions(Cluster_in(clusterRef)));
+  uint8s_in localIndices   = uint8s_in(Cluster_getTriangleIndices(Cluster_in(clusterRef)));
   
-  uvec3 triangleIndices    = uvec3(localTriangles.d[triangleID * 3 + 0],
-                                   localTriangles.d[triangleID * 3 + 1],
-                                   localTriangles.d[triangleID * 3 + 2]);
+  uvec3 triangleIndices    = uvec3(localIndices.d[triangleID * 3 + 0],
+                                   localIndices.d[triangleID * 3 + 1],
+                                   localIndices.d[triangleID * 3 + 2]);
 
   vec3 baryWeight = vec3((1.f - barycentrics[0] - barycentrics[1]), barycentrics[0], barycentrics[1]);
 
@@ -158,11 +162,39 @@ void main()
               baryWeight.y * gl_HitTriangleVertexPositionsEXT[1] + 
               baryWeight.z * gl_HitTriangleVertexPositionsEXT[2];    
   vec3 wPos = vec3(gl_ObjectToWorldEXT * vec4(oPos, 1.0));
+  
+  uint visData = clusterID;
+  if (view.visualize == VISUALIZE_LOD || view.visualize == VISUALIZE_GROUP)
+  {
+    if (view.visualize == VISUALIZE_LOD)
+    {
+      visData = floatBitsToUint(float(cluster.lodLevel) * instances[instanceID].maxLodLevelRcp);
+    }
+    else {
+      uvec2 baseAddress =  unpackUint2x32(clusterAddress - cluster.groupChildIndex * Cluster_size);
+      visData =  baseAddress.x ^ baseAddress.y;
+    }
+  }
+  else if (view.visualize == VISUALIZE_TRIANGLE)
+  {
+    visData = clusterID * 256 + uint(triangleID);
+  }
 
+#if ALLOW_SHADING
+
+  vec4 wTangent = vec4(1);
+  vec2 oUV = vec2(1);
   vec3 oNormal;
   bool backFacing = false;
-#if ALLOW_VERTEX_NORMALS
-  if(view.facetShading != 0 || view.flipWinding == 2)
+  
+  mat3 worldMatrixI = mat3(instance.worldMatrixI);
+
+#if ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_UVS
+  uint32s_in oNormals = Cluster_getVertexNormals(clusterRef);
+  vec2s_in   oUVs     = Cluster_getVertexUVs(clusterRef);
+  uint16s_in oTangs   = Cluster_getVertexTangents(clusterRef);
+
+  if(view.facetShading != 0 || (cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_NORMAL) == 0)
 #endif
   {
     // Otherwise compute geometric normal
@@ -174,39 +206,47 @@ void main()
   }
 #if ALLOW_VERTEX_NORMALS
   if(view.facetShading == 0)
+  {  
+    vec3 triNormals[3];
+    triNormals[0] = oct32_to_vec(oNormals.d[triangleIndices.x]);
+    triNormals[1] = oct32_to_vec(oNormals.d[triangleIndices.y]);
+    triNormals[2] = oct32_to_vec(oNormals.d[triangleIndices.z]);
+      
+    oNormal = baryWeight.x * triNormals[0] + 
+              baryWeight.y * triNormals[1] + 
+              baryWeight.z * triNormals[2];
+              
+  #if ALLOW_VERTEX_TANGENTS
+    if ((cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_UV) != 0)
+    {
+      vec4 tangent0 = tangent_unpack(triNormals[0], oTangs.d[triangleIndices.x]);
+      wTangent.w    = tangent0.w;
+
+      vec3 oTangent = baryWeight.x * tangent0.xyz + 
+                      baryWeight.y * tangent_unpack(triNormals[1], oTangs.d[triangleIndices.y]).xyz + 
+                      baryWeight.z * tangent_unpack(triNormals[2], oTangs.d[triangleIndices.z]).xyz;
+            
+      wTangent.xyz = oTangent * worldMatrixI;
+    }
+  #endif
+  }
+#endif
+#if ALLOW_VERTEX_UVS
+  if ((cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_UV) != 0)
   {
-    oNormal = baryWeight.x * oct32_to_vec(floatBitsToUint(oVertices.d[triangleIndices.x].w)) + 
-              baryWeight.y * oct32_to_vec(floatBitsToUint(oVertices.d[triangleIndices.y].w)) + 
-              baryWeight.z * oct32_to_vec(floatBitsToUint(oVertices.d[triangleIndices.z].w));
+    oUV = baryWeight.x * oUVs.d[triangleIndices.x] + 
+          baryWeight.y * oUVs.d[triangleIndices.y] + 
+          baryWeight.z * oUVs.d[triangleIndices.z];
   }
 #endif
 
-  mat3 worldMatrixIT = transpose(inverse(mat3(instance.worldMatrix)));
-
-  vec3 wNormal = normalize(vec3(worldMatrixIT * oNormal));
+  vec3 wNormal = normalize(vec3(oNormal * worldMatrixI));
   if(view.flipWinding == 1 || (view.flipWinding == 2 && backFacing))
   {
     wNormal = -wNormal;
   }
-  
-  uint visData = clusterID;
-  if (view.visualize == VISUALIZE_LOD || view.visualize == VISUALIZE_GROUP)
-  {
-    if (view.visualize == VISUALIZE_LOD)
-    {
-      visData = floatBitsToUint(float(cluster.lodLevel) * instances[instanceID].maxLodLevelRcp);
-    }
-    else {
-      visData = cluster.groupID;
-    }
-  }
-  else if (view.visualize == VISUALIZE_TRIANGLE)
-  {
-    visData = clusterID * 256 + uint(triangleID);
-  }
 
   vec4 shaded;
-#if ALLOW_SHADING
   {
     float ambientOcclusion =
         ambientOcclusion(wPos, wNormal, view.ambientOcclusionSamples, view.ambientOcclusionRadius * view.sceneSize);
@@ -216,14 +256,14 @@ void main()
     if(view.doShadow == 1)
       sunContribution = traceShadowRay(wPos, wNormal, directionToLight);
 
-    shaded = shading(instanceID, wPos, wNormal, visData, sunContribution, ambientOcclusion
+    shaded = shading(instanceID, wPos, wNormal, wTangent, oUV, visData, sunContribution, ambientOcclusion
     #if USE_DLSS
       , rayHit.dlssAlbedo, rayHit.dlssSpecular, rayHit.dlssNormalRoughness
     #endif
     );
   }
 #else
-  shaded = vec4(visualizeColor(visData), 1.0);
+  vec4 shaded = vec4(visualizeColor(visData), 1.0);
 #endif
 
 #if DEBUG_VISUALIZATION

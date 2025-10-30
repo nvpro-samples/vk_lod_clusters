@@ -121,6 +121,8 @@ BUFFER_REF_DECLARE_ARRAY(uint32s_inout, uint32_t, , 4);
 BUFFER_REF_DECLARE_ARRAY(int32s_inout, int32_t, , 4);
 BUFFER_REF_DECLARE_ARRAY(uvec2s_in, uvec2, , 8);
 BUFFER_REF_DECLARE_ARRAY(uvec2s_inout, uvec2, , 8);
+BUFFER_REF_DECLARE_ARRAY(vec2s_in, vec2, , 8);
+BUFFER_REF_DECLARE_ARRAY(vec2s_inout, vec2, , 8);
 BUFFER_REF_DECLARE_ARRAY(uint64s_in, uint64_t, readonly, 8);
 BUFFER_REF_DECLARE_ARRAY(uint64s_inout, uint64_t, , 8);
 BUFFER_REF_DECLARE_ARRAY(uint64s_coh, uint64_t, coherent, 8);

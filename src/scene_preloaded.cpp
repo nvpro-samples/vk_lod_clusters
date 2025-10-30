@@ -31,21 +31,12 @@ bool ScenePreloaded::canPreload(VkDeviceSize deviceLocalHeapSize, const Scene* s
     const Scene::GeometryView& sceneGeometry = scene->getActiveGeometry(geometryIndex);
     ScenePreloaded::Geometry   preloadGeometry;
 
-    // * 2 for some to account for clas etc.
-    testSize += sceneGeometry.localTriangles.size_bytes() * 2;
-    testSize += sceneGeometry.vertices.size_bytes() * 2;
+    // * for CLAS estimate
+    testSize += sceneGeometry.groupData.size() * 2;
 
-    size_t numClusters = sceneGeometry.lodMesh.clusterTriangleRanges.size();
-    testSize += preloadGeometry.clusters.value_size * numClusters * 2;
-    testSize += preloadGeometry.clusterBboxes.value_size * numClusters;
-    testSize += preloadGeometry.clusterGeneratingGroups.value_size * numClusters;
-
-    size_t numGroups = sceneGeometry.lodMesh.groupClusterRanges.size();
-    testSize += preloadGeometry.groups.value_size * numGroups;
-
-    size_t numNodes = sceneGeometry.lodHierarchy.nodes.size();
-    testSize += preloadGeometry.nodes.value_size * numNodes;
-    testSize += preloadGeometry.nodeBboxes.value_size * numNodes;
+    size_t numNodes = sceneGeometry.lodNodes.size();
+    testSize += preloadGeometry.lodNodes.value_size * numNodes;
+    testSize += preloadGeometry.lodNodeBboxes.value_size * numNodes;
 
     uint32_t numLodLevels = sceneGeometry.lodLevelsCount;
     testSize += preloadGeometry.lodLevels.value_size * numLodLevels;
@@ -87,51 +78,39 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
     ScenePreloaded::Geometry&  preloadGeometry = m_geometries[geometryIndex];
     const Scene::GeometryView& sceneGeometry   = scene->getActiveGeometry(geometryIndex);
 
-    // normally we would recommend using less buffers, and just aggregate this information in a single buffer per geometry.
+    res->createBuffer(preloadGeometry.groupData, sceneGeometry.groupData.size_bytes(),
+                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
+    NVVK_DBG_NAME(preloadGeometry.groupData.buffer);
 
-    res->createBufferTyped(preloadGeometry.localTriangles, sceneGeometry.localTriangles.size(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    res->createBufferTyped(preloadGeometry.vertices, sceneGeometry.vertices.size(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    NVVK_DBG_NAME(preloadGeometry.localTriangles.buffer);
-    NVVK_DBG_NAME(preloadGeometry.vertices.buffer);
+    res->createBufferTyped(preloadGeometry.groupAddresses, sceneGeometry.groupInfos.size(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    res->createBufferTyped(preloadGeometry.clusterAddresses, sceneGeometry.totalClustersCount, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    NVVK_DBG_NAME(preloadGeometry.groupAddresses.buffer);
+    NVVK_DBG_NAME(preloadGeometry.clusterAddresses.buffer);
 
-    size_t numClusters = sceneGeometry.lodMesh.clusterTriangleRanges.size();
-    res->createBufferTyped(preloadGeometry.clusters, numClusters, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    res->createBufferTyped(preloadGeometry.clusterBboxes, numClusters, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    res->createBufferTyped(preloadGeometry.clusterGeneratingGroups, numClusters, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    NVVK_DBG_NAME(preloadGeometry.clusters.buffer);
-    NVVK_DBG_NAME(preloadGeometry.clusterBboxes.buffer);
-    NVVK_DBG_NAME(preloadGeometry.clusterGeneratingGroups.buffer);
-
-    size_t numGroups = sceneGeometry.lodMesh.groupClusterRanges.size();
-    res->createBufferTyped(preloadGeometry.groups, numGroups, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    NVVK_DBG_NAME(preloadGeometry.groups.buffer);
-
-    size_t numNodes = sceneGeometry.lodHierarchy.nodes.size();
-    res->createBufferTyped(preloadGeometry.nodes, numNodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    res->createBufferTyped(preloadGeometry.nodeBboxes, numNodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    NVVK_DBG_NAME(preloadGeometry.nodes.buffer);
-    NVVK_DBG_NAME(preloadGeometry.nodeBboxes.buffer);
+    size_t numNodes = sceneGeometry.lodNodes.size();
+    res->createBufferTyped(preloadGeometry.lodNodes, numNodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    res->createBufferTyped(preloadGeometry.lodNodeBboxes, numNodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    NVVK_DBG_NAME(preloadGeometry.lodNodes.buffer);
+    NVVK_DBG_NAME(preloadGeometry.lodNodeBboxes.buffer);
 
     uint32_t numLodLevels = sceneGeometry.lodLevelsCount;
     res->createBufferTyped(preloadGeometry.lodLevels, numLodLevels, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     NVVK_DBG_NAME(preloadGeometry.lodLevels.buffer);
 
-    m_geometrySize += preloadGeometry.localTriangles.bufferSize;
-    m_geometrySize += preloadGeometry.vertices.bufferSize;
-    m_geometrySize += preloadGeometry.clusters.bufferSize;
-    m_geometrySize += preloadGeometry.clusterBboxes.bufferSize;
-    m_geometrySize += preloadGeometry.clusterGeneratingGroups.bufferSize;
-    m_geometrySize += preloadGeometry.groups.bufferSize;
-    m_geometrySize += preloadGeometry.nodes.bufferSize;
-    m_geometrySize += preloadGeometry.nodeBboxes.bufferSize;
+    m_geometrySize += preloadGeometry.groupData.bufferSize;
+    m_geometrySize += preloadGeometry.groupAddresses.bufferSize;
+    m_geometrySize += preloadGeometry.clusterAddresses.bufferSize;
+    m_geometrySize += preloadGeometry.lodLevels.bufferSize;
+    m_geometrySize += preloadGeometry.lodNodes.bufferSize;
+    m_geometrySize += preloadGeometry.lodNodeBboxes.bufferSize;
 
     // setup shaderio
     shaderGeometry                    = {};
     shaderGeometry.bbox               = sceneGeometry.bbox;
-    shaderGeometry.nodes              = preloadGeometry.nodes.address;
-    shaderGeometry.nodeBboxes         = preloadGeometry.nodeBboxes.address;
-    shaderGeometry.preloadedGroups    = preloadGeometry.groups.address;
-    shaderGeometry.preloadedClusters  = preloadGeometry.clusters.address;
+    shaderGeometry.nodes              = preloadGeometry.lodNodes.address;
+    shaderGeometry.nodeBboxes         = preloadGeometry.lodNodeBboxes.address;
+    shaderGeometry.preloadedGroups    = preloadGeometry.groupAddresses.address;
+    shaderGeometry.preloadedClusters  = preloadGeometry.clusterAddresses.address;
     shaderGeometry.lodLevelsCount     = uint32_t(numLodLevels);
     shaderGeometry.lodLevels          = preloadGeometry.lodLevels.address;
     shaderGeometry.cachedBlasAddress  = 0;
@@ -142,83 +121,42 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
     instancesOffset += shaderGeometry.instancesCount;
 
     // lowest detail group must have just a single cluster
-    nvcluster_Range lastGroupRange = sceneGeometry.lodMesh.lodLevelGroupRanges.back();
-    assert(lastGroupRange.count == 1);
-    assert(sceneGeometry.lodMesh.groupClusterRanges[lastGroupRange.offset].count == 1);
+    shaderio::LodLevel lastLodLevel = sceneGeometry.lodLevels.back();
+    assert(lastLodLevel.groupCount == 1 && lastLodLevel.clusterCount == 1);
 
-    shaderGeometry.lowDetailClusterID = sceneGeometry.lodMesh.groupClusterRanges[lastGroupRange.offset].offset;
-    shaderGeometry.lowDetailTriangles = sceneGeometry.lodMesh.clusterTriangleRanges[shaderGeometry.lowDetailClusterID].count;
+    shaderGeometry.lowDetailClusterID = lastLodLevel.clusterOffset;
+    shaderGeometry.lowDetailTriangles = sceneGeometry.groupInfos[lastLodLevel.groupOffset].triangleCount;
 
     // basic uploads
 
-    uploader.uploadBuffer(preloadGeometry.nodes, sceneGeometry.lodHierarchy.nodes.data());
-    uploader.uploadBuffer(preloadGeometry.nodeBboxes, sceneGeometry.nodeBboxes.data());
-
-    uploader.uploadBuffer(preloadGeometry.localTriangles, sceneGeometry.localTriangles.data());
-    uploader.uploadBuffer(preloadGeometry.vertices, sceneGeometry.vertices.data());
-
-    uploader.uploadBuffer(preloadGeometry.clusterBboxes, sceneGeometry.clusterBboxes.data());
-    uploader.uploadBuffer(preloadGeometry.clusterGeneratingGroups, sceneGeometry.lodMesh.clusterGeneratingGroups.data());
-
+    uploader.uploadBuffer(preloadGeometry.lodNodes, sceneGeometry.lodNodes.data());
+    uploader.uploadBuffer(preloadGeometry.lodNodeBboxes, sceneGeometry.lodNodeBboxes.data());
     uploader.uploadBuffer(preloadGeometry.lodLevels, sceneGeometry.lodLevels.data());
 
     // clusters and groups need to be filled manually
 
-    shaderio::Cluster* clusters = uploader.uploadBuffer(preloadGeometry.clusters, (shaderio::Cluster*)nullptr);
+    uint64_t* clusterAddresses = uploader.uploadBuffer(preloadGeometry.clusterAddresses, (uint64_t*)nullptr);
+    uint64_t* groupAddresses =
+        uploader.uploadBuffer(preloadGeometry.groupAddresses, (uint64_t*)nullptr, Resources::FlushState::DONT_FLUSH);
+    uint8_t* groupData = uploader.uploadBuffer(preloadGeometry.groupData, (uint8_t*)nullptr, Resources::FlushState::DONT_FLUSH);
 
-    for(size_t c = 0; c < numClusters; c++)
+    uint32_t clusterOffset = 0;
+    for(size_t g = 0; g < sceneGeometry.groupInfos.size(); g++)
     {
-      nvcluster_Range vertexRange   = sceneGeometry.clusterVertexRanges[c];
-      nvcluster_Range triangleRange = sceneGeometry.lodMesh.clusterTriangleRanges[c];
+      const Scene::GroupInfo groupInfo = sceneGeometry.groupInfos[g];
+      uint64_t               groupVA   = preloadGeometry.groupData.address + groupInfo.offsetBytes;
 
-      shaderio::Cluster& cluster    = clusters[c];
-      cluster                       = {};
-      cluster.triangleCountMinusOne = uint8_t(triangleRange.count - 1);
-      cluster.vertexCountMinusOne   = uint8_t(vertexRange.count - 1);
+      groupAddresses[g] = groupVA;
 
-      // setup pointers to where relevant data is stored
-      cluster.vertices = preloadGeometry.vertices.addressAt(vertexRange.offset, vertexRange.count);
-      cluster.localTriangles = preloadGeometry.localTriangles.addressAt(triangleRange.offset * 3, triangleRange.count * 3);
-    }
+      Scene::fillGroupRuntimeData(sceneGeometry, uint32_t(g), uint32_t(g), clusterOffset,
+                                  groupData + groupInfo.offsetBytes, groupInfo.sizeBytes);
 
-    shaderio::Group* groups = uploader.uploadBuffer(preloadGeometry.groups, (shaderio::Group*)nullptr, Resources::DONT_FLUSH);
-
-    for(size_t g = 0; g < sceneGeometry.lodMesh.groupClusterRanges.size(); g++)
-    {
-      nvcluster_Range clusterRange = sceneGeometry.lodMesh.groupClusterRanges[g];
-      uint8_t         lodLevel     = sceneGeometry.groupLodLevels[g];
-
-      shaderio::Group& group                = groups[g];
-      group                                 = {};
-      group.geometryID                      = uint32_t(geometryIndex);
-      group.groupID                         = uint32_t(g);
-      group.lodLevel                        = lodLevel;
-      group.clusterCount                    = clusterRange.count;
-      group.traversalMetric.boundingSphereX = sceneGeometry.lodHierarchy.groupCumulativeBoundingSpheres[g].center.x;
-      group.traversalMetric.boundingSphereY = sceneGeometry.lodHierarchy.groupCumulativeBoundingSpheres[g].center.y;
-      group.traversalMetric.boundingSphereZ = sceneGeometry.lodHierarchy.groupCumulativeBoundingSpheres[g].center.z;
-      group.traversalMetric.boundingSphereRadius = sceneGeometry.lodHierarchy.groupCumulativeBoundingSpheres[g].radius;
-      group.traversalMetric.maxQuadricError      = sceneGeometry.lodHierarchy.groupCumulativeQuadricError[g];
-
-      // setup pointers to where relevant data is stored
-      group.clusterGeneratingGroups =
-          preloadGeometry.clusterGeneratingGroups.addressAt(clusterRange.offset, clusterRange.count);
-      group.clusterBboxes = preloadGeometry.clusterBboxes.addressAt(clusterRange.offset, clusterRange.count);
-
-      // for preloaded data we match the per-geometry global id
-      // since all arrays are fully accessible
-      group.residentID        = uint32_t(g);
-      group.clusterResidentID = clusterRange.offset;
-
-      // fill in properties of clusters
-      for(uint32_t c = 0; c < clusterRange.count; c++)
+      for(uint32_t c = 0; c < groupInfo.clusterCount; c++)
       {
-        uint32_t clusterIndex                  = clusterRange.offset + c;
-        clusters[clusterIndex].lodLevel        = uint8_t(lodLevel);
-        clusters[clusterIndex].groupChildIndex = uint8_t(c);
-        clusters[clusterIndex].groupID         = uint32_t(g);
-        clusters[clusterIndex].bbox            = preloadGeometry.clusterBboxes.addressAt(clusterRange.offset + c, 1);
+        clusterAddresses[c + clusterOffset] = groupVA + sizeof(shaderio::Group) + sizeof(shaderio::Cluster) * c;
       }
+
+      clusterOffset += groupInfo.clusterCount;
     }
   }
 
@@ -256,18 +194,15 @@ void ScenePreloaded::deinit()
 
   for(auto& it : m_geometries)
   {
-    m_resources->m_allocator.destroyBuffer(it.localTriangles);
-    m_resources->m_allocator.destroyBuffer(it.vertices);
-    m_resources->m_allocator.destroyBuffer(it.clusters);
-    m_resources->m_allocator.destroyBuffer(it.clusterGeneratingGroups);
-    m_resources->m_allocator.destroyBuffer(it.clusterBboxes);
-    m_resources->m_allocator.destroyBuffer(it.clusterClasSizes);
-    m_resources->m_allocator.destroyBuffer(it.clusterClasAddresses);
-    m_resources->m_allocator.destroyBuffer(it.groups);
-    m_resources->m_allocator.destroyBuffer(it.nodes);
-    m_resources->m_allocator.destroyBuffer(it.nodeBboxes);
+    m_resources->m_allocator.destroyBuffer(it.clusterAddresses);
+    m_resources->m_allocator.destroyBuffer(it.groupData);
+    m_resources->m_allocator.destroyBuffer(it.groupAddresses);
+    m_resources->m_allocator.destroyBuffer(it.lodNodes);
+    m_resources->m_allocator.destroyBuffer(it.lodNodeBboxes);
     m_resources->m_allocator.destroyBuffer(it.lodLevels);
     m_resources->m_allocator.destroyBuffer(it.clasData);
+    m_resources->m_allocator.destroyBuffer(it.clusterClasAddresses);
+    m_resources->m_allocator.destroyBuffer(it.clusterClasSizes);
   }
 
   m_resources->m_allocator.destroyBuffer(m_clasLowDetailBlasBuffer);
@@ -365,24 +300,35 @@ bool ScenePreloaded::initClas()
     const Scene::GeometryView& sceneGeometry   = m_scene->getActiveGeometry(g);
 
     VkClusterAccelerationStructureBuildTriangleClusterInfoNV* buildInfos = clasBuildInfosHost.data();
-    for(uint32_t c = 0; c < sceneGeometry.totalClustersCount; c++)
+
+    uint32_t clusterOffset = 0;
+    for(size_t g = 0; g < sceneGeometry.groupInfos.size(); g++)
     {
-      nvcluster_Range triangleRange = sceneGeometry.lodMesh.clusterTriangleRanges[c];
-      nvcluster_Range vertexRange   = sceneGeometry.clusterVertexRanges[c];
+      const Scene::GroupInfo groupInfo = sceneGeometry.groupInfos[g];
+      Scene::GroupView       groupView(sceneGeometry.groupData, groupInfo);
+      uint64_t               groupVA = preloadGeometry.groupData.address + groupInfo.offsetBytes;
 
-      VkClusterAccelerationStructureBuildTriangleClusterInfoNV& buildInfo = buildInfos[c];
-      buildInfo                                                           = {};
+      for(uint32_t c = 0; c < groupInfo.clusterCount; c++)
+      {
+        const shaderio::Cluster&                                  groupCluster = groupView.clusters[c];
+        VkClusterAccelerationStructureBuildTriangleClusterInfoNV& buildInfo    = buildInfos[clusterOffset];
+        buildInfo                                                              = {};
 
-      buildInfo.baseGeometryIndexAndGeometryFlags.geometryFlags = VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT_NV;
-      buildInfo.clusterID         = c;
-      buildInfo.triangleCount     = triangleRange.count;
-      buildInfo.indexType         = VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_8BIT_NV;
-      buildInfo.indexBufferStride = 1;
-      buildInfo.indexBuffer = preloadGeometry.localTriangles.addressAt(triangleRange.offset * 3, triangleRange.count * 3);
-      buildInfo.vertexCount              = vertexRange.count;
-      buildInfo.vertexBufferStride       = uint16_t(sizeof(glm::vec4));
-      buildInfo.vertexBuffer             = preloadGeometry.vertices.addressAt(vertexRange.offset, vertexRange.count);
-      buildInfo.positionTruncateBitCount = m_config.clasPositionTruncateBits;
+        uint64_t clusterVA = groupVA + sizeof(shaderio::Group) + sizeof(shaderio::Cluster) * c;
+
+        buildInfo.baseGeometryIndexAndGeometryFlags.geometryFlags = VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT_NV;
+        buildInfo.clusterID                = clusterOffset;
+        buildInfo.triangleCount            = groupCluster.triangleCountMinusOne + 1;
+        buildInfo.indexType                = VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_8BIT_NV;
+        buildInfo.indexBufferStride        = 1;
+        buildInfo.indexBuffer              = clusterVA + groupCluster.indices;
+        buildInfo.vertexCount              = groupCluster.vertexCountMinusOne + 1;
+        buildInfo.vertexBufferStride       = uint16_t(sizeof(glm::vec3));
+        buildInfo.vertexBuffer             = clusterVA + groupCluster.vertices;
+        buildInfo.positionTruncateBitCount = m_config.clasPositionTruncateBits;
+
+        clusterOffset++;
+      }
     }
 
     size_t numClusters = sceneGeometry.totalClustersCount;

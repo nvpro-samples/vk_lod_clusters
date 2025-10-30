@@ -621,7 +621,7 @@ void LodClusters::onUIRender()
         PE::Checkbox("Use NV lod library", &m_sceneConfig.useNvLib,
                      "uses nv_cluster_lod_builder library. Warning: slower and significantly more RAM usage during processing. Less control.");
 
-        PE::InputIntClamped("LoD group size", (int*)&m_sceneConfig.clusterGroupSize, 8, 256, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
+        PE::InputIntClamped("LoD group size", (int*)&m_sceneConfig.clusterGroupSize, 8, 128, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
                             "number of clusters that make lod group. Their triangles are decimated together and they share a common error property");
         if(!m_sceneConfig.useNvLib)
         {

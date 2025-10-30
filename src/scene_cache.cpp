@@ -27,50 +27,42 @@
 
 namespace lodclusters {
 
-
 bool Scene::storeCached(const GeometryView& view, uint64_t dataSize, void* data)
 {
   uint64_t dataAddress = reinterpret_cast<uint64_t>(data);
   uint64_t dataEnd     = dataAddress + dataSize;
 
-  bool isValid = (dataAddress % nvclusterlod::detail::ALIGNMENT) == 0 && (dataAddress + sizeof(GeometryBase)) <= dataEnd;
+  bool isValid = (dataAddress % serialization::ALIGNMENT) == 0 && (dataAddress + sizeof(GeometryBase)) <= dataEnd;
 
   if(isValid)
   {
     memcpy(reinterpret_cast<void*>(dataAddress), (const GeometryBase*)&view, sizeof(GeometryBase));
-    dataAddress += (sizeof(GeometryBase) + nvclusterlod::detail::ALIGN_MASK) & ~nvclusterlod::detail::ALIGN_MASK;
+    dataAddress += (sizeof(GeometryBase) + serialization::ALIGN_MASK) & ~serialization::ALIGN_MASK;
   }
 
   if(isValid)
   {
-    nvclusterlod::detail::storeAndAdvance(isValid, dataAddress, dataEnd, view.vertices);
-    nvclusterlod::detail::storeAndAdvance(isValid, dataAddress, dataEnd, view.localTriangles);
-    nvclusterlod::detail::storeAndAdvance(isValid, dataAddress, dataEnd, view.clusterVertexRanges);
-    nvclusterlod::detail::storeAndAdvance(isValid, dataAddress, dataEnd, view.clusterBboxes);
-    nvclusterlod::detail::storeAndAdvance(isValid, dataAddress, dataEnd, view.groupLodLevels);
-    nvclusterlod::detail::storeAndAdvance(isValid, dataAddress, dataEnd, view.nodeBboxes);
-    nvclusterlod::detail::storeAndAdvance(isValid, dataAddress, dataEnd, view.lodLevels);
+    serialization::storeAndAdvance(isValid, dataAddress, dataEnd, view.groupData);
+    serialization::storeAndAdvance(isValid, dataAddress, dataEnd, view.groupInfos);
+    serialization::storeAndAdvance(isValid, dataAddress, dataEnd, view.lodLevels);
+    serialization::storeAndAdvance(isValid, dataAddress, dataEnd, view.lodNodes);
+    serialization::storeAndAdvance(isValid, dataAddress, dataEnd, view.lodNodeBboxes);
+    serialization::storeAndAdvance(isValid, dataAddress, dataEnd, view.localMaterialIDs);
   }
-
-
-  isValid = isValid && nvclusterlod::storeCached(view.lodMesh, dataEnd - dataAddress, reinterpret_cast<void*>(dataAddress));
-  dataAddress += nvclusterlod::getCachedSize(view.lodMesh);
-  isValid = isValid && nvclusterlod::storeCached(view.lodHierarchy, dataEnd - dataAddress, reinterpret_cast<void*>(dataAddress));
-  dataAddress += nvclusterlod::getCachedSize(view.lodHierarchy);
 
   return isValid;
 }
 
 static bool fileWriteAligned(uint64_t& outAccumulatedSize, FILE* outFile, size_t dataSize, const void* data)
 {
-  assert(outAccumulatedSize % nvclusterlod::detail::ALIGNMENT == 0);
+  assert(outAccumulatedSize % serialization::ALIGNMENT == 0);
 
-  static const uint8_t padBytes[nvclusterlod::detail::ALIGNMENT] = {};
+  static const uint8_t padBytes[serialization::ALIGNMENT] = {};
 
   if(fwrite(data, dataSize, 1, outFile) != 1)
     return false;
 
-  uint64_t newDataSize = (dataSize + nvclusterlod::detail::ALIGN_MASK) & ~nvclusterlod::detail::ALIGN_MASK;
+  uint64_t newDataSize = (dataSize + serialization::ALIGN_MASK) & ~serialization::ALIGN_MASK;
 
   uint64_t padSize = newDataSize - dataSize;
   if(padSize)
@@ -88,26 +80,26 @@ static bool fileWriteAligned(uint64_t& outAccumulatedSize, FILE* outFile, size_t
 template <typename T>
 inline void fileWriteAligned(bool& isValid, uint64_t& outAccumulatedSize, FILE* outFile, const std::span<const T>& view)
 {
-  assert(outAccumulatedSize % nvclusterlod::detail::ALIGNMENT == 0);
+  assert(outAccumulatedSize % serialization::ALIGNMENT == 0);
 
   if(isValid)
   {
     union
     {
       uint64_t count;
-      uint8_t  countData[nvclusterlod::detail::ALIGNMENT];
+      uint8_t  countData[serialization::ALIGNMENT];
     };
     memset(countData, 0, sizeof(countData));
 
     count = view.size();
 
-    if(fwrite(countData, nvclusterlod::detail::ALIGNMENT, 1, outFile) != 1)
+    if(fwrite(countData, serialization::ALIGNMENT, 1, outFile) != 1)
     {
       isValid = false;
       return;
     }
 
-    outAccumulatedSize += nvclusterlod::detail::ALIGNMENT;
+    outAccumulatedSize += serialization::ALIGNMENT;
 
     if(view.size() && !fileWriteAligned(outAccumulatedSize, outFile, view.size_bytes(), view.data()))
     {
@@ -124,26 +116,12 @@ uint64_t Scene::storeCached(const GeometryView& view, FILE* outFile)
 
   if(isValid)
   {
-    fileWriteAligned(isValid, dataSize, outFile, view.vertices);
-    fileWriteAligned(isValid, dataSize, outFile, view.localTriangles);
-    fileWriteAligned(isValid, dataSize, outFile, view.clusterVertexRanges);
-    fileWriteAligned(isValid, dataSize, outFile, view.clusterBboxes);
-    fileWriteAligned(isValid, dataSize, outFile, view.groupLodLevels);
-    fileWriteAligned(isValid, dataSize, outFile, view.nodeBboxes);
+    fileWriteAligned(isValid, dataSize, outFile, view.groupData);
+    fileWriteAligned(isValid, dataSize, outFile, view.groupInfos);
     fileWriteAligned(isValid, dataSize, outFile, view.lodLevels);
-
-
-    fileWriteAligned(isValid, dataSize, outFile, view.lodMesh.triangleVertices);
-    fileWriteAligned(isValid, dataSize, outFile, view.lodMesh.clusterTriangleRanges);
-    fileWriteAligned(isValid, dataSize, outFile, view.lodMesh.clusterGeneratingGroups);
-    fileWriteAligned(isValid, dataSize, outFile, view.lodMesh.clusterBoundingSpheres);
-    fileWriteAligned(isValid, dataSize, outFile, view.lodMesh.groupQuadricErrors);
-    fileWriteAligned(isValid, dataSize, outFile, view.lodMesh.groupClusterRanges);
-    fileWriteAligned(isValid, dataSize, outFile, view.lodMesh.lodLevelGroupRanges);
-
-    fileWriteAligned(isValid, dataSize, outFile, view.lodHierarchy.nodes);
-    fileWriteAligned(isValid, dataSize, outFile, view.lodHierarchy.groupCumulativeBoundingSpheres);
-    fileWriteAligned(isValid, dataSize, outFile, view.lodHierarchy.groupCumulativeQuadricError);
+    fileWriteAligned(isValid, dataSize, outFile, view.lodNodes);
+    fileWriteAligned(isValid, dataSize, outFile, view.lodNodeBboxes);
+    fileWriteAligned(isValid, dataSize, outFile, view.localMaterialIDs);
   }
 
   return dataSize;
@@ -156,10 +134,10 @@ bool Scene::loadCached(GeometryView& view, uint64_t dataSize, const void* data)
 
   bool isValid = true;
 
-  if(dataAddress % nvclusterlod::detail::ALIGNMENT == 0 && dataAddress + sizeof(GeometryBase) <= dataEnd)
+  if(dataAddress % serialization::ALIGNMENT == 0 && dataAddress + sizeof(GeometryBase) <= dataEnd)
   {
     memcpy((GeometryBase*)&view, data, sizeof(GeometryBase));
-    dataAddress += (sizeof(GeometryBase) + nvclusterlod::detail::ALIGN_MASK) & ~nvclusterlod::detail::ALIGN_MASK;
+    dataAddress += (sizeof(GeometryBase) + serialization::ALIGN_MASK) & ~serialization::ALIGN_MASK;
   }
   else
   {
@@ -169,19 +147,13 @@ bool Scene::loadCached(GeometryView& view, uint64_t dataSize, const void* data)
 
   if(isValid)
   {
-    nvclusterlod::detail::loadAndAdvance(isValid, dataAddress, dataEnd, view.vertices);
-    nvclusterlod::detail::loadAndAdvance(isValid, dataAddress, dataEnd, view.localTriangles);
-    nvclusterlod::detail::loadAndAdvance(isValid, dataAddress, dataEnd, view.clusterVertexRanges);
-    nvclusterlod::detail::loadAndAdvance(isValid, dataAddress, dataEnd, view.clusterBboxes);
-    nvclusterlod::detail::loadAndAdvance(isValid, dataAddress, dataEnd, view.groupLodLevels);
-    nvclusterlod::detail::loadAndAdvance(isValid, dataAddress, dataEnd, view.nodeBboxes);
-    nvclusterlod::detail::loadAndAdvance(isValid, dataAddress, dataEnd, view.lodLevels);
+    serialization::loadAndAdvance(isValid, dataAddress, dataEnd, view.groupData);
+    serialization::loadAndAdvance(isValid, dataAddress, dataEnd, view.groupInfos);
+    serialization::loadAndAdvance(isValid, dataAddress, dataEnd, view.lodLevels);
+    serialization::loadAndAdvance(isValid, dataAddress, dataEnd, view.lodNodes);
+    serialization::loadAndAdvance(isValid, dataAddress, dataEnd, view.lodNodeBboxes);
+    serialization::loadAndAdvance(isValid, dataAddress, dataEnd, view.localMaterialIDs);
   }
-
-  isValid = isValid && nvclusterlod::loadCached(view.lodMesh, dataEnd - dataAddress, reinterpret_cast<void*>(dataAddress));
-  dataAddress += nvclusterlod::getCachedSize(view.lodMesh);
-  isValid = isValid && nvclusterlod::loadCached(view.lodHierarchy, dataEnd - dataAddress, reinterpret_cast<void*>(dataAddress));
-  dataAddress += nvclusterlod::getCachedSize(view.lodHierarchy);
 
   return isValid;
 }
@@ -191,13 +163,13 @@ bool Scene::CacheFileView::init(uint64_t dataSize, const void* data)
   m_dataSize  = dataSize;
   m_dataBytes = reinterpret_cast<const uint8_t*>(data);
 
-  if(dataSize <= sizeof(CacheHeader) + sizeof(uint64_t))
+  if(dataSize <= sizeof(CacheFileHeader) + sizeof(uint64_t))
   {
     m_dataSize = 0;
     return false;
   }
 
-  const CacheHeader* fileHeader = (const CacheHeader*)data;
+  const CacheFileHeader* fileHeader = (const CacheFileHeader*)data;
 
   if(!fileHeader->isValid())
   {
@@ -207,7 +179,7 @@ bool Scene::CacheFileView::init(uint64_t dataSize, const void* data)
 
   m_geometryCount = *getPointer<uint64_t>(m_dataSize - sizeof(uint64_t));
 
-  if(!m_geometryCount || (dataSize <= (sizeof(CacheHeader) + sizeof(uint64_t) * (m_geometryCount * 2 + 1))))
+  if(!m_geometryCount || (dataSize <= (sizeof(CacheFileHeader) + sizeof(uint64_t) * (m_geometryCount * 2 + 1))))
   {
     m_dataSize = 0;
     return false;
@@ -218,9 +190,17 @@ bool Scene::CacheFileView::init(uint64_t dataSize, const void* data)
   return true;
 }
 
+
+void Scene::CacheFileView::getSceneLodSettings(SceneConfig& settings) const
+{
+  const CacheFileHeader* cacheHeader = (const CacheFileHeader*)(m_dataBytes);
+
+  settings = cacheHeader->config;
+}
+
 bool Scene::CacheFileView::getGeometryView(GeometryView& view, uint64_t geometryIndex) const
 {
-  constexpr uint64_t ALIGN_MASK = nvclusterlod::detail::ALIGNMENT - 1;
+  constexpr uint64_t ALIGN_MASK = serialization::ALIGNMENT - 1;
 
   if(geometryIndex >= m_geometryCount)
   {
@@ -256,11 +236,6 @@ bool Scene::checkCache(const GeometryLodInput& info, size_t geometryIndex)
       return false;
     }
 
-    // ignore these during compare
-    cacheView.lodInfo.decimationFactor = info.decimationFactor;
-    cacheView.lodInfo.clusterConfig    = info.clusterConfig;
-    cacheView.lodInfo.groupConfig      = info.groupConfig;
-
     return memcmp(&info, &cacheView.lodInfo, sizeof(cacheView.lodInfo)) == 0;
   }
   return false;
@@ -279,21 +254,17 @@ void Scene::loadCachedGeometry(GeometryStorage& storage, size_t geometryIndex)
   m_cacheFileView.getGeometryView(view, geometryIndex);
   (GeometryBase&)storage = view;
 
-  fillVector(storage.vertices, view.vertices);
-  fillVector(storage.localTriangles, view.localTriangles);
-  fillVector(storage.clusterVertexRanges, view.clusterVertexRanges);
-  fillVector(storage.clusterBboxes, view.clusterBboxes);
-  fillVector(storage.groupLodLevels, view.groupLodLevels);
-  fillVector(storage.nodeBboxes, view.nodeBboxes);
+  fillVector(storage.groupData, view.groupData);
+  fillVector(storage.groupInfos, view.groupInfos);
   fillVector(storage.lodLevels, view.lodLevels);
-
-  nvclusterlod::toStorage(view.lodMesh, storage.lodMesh);
-  nvclusterlod::toStorage(view.lodHierarchy, storage.lodHierarchy);
+  fillVector(storage.lodNodes, view.lodNodes);
+  fillVector(storage.lodNodeBboxes, view.lodNodeBboxes);
+  fillVector(storage.localMaterialIDs, view.localMaterialIDs);
 }
 
 bool Scene::saveCache() const
 {
-  uint64_t dataOffset = sizeof(Scene::CacheHeader);
+  uint64_t dataOffset = sizeof(Scene::CacheFileHeader);
 
   std::vector<uint64_t> geometryOffsets;
   geometryOffsets.reserve(m_geometryViews.size() * 2 + 1);
@@ -325,7 +296,8 @@ bool Scene::saveCache() const
   uint8_t* mappingData = static_cast<uint8_t*>(outMapping.data());
 
   // write header
-  Scene::CacheHeader cacheHeader;
+  Scene::CacheFileHeader cacheHeader;
+  cacheHeader.config = m_config;
   memcpy(mappingData, &cacheHeader, sizeof(cacheHeader));
   // write offset table at end
   memcpy(mappingData + tableOffset, geometryOffsets.data(), sizeof(uint64_t) * geometryOffsets.size());
@@ -359,7 +331,7 @@ bool Scene::saveCache() const
 void Scene::beginProcessingOnly(size_t geometryCount)
 {
   // don't trigger this code path if not valid
-  if(!m_config.processingOnly || m_cacheFileView.isValid())
+  if(!m_loaderConfig.processingOnly || m_cacheFileView.isValid())
   {
     return;
   }
@@ -367,13 +339,13 @@ void Scene::beginProcessingOnly(size_t geometryCount)
   std::string outFilename        = nvutils::utf8FromPath(m_cacheFilePath);
   std::string outPartialFilename = nvutils::utf8FromPath(m_cachePartialFilePath);
 
-  bool partialExists = m_config.processingAllowPartial && std::filesystem::exists(m_cachePartialFilePath)
+  bool partialExists = m_loaderConfig.processingAllowPartial && std::filesystem::exists(m_cachePartialFilePath)
                        && std::filesystem::exists(m_cacheFilePath);
 
   const char* mode = partialExists ? "ab" : "wb";
 
   m_processingOnlyPartialCompleted = 0;
-  m_processingOnlyFileOffset       = sizeof(Scene::CacheHeader);
+  m_processingOnlyFileOffset       = sizeof(Scene::CacheFileHeader);
 
   m_processingOnlyGeometryOffsets.resize(geometryCount * 2 + 1);
   m_processingOnlyGeometryOffsets[geometryCount * 2] = geometryCount;
@@ -427,11 +399,13 @@ void Scene::beginProcessingOnly(size_t geometryCount)
   if(!partialExists)
   {
     // write header to cache file (unless we are resuming a partial processing)
-    Scene::CacheHeader header;
+    Scene::CacheFileHeader header;
+    header.config = m_config;
+
     fwrite(&header, sizeof(header), 1, m_processingOnlyFile);
   }
 
-  if(m_config.processingAllowPartial)
+  if(m_loaderConfig.processingAllowPartial)
   {
 #ifdef WIN32
     result = fopen_s(&m_processingOnlyPartialFile, outPartialFilename.c_str(), mode) == 0;

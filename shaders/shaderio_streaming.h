@@ -143,9 +143,17 @@ BUFFER_REF_DECLARE_ARRAY(ClasBuildInfos_inout, ClasBuildInfo, , 16);
 
 struct StreamingPatch
 {
+  // unload or loading
   uint32_t geometryID;
-  uint32_t groupIndex;
+  uint32_t groupID;
   uint64_t groupAddress;
+
+  // loading
+  uint16_t clusterCount;
+  uint16_t lodLevel;
+  uint32_t groupResidentID;
+  uint32_t clusterResidentID;
+  uint32_t clasBuildOffset;
 };
 BUFFER_REF_DECLARE_ARRAY(StreamingPatchs_in, StreamingPatch, , 16);
 
@@ -227,6 +235,7 @@ struct StreamingResident
   // content, including persistent lowest detail.
 
   BUFFER_REF(StreamingGroup_inout) groups;
+  BUFFER_REF(uint32s_inout) groupIDs;
 
   // only if persistent clas allocator is used
   BUFFER_REF(uvec2s_inout) groupClasSizes;

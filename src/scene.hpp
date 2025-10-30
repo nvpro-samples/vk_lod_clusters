@@ -23,14 +23,17 @@
 #include <string>
 #include <atomic>
 #include <mutex>
+#include <functional>
 
 #include <glm/glm.hpp>
 #include <nvutils/file_mapping.hpp>
 #include <nvutils/timers.hpp>
+#include <nvutils/alignment.hpp>
 #include <nvclusterlod/nvclusterlod_hierarchy_storage.hpp>
 #include <nvclusterlod/nvclusterlod_mesh_storage.hpp>
 #include <nvclusterlod/nvclusterlod_cache.hpp>
 
+#include "serialization.hpp"
 #include "meshopt_clusterlod.h"
 #include "../shaders/shaderio_scene.h"
 
@@ -38,6 +41,8 @@ namespace lodclusters {
 
 struct SceneConfig
 {
+  static const uint32_t version = 1;
+
   // cluster and cluster group settings
   uint32_t clusterVertices    = 128;
   uint32_t clusterTriangles   = 128;
@@ -47,6 +52,18 @@ struct SceneConfig
   // uses nv_cluster_lod_builder library,
   // will be deprecated in future.
   bool useNvLib = false;
+
+  // default setting should prefer ray tracing
+  bool meshoptPreferRayTracing = true;
+
+  // not yet implemented, but add to make cache files binary compatible
+  bool useCompressedData = false;
+
+  uint32_t enabledAttributes = shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL;
+
+  // settings that affect clusterization
+  float meshoptFillWeight  = 0.5f;  // if ray-tracing is preferred
+  float meshoptSplitFactor = 2.0f;  // otherwise
 
   // at each lod step reduce cluster group triangles by this factor
   float lodLevelDecimationFactor = 0.5f;
@@ -60,14 +77,19 @@ struct SceneConfig
   float lodErrorMergePrevious = 1.5;
   float lodErrorMergeAdditive = 0.0f;
 
-  // default lod options to use ray tracing preset
-  bool  meshoptPreferRayTracing = true;
-  float meshoptFillWeight       = 0.5f;
-  float meshoptSplitFactor      = 2.0f;
+  // mesh simplification weights for attributes
+  // zero to disable
+  float simplifyNormalWeight      = 1.0f;
+  float simplifyTangentWeight     = 0.01f;
+  float simplifyTangentSignWeight = 0.5f;
+  float simplifyUvWeight          = 0;
 
-  // build triangle strips within clusters
-  bool clusterStripify = true;
+  //
+  uint32_t reservedData[17] = {};
+};
 
+struct SceneLoaderConfig
+{
   // Influence the number of geometries that can be processed in parallel.
   // Percentage of threads of maximum hardware concurrency
   float processingThreadsPct = 0.5;
@@ -117,6 +139,12 @@ struct SceneGridConfig
 class Scene
 {
 public:
+  struct Range
+  {
+    uint32_t offset;
+    uint32_t count;
+  };
+
   struct Instance
   {
     glm::mat4      matrix;
@@ -126,35 +154,154 @@ public:
     glm::vec4      color{0.8, 0.8, 0.8, 1.0f};
   };
 
-  // for backwards compatibility of scene caches
-  // designed to match cluster version 2 config binary size
-  struct GeometryClusterConfig
+  struct GroupInfo
   {
-    uint32_t _reservedA = 0;
+    uint64_t offsetBytes : 42;
+    uint64_t sizeBytes : 22;
+    uint16_t vertexCount;
+    uint16_t triangleCount;
+    uint8_t  lodLevel;
+    uint8_t  clusterCount;
+    uint8_t  attributeBits;
+    uint8_t  reserved1             = 0;
+    uint16_t vertexDataCount       = 0;
+    uint16_t reserved2             = 0;
+    uint32_t uncompressedSizeBytes = 0;
 
-    uint32_t maxClusterSize     = 0;
-    uint32_t maxClusterVertices = 0;
+    // safe upper bound
+    uint32_t estimateVertexDataCount() const
+    {
+      uint32_t dataCount = vertexCount * 3;
+      if(attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL)
+      {
+        dataCount += vertexCount * 1;
+      }
+      if(attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_UV)
+      {
+        dataCount += vertexCount * 2;
+        dataCount += clusterCount;  // potential padding
+      }
+      if(attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT)
+      {
+        // 16 bit per entry
+        dataCount += (vertexCount + 1) / 2;
+        dataCount += clusterCount;  // potential padding
+      }
+      return dataCount;
+    }
 
-    uint32_t _reservedB[5] = {};
+    size_t computeSize() const
+    {
+      size_t threadGroupSize = sizeof(shaderio::Group);
+      threadGroupSize        = nvutils::align_up(threadGroupSize, 16) + sizeof(shaderio::Cluster) * clusterCount;
+      threadGroupSize        = nvutils::align_up(threadGroupSize, 4) + sizeof(uint32_t) * clusterCount;
+      threadGroupSize        = nvutils::align_up(threadGroupSize, 16) + sizeof(shaderio::BBox) * clusterCount;
+      threadGroupSize        = nvutils::align_up(threadGroupSize, 16) + sizeof(float) * vertexDataCount;
+      threadGroupSize        = threadGroupSize + sizeof(uint8_t) * triangleCount * 3;
+      return nvutils::align_up(threadGroupSize, 16);
+    }
   };
 
-  // designed to match `nvclusterlod::LodGeometryInfo` for
+  struct GroupView
+  {
+    GroupView() {};
+
+    // input is array over all groupDatas
+    GroupView(std::span<const uint8_t> groupDatas, const GroupInfo& info)
+        : rawSize(info.sizeBytes)
+    {
+      assert(info.offsetBytes + info.sizeBytes <= groupDatas.size());
+      raw = &groupDatas[info.offsetBytes];
+
+      size_t startAddress = size_t(raw);
+
+      group = (const shaderio::Group*)raw;
+      clusters = std::span((const shaderio::Cluster*)nvutils::align_up(startAddress + sizeof(shaderio::Group), 16), info.clusterCount);
+      clusterGeneratingGroups =
+          std::span((const uint32_t*)nvutils::align_up(size_t(clusters.data() + info.clusterCount), 4), info.clusterCount);
+      clusterBboxes =
+          std::span((const shaderio::BBox*)nvutils::align_up(size_t(clusterGeneratingGroups.data() + info.clusterCount), 16),
+                    info.clusterCount);
+      vertices = std::span((const float*)nvutils::align_up(size_t(clusterBboxes.data() + info.clusterCount), 16), info.vertexDataCount);
+      indices = std::span((const uint8_t*)size_t(vertices.data() + info.vertexDataCount), info.triangleCount * 3);
+      assert((size_t(indices.data() + indices.size()) - startAddress) <= size_t(info.sizeBytes));
+    }
+
+    const uint8_t*                     raw     = nullptr;
+    const size_t                       rawSize = 0;
+    const shaderio::Group*             group   = nullptr;
+    std::span<const shaderio::Cluster> clusters;
+    std::span<const uint32_t>          clusterGeneratingGroups;
+    std::span<const shaderio::BBox>    clusterBboxes;
+    std::span<const float>             vertices;
+    std::span<const uint8_t>           indices;
+
+    const uint8_t* getClusterIndices(size_t clusterIndex) const
+    {
+      // offsets relative to cluster header
+      return (const uint8_t*)(size_t(&clusters[clusterIndex]) + clusters[clusterIndex].indices);
+    }
+    const glm::vec3* getClusterVertices(size_t clusterIndex) const
+    {
+      // offsets relative to cluster header
+      return (const glm::vec3*)(size_t(&clusters[clusterIndex]) + clusters[clusterIndex].vertices);
+    }
+  };
+
+  struct GroupStorage
+  {
+    GroupStorage() {};
+
+    // input is pointer to local groupData, does not apply info.offsetBytes!
+    GroupStorage(void* groupData, const GroupInfo& info)
+        : rawSize(info.sizeBytes)
+    {
+      size_t startAddress = (size_t)groupData;
+
+      raw   = (uint8_t*)groupData;
+      group = (shaderio::Group*)startAddress;
+      clusters = std::span((shaderio::Cluster*)nvutils::align_up(startAddress + sizeof(shaderio::Group), 16), info.clusterCount);
+      clusterGeneratingGroups =
+          std::span((uint32_t*)nvutils::align_up(size_t(clusters.data() + info.clusterCount), 4), info.clusterCount);
+      clusterBboxes =
+          std::span((shaderio::BBox*)nvutils::align_up(size_t(clusterGeneratingGroups.data() + info.clusterCount), 16),
+                    info.clusterCount);
+      vertices = std::span((float*)nvutils::align_up(size_t(clusterBboxes.data() + info.clusterCount), 16), info.vertexDataCount);
+      indices = std::span((uint8_t*)size_t(vertices.data() + info.vertexDataCount), info.triangleCount * 3);
+      assert((size_t(indices.data() + indices.size()) - startAddress) <= size_t(info.sizeBytes));
+    }
+
+    // cluster data pointers are stored as offsets relative to the Cluster's header.
+    uint32_t getClusterLocalOffset(uint32_t clusterIndex, const void* input) const
+    {
+      assert(size_t(input) >= size_t(&clusters[clusterIndex]));
+      assert(size_t(input) < size_t(raw + rawSize));
+
+      return uint32_t(size_t(input) - size_t(&clusters[clusterIndex]));
+    }
+
+    uint8_t*                     raw;
+    const size_t                 rawSize = 0;
+    shaderio::Group*             group;
+    std::span<shaderio::Cluster> clusters;
+    std::span<uint32_t>          clusterGeneratingGroups;
+    std::span<shaderio::BBox>    clusterBboxes;
+    std::span<float>             vertices;
+    std::span<uint8_t>           indices;
+  };
+
   struct GeometryLodInput
   {
     uint64_t inputTriangleCount       = 0;
     uint64_t inputVertexCount         = 0;
     uint64_t inputTriangleIndicesHash = 0;
     uint64_t inputVerticesHash        = 0;
-
-    // a bit weird layout due to backwards compatibility
-    GeometryClusterConfig clusterConfig;
-    GeometryClusterConfig groupConfig;
-
-    float decimationFactor = 0;
   };
 
   struct GeometryBase
   {
+    uint32_t attributeBits = 0;
+
     uint32_t clusterMaxVerticesCount{};
     uint32_t clusterMaxTrianglesCount{};
 
@@ -181,38 +328,42 @@ public:
   // data accessed from persistently memory mapped files
   struct GeometryView : GeometryBase
   {
-    std::span<const glm::vec4> vertices;
+    // may contain compressed or uncompressed data
+    std::span<const uint8_t> groupData;
 
-    std::span<const uint8_t> localTriangles;
+    // info about state of a group
+    std::span<const GroupInfo> groupInfos;
 
-    std::span<const nvcluster_Range> clusterVertexRanges;
-    std::span<const shaderio::BBox>  clusterBboxes;
-    std::span<const uint8_t>         groupLodLevels;
-
-    std::span<const shaderio::BBox>     nodeBboxes;
     std::span<const shaderio::LodLevel> lodLevels;
+    std::span<const shaderio::Node>     lodNodes;
+    std::span<const shaderio::BBox>     lodNodeBboxes;
 
-    nvclusterlod::LodMeshView      lodMesh;
-    nvclusterlod::LodHierarchyView lodHierarchy;
+    // if we have
+    std::span<const uint32_t> localMaterialIDs;
 
     inline uint64_t getCachedSize() const
     {
       uint64_t cachedSize = 0;
 
-      cachedSize += (sizeof(GeometryBase) + nvclusterlod::detail::ALIGN_MASK) & ~nvclusterlod::detail::ALIGN_MASK;
-      cachedSize += nvclusterlod::detail::getCachedSize(vertices);
-      cachedSize += nvclusterlod::detail::getCachedSize(localTriangles);
-      cachedSize += nvclusterlod::detail::getCachedSize(clusterVertexRanges);
-      cachedSize += nvclusterlod::detail::getCachedSize(clusterBboxes);
-      cachedSize += nvclusterlod::detail::getCachedSize(groupLodLevels);
-      cachedSize += nvclusterlod::detail::getCachedSize(nodeBboxes);
-      cachedSize += nvclusterlod::detail::getCachedSize(lodLevels);
-      cachedSize += nvclusterlod::getCachedSize(lodMesh);
-      cachedSize += nvclusterlod::getCachedSize(lodHierarchy);
+      cachedSize += (sizeof(GeometryBase) + serialization::ALIGN_MASK) & ~serialization::ALIGN_MASK;
+      cachedSize += serialization::getCachedSize(groupData);
+      cachedSize += serialization::getCachedSize(groupInfos);
+      cachedSize += serialization::getCachedSize(lodLevels);
+      cachedSize += serialization::getCachedSize(lodNodes);
+      cachedSize += serialization::getCachedSize(lodNodeBboxes);
+      cachedSize += serialization::getCachedSize(localMaterialIDs);
 
       return cachedSize;
     }
   };
+
+  // used for preloaded groups, streamed in groups are patched in shaders.
+  static void fillGroupRuntimeData(const GeometryView& sceneGeometry,
+                                   uint32_t            groupID,
+                                   uint32_t            groupResidentID,
+                                   uint32_t            clusterResidentID,
+                                   void*               dst,
+                                   size_t              dstSize);
 
   struct Camera
   {
@@ -232,9 +383,9 @@ public:
     SCENE_RESULT_ERROR,
   };
 
-  Result init(const std::filesystem::path& filePath, const SceneConfig& config, bool skipCache);
-  bool   saveCache() const;
-  void   deinit();
+  Result init(const std::filesystem::path& filePath, const SceneConfig& config, const SceneLoaderConfig& loaderConfig, bool skipCache);
+  bool saveCache() const;
+  void deinit();
 
   void updateSceneGrid(const SceneGridConfig& gridConfig);
 
@@ -243,8 +394,9 @@ public:
   const std::filesystem::path& getFilePath() const { return m_filePath; }
   const std::filesystem::path& getCacheFilePath() const { return m_cacheFilePath; }
 
-  SceneConfig     m_config;
-  SceneGridConfig m_gridConfig;
+  SceneConfig       m_config;
+  SceneLoaderConfig m_loaderConfig;
+  SceneGridConfig   m_gridConfig;
 
   shaderio::BBox m_bbox;
   shaderio::BBox m_gridBbox;
@@ -293,8 +445,10 @@ public:
   uint32_t m_nodeChildrenHistogramMax;
   uint32_t m_lodLevelsHistogramMax;
 
-  bool m_loadedFromCache  = false;
-  bool m_hasVertexNormals = false;
+  bool m_loadedFromCache   = false;
+  bool m_hasVertexNormals  = false;
+  bool m_hasVertexUVs      = false;
+  bool m_hasVertexTangents = false;
 
   size_t m_originalInstanceCount = 0;
   size_t m_originalGeometryCount = 0;
@@ -309,37 +463,35 @@ private:
   // GeometryStorage allows building and modifying the data in system RAM
   struct GeometryStorage : GeometryBase
   {
-    std::vector<glm::vec4> vertices;
-
     // temporary, removed after processing
-    std::vector<glm::uvec3> globalTriangles;
+    std::vector<glm::vec3>  vertexPositions;
+    std::vector<float>      vertexAttributes;
+    std::vector<glm::uvec3> triangles;
 
-    // local to a cluster: indices of triangle vertices and global vertices
-    std::vector<uint8_t> localTriangles;
+    uint32_t attributesWithWeights  = 0u;
+    uint32_t attributeNormalOffset  = ~0u;
+    uint32_t attributeUvOffset      = ~0u;
+    uint32_t attributeTangentOffset = ~0u;
 
-    // temporary, removed after processing
-    std::vector<uint32_t> localVertices;
-
-    std::vector<nvcluster_Range> clusterVertexRanges;
-    std::vector<shaderio::BBox>  clusterBboxes;
-    std::vector<uint8_t>         groupLodLevels;
+    // persistent used in view
+    std::vector<uint8_t>   groupData;
+    std::vector<GroupInfo> groupInfos;
 
     std::vector<shaderio::LodLevel> lodLevels;
-    nvclusterlod::LodMesh           lodMesh;
-    nvclusterlod::LodHierarchy      lodHierarchy;
-    std::vector<shaderio::BBox>     nodeBboxes;
+    std::vector<shaderio::BBox>     lodNodeBboxes;
+    std::vector<shaderio::Node>     lodNodes;
+
+    std::vector<uint32_t> localMaterialIDs;
   };
 
-  class CacheHeader
+  class CacheFileHeader
   {
   public:
-    CacheHeader()
+    CacheFileHeader()
     {
+      memset(this, 0, sizeof(CacheFileHeader));
       header = {};
-      if(sizeof(CacheHeader) - sizeof(Header))
-      {
-        memset(&data[sizeof(Header)], 0, sizeof(CacheHeader) - sizeof(Header));
-      }
+      config = {};
     }
 
     bool isValid() const
@@ -347,33 +499,36 @@ private:
       Header reference = {};
 
       return header.magic == reference.magic && header.geoVersion == reference.geoVersion
-             && header.structSize == reference.structSize && header.lodVersion == reference.lodVersion
-             && header.clusterVersion == reference.clusterVersion && header.alignment == reference.alignment;
+             && header.geoStructSize == reference.geoStructSize && header.configStructSize == reference.configStructSize
+             && header.alignment == reference.alignment;
     }
 
   private:
     struct Header
     {
-      uint64_t magic          = 0x006f65676e73766eULL;  // nvsngeo
-      uint32_t geoVersion     = 5;
-      uint32_t structSize     = uint32_t(sizeof(GeometryView));
-      uint32_t lodVersion     = 3;  // hardcode for forward compatibility
-      uint32_t clusterVersion = 2;  // hardcode for forward compatibility
-      uint64_t alignment      = nvclusterlod::detail::ALIGNMENT;
+      uint64_t magic            = 0x006f65676e73766eULL;  // nvsngeo
+      uint32_t geoVersion       = 6;
+      uint32_t geoStructSize    = uint32_t(sizeof(GeometryView));
+      uint32_t configVersion    = SceneConfig::version;
+      uint32_t configStructSize = uint32_t(sizeof(SceneConfig));
+      uint64_t alignment        = nvclusterlod::detail::ALIGNMENT;
 
       // geoVersion history:
       // 1 initial
       // 2 bugfix wrong storage of `lodInfo`
       // 3 octant vertices
-      // 4 table is 2 x 64-bit per geometry (offse + size) to allow out of order storage
+      // 4 table is 2 x 64-bit per geometry (offset + size) to allow out of order storage
+      // 5
+      // 6 reduced shaderio::Group/Cluster structs using relative offsets
     };
 
-    union
-    {
-      Header  header;
-      uint8_t data[(sizeof(Header) + nvclusterlod::detail::ALIGN_MASK) & ~(nvclusterlod::detail::ALIGN_MASK)];
-    };
+    Header header;
+
+  public:
+    SceneConfig config;
   };
+
+  static_assert(sizeof(CacheFileHeader) % nvclusterlod::detail::ALIGNMENT == 0, "CacheFileHeader size unaligned");
 
   class CacheFileView
   {
@@ -407,6 +562,8 @@ private:
     void deinit() { *(this) = {}; }
 
     uint64_t getGeometryCount() const { return m_geometryCount; }
+
+    void getSceneLodSettings(SceneConfig& settings) const;
 
     bool getGeometryView(GeometryView& view, uint64_t geometryIndex) const;
 
@@ -477,11 +634,6 @@ private:
 
     std::mutex processOnlySaveMutex;
 
-    // some stats
-
-    std::atomic_uint64_t numTotalTriangles = 0;
-    std::atomic_uint64_t numTotalStrips    = 0;
-
     // logging progress
 
     uint32_t   progressLastPercentage      = 0;
@@ -503,28 +655,6 @@ private:
 
   Result loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path& filePath);
 
-  nvcluster_Config getClusterConfig() const
-  {
-    nvcluster_Config clusterConfig = {};
-    clusterConfig.minClusterSize   = (m_config.clusterTriangles * 3) / 4;
-    clusterConfig.maxClusterSize   = m_config.clusterTriangles;
-
-    if(m_config.clusterVertices < m_config.clusterTriangles * 3)
-    {
-      clusterConfig.maxClusterVertices = m_config.clusterVertices;
-      clusterConfig.itemVertexCount    = 3;
-    }
-
-    return clusterConfig;
-  }
-  nvcluster_Config getGroupConfig() const
-  {
-    nvcluster_Config groupConfig = {};
-    groupConfig.minClusterSize   = (m_config.clusterGroupSize * 3) / 4;
-    groupConfig.maxClusterSize   = m_config.clusterGroupSize;
-    return groupConfig;
-  }
-
   void openCache();
   void closeCache();
 
@@ -538,10 +668,7 @@ private:
   void buildGeometryClusterLodMeshoptimizer(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
 
   void computeLodBboxes_recursive(GeometryStorage& geometry, size_t nodeIdx);
-  void buildGeometryDedupVertices(ProcessingInfo& processingInfo, GeometryStorage& geometry);
-  void buildGeometryBboxes(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
-  void buildGeometryClusterStrips(ProcessingInfo& processingInfo, GeometryStorage& geometry);
-  void buildGeometryClusterVertices(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
+  void buildGeometryDedupVertices(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
 
   void beginProcessingOnly(size_t geometryCount);
   void saveProcessingOnly(ProcessingInfo& processingInfo, size_t geometryIndex);
@@ -551,20 +678,61 @@ private:
   void computeHistograms();
   void computeInstanceBBoxes();
 
-  struct MeshoptContext
+  struct TempContext
   {
     const ProcessingInfo& processingInfo;
     GeometryStorage&      geometry;
-    int                   depth = -1;
 
-    std::mutex clusterMutex;
-    std::mutex groupMutex;
+    bool      innerThreadingActive   = false;
+    bool      levelGroupOffsetValid  = false;
+    GroupInfo threadGroupInfo        = {};
+    uint32_t  threadGroupSize        = 0;
+    uint32_t  threadGroupStorageSize = 0;
+    uint32_t  lodLevel               = ~0u;
+    size_t    levelGroupOffset       = 0;
+
+
+    std::mutex           groupMutex;
+    std::atomic_uint32_t groupIndexOrdered = 0;
+    std::atomic_size_t   groupDataOrdered  = 0;
+    std::vector<uint8_t> threadGroupDatas;
+
+    // only for nvlib
+    nvclusterlod::LodMesh      lodMesh;
+    nvclusterlod::LodHierarchy lodHierarchy;
+    std::vector<uint8_t>       groupLodLevels;
   };
+
+  struct TempGroup
+  {
+    uint32_t                  lodLevel;
+    uint32_t                  clusterCount;
+    shaderio::TraversalMetric traversalMetric;
+  };
+
+  struct TempCluster
+  {
+    const uint32_t* indices         = nullptr;
+    uint32_t        indexCount      = 0;
+    uint32_t        generatingGroup = 0;
+  };
+
+  static uint32_t storeGroup(TempContext*                         context,
+                             uint32_t                             threadIndex,
+                             uint32_t                             groupIndex,
+                             const TempGroup&                     tempGroup,
+                             std::function<TempCluster(uint32_t)> tempClusterFn);
 
   void buildGeometryLodHierarchyMeshoptimizer(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
 
+
   static void clodIterationMeshoptimizer(void* iteration_context, void* output_context, int depth, size_t task_count);
-  static int clodGroupMeshoptimizer(void* output_context, clodGroup group, const clodCluster* clusters, size_t cluster_count);
+  static int  clodGroupMeshoptimizer(void*              output_context,
+                                     clodGroup          group,
+                                     const clodCluster* clusters,
+                                     size_t             cluster_count,
+                                     size_t             task_index,
+                                     uint32_t           thread_index);
 };
 
 }  // namespace lodclusters

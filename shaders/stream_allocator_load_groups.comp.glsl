@@ -174,24 +174,25 @@ void main()
   uint allocPos         = 0;
   uint newBuildOffset   = 0;
   uint groupResidentID  = 0;
-  Group group;
+  uint clusterCount     = 0;
+  uint groupClusterResidentID = 0;
   
   if (valid)
   {
     // get details the newly loaded groups
-    
-    // The groups' residentIDs are always stored at the end of the activeGroups.    
-    groupResidentID = streaming.resident.activeGroups.d[threadID + streaming.update.loadActiveGroupsOffset];
-    group           = streaming.resident.groups.d[groupResidentID].group.d;
+    StreamingPatch spatch  = streaming.update.patches.d[threadID + streaming.update.patchUnloadGroupsCount];
+    groupResidentID        = spatch.groupResidentID;
+    groupClusterResidentID = spatch.clusterResidentID;
+    clusterCount           = spatch.clusterCount;
     
     // First compute space of all newly built clas within a group
     
     // All clas are built in a canonical order that was pre-determined on the CPU
     // and offsets are enoced in the group itself.
-    newBuildOffset = group.streamingNewBuildOffset;
+    newBuildOffset = spatch.clasBuildOffset;
     newGroupByteSize = 0;
   
-    for (uint c = 0; c < group.clusterCount; c++)
+    for (uint c = 0; c < clusterCount; c++)
     {
       uint clasSize = streaming.update.newClasSizes.d[newBuildOffset + c];
       newGroupByteSize += clasSize;
@@ -344,7 +345,7 @@ void main()
     {
       // should never happen by design, we only load new groups if there is guaranteed clas allocation space left
       streamingRW.request.errorClasNotFound = 1 + threadID;
-      for (uint c = 0; c < group.clusterCount; c++)
+      for (uint c = 0; c < clusterCount; c++)
       {
         streaming.update.moveClasSrcAddresses.d[newBuildOffset + c] = 0;
         streaming.update.moveClasDstAddresses.d[newBuildOffset + c] = 0;
@@ -365,9 +366,9 @@ void main()
     streaming.resident.groupClasSizes.d[groupResidentID] = uvec2(allocSize, wastedByteSize);
     
     // then assign new clas address and fill the move operations
-    for (uint c = 0; c < group.clusterCount; c++)
+    for (uint c = 0; c < clusterCount; c++)
     {
-      uint clusterResidentID = group.clusterResidentID + c;
+      uint clusterResidentID = groupClusterResidentID + c;
       
       uint clasSize        = streaming.update.newClasSizes.d[newBuildOffset + c];
       uint64_t clasAddress = streaming.update.newClasAddresses.d[newBuildOffset + c];

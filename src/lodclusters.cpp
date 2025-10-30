@@ -60,6 +60,13 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"gridunique"}, &m_sceneGridConfig.uniqueGeometriesForCopies);
   m_info.parameterRegistry->add({"clusterconfig"}, (int*)&m_tweak.clusterConfig);
   m_info.parameterRegistry->add({"clustergroupsize"}, &m_sceneConfig.clusterGroupSize);
+
+  m_info.parameterRegistry->add({"simplifyuvweight"}, &m_sceneConfig.simplifyUvWeight);
+  m_info.parameterRegistry->add({"simplifynormalweight"}, &m_sceneConfig.simplifyNormalWeight);
+  m_info.parameterRegistry->add({"simplifytangentweight"}, &m_sceneConfig.simplifyTangentWeight);
+  m_info.parameterRegistry->add({"simplifytangentsignweight"}, &m_sceneConfig.simplifyTangentSignWeight);
+  m_info.parameterRegistry->add({"attributes"}, &m_sceneConfig.enabledAttributes);
+
   m_info.parameterRegistry->add({"loderrormergeprevious"}, &m_sceneConfig.lodErrorMergePrevious);
   m_info.parameterRegistry->add({"loderrormergeadditive"}, &m_sceneConfig.lodErrorMergeAdditive);
   m_info.parameterRegistry->add({"lodnodewidth"}, &m_sceneConfig.preferredNodeWidth);
@@ -100,27 +107,27 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"renderstats"}, &m_rendererConfig.useRenderStats);
   m_info.parameterRegistry->add({"extmeshshader"}, &m_rendererConfig.useEXTmeshShader);
   m_info.parameterRegistry->add({"nvclusterlod"}, &m_sceneConfig.useNvLib);
-  m_info.parameterRegistry->add({"forcepreprocessmegabytes"}, (uint32_t*)&m_sceneConfig.forcePreprocessMiB);
-  m_info.parameterRegistry->add({"clusterbboxoccupancy"}, &m_sceneConfig.computeClusterBBoxOccupancy);
+  m_info.parameterRegistry->add({"forcepreprocessmegabytes"}, (uint32_t*)&m_sceneLoaderConfig.forcePreprocessMiB);
+  m_info.parameterRegistry->add({"clusterbboxoccupancy"}, &m_sceneLoaderConfig.computeClusterBBoxOccupancy);
   m_info.parameterRegistry->add({"facetshading"}, &m_tweak.facetShading);
   m_info.parameterRegistry->add({"flipwinding"}, &m_rendererConfig.flipWinding);
   m_info.parameterRegistry->add({"twosided"}, &m_rendererConfig.twoSided);
   m_info.parameterRegistry->add({"autosharing", "automatically set blas sharing based on scene's instancing usage. default true"},
                                 &m_tweak.autoSharing);
   m_info.parameterRegistry->add({"autosavecache", "automatically store cache file for loaded scene. default true"},
-                                &m_sceneConfig.autoSaveCache);
+                                &m_sceneLoaderConfig.autoSaveCache);
   m_info.parameterRegistry->add({"autoloadcache", "automatically load cache file if found. default true"},
-                                &m_sceneConfig.autoLoadCache);
+                                &m_sceneLoaderConfig.autoLoadCache);
   m_info.parameterRegistry->add({"mappedcache", "work from memory mapped cache file, otherwise load to sysmem. default false"},
-                                &m_sceneConfig.memoryMappedCache);
+                                &m_sceneLoaderConfig.memoryMappedCache);
   m_info.parameterRegistry->add({"processingonly", "directly terminate app once cache file was saved. default false"},
-                                &m_sceneConfig.processingOnly);
+                                &m_sceneLoaderConfig.processingOnly);
   m_info.parameterRegistry->add({"processingpartial", "in processingonly mode also allow partial/resuming processing. default false"},
-                                &m_sceneConfig.processingAllowPartial);
+                                &m_sceneLoaderConfig.processingAllowPartial);
   m_info.parameterRegistry->add({"processingmode", "0 auto, -1 inner (within geometry), +1 outer (over geometries) parallelism. default 0"},
-                                &m_sceneConfig.processingMode);
+                                &m_sceneLoaderConfig.processingMode);
   m_info.parameterRegistry->add({"processingthreadpct", "float percentage of threads during initial file load and processing into lod clusters, default 0.5 == 50 %"},
-                                &m_sceneConfig.processingThreadsPct);
+                                &m_sceneLoaderConfig.processingThreadsPct);
 
   m_frameConfig.frameConstants                         = {};
   m_frameConfig.frameConstants.wireThickness           = 2.f;
@@ -143,8 +150,7 @@ LodClusters::LodClusters(const Info& info)
 
   m_lastAmbientOcclusionSamples = m_frameConfig.frameConstants.ambientOcclusionSamples;
 
-  m_sceneConfig.progressPct     = &m_sceneProgress;
-  m_sceneConfigLast.progressPct = &m_sceneProgress;
+  m_sceneLoaderConfig.progressPct = &m_sceneProgress;
 }
 
 void LodClusters::initScene(const std::filesystem::path& filePath, bool configChange)
@@ -163,7 +169,7 @@ void LodClusters::initScene(const std::filesystem::path& filePath, bool configCh
 
     std::thread([=, this]() {
       auto scene = std::make_unique<Scene>();
-      if(scene->init(filePath, m_sceneConfig, configChange) != Scene::SCENE_RESULT_SUCCESS)
+      if(scene->init(filePath, m_sceneConfig, m_sceneLoaderConfig, configChange) != Scene::SCENE_RESULT_SUCCESS)
       {
         scene = nullptr;
         LOGW("Loading scene failed\n");
@@ -561,7 +567,7 @@ void LodClusters::doProcessingOnly()
   updatedClusterConfig();
   assert(m_app == nullptr);
   m_scene = std::make_unique<Scene>();
-  m_scene->init(m_sceneFilePath, m_sceneConfig, false);
+  m_scene->init(m_sceneFilePath, m_sceneConfig, m_sceneLoaderConfig, false);
 }
 
 const LodClusters::ClusterInfo LodClusters::s_clusterInfos[NUM_CLUSTER_CONFIGS] = {

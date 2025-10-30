@@ -28,9 +28,10 @@
 #extension GL_EXT_buffer_reference2 : enable
 #extension GL_EXT_scalar_block_layout : enable
 #extension GL_EXT_shader_atomic_int64 : enable
-#if DEBUG_VISUALIZATION
+#if DEBUG_VISUALIZATION || ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_UVS
 #extension GL_EXT_fragment_shader_barycentric : enable
 #endif
+
 #include "shaderio.h"
 
 layout(push_constant) uniform pushData
@@ -77,23 +78,29 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
 
 ///////////////////////////////////////////////////
 
+#include "octant_encoding.h"
+#include "tangent_encoding.h"
 #include "render_shading.glsl"
 
 ///////////////////////////////////////////////////
 
 layout(location = 0) in Interpolants
 {
-#if ALLOW_SHADING
-  vec3 wPos;
-#if ALLOW_VERTEX_NORMALS
-  vec3 wNormal;
-#endif
-#endif
   flat uint clusterID;
   flat uint instanceID;
+#if ALLOW_SHADING
+  vec3 wPos;
+#endif
 }
 IN;
 
+#if ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_UVS)
+layout(location = 3) pervertexEXT in Interpolants2
+{
+  uint vertexID;
+}
+INBARY[];
+#endif
 
 ///////////////////////////////////////////////////
 
@@ -105,11 +112,30 @@ layout(early_fragment_tests) in;
 
 void main()
 {
-  vec3 wNormal;
-
+  vec4 wTangent = vec4(1);
+  vec3 wNormal  = vec3(1);
+  vec2 oUV      = vec2(1);
+  
+  RenderInstance instance = instances[IN.instanceID];
+#if USE_STREAMING
+  Cluster_in clusterRef = Cluster_in(streaming.resident.clusters.d[IN.clusterID]);
+#else
+  Geometry geometry = geometries[instances[IN.instanceID].geometryID];
+  Cluster_in clusterRef = Cluster_in(geometry.preloadedClusters.d[IN.clusterID]);
+#endif
+  
 #if ALLOW_SHADING
+#if ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_UVS
+  Cluster cluster = clusterRef.d;
+  uint32s_in oNormals = Cluster_getVertexNormals(clusterRef);
+  vec2s_in   oUVs     = Cluster_getVertexUVs(clusterRef);
+  uint16s_in oTangs   = Cluster_getVertexTangents(clusterRef);
+  
+  uvec3 triangleIndices = uvec3(INBARY[0].vertexID, INBARY[1].vertexID, INBARY[2].vertexID);
+#endif
+
 #if ALLOW_VERTEX_NORMALS
-  if(view.facetShading != 0)
+  if(view.facetShading != 0 || (cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_NORMAL) == 0)
 #endif
   {
     wNormal = -cross(dFdx(IN.wPos), dFdy(IN.wPos));
@@ -117,11 +143,45 @@ void main()
 #if ALLOW_VERTEX_NORMALS
   else
   {
-    wNormal = IN.wNormal;
+    mat3 worldMatrixI = mat3(instance.worldMatrixI);
+    
+    vec3 triNormals[3];
+    triNormals[0] = oct32_to_vec(oNormals.d[triangleIndices.x]);
+    triNormals[1] = oct32_to_vec(oNormals.d[triangleIndices.y]);
+    triNormals[2] = oct32_to_vec(oNormals.d[triangleIndices.z]);
+      
+    vec3 oNormal = gl_BaryCoordEXT.x * triNormals[0] + 
+                   gl_BaryCoordEXT.y * triNormals[1] + 
+                   gl_BaryCoordEXT.z * triNormals[2];
+                   
+  
+    wNormal = oNormal * worldMatrixI;
     if(view.flipWinding == 1 || (view.flipWinding == 2 && !gl_FrontFacing))
     {
       wNormal = -wNormal;
     }
+    
+  #if ALLOW_VERTEX_TANGENTS
+    if ((cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_UV) != 0)
+    {
+      vec4 tangent0 = tangent_unpack(triNormals[0], oTangs.d[triangleIndices.x]);
+      wTangent.w    = tangent0.w;
+
+      vec3 oTangent = gl_BaryCoordEXT.x * tangent0.xyz + 
+                      gl_BaryCoordEXT.y * tangent_unpack(triNormals[1], oTangs.d[triangleIndices.y]).xyz + 
+                      gl_BaryCoordEXT.z * tangent_unpack(triNormals[2], oTangs.d[triangleIndices.z]).xyz;
+            
+      wTangent.xyz = oTangent * worldMatrixI;
+    }
+  #endif
+  }
+#endif
+#if ALLOW_VERTEX_UVS
+  if ((cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_UV) != 0)
+  {
+    oUV = gl_BaryCoordEXT.x * oUVs.d[triangleIndices.x] + 
+          gl_BaryCoordEXT.y * oUVs.d[triangleIndices.y] + 
+          gl_BaryCoordEXT.z * oUVs.d[triangleIndices.z];
   }
 #endif
 #endif
@@ -129,19 +189,14 @@ void main()
   uint visData = IN.clusterID;
   if (view.visualize == VISUALIZE_LOD || view.visualize == VISUALIZE_GROUP)
   {
-    #if USE_STREAMING
-      Cluster cluster = Cluster_in(streaming.resident.clusters.d[IN.clusterID]).d;
-    #else
-      Geometry geometry = geometries[instances[IN.instanceID].geometryID];
-      Cluster cluster = geometry.preloadedClusters.d[IN.clusterID];
-    #endif
-      if (view.visualize == VISUALIZE_LOD)
-      {
-        visData = floatBitsToUint(float(cluster.lodLevel) * instances[IN.instanceID].maxLodLevelRcp);
-      }
-      else {
-        visData = cluster.groupID;
-      }
+    if (view.visualize == VISUALIZE_LOD)
+    {
+      visData = floatBitsToUint(float(clusterRef.d.lodLevel) * instances[IN.instanceID].maxLodLevelRcp);
+    }
+    else {
+      uvec2 baseAddress =  unpackUint2x32(uint64_t(clusterRef) - clusterRef.d.groupChildIndex * Cluster_size);
+      visData =  baseAddress.x ^ baseAddress.y;
+    }
   }
   else if (view.visualize == VISUALIZE_TRIANGLE)
   {
@@ -149,12 +204,12 @@ void main()
   }
 
   out_Color.w = 1.f;
-#if ALLOW_SHADING && 1
+#if ALLOW_SHADING
   {
     const float overHeadLight = 1.0f;
     const float ambientLight  = 0.7f;
 
-    out_Color = shading(IN.instanceID, IN.wPos, wNormal, visData, overHeadLight, ambientLight);
+    out_Color = shading(IN.instanceID, IN.wPos, wNormal, wTangent, oUV, visData, overHeadLight, ambientLight);
   }
 #else
   {

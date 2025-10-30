@@ -144,14 +144,16 @@ void main()
   
     ClusterInfo cinfo = build.renderClusterInfos.d[boxLoad + baseID];
     uint clusterID = cinfo.clusterID;
+    RenderInstance instance = instances[cinfo.instanceID];
+    
   #if USE_STREAMING
-    Cluster cluster = Cluster_in(streaming.resident.clusters.d[clusterID]).d;
+    Cluster_in clusterRef = Cluster_in(streaming.resident.clusters.d[clusterID]);
   #else
-    Cluster cluster = geometry.preloadedClusters.d[clusterID];
+    Geometry geometry = geometries[instance.geometryID];
+    Cluster_in clusterRef = Cluster_in(geometry.preloadedClusters.d[clusterID]);
   #endif
     
-    RenderInstance instance = instances[cinfo.instanceID];
-    BBox bbox = cluster.bbox.d;
+    BBox bbox = Cluster_getBBox(clusterRef);
     
     bvec3 weight   = bvec3((corner & 1) != 0, (corner & 2) != 0, (corner & 4) != 0);
     vec3 cornerPos = mix(bbox.lo, bbox.hi, weight);

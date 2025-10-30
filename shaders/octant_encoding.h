@@ -26,7 +26,7 @@ namespace shaderio {
 #define OCT_FLOOR glm::floor
 #define OCT_CLAMP glm::clamp
 #define OCT_ABS glm::abs
-OCT_INLINE uint32_t pack_oct32(vec2 v)
+OCT_INLINE uint32_t pack_oct32(glm::vec2 v)
 {
   union
   {
@@ -37,7 +37,7 @@ OCT_INLINE uint32_t pack_oct32(vec2 v)
   snorm[1] = static_cast<int16_t>(glm::clamp(int32_t(std::round(v.y * float(0x7FFF))), -0x7FFF, 0x7FFF));
   return packed;
 }
-OCT_INLINE vec2 unpack_oct32(uint32_t v)
+OCT_INLINE glm::vec2 unpack_oct32(uint32_t v)
 {
   union
   {
@@ -45,7 +45,7 @@ OCT_INLINE vec2 unpack_oct32(uint32_t v)
     uint32_t packed;
   };
   packed = v;
-  return vec2(float(snorm[0]) / float(0x7FFF), float(snorm[1]) / float(0x7FFF));
+  return glm::vec2(float(snorm[0]) / float(0x7FFF), float(snorm[1]) / float(0x7FFF));
 }
 #else
 #define OCT_INLINE

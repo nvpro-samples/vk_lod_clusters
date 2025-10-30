@@ -30,6 +30,7 @@ struct clodConfig
 	// partitioning setup; maps to meshopt_partitionClusters parameters
 	// note: partition size is the target size, not maximum; actual partitions may be up to 1/3 larger (e.g. target 24 results in maximum 32)
 	bool partition_spatial;
+	bool partition_sort;
 	size_t partition_size;
 
 	// clusterization setup; maps to meshopt_buildMeshletsSpatial / meshopt_buildMeshletsFlex
@@ -136,7 +137,7 @@ struct clodGroup
 
 // gets called for each group
 // returned value gets saved for clusters emitted from this group (clodCluster::refined)
-typedef int (*clodOutput)(void* output_context, clodGroup group, const clodCluster* clusters, size_t cluster_count);
+typedef int (*clodOutput)(void* output_context, clodGroup group, const clodCluster* clusters, size_t cluster_count, size_t task_index, unsigned int thread_index);
 
 // gets called for each lod level iteration, except last, which directly calls clodOutput.
 // user must call `clodBuild_iterationTask` passing through `intermediate_context` and with task_index from 0 to task_count-1.
@@ -160,7 +161,7 @@ size_t clodBuild(clodConfig config, clodMesh mesh, void* output_context, clodOut
 // and call this function `task_count` many times.
 // The provided `output_context` is passed to `clodOutput`.
 // Is thread-safe as long as the output callback is thread-safe or null.
-void clodBuild_iterationTask(void* iteration_context, void* output_context, size_t task_index);
+void clodBuild_iterationTask(void* iteration_context, void* output_context, size_t task_index, unsigned int thread_index);
 
 #ifdef __cplusplus
 } // extern "C"
@@ -317,8 +318,20 @@ static std::vector<std::vector<int> > partition(const clodConfig& config, const 
 	for (size_t i = 0; i < partition_count; ++i)
 		partitions[i].reserve(config.partition_size + config.partition_size / 3);
 
+	std::vector<unsigned int> partition_remap;
+
+	if (config.partition_sort)
+	{
+		std::vector<float> partition_point(partition_count * 3);
+		for (size_t i = 0; i < pending.size(); ++i)
+			memcpy(&partition_point[cluster_part[i] * 3], clusters[pending[i]].bounds.center, sizeof(float) * 3);
+
+		partition_remap.resize(partition_count);
+		meshopt_spatialSortRemap(partition_remap.data(), partition_point.data(), partition_count, sizeof(float) * 3);
+	}
+
 	for (size_t i = 0; i < pending.size(); ++i)
-		partitions[cluster_part[i]].push_back(pending[i]);
+		partitions[partition_remap.empty() ? cluster_part[i] : partition_remap[cluster_part[i]]].push_back(pending[i]);
 
 	return partitions;
 }
@@ -442,7 +455,7 @@ static std::vector<unsigned int> simplify(const clodConfig& config, const clodMe
 	return lod;
 }
 
-static int outputGroup(const clodConfig& config, const clodMesh& mesh, const std::vector<Cluster>& clusters, const std::vector<int>& group, const clodBounds& simplified, int depth, void* output_context, clodOutput output_callback)
+static int outputGroup(const clodConfig& config, const clodMesh& mesh, const std::vector<Cluster>& clusters, const std::vector<int>& group, const clodBounds& simplified, int depth, void* output_context, clodOutput output_callback, size_t task_index, unsigned int thread_index)
 {
 	std::vector<clodCluster> group_clusters(group.size());
 
@@ -458,7 +471,7 @@ static int outputGroup(const clodConfig& config, const clodMesh& mesh, const std
 		result.vertex_count = cluster.vertices;
 	}
 
-	return output_callback ? output_callback(output_context, {depth, simplified}, group_clusters.data(), group_clusters.size()) : -1;
+	return output_callback ? output_callback(output_context, {depth, simplified}, group_clusters.data(), group_clusters.size(), task_index, thread_index) : -1;
 }
 
 struct IterationContext
@@ -532,7 +545,7 @@ clodConfig clodDefaultConfigRT(size_t max_triangles)
 	return config;
 }
 
-void clodBuild_iterationTask(void* iteration_context, void* output_context, size_t i)
+void clodBuild_iterationTask(void* iteration_context, void* output_context, size_t i, unsigned int thread_index)
 {
 	using namespace clod;
 
@@ -560,7 +573,7 @@ void clodBuild_iterationTask(void* iteration_context, void* output_context, size
 	if (simplified.size() > merged.size() * config.simplify_threshold)
 	{
 		bounds.error = FLT_MAX; // terminal group, won't simplify further
-		outputGroup(config, mesh, clusters, groups[i], bounds, depth, output_context, context.output_callback);
+		outputGroup(config, mesh, clusters, groups[i], bounds, depth, output_context, context.output_callback, i, thread_index);
 		return; // simplification is stuck; abandon the merge
 	}
 
@@ -568,7 +581,7 @@ void clodBuild_iterationTask(void* iteration_context, void* output_context, size
 	bounds.error = std::max(bounds.error * config.simplify_error_merge_previous, error) + error * config.simplify_error_merge_additive;
 
 	// output the new group with all clusters; the resulting id will be recorded in new clusters as clodCluster::refined
-	int refined = outputGroup(config, mesh, clusters, groups[i], bounds, depth, output_context, context.output_callback);
+	int refined = outputGroup(config, mesh, clusters, groups[i], bounds, depth, output_context, context.output_callback, i, thread_index);
 
 	// discard clusters from the group - they won't be used anymore
 	for (size_t j = 0; j < groups[i].size(); ++j)
@@ -664,7 +677,7 @@ size_t clodBuild(clodConfig config, clodMesh mesh, void* output_context, clodOut
 		{
 			for (size_t i = 0; i < context.groups.size(); ++i)
 			{
-				clodBuild_iterationTask(&context, output_context, i);
+				clodBuild_iterationTask(&context, output_context, i, 0);
 			}
 		}
 
@@ -683,7 +696,7 @@ size_t clodBuild(clodConfig config, clodMesh mesh, void* output_context, clodOut
 		clodBounds bounds = cluster.bounds;
 		bounds.error = FLT_MAX; // terminal group, won't simplify further
 
-		outputGroup(config, mesh, context.clusters, context.pending, bounds, context.depth, output_context, output_callback);
+		outputGroup(config, mesh, context.clusters, context.pending, bounds, context.depth, output_context, output_callback, 0, 0);
 	}
 
 	return context.clusters.size();

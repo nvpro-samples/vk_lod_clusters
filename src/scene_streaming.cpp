@@ -38,143 +38,6 @@ struct OffsetOrPointer
   };
 };
 
-// wraps the data needed for `shaderio::Group`
-struct GroupDataOffsets
-{
-  OffsetOrPointer<shaderio::Group>    group;
-  OffsetOrPointer<shaderio::Cluster>  clusters;
-  OffsetOrPointer<shaderio::uint32_t> clusterGeneratingGroups;
-  OffsetOrPointer<shaderio::BBox>     clusterBboxes;
-  OffsetOrPointer<glm::vec4>          vertices;
-  OffsetOrPointer<uint8_t>            localTriangles;
-
-  // special values, must stay 64 bit
-  uint64_t finalSize;
-
-  void applyOffset(uint64_t baseAddress)
-  {
-    uint64_t* addresses = reinterpret_cast<uint64_t*>(this);
-    for(size_t i = 0; i < sizeof(GroupDataOffsets) / sizeof(uint64_t); i++)
-    {
-      addresses[i] += baseAddress;
-    }
-  }
-};
-
-// returns number of group clusters
-static uint32_t getGroupDataOffsets(const Scene::GeometryView& geometry, GeometryGroup geometryGroup, GroupDataOffsets& dataOffsets)
-{
-  uint32_t numTriangles = 0;
-  uint32_t numVertices  = 0;
-  uint32_t numClusters  = 0;
-
-  nvcluster_Range clusterRange = geometry.lodMesh.groupClusterRanges[geometryGroup.groupID];
-
-  numClusters = clusterRange.count;
-
-  for(uint32_t c = clusterRange.offset; c < clusterRange.offset + clusterRange.count; c++)
-  {
-    numTriangles += geometry.lodMesh.clusterTriangleRanges[c].count;
-    numVertices += geometry.clusterVertexRanges[c].count;
-  }
-
-  BufferRanges ranges;
-  dataOffsets.group.offset                   = ranges.append(sizeof(shaderio::Group), 16);
-  dataOffsets.clusters.offset                = ranges.append(sizeof(shaderio::Cluster) * numClusters, 16);
-  dataOffsets.clusterGeneratingGroups.offset = ranges.append(sizeof(uint32_t) * numClusters, 8);
-  dataOffsets.clusterBboxes.offset           = ranges.append(sizeof(shaderio::BBox) * numClusters, 16);
-  dataOffsets.vertices.offset                = ranges.append(sizeof(glm::vec4) * numVertices, 16);
-  dataOffsets.localTriangles.offset          = ranges.append(sizeof(uint8_t) * numTriangles * 3, 4);
-  dataOffsets.finalSize                      = ranges.getSize(16);
-
-  // clusters must start after group
-  assert(dataOffsets.clusters.offset == sizeof(shaderio::Group));
-
-  return numClusters;
-}
-
-static void fillGroupData(const Scene::GeometryView& sceneGeometry,
-                          GeometryGroup              geometryGroup,
-                          const GroupDataOffsets&    dataOffsets,
-                          uint32_t                   groupResidentID,
-                          uint32_t                   clusterResidentID,
-                          uint32_t                   streamingNewBuildOffset,
-                          uint64_t                   dstVA,
-                          void*                      dst,
-                          size_t                     dstSize,
-                          uint16_t&                  outLodLevel)
-{
-  assert(dstSize >= dataOffsets.finalSize);
-
-  GroupDataOffsets addresses = dataOffsets;
-  GroupDataOffsets pointers  = dataOffsets;
-
-  // convert all device addresses to be absolute
-  addresses.applyOffset(dstVA);
-  // convert all pointers to be absolute
-  pointers.applyOffset((uint64_t)dst);
-
-  uint32_t offsetTriangles = 0;
-  uint32_t offsetVertices  = 0;
-
-  uint32_t groupIndex = geometryGroup.groupID;
-
-  nvcluster_Range clusterRange = sceneGeometry.lodMesh.groupClusterRanges[groupIndex];
-
-  uint8_t lodLevel = uint8_t(sceneGeometry.groupLodLevels[groupIndex]);
-
-  shaderio::Group& group  = *pointers.group.pointer;
-  group                   = {};
-  group.geometryID        = geometryGroup.geometryID;
-  group.groupID           = geometryGroup.groupID;
-  group.residentID        = groupResidentID;
-  group.clusterResidentID = clusterResidentID;
-  group.lodLevel          = lodLevel;
-  group.clusterCount      = clusterRange.count;
-  group.traversalMetric.boundingSphereX = sceneGeometry.lodHierarchy.groupCumulativeBoundingSpheres[groupIndex].center.x;
-  group.traversalMetric.boundingSphereY = sceneGeometry.lodHierarchy.groupCumulativeBoundingSpheres[groupIndex].center.y;
-  group.traversalMetric.boundingSphereZ = sceneGeometry.lodHierarchy.groupCumulativeBoundingSpheres[groupIndex].center.z;
-  group.traversalMetric.boundingSphereRadius = sceneGeometry.lodHierarchy.groupCumulativeBoundingSpheres[groupIndex].radius;
-  group.traversalMetric.maxQuadricError = sceneGeometry.lodHierarchy.groupCumulativeQuadricError[groupIndex];
-  group.streamingNewBuildOffset         = streamingNewBuildOffset;
-  group.clusterBboxes                   = addresses.clusterBboxes.offset;
-  group.clusterGeneratingGroups         = addresses.clusterGeneratingGroups.offset;
-
-  memcpy(pointers.clusterBboxes.pointer, &sceneGeometry.clusterBboxes[clusterRange.offset],
-         sizeof(shaderio::BBox) * clusterRange.count);
-  memcpy(pointers.clusterGeneratingGroups.pointer, &sceneGeometry.lodMesh.clusterGeneratingGroups[clusterRange.offset],
-         sizeof(uint32_t) * clusterRange.count);
-
-  for(uint32_t c = 0; c < clusterRange.count; c++)
-  {
-    nvcluster_Range vertexRange   = sceneGeometry.clusterVertexRanges[c + clusterRange.offset];
-    nvcluster_Range triangleRange = sceneGeometry.lodMesh.clusterTriangleRanges[c + clusterRange.offset];
-
-    shaderio::Cluster& cluster = pointers.clusters.pointer[c];
-
-    cluster                       = {};
-    cluster.triangleCountMinusOne = uint8_t(triangleRange.count - 1);
-    cluster.vertexCountMinusOne   = uint8_t(vertexRange.count - 1);
-    cluster.groupID               = uint32_t(groupIndex);
-    cluster.groupChildIndex       = uint8_t(c);
-    cluster.lodLevel              = lodLevel;
-
-    cluster.vertices       = addresses.vertices.offset + sizeof(glm::vec4) * offsetVertices;
-    cluster.localTriangles = addresses.localTriangles.offset + sizeof(uint8_t) * offsetTriangles * 3;
-    cluster.bbox           = addresses.clusterBboxes.offset + sizeof(shaderio::BBox) * c;
-
-    memcpy(pointers.vertices.pointer + (offsetVertices), &sceneGeometry.vertices[vertexRange.offset],
-           vertexRange.count * sizeof(glm::vec4));
-    memcpy(pointers.localTriangles.pointer + (offsetTriangles * 3),
-           &sceneGeometry.localTriangles[triangleRange.offset * 3], triangleRange.count * 3);
-
-    offsetTriangles += triangleRange.count;
-    offsetVertices += vertexRange.count;
-  }
-
-  outLodLevel = lodLevel;
-}
-
 bool SceneStreaming::init(Resources* resources, const Scene* scene, const StreamingConfig& config)
 {
   assert(!m_resources && "no init before deinit");
@@ -331,15 +194,15 @@ void SceneStreaming::resetGeometryGroupAddresses(Resources::BatchedUploader& upl
     shaderio::Geometry&                 shaderGeometry     = m_shaderGeometries[geometryIndex];
     const Scene::GeometryView&          sceneGeometry      = m_scene->getActiveGeometry(geometryIndex);
 
-    nvcluster_Range lastGroupRange = sceneGeometry.lodMesh.lodLevelGroupRanges.back();
+    shaderio::LodLevel lastLodLevel = sceneGeometry.lodLevels.back();
 
     uint64_t* groupAddresses = uploader.uploadBuffer(persistentGeometry.groupAddresses, (uint64_t*)nullptr);
-    for(uint32_t groupIndex = 0; groupIndex < lastGroupRange.offset; groupIndex++)
+    for(uint32_t groupIndex = 0; groupIndex < lastLodLevel.groupOffset; groupIndex++)
     {
       groupAddresses[groupIndex] = STREAMING_INVALID_ADDRESS_START;
     }
     // except last group, which is always loaded
-    groupAddresses[lastGroupRange.offset] = persistentGeometry.lowDetailGroupsData.address;
+    groupAddresses[lastLodLevel.groupOffset] = persistentGeometry.lowDetailGroupsData.address;
 
     // also reset the number of groups loaded per lod-level, except last which is also always loaded.
     uint32_t maxLodLevel = persistentGeometry.lodLevelsCount - 1;
@@ -372,11 +235,11 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
     SceneStreaming::PersistentGeometry& persistentGeometry = m_persistentGeometries[geometryIndex];
     const Scene::GeometryView&          sceneGeometry      = m_scene->getActiveGeometry(geometryIndex);
 
-    size_t numGroups = sceneGeometry.lodMesh.groupClusterRanges.size();
+    size_t numGroups = sceneGeometry.groupInfos.size();
     res.createBufferTyped(persistentGeometry.groupAddresses, numGroups, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     NVVK_DBG_NAME(persistentGeometry.groupAddresses.buffer);
 
-    size_t numNodes = sceneGeometry.lodHierarchy.nodes.size();
+    size_t numNodes = sceneGeometry.lodNodes.size();
     res.createBufferTyped(persistentGeometry.nodes, numNodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     res.createBufferTyped(persistentGeometry.nodeBboxes, numNodes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     NVVK_DBG_NAME(persistentGeometry.nodes.buffer);
@@ -413,19 +276,19 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
 
     // basic uploads
 
-    uploader.uploadBuffer(persistentGeometry.nodes, sceneGeometry.lodHierarchy.nodes.data());
-    uploader.uploadBuffer(persistentGeometry.nodeBboxes, sceneGeometry.nodeBboxes.data());
+    uploader.uploadBuffer(persistentGeometry.nodes, sceneGeometry.lodNodes.data());
+    uploader.uploadBuffer(persistentGeometry.nodeBboxes, sceneGeometry.lodNodeBboxes.data());
     uploader.uploadBuffer(persistentGeometry.lodLevels, sceneGeometry.lodLevels.data());
 
     // seed lowest detail group, which must have just a single cluster
-    nvcluster_Range lastGroupRange = sceneGeometry.lodMesh.lodLevelGroupRanges.back();
-    assert(lastGroupRange.count == 1);
-    assert(sceneGeometry.lodMesh.groupClusterRanges[lastGroupRange.offset].count == 1);
+    shaderio::LodLevel     lastLodLevel = sceneGeometry.lodLevels.back();
+    const Scene::GroupInfo groupInfo    = sceneGeometry.groupInfos[lastLodLevel.groupOffset];
+    Scene::GroupView       groupView(sceneGeometry.groupData, groupInfo);
+    assert(groupInfo.clusterCount == 1);
 
-    GeometryGroup    geometryGroup = {uint32_t(geometryIndex), lastGroupRange.offset};
-    GroupDataOffsets dataOffsets;
-    uint64_t         lastClustersCount = getGroupDataOffsets(sceneGeometry, geometryGroup, dataOffsets);
-    uint64_t         lastGroupSize     = dataOffsets.finalSize;
+    GeometryGroup geometryGroup     = {uint32_t(geometryIndex), lastLodLevel.groupOffset};
+    uint32_t      lastClustersCount = groupInfo.clusterCount;
+    uint64_t      lastGroupSize     = groupInfo.sizeBytes;
 
     res.createBuffer(persistentGeometry.lowDetailGroupsData, lastGroupSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     NVVK_DBG_NAME(persistentGeometry.lowDetailGroupsData.buffer);
@@ -434,19 +297,20 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
     assert(lastClustersCount <= 0xFFFFFFFF);
     assert(m_resident.canAllocateGroup(uint32_t(lastClustersCount)));
 
-    StreamingResident::Group* rgroup = m_resident.addGroup(geometryGroup, 1);
+    StreamingResident::Group* rgroup = m_resident.addGroup(geometryGroup, lastClustersCount);
     rgroup->deviceAddress            = persistentGeometry.lowDetailGroupsData.address;
+    rgroup->lodLevel                 = groupInfo.lodLevel;
 
-    persistentGeometry.lodLoadedGroupsCount[rgroup->lodLevel] = 1;
+    persistentGeometry.lodLoadedGroupsCount[groupInfo.lodLevel] = 1;
 
     // setup and upload geometry data for the lowest detail group
     void* loGroupData = uploader.uploadBuffer(persistentGeometry.lowDetailGroupsData, (void*)nullptr);
-    fillGroupData(sceneGeometry, geometryGroup, dataOffsets, rgroup->groupResidentID, rgroup->clusterResidentID,
-                  rgroup->clusterResidentID, persistentGeometry.lowDetailGroupsData.address, loGroupData,
-                  persistentGeometry.lowDetailGroupsData.bufferSize, rgroup->lodLevel);
+
+    Scene::fillGroupRuntimeData(sceneGeometry, geometryGroup.groupID, rgroup->groupResidentID, rgroup->clusterResidentID,
+                                loGroupData, persistentGeometry.lowDetailGroupsData.bufferSize);
 
     shaderGeometry.lowDetailClusterID = rgroup->clusterResidentID;
-    shaderGeometry.lowDetailTriangles = sceneGeometry.lodMesh.clusterTriangleRanges[lastGroupRange.offset].count;
+    shaderGeometry.lowDetailTriangles = groupInfo.triangleCount;
   }
 
   // this will set all addresses to invalid, except lowest detail geometry group, which is persistently loaded.
@@ -753,7 +617,7 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
     uint32_t                  unloadIndex = updateTask.unloadCount++;
     shaderio::StreamingPatch& patch       = updateTask.unloadPatches[unloadIndex];
     patch.geometryID                      = geometryGroup.geometryID;
-    patch.groupIndex                      = geometryGroup.groupID;
+    patch.groupID                         = geometryGroup.groupID;
     patch.groupAddress                    = STREAMING_INVALID_ADDRESS_START;
 
     // note actual storage memory cannot be recycled here, cause only
@@ -830,15 +694,15 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
 
     // figure out size of this geometry group.
     // This includes all relevant cluster data, including vertices, triangle indices...
-    GroupDataOffsets dataOffsets;
-    uint32_t         clustersCount   = getGroupDataOffsets(sceneGeometry, geometryGroup, dataOffsets);
-    uint64_t         groupSize       = dataOffsets.finalSize;
-    uint64_t         groupClasSize   = 0;
-    bool             canAllocateClas = true;
+    const Scene::GroupInfo groupInfo       = sceneGeometry.groupInfos[geometryGroup.groupID];
+    uint32_t               clusterCount    = groupInfo.clusterCount;
+    uint64_t               groupSize       = groupInfo.sizeBytes;
+    uint64_t               groupClasSize   = 0;
+    bool                   canAllocateClas = true;
 
     if(m_requiresClas)
     {
-      groupClasSize = m_clasSingleMaxSize * clustersCount;
+      groupClasSize = m_clasSingleMaxSize * clusterCount;
 
       // must always fit in scratch
       assert((clasBuildSize + groupClasSize) <= m_clasScratchNewClasSize);
@@ -858,7 +722,7 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
 
     bool canTransfer      = m_storage.canTransfer(storageTask, groupSize);
     bool canStore         = m_storage.allocate(storageHandle, geometryGroup, groupSize, deviceAddress);
-    bool canAllocateGroup = m_resident.canAllocateGroup(clustersCount);
+    bool canAllocateGroup = m_resident.canAllocateGroup(clusterCount);
 
     // test if we can allocate
     if(!canTransfer || !canStore || !canAllocateGroup || !canAllocateClas)
@@ -874,7 +738,7 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
         m_storage.free(storageHandle);
       }
 
-      if(clustersCount < 8)
+      if(clusterCount < 8)
       {
         m_stats.uncompletedLoadCount += loadCount - g;
         break;  // heuristic if small groups don't fit anymore then we fully break
@@ -886,17 +750,22 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
       }
     }
 
-    StreamingResident::Group* residentGroup = m_resident.addGroup(geometryGroup, clustersCount);
+    StreamingResident::Group* residentGroup = m_resident.addGroup(geometryGroup, clusterCount);
     residentGroup->storageHandle            = storageHandle;
     residentGroup->deviceAddress            = deviceAddress;
+    residentGroup->lodLevel                 = groupInfo.lodLevel;
     void* groupData                         = m_storage.appendTransfer(storageTask, residentGroup->storageHandle);
 
     assert(deviceAddress % 16 == 0);
 
-    fillGroupData(sceneGeometry, geometryGroup, dataOffsets, residentGroup->groupResidentID, residentGroup->clusterResidentID,
-                  clasBuildOffset, deviceAddress, groupData, groupSize, residentGroup->lodLevel);
+    {
+      // simply copy data as is, the streaming patch will take care of modifying the data
+      // where needed
+      Scene::GroupView groupView(sceneGeometry.groupData, groupInfo);
+      memcpy(groupData, groupView.raw, groupView.rawSize);
+    }
 
-    m_persistentGeometries[geometryGroup.geometryID].lodLoadedGroupsCount[residentGroup->lodLevel]++;
+    m_persistentGeometries[geometryGroup.geometryID].lodLoadedGroupsCount[groupInfo.lodLevel]++;
 
     // append to geometry patch list if necessary
     if(useBlasCaching && m_persistentGeometries[geometryGroup.geometryID].cachedBlasUpdateFrame != m_frameIndex)
@@ -910,15 +779,20 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
     // setup patch
     shaderio::StreamingPatch& patch = updateTask.loadPatches[updateTask.loadCount++];
     patch.geometryID                = geometryGroup.geometryID;
-    patch.groupIndex                = geometryGroup.groupID;
+    patch.groupID                   = geometryGroup.groupID;
     patch.groupAddress              = deviceAddress;
+    patch.groupResidentID           = residentGroup->groupResidentID;
+    patch.clusterResidentID         = residentGroup->clusterResidentID;
+    patch.clasBuildOffset           = clasBuildOffset;
+    patch.clusterCount              = groupInfo.clusterCount;
+    patch.lodLevel                  = groupInfo.lodLevel;
 
-    clasBuildOffset += clustersCount;
+    clasBuildOffset += clusterCount;
     clasBuildSize += groupClasSize;
     clasAllocatedMaxSizedLeft--;
 
     // stats
-    transferBytes += dataOffsets.finalSize;
+    transferBytes += groupInfo.sizeBytes;
   }
 
   updateTask.newClusterCount = clasBuildOffset;
@@ -1055,13 +929,9 @@ void SceneStreaming::handleBlasCaching(StreamingUpdates::TaskInfo& updateTask, c
       // fully loaded
       if(persistentGeometry.lodGroupsCount[i] == persistentGeometry.lodLoadedGroupsCount[i])
       {
-        uint32_t groupCount  = geometryView.lodLevels[i].groupCount;
-        uint32_t groupOffset = geometryView.lodLevels[i].groupOffset;
-
-        // clusters are stored linearly, densely packed
-        cachedClustersCount = geometryView.lodMesh.groupClusterRanges[groupOffset + groupCount - 1].count
-                              + geometryView.lodMesh.groupClusterRanges[groupOffset + groupCount - 1].offset
-                              - geometryView.lodMesh.groupClusterRanges[groupOffset].offset;
+        uint32_t groupCount          = geometryView.lodLevels[i].groupCount;
+        uint32_t groupOffset         = geometryView.lodLevels[i].groupOffset;
+        uint32_t cachedClustersCount = geometryView.lodLevels[i].clusterCount;
 
         // check if it fits
         if(cachedClustersCount <= STREAMING_CACHED_BLAS_MAX_CLUSTERS)
@@ -2032,12 +1902,9 @@ bool SceneStreaming::initClas()
     for(uint32_t g = 0; g < loGroupsCount; g++)
     {
       const StreamingResident::Group& residentGroup = groups[g];
-      const Scene::GeometryView& sceneGeometry = m_scene->getActiveGeometry(residentGroup.geometryGroup.geometryID);
-
-      GroupDataOffsets dataOffsets;
-      getGroupDataOffsets(sceneGeometry, residentGroup.geometryGroup, dataOffsets);
-
-      nvcluster_Range groupRange = sceneGeometry.lodMesh.groupClusterRanges[residentGroup.geometryGroup.groupID];
+      const Scene::GeometryView& sceneGeometry  = m_scene->getActiveGeometry(residentGroup.geometryGroup.geometryID);
+      const Scene::GroupInfo     sceneGroupInfo = sceneGeometry.groupInfos[residentGroup.geometryGroup.groupID];
+      Scene::GroupView           sceneGroupView(sceneGeometry.groupData, sceneGroupInfo);
 
       blasBuildInfos[g].clusterReferencesCount  = residentGroup.clusterCount;
       blasBuildInfos[g].clusterReferencesStride = sizeof(uint64_t);
@@ -2045,27 +1912,24 @@ bool SceneStreaming::initClas()
 
       for(uint32_t c = 0; c < residentGroup.clusterCount; c++)
       {
+        const shaderio::Cluster& sceneCluster = sceneGroupView.clusters[c];
         assert((residentGroup.clusterResidentID + c) == clusterOffset);
-
-        nvcluster_Range triangleRange = sceneGeometry.lodMesh.clusterTriangleRanges[c + groupRange.offset];
-        nvcluster_Range vertexRange   = sceneGeometry.clusterVertexRanges[c + groupRange.offset];
 
         VkClusterAccelerationStructureBuildTriangleClusterInfoNV& buildInfo = clasBuildInfos[clusterOffset];
         buildInfo                                                           = {};
 
+        uint64_t clusterVA = residentGroup.deviceAddress + sizeof(shaderio::Group) + sizeof(shaderio::Cluster) * c;
+
         buildInfo.baseGeometryIndexAndGeometryFlags.geometryFlags = VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT_NV;
         buildInfo.clusterID                = residentGroup.clusterResidentID + c;
-        buildInfo.triangleCount            = triangleRange.count;
+        buildInfo.triangleCount            = sceneCluster.triangleCountMinusOne + 1;
         buildInfo.indexType                = VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_8BIT_NV;
         buildInfo.indexBufferStride        = 1;
-        buildInfo.indexBuffer              = dataOffsets.localTriangles.offset + residentGroup.deviceAddress;
-        buildInfo.vertexCount              = vertexRange.count;
-        buildInfo.vertexBufferStride       = uint16_t(sizeof(glm::vec4));
-        buildInfo.vertexBuffer             = dataOffsets.vertices.offset + residentGroup.deviceAddress;
+        buildInfo.indexBuffer              = clusterVA + sceneCluster.indices;
+        buildInfo.vertexCount              = sceneCluster.vertexCountMinusOne + 1;
+        buildInfo.vertexBufferStride       = uint16_t(sizeof(glm::vec3));
+        buildInfo.vertexBuffer             = clusterVA + sceneCluster.vertices;
         buildInfo.positionTruncateBitCount = m_config.clasPositionTruncateBits;
-
-        dataOffsets.localTriangles.offset += sizeof(uint8_t) * triangleRange.count * 3;
-        dataOffsets.vertices.offset += sizeof(glm::vec4) * vertexRange.count;
 
         clusterOffset++;
       }

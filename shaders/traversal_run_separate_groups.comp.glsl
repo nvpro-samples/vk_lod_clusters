@@ -186,7 +186,8 @@ void main()
 #if USE_STREAMING
   // traversal_run ensured we never get here without ensuring residency
   // and we never traverse to a group that isn't resident.
-  Group group = Group_in(geometry.streamingGroupAddresses.d[groupIndex]).d;
+  Group_in groupRef = Group_in(geometry.streamingGroupAddresses.d[groupIndex]);
+  Group group = groupRef.d;
   #if USE_BLAS_MERGING
     // handled in traversal_run
   #else
@@ -194,7 +195,8 @@ void main()
   #endif
 #else
   // can directly access the group
-  Group group = geometry.preloadedGroups.d[groupIndex];
+  Group_in groupRef = Group_in(geometry.preloadedGroups.d[groupIndex]);
+  Group group = groupRef.d;
 #endif
 
   for (uint clusterIndex = 0; clusterIndex < groupClusterCount; clusterIndex++)
@@ -204,7 +206,7 @@ void main()
 
     {
     #if USE_CULLING && TARGETS_RASTERIZATION
-      bbox        = group.clusterBboxes.d[clusterIndex];
+      bbox        = Group_getClusterBBox(groupRef, clusterIndex);
     #endif
       
       // The continous lod algorithm optimizes to get the lowest detail we can get away with.
@@ -229,7 +231,7 @@ void main()
       // In streaming, it may also occur that the generating group isn't loaded, that also
       // means this cluster is the highest detail available.
       
-      uint32_t clusterGeneratingGroup = group.clusterGeneratingGroups.d[clusterIndex];
+      uint32_t clusterGeneratingGroup = Group_getGeneratingGroup(groupRef, clusterIndex);
     #if USE_STREAMING
       if (clusterGeneratingGroup != SHADERIO_ORIGINAL_MESH_GROUP
           && geometry.streamingGroupAddresses.d[clusterGeneratingGroup] < STREAMING_INVALID_ADDRESS_START)
@@ -241,7 +243,7 @@ void main()
     #else
       if (clusterGeneratingGroup != SHADERIO_ORIGINAL_MESH_GROUP)
       {
-        traversalMetric = geometry.preloadedGroups.d[clusterGeneratingGroup].traversalMetric;
+        traversalMetric = Group_in(geometry.preloadedGroups.d[clusterGeneratingGroup]).d.traversalMetric;
       }
     #endif
       else {

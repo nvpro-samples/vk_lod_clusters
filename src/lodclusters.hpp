@@ -134,7 +134,7 @@ public:
   void setSupportsSmBuiltinsNV(bool supported) { m_resources.m_supportsSmBuiltinsNV = supported; }
   bool getShowDebugUI() const { return m_showDebugUI; }
 
-  bool isProcessingOnly() const { return !m_sceneFilePath.empty() && m_sceneConfig.processingOnly; }
+  bool isProcessingOnly() const { return !m_sceneFilePath.empty() && m_sceneLoaderConfig.processingOnly; }
   void doProcessingOnly();
 
 private:
@@ -173,6 +173,7 @@ private:
   std::unique_ptr<Scene> m_scene;
   std::filesystem::path  m_sceneFilePath;
   std::filesystem::path  m_sceneFilePathDefault;
+  SceneLoaderConfig      m_sceneLoaderConfig;
   SceneConfig            m_sceneConfig;
   SceneConfig            m_sceneConfigLast;
   glm::vec3              m_sceneUpVector = glm::vec3(0, 1, 0);

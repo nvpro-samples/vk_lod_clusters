@@ -45,7 +45,7 @@ The scene can be rendered with or without streaming:
 * [scene_streaming.cpp](/src/scene_streaming.cpp): implements the streaming system, more details later. Enabled by default.
 
 The full logic of the renderers is implemented in:
-* [renderer_raster_clusters_lod.cpp](/src/renderer_raster_clusters_lod.cpp): Rasterization using `VK_NV_mesh_shader`
+* [renderer_raster_clusters_lod.cpp](/src/renderer_raster_clusters_lod.cpp): Rasterization using `VK_NV_mesh_shader` or `VK_EXT_mesh_shader`
 * [renderer_raytrace_clusters_lod.cpp](/src/renderer_raytrace_clusters_lod.cpp): Ray tracing using `VK_NV_cluster_acceleration_structure`. Enabled by default if available.
 
 The sample also showcases a ray tracing specific optimization for [BLAS Sharing](docs/blas_sharing.md).
@@ -53,17 +53,17 @@ The sample also showcases a ray tracing specific optimization for [BLAS Sharing]
 ### Model processing
 
 This sample provides two options to build the cluster level of detail data structures:
-* A custom fork of [meshoptimizer's](https://github.com/zeux/meshoptimizer) single header [clusterlod.h](src/meshopt_clusterlod.h) to support parallelism. This builder is the default as it is faster and uses a lot less memory at time of writing. The builder is deterministic and we recommend its usage going forward.
-* The [nv_cluster_lod_builder](https://github.com/nvpro-samples/nv_cluster_lod_builder) research library. We recommend looking at its documentation for the basics of how the cluster lod building works. In both builders the principle operations are the same. `--nvclusterlod 1` to enable or via UI (off by default). The builder is _not_ deterministic.
+* A custom fork of [meshoptimizer's](https://github.com/zeux/meshoptimizer) single header [clusterlod.h](src/meshopt_clusterlod.h) to support parallelism. This builder is the default as it is faster and uses a lot less memory at time of writing. This builder is deterministic and we recommend its usage going forward.
+* The [nv_cluster_lod_builder](https://github.com/nvpro-samples/nv_cluster_lod_builder) research library. We recommend looking at its documentation for the basics of how the cluster lod building works. In both builders the principle operations are the same. `--nvclusterlod 1` to enable or via UI (off by default). This builder is _not_ deterministic and will be deprecated and removed in a future version of this application.
 
-Inside [scene_cluster_lod.cpp](/src/scene_cluster_lod.cpp) the `Scene:buildGeometryClusterLod(...)` function covers the usage of the libraries and what data we need to extract from them. All key processing steps are within `Scene:processGeometry(...)` inside [scene.cpp](/src/scene.cpp).
+Inside [scene_cluster_lod.cpp](/src/scene_cluster_lod.cpp) the `Scene:buildGeometryClusterLod(...)` function covers the usage of the libraries and what data we need to extract from them. The `Scene::storeGroup(...)` function takes the resulting cluster group and packs it into a binary blob used for the runtime representation. The geometry data is later saved into the cache file for faster loading and streaming.
 
 In the UI you can influence the size of clusters and the LoD grouping of them in _"Clusters & LoDs generation"_.
 
 > [!WARNING]
 > The processing of larger scenes can take a while, even on CPUs with many cores. Therefore the application will save
 > an uncompressed cache file of the results automatically. This file is a simple memory mappable binary file that can take a lot of space
-> and is placed next to the original file with a `.nvsngeo` file ending.
+> and is placed next to the original file with a `.nvsngeo` file ending. During processing existing cache files will be overwritten without warning.
 > If disk space is a concern use `--autosavecache 0` to avoid the automatic storage, however it is not recommended.
 >
 > With the `--processingonly 1` command-line option one can reduce peak memory consumption during processing of scenes with many geometries.
@@ -168,10 +168,14 @@ You can use the commandline to change some defaults:
 
 ## Future Improvements
 
-* Redesigning the file cache for less size and potential use of `VK_NV_memory_decompression` during streaming
-* Implement sorting of streaming requests based on distance of instance. Sorting instances alone is not sufficient.
+Next:
+* Compressed cluster groups stored to memory/cache file and uncompressed with a compute shader after upload.
+Other:
+* Add more material features and basic texturing.
+* Add texture streaming
 * Fallback for persistent traversal kernel.
 * Allowing the use of a compute shader to do rasterization of smaller/non-clipped triangles.
+* Implement sorting of streaming requests based on distance of instance. Sorting instances alone is not sufficient.
 
 ## Building and Running
 
@@ -222,11 +226,12 @@ This is a glTF export of the highly detailed raw geometry from the [NVIDIA RTX K
   - **~ 12.8 GB 7z**, unpacks to **~ 36.1 GB on disk**
   - The render cache file will require 62 GB next to the gltf file, it can be downloaded (see next link)
 - [zorah_main_public.gltf.nvsngeo.7z](https://developer.download.nvidia.com/ProGraphics/nvpro-samples/zorah_main_public.gltf.nvsngeo.7z)
-  - **~ 19 GB 7z**, unpacks to **~ 58.7 GB on disk**
+  - **~ 18.3 GB 7z**, unpacks to **~ 45.5 GB on disk**
   - Ensure that the `zorah_main_public.gltf.nvsngeo` is in the same directory as `zorah_main_public.gltf`.
   - If you want to avoid this big download and do the pre-processing for the cluster lod manually, use the following command-line:
     - `vk_lod_cluster.exe "zorah_main_public.gltf" --clusterconfig 4 --processingonly 1 --processingthreadpct 0.5 --processingpartial 1 --nvclusterlod 0`
-    - This will use 50% of the local PC's supported concurrency to process the model and allow to abort and resume the processing. On a 16-core Ryzen 9 a value of `0.5` will yield 16 threads, requires 19 GB RAM and takes around 6 minutes. We recommend lower thread percentages on machines with less RAM. At the time of writing the downloadable cache file was still built with the `--nvclusterlib 1` option, which we don't recommend anymore.
+    - This will use 50% of the local PC's supported concurrency to process the model and allow to abort and resume the processing. On a 16-core Ryzen 9 a value of `0.5` will yield 16 threads, requires 29 GB RAM (brief peak of 44 GB) and takes around 6 minutes. We recommend lower thread percentages on machines with less RAM.
+  - **NOTE:** Older versions of this file were larger, this sample has changed the file format of its file cache. When loading an old version, the processing will be triggered automatically and the old cache file is overwritten. It can take a bit until the new file versions have been propagated to servers worldwide.
 
 Make sure to use an NVME or SSD drive for storing these files. We recommend GPUs with at least 8 GB VRAM.
 
