@@ -76,10 +76,16 @@ vec3 EnvBRDFApprox2(vec3 SpecularColor, float alpha, float NoV)
   Y.z = alpha * alpha;
   Y.w = alpha * Y.z;
 
-  mat2 M1 = mat2(0.99044, -1.28514, 1.29678, -0.755907);
-  mat3 M2 = mat3(1.0, 2.92338, 59.4188, 20.3225, -27.0302, 222.592, 121.563, 626.13, 316.627);
-  mat2 M3 = mat2(0.0365463, 3.32707, 9.0632, -9.04756);
-  mat3 M4 = mat3(1.0, 3.59685, -1.36772, 9.04401, -16.3174, 9.22949, 5.56589, 19.7886, -20.2123);
+// account for HLSL source of this code
+// https://github.com/nvpro-samples/vk_lod_clusters/issues/2
+#define MATRIX_CORRECTION transpose
+
+  mat2 M1 = MATRIX_CORRECTION(mat2(0.99044, -1.28514, 1.29678, -0.755907));
+  mat3 M2 = MATRIX_CORRECTION(mat3(1.0, 2.92338, 59.4188, 20.3225, -27.0302, 222.592, 121.563, 626.13, 316.627));
+  mat2 M3 = MATRIX_CORRECTION(mat2(0.0365463, 3.32707, 9.0632, -9.04756));
+  mat3 M4 = MATRIX_CORRECTION(mat3(1.0, 3.59685, -1.36772, 9.04401, -16.3174, 9.22949, 5.56589, 19.7886, -20.2123));
+
+#undef MATRIX_CORRECTION
 
   // Bias and scale calculations
   float bias  = dot(M1 * X.xy, Y.xy) / dot(M2 * X.xyz, Y.xyz);
