@@ -480,8 +480,8 @@ void Scene::buildGeometryClusterLodMeshoptimizer(const ProcessingInfo& processin
   clodInfo.partition_spatial    = true;
   clodInfo.partition_sort       = true;
 
-  // this only reorders triangles within cluster, run it, if we don't do triangle strips
-  clodInfo.optimize_raster = true;  //!m_config.clusterStripify;
+  // this only reorders triangles within cluster
+  clodInfo.optimize_clusters = true;
 
   // account for meshopt_partitionClusters's using a target value with a higher worst case
   while((clodInfo.partition_size + clodInfo.partition_size / 3) > m_config.clusterGroupSize)
