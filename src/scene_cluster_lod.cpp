@@ -29,7 +29,7 @@
 
 namespace lodclusters {
 
-void Scene::buildGeometryClusterLod(const ProcessingInfo& processingInfo, GeometryStorage& geometry)
+void Scene::buildGeometryClusterLod(ProcessingInfo& processingInfo, GeometryStorage& geometry)
 {
   if(m_config.useNvLib)
   {
@@ -55,8 +55,9 @@ uint32_t Scene::storeGroup(TempContext*                         context,
                            const TempGroup&                     group,
                            std::function<TempCluster(uint32_t)> tempClusterFn)
 {
-  GeometryStorage& geometry  = context->geometry;
-  Scene::GroupInfo groupInfo = {};
+  ProcessingInfo&  processing = context->processingInfo;
+  GeometryStorage& geometry   = context->geometry;
+  Scene::GroupInfo groupInfo  = {};
 
   uint32_t level        = uint32_t(group.lodLevel);
   uint32_t clusterCount = uint32_t(group.clusterCount);
@@ -80,6 +81,11 @@ uint32_t Scene::storeGroup(TempContext*                         context,
     uint32_t triangleOffset   = 0;
     uint32_t vertexOffset     = 0;
     uint32_t vertexDataOffset = 0;
+
+    size_t vertexPosBytes  = 0;
+    size_t vertexNrmBytes  = 0;
+    size_t vertexTangBytes = 0;
+    size_t vertexUvBytes   = 0;
 
     uint32_t attributeStride = uint32_t(geometry.vertexAttributes.size() / geometry.vertexPositions.size());
 
@@ -142,6 +148,8 @@ uint32_t Scene::storeGroup(TempContext*                         context,
           bbox.hi = glm::max(bbox.hi, glm::vec3(pos));
         }
         vertexDataOffset += vertexCount * 3;
+
+        vertexPosBytes += sizeof(float) * 3 * vertexCount;
       }
 
       if(geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL)
@@ -153,6 +161,8 @@ uint32_t Scene::storeGroup(TempContext*                         context,
           uint32_t encoded                                             = shaderio::vec_to_oct32(tmp);
           *(uint32_t*)&groupTempStorage.vertices[vertexDataOffset + v] = encoded;
         }
+
+        vertexNrmBytes += sizeof(uint32_t) * vertexCount;
 
         vertexDataOffset += vertexCount;
       }
@@ -168,6 +178,9 @@ uint32_t Scene::storeGroup(TempContext*                         context,
               *(const glm::vec2*)(&geometry.vertexAttributes[localVertices[v] * attributeStride + geometry.attributeUvOffset]);
           *(glm::vec2*)&groupTempStorage.vertices[vertexDataOffset + v * 2] = tmp;
         }
+
+        vertexUvBytes += sizeof(float) * 2 * vertexCount;
+
         vertexDataOffset += vertexCount * 2;
       }
 
@@ -177,7 +190,7 @@ uint32_t Scene::storeGroup(TempContext*                         context,
         uint32_t elementCount                                          = (vertexCount + 1) / 2;
         groupTempStorage.vertices[vertexDataOffset + elementCount - 1] = 0;
 
-        for(uint32_t v = 0; v < vertexCount && false; v++)
+        for(uint32_t v = 0; v < vertexCount; v++)
         {
           glm::vec4 userTangent =
               *(const glm::vec4*)(&geometry.vertexAttributes[localVertices[v] * attributeStride + geometry.attributeTangentOffset]);
@@ -188,6 +201,8 @@ uint32_t Scene::storeGroup(TempContext*                         context,
           // put sign in lowest bit
           ((uint16_t*)&groupTempStorage.vertices[vertexDataOffset])[v] = encoded;
         }
+
+        vertexTangBytes += sizeof(float) * elementCount;
 
         vertexDataOffset += elementCount;
       }
@@ -240,6 +255,20 @@ uint32_t Scene::storeGroup(TempContext*                         context,
     groupInfo.attributeBits   = uint8_t(geometry.attributeBits);
     groupInfo.vertexDataCount = uint16_t(vertexDataOffset);
     groupInfo.sizeBytes       = groupInfo.computeSize();
+
+    {
+      processing.stats.groups++;
+      processing.stats.clusters += clusterCount;
+      processing.stats.groupHeaderBytes += sizeof(shaderio::Group);
+      processing.stats.clusterHeaderBytes += sizeof(shaderio::Cluster) * clusterCount;
+      processing.stats.clusterBboxBytes += sizeof(shaderio::BBox) * clusterCount;
+      processing.stats.clusterGenBytes += sizeof(uint32_t) * clusterCount;
+      processing.stats.triangleIndexBytes += sizeof(uint8_t) * triangleOffset * 3;
+      processing.stats.vertexPosBytes += vertexPosBytes;
+      processing.stats.vertexNrmBytes += vertexNrmBytes;
+      processing.stats.vertexUvBytes += vertexUvBytes;
+      processing.stats.vertexTangBytes += vertexTangBytes;
+    }
   }
 
   // do actual storage & basic stats
@@ -465,10 +494,10 @@ int Scene::clodGroupMeshoptimizer(void* output_context, clodGroup group, const c
   uint32_t groupIndex =
       context->innerThreadingActive && context->levelGroupOffsetValid ? uint32_t(context->levelGroupOffset + task_index) : ~0u;
 
-  return storeGroup(context, thread_index, groupIndex, tempGroup, fnClusterProvider);
+  return context->scene.storeGroup(context, thread_index, groupIndex, tempGroup, fnClusterProvider);
 }
 
-void Scene::buildGeometryClusterLodMeshoptimizer(const ProcessingInfo& processingInfo, GeometryStorage& geometry)
+void Scene::buildGeometryClusterLodMeshoptimizer(ProcessingInfo& processingInfo, GeometryStorage& geometry)
 {
   clodConfig clodInfo = m_config.meshoptPreferRayTracing ? clodDefaultConfigRT(m_config.clusterTriangles) :
                                                            clodDefaultConfig(m_config.clusterTriangles);
@@ -532,7 +561,7 @@ void Scene::buildGeometryClusterLodMeshoptimizer(const ProcessingInfo& processin
     inputMesh.attribute_weights        = attributeWeights;
   }
 
-  TempContext context = {processingInfo, geometry};
+  TempContext context = {processingInfo, geometry, *this};
 
   GroupInfo worstGroup       = {};
   worstGroup.clusterCount    = uint8_t(m_config.clusterGroupSize);
@@ -772,7 +801,7 @@ void Scene::buildGeometryLodHierarchyMeshoptimizer(const ProcessingInfo& process
   }
 }
 
-void Scene::buildGeometryClusterLodNvLib(const ProcessingInfo& processingInfo, GeometryStorage& geometry)
+void Scene::buildGeometryClusterLodNvLib(ProcessingInfo& processingInfo, GeometryStorage& geometry)
 {
   // WARNING: to be removed / deprecated
   // NVIDIA will deprecate the cluster lod builder library in favor of recommending the use of meshoptimizer.
@@ -799,7 +828,7 @@ void Scene::buildGeometryClusterLodNvLib(const ProcessingInfo& processingInfo, G
   lodMeshInput.groupConfig.minClusterSize = (m_config.clusterGroupSize * 3) / 4;
   lodMeshInput.groupConfig.maxClusterSize = m_config.clusterGroupSize;
 
-  TempContext temp = {processingInfo, geometry};
+  TempContext temp = {processingInfo, geometry, *this};
   result           = nvclusterlod::generateLodMesh(processingInfo.lodContext, lodMeshInput, temp.lodMesh);
   if(result != NVCLUSTERLOD_SUCCESS)
   {

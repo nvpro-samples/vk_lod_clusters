@@ -634,6 +634,24 @@ private:
 
     std::mutex processOnlySaveMutex;
 
+    // stats
+
+    struct Stats
+    {
+      std::atomic_uint64_t groups             = 0;
+      std::atomic_uint64_t clusters           = 0;
+      std::atomic_uint64_t groupHeaderBytes   = 0;
+      std::atomic_uint64_t triangleIndexBytes = 0;
+      std::atomic_uint64_t vertexPosBytes     = 0;
+      std::atomic_uint64_t vertexUvBytes      = 0;
+      std::atomic_uint64_t vertexNrmBytes     = 0;
+      std::atomic_uint64_t vertexTangBytes    = 0;
+      std::atomic_uint64_t clusterBboxBytes   = 0;
+      std::atomic_uint64_t clusterHeaderBytes = 0;
+      std::atomic_uint64_t clusterGenBytes    = 0;
+    } stats;
+
+
     // logging progress
 
     uint32_t   progressLastPercentage      = 0;
@@ -663,12 +681,12 @@ private:
   void processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex, bool isCached);
   void loadCachedGeometry(GeometryStorage& geometry, size_t geometryIndex);
 
-  void buildGeometryClusterLod(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
-  void buildGeometryClusterLodNvLib(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
-  void buildGeometryClusterLodMeshoptimizer(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
+  void buildGeometryClusterLod(ProcessingInfo& processingInfo, GeometryStorage& geometry);
+  void buildGeometryClusterLodNvLib(ProcessingInfo& processingInfo, GeometryStorage& geometry);
+  void buildGeometryClusterLodMeshoptimizer(ProcessingInfo& processingInfo, GeometryStorage& geometry);
 
   void computeLodBboxes_recursive(GeometryStorage& geometry, size_t nodeIdx);
-  void buildGeometryDedupVertices(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
+  void buildGeometryDedupVertices(ProcessingInfo& processingInfo, GeometryStorage& geometry);
 
   void beginProcessingOnly(size_t geometryCount);
   void saveProcessingOnly(ProcessingInfo& processingInfo, size_t geometryIndex);
@@ -680,8 +698,9 @@ private:
 
   struct TempContext
   {
-    const ProcessingInfo& processingInfo;
-    GeometryStorage&      geometry;
+    ProcessingInfo&  processingInfo;
+    GeometryStorage& geometry;
+    Scene&           scene;
 
     bool      innerThreadingActive   = false;
     bool      levelGroupOffsetValid  = false;
@@ -717,11 +736,11 @@ private:
     uint32_t        generatingGroup = 0;
   };
 
-  static uint32_t storeGroup(TempContext*                         context,
-                             uint32_t                             threadIndex,
-                             uint32_t                             groupIndex,
-                             const TempGroup&                     tempGroup,
-                             std::function<TempCluster(uint32_t)> tempClusterFn);
+  uint32_t storeGroup(TempContext*                         context,
+                      uint32_t                             threadIndex,
+                      uint32_t                             groupIndex,
+                      const TempGroup&                     tempGroup,
+                      std::function<TempCluster(uint32_t)> tempClusterFn);
 
   void buildGeometryLodHierarchyMeshoptimizer(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
 

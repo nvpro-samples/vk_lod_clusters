@@ -123,6 +123,26 @@ void Scene::ProcessingInfo::logEnd()
   double endTime = clock.getMicroseconds();
 
   LOGI("... geometry load & processing: %f milliseconds\n", (endTime - startTime) / 1000.0f);
+
+  // can be zero if loaded from cache
+  if(stats.groups)
+  {
+    LOGI("Group Data Stats\n");
+    LOGI("Groups:               %12" PRIu64 "\n", (uint64_t)stats.groups);
+    LOGI("Clusters:             %12" PRIu64 "\n", (uint64_t)stats.clusters);
+    LOGI("Group Header Bytes:   %12" PRIu64 "\n", (uint64_t)stats.groupHeaderBytes);
+    LOGI("Cluster Header Bytes: %12" PRIu64 "\n", (uint64_t)stats.clusterHeaderBytes);
+    LOGI("Cluster BBox Bytes:   %12" PRIu64 "\n", (uint64_t)stats.clusterBboxBytes);
+    LOGI("Cluster GGrp Bytes:   %12" PRIu64 "\n", (uint64_t)stats.clusterGenBytes);
+    LOGI("Triangle Index Bytes: %12" PRIu64 "\n", (uint64_t)stats.triangleIndexBytes);
+    LOGI("Vertex All Bytes:     %12" PRIu64 "\n",
+         (uint64_t)(stats.vertexPosBytes + stats.vertexNrmBytes + stats.vertexTangBytes + stats.vertexUvBytes));
+    LOGI("Vertex Pos Bytes:     %12" PRIu64 "\n", (uint64_t)stats.vertexPosBytes);
+    LOGI("Vertex Nrm Bytes:     %12" PRIu64 "\n", (uint64_t)stats.vertexNrmBytes);
+    LOGI("Vertex Uv  Bytes:     %12" PRIu64 "\n", (uint64_t)stats.vertexUvBytes);
+    LOGI("Vertex Tan Bytes:     %12" PRIu64 "\n", (uint64_t)stats.vertexTangBytes);
+    LOGI("\n");
+  }
 }
 
 void Scene::ProcessingInfo::deinit()
@@ -647,7 +667,7 @@ struct HashVertexRange
 
 static_assert(std::atomic_uint32_t::is_always_lock_free && sizeof(std::atomic_uint32_t) == sizeof(uint32_t));
 
-void Scene::buildGeometryDedupVertices(const ProcessingInfo& processingInfo, GeometryStorage& geometry)
+void Scene::buildGeometryDedupVertices(ProcessingInfo& processingInfo, GeometryStorage& geometry)
 {
   std::vector<uint32_t> remap(geometry.vertexPositions.size());
 
@@ -732,8 +752,10 @@ void Scene::computeHistograms()
   double minOccupancy = FLT_MAX;
   double maxOccupancy = 0;
 
-  for(GeometryView& geometry : m_geometryViews)
+  for(size_t geo = 0; geo < m_geometryViews.size(); geo++)
   {
+    const GeometryView& geometry = m_geometryViews[geo];
+
     assert(geometry.lodLevelsCount < SHADERIO_MAX_LOD_LEVELS);
     m_maxLodLevelsCount = std::max(m_maxLodLevelsCount, geometry.lodLevelsCount);
 
