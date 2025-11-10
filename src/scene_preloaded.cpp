@@ -78,7 +78,19 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
     ScenePreloaded::Geometry&  preloadGeometry = m_geometries[geometryIndex];
     const Scene::GeometryView& sceneGeometry   = scene->getActiveGeometry(geometryIndex);
 
-    res->createBuffer(preloadGeometry.groupData, sceneGeometry.groupData.size_bytes(),
+    size_t groupDataSize = sceneGeometry.groupData.size_bytes();
+
+    if(scene->m_config.useCompressedData)
+    {
+      groupDataSize = 0;
+      for(size_t g = 0; g < sceneGeometry.groupInfos.size(); g++)
+      {
+        const Scene::GroupInfo groupInfo = sceneGeometry.groupInfos[g];
+        groupDataSize += groupInfo.getDeviceSize();
+      }
+    }
+
+    res->createBuffer(preloadGeometry.groupData, groupDataSize,
                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
     NVVK_DBG_NAME(preloadGeometry.groupData.buffer);
 
@@ -140,16 +152,20 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
         uploader.uploadBuffer(preloadGeometry.groupAddresses, (uint64_t*)nullptr, Resources::FlushState::DONT_FLUSH);
     uint8_t* groupData = uploader.uploadBuffer(preloadGeometry.groupData, (uint8_t*)nullptr, Resources::FlushState::DONT_FLUSH);
 
-    uint32_t clusterOffset = 0;
+    uint32_t clusterOffset   = 0;
+    size_t   groupDataOffset = 0;
     for(size_t g = 0; g < sceneGeometry.groupInfos.size(); g++)
     {
       const Scene::GroupInfo groupInfo = sceneGeometry.groupInfos[g];
-      uint64_t               groupVA   = preloadGeometry.groupData.address + groupInfo.offsetBytes;
+      const Scene::GroupView groupView(sceneGeometry.groupData, groupInfo);
+      uint64_t               groupVA = preloadGeometry.groupData.address + groupDataOffset;
 
       groupAddresses[g] = groupVA;
 
-      Scene::fillGroupRuntimeData(sceneGeometry, uint32_t(g), uint32_t(g), clusterOffset,
-                                  groupData + groupInfo.offsetBytes, groupInfo.sizeBytes);
+      Scene::fillGroupRuntimeData(groupInfo, groupView, uint32_t(g), uint32_t(g), clusterOffset,
+                                  groupData + groupDataOffset, groupInfo.getDeviceSize());
+
+      groupDataOffset += groupInfo.getDeviceSize();
 
       for(uint32_t c = 0; c < groupInfo.clusterCount; c++)
       {
@@ -228,10 +244,12 @@ bool ScenePreloaded::initClas()
   clusterTriangleInput.maxClusterVertexCount         = m_scene->m_maxClusterVertices;
   clusterTriangleInput.maxClusterUniqueGeometryCount = 1;
   clusterTriangleInput.maxGeometryIndexValue         = 0;
-  clusterTriangleInput.minPositionTruncateBitCount   = m_config.clasPositionTruncateBits;
-  clusterTriangleInput.maxTotalTriangleCount         = m_scene->m_maxPerGeometryTriangles;
-  clusterTriangleInput.maxTotalVertexCount           = m_scene->m_maxPerGeometryVertices;
-  clusterTriangleInput.vertexFormat                  = VK_FORMAT_R32G32B32_SFLOAT;
+  clusterTriangleInput.minPositionTruncateBitCount =
+      std::max(m_config.clasPositionTruncateBits,
+               m_scene->m_config.useCompressedData ? uint32_t(m_scene->m_config.compressionPosDropBits) : 0);
+  clusterTriangleInput.maxTotalTriangleCount = m_scene->m_maxPerGeometryTriangles;
+  clusterTriangleInput.maxTotalVertexCount   = m_scene->m_maxPerGeometryVertices;
+  clusterTriangleInput.vertexFormat          = VK_FORMAT_R32G32B32_SFLOAT;
 
   VkClusterAccelerationStructureClustersBottomLevelInputNV blasInput = {
       VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_CLUSTERS_BOTTOM_LEVEL_INPUT_NV};
@@ -291,8 +309,6 @@ bool ScenePreloaded::initClas()
   VkCommandBuffer cmd;
   VkClusterAccelerationStructureCommandsInfoNV cmdInfo = {VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV};
 
-  // for every geometry build clas
-
   for(size_t g = 0; g < m_scene->getActiveGeometryCount(); g++)
   {
     ScenePreloaded::Geometry&  preloadGeometry = m_geometries[g];
@@ -301,12 +317,15 @@ bool ScenePreloaded::initClas()
 
     VkClusterAccelerationStructureBuildTriangleClusterInfoNV* buildInfos = clasBuildInfosHost.data();
 
+    size_t   groupOffset   = 0;
     uint32_t clusterOffset = 0;
     for(size_t g = 0; g < sceneGeometry.groupInfos.size(); g++)
     {
       const Scene::GroupInfo groupInfo = sceneGeometry.groupInfos[g];
       Scene::GroupView       groupView(sceneGeometry.groupData, groupInfo);
-      uint64_t               groupVA = preloadGeometry.groupData.address + groupInfo.offsetBytes;
+      uint64_t               groupVA = preloadGeometry.groupData.address + groupOffset;
+
+      size_t indexOffset = size_t(groupView.indices.data()) - size_t(groupView.raw);
 
       for(uint32_t c = 0; c < groupInfo.clusterCount; c++)
       {
@@ -317,18 +336,30 @@ bool ScenePreloaded::initClas()
         uint64_t clusterVA = groupVA + sizeof(shaderio::Group) + sizeof(shaderio::Cluster) * c;
 
         buildInfo.baseGeometryIndexAndGeometryFlags.geometryFlags = VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT_NV;
-        buildInfo.clusterID                = clusterOffset;
-        buildInfo.triangleCount            = groupCluster.triangleCountMinusOne + 1;
-        buildInfo.indexType                = VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_8BIT_NV;
-        buildInfo.indexBufferStride        = 1;
-        buildInfo.indexBuffer              = clusterVA + groupCluster.indices;
+        buildInfo.clusterID         = clusterOffset;
+        buildInfo.triangleCount     = groupCluster.triangleCountMinusOne + 1;
+        buildInfo.indexType         = VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_8BIT_NV;
+        buildInfo.indexBufferStride = 1;
+
+        if(groupInfo.uncompressedSizeBytes)
+        {
+          buildInfo.indexBuffer = groupVA + indexOffset;
+          indexOffset += buildInfo.triangleCount * 3;
+        }
+        else
+        {
+          buildInfo.indexBuffer = clusterVA + groupCluster.indices;
+        }
+
         buildInfo.vertexCount              = groupCluster.vertexCountMinusOne + 1;
         buildInfo.vertexBufferStride       = uint16_t(sizeof(glm::vec3));
         buildInfo.vertexBuffer             = clusterVA + groupCluster.vertices;
-        buildInfo.positionTruncateBitCount = m_config.clasPositionTruncateBits;
+        buildInfo.positionTruncateBitCount = clusterTriangleInput.minPositionTruncateBitCount;
 
         clusterOffset++;
       }
+
+      groupOffset += groupInfo.getDeviceSize();
     }
 
     size_t numClusters = sceneGeometry.totalClustersCount;

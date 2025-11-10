@@ -291,6 +291,8 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
   std::vector<size_t> taskToGeometry;
   std::vector<size_t> meshToGeometry(data->meshes_count, -1);
 
+  uint64_t totalTriangleCount = 0;
+
   {
     size_t geometryMemoryEstimate = 0;
 
@@ -347,9 +349,10 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
         }
 
         meshAccessors.index = gltfPrim->indices;
-
         meshMemoryEstimate += sizeof(uint32_t) * gltfPrim->indices->count;
-        meshTriangleCount += gltfPrim->indices->count;
+
+        meshTriangleCount += gltfPrim->indices->count / 3;
+        totalTriangleCount += gltfPrim->indices->count / 3;
 
         // just serialize the pointer values as identifier for the mesh
         meshIdentifier +=
@@ -471,10 +474,15 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
           m_hasVertexNormals = true;
           geometry.attributeBits |= shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL;
         }
-        else if((m_config.enabledAttributes & shaderio::CLUSTER_ATTRIBUTE_VERTEX_UV) && strcmp(gltfAttrib.name, "TEXCOORD_0") == 0)
+        else if((m_config.enabledAttributes & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0) && strcmp(gltfAttrib.name, "TEXCOORD_0") == 0)
         {
-          m_hasVertexUVs = true;
-          geometry.attributeBits |= shaderio::CLUSTER_ATTRIBUTE_VERTEX_UV;
+          m_hasVertexTexCoord0 = true;
+          geometry.attributeBits |= shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0;
+        }
+        else if((m_config.enabledAttributes & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1) && strcmp(gltfAttrib.name, "TEXCOORD_1") == 0)
+        {
+          m_hasVertexTexCoord1 = true;
+          geometry.attributeBits |= shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1;
         }
         else if((m_config.enabledAttributes & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT) && strcmp(gltfAttrib.name, "TANGENT") == 0)
         {
@@ -505,20 +513,27 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
     // load vertices & index data
     if(!isCached)
     {
-      // disable tangents if no UVs or NORMALS are provided
+      // disable tangents if no TEXCOORDS or NORMALS are provided
       // might as well use automatic tangent space then
       if(!(geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL))
       {
         geometry.attributeBits &= ~shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT;
       }
-      if(!(geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_UV))
+      if(!(geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0))
       {
         geometry.attributeBits &= ~shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT;
       }
 
+      // disable TEX_1 if no TEX_0
+      if(!(geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0))
+      {
+        geometry.attributeBits &= ~shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1;
+      }
+
       size_t attributeStride = (geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL ? 3 : 0)
-                               + (geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_UV ? 2 : 0)
-                               + (geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT ? 4 : 0);
+                               + (geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT ? 4 : 0)
+                               + (geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0 ? 2 : 0)
+                               + (geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1 ? 2 : 0);
       uint32_t attributeStart = 0;
       uint32_t attributeEnd   = uint32_t(attributeStride);
 
@@ -538,16 +553,30 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
         }
       }
 
-      if((geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_UV))
+      if((geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0))
       {
-        if(m_config.simplifyUvWeight > 0)
+        if(m_config.simplifyTexCoordWeight > 0)
         {
-          geometry.attributeUvOffset = attributeStart;
+          geometry.attributeTex0offset = attributeStart;
           attributeStart += 2;
         }
         else
         {
-          geometry.attributeUvOffset = attributeEnd - 2;
+          geometry.attributeTex0offset = attributeEnd - 2;
+          attributeEnd -= 2;
+        }
+      }
+
+      if((geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1))
+      {
+        if(m_config.simplifyTexCoordWeight > 0)
+        {
+          geometry.attributeTex1offset = attributeStart;
+          attributeStart += 2;
+        }
+        else
+        {
+          geometry.attributeTex1offset = attributeEnd - 2;
           attributeEnd -= 2;
         }
       }
@@ -594,6 +623,9 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
 
         uint32_t numVertices = 0;
 
+        uint32_t positionMask = ~(m_config.compressionPosDropBits < 20 ? (1u << m_config.compressionPosDropBits) - 1 : 0);
+        uint32_t texCoordMask = ~(m_config.compressionTexDropBits < 20 ? (1u << m_config.compressionTexDropBits) - 1 : 0);
+
         for(size_t attribIdx = 0; attribIdx < gltfPrim->attributes_count; attribIdx++)
         {
           const cgltf_attribute& gltfAttrib = gltfPrim->attributes[attribIdx];
@@ -610,12 +642,20 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
                   (const glm::vec3*)(cgltf_buffer_view_data(accessor->buffer_view) + accessor->offset);
               for(size_t i = 0; i < accessor->count; i++)
               {
-                glm::vec3 tmp      = readPositions[i];
+                glm::vec3 tmp = readPositions[i];
+                if(m_config.useCompressedData)
+                {
+                  *(uint32_t*)&tmp.x &= positionMask;
+                  *(uint32_t*)&tmp.y &= positionMask;
+                  *(uint32_t*)&tmp.z &= positionMask;
+                }
+
                 writeVertices[i].x = tmp.x;
                 writeVertices[i].y = tmp.y;
                 writeVertices[i].z = tmp.z;
-                geometry.bbox.lo   = glm::min(geometry.bbox.lo, tmp);
-                geometry.bbox.hi   = glm::max(geometry.bbox.hi, tmp);
+
+                geometry.bbox.lo = glm::min(geometry.bbox.lo, tmp);
+                geometry.bbox.hi = glm::max(geometry.bbox.hi, tmp);
               }
             }
             else
@@ -624,6 +664,12 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
               {
                 glm::vec3 tmp;
                 cgltf_accessor_read_float(accessor, i, &tmp.x, 3);
+                if(m_config.useCompressedData)
+                {
+                  *(uint32_t*)&tmp.x &= positionMask;
+                  *(uint32_t*)&tmp.y &= positionMask;
+                  *(uint32_t*)&tmp.z &= positionMask;
+                }
                 writeVertices[i].x = tmp.x;
                 writeVertices[i].y = tmp.y;
                 writeVertices[i].z = tmp.z;
@@ -660,10 +706,10 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
             }
             numVertices = (uint32_t)accessor->count;
           }
-          else if(strcmp(gltfAttrib.name, "TEXCOORD_0") == 0 && (geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_UV))
+          else if(strcmp(gltfAttrib.name, "TEXCOORD_0") == 0 && (geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0))
           {
             float* writeAttributes = geometry.vertexAttributes.data() + (offsetVertices * attributeStride);
-            writeAttributes += geometry.attributeUvOffset;
+            writeAttributes += geometry.attributeTex0offset;
 
             if(accessor->component_type == cgltf_component_type_r_32f && accessor->type == cgltf_type_vec2
                && accessor->stride == sizeof(glm::vec2))
@@ -672,7 +718,12 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
                   (const glm::vec2*)(cgltf_buffer_view_data(accessor->buffer_view) + accessor->offset);
               for(size_t i = 0; i < accessor->count; i++)
               {
-                glm::vec2 tmp                                      = readAttributes[i];
+                glm::vec2 tmp = readAttributes[i];
+                if(m_config.useCompressedData)
+                {
+                  *(uint32_t*)&tmp.x &= texCoordMask;
+                  *(uint32_t*)&tmp.y &= texCoordMask;
+                }
                 *(glm::vec2*)&writeAttributes[i * attributeStride] = tmp;
               }
             }
@@ -681,6 +732,48 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
               for(size_t i = 0; i < accessor->count; i++)
               {
                 glm::vec2 tmp;
+                if(m_config.useCompressedData)
+                {
+                  *(uint32_t*)&tmp.x &= texCoordMask;
+                  *(uint32_t*)&tmp.y &= texCoordMask;
+                }
+                cgltf_accessor_read_float(accessor, i, &tmp.x, 2);
+                *(glm::vec2*)&writeAttributes[i * attributeStride] = tmp;
+              }
+            }
+            numVertices = (uint32_t)accessor->count;
+          }
+          else if(strcmp(gltfAttrib.name, "TEXCOORD_1") == 0 && (geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1))
+          {
+            float* writeAttributes = geometry.vertexAttributes.data() + (offsetVertices * attributeStride);
+            writeAttributes += geometry.attributeTex1offset;
+
+            if(accessor->component_type == cgltf_component_type_r_32f && accessor->type == cgltf_type_vec2
+               && accessor->stride == sizeof(glm::vec2))
+            {
+              const glm::vec2* readAttributes =
+                  (const glm::vec2*)(cgltf_buffer_view_data(accessor->buffer_view) + accessor->offset);
+              for(size_t i = 0; i < accessor->count; i++)
+              {
+                glm::vec2 tmp = readAttributes[i];
+                if(m_config.useCompressedData)
+                {
+                  *(uint32_t*)&tmp.x &= texCoordMask;
+                  *(uint32_t*)&tmp.y &= texCoordMask;
+                }
+                *(glm::vec2*)&writeAttributes[i * attributeStride] = tmp;
+              }
+            }
+            else
+            {
+              for(size_t i = 0; i < accessor->count; i++)
+              {
+                glm::vec2 tmp;
+                if(m_config.useCompressedData)
+                {
+                  *(uint32_t*)&tmp.x &= texCoordMask;
+                  *(uint32_t*)&tmp.y &= texCoordMask;
+                }
                 cgltf_accessor_read_float(accessor, i, &tmp.x, 2);
                 *(glm::vec2*)&writeAttributes[i * attributeStride] = tmp;
               }
@@ -746,14 +839,15 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
 
     processGeometry(processingInfo, geometryIndex, isCached);
 
-    uint32_t percentage = processingInfo.logCompletedGeometry();
+    uint32_t percentage = processingInfo.logCompletedGeometry(triangleCount);
     if(m_loaderConfig.progressPct)
     {
       m_loaderConfig.progressPct->store(percentage);
     }
   };
 
-  processingInfo.logBegin();
+  // for partial files we don't have the completed triangle information
+  processingInfo.logBegin(m_processingOnlyPartialFile ? 0 : totalTriangleCount);
   if(m_loaderConfig.progressPct)
   {
     m_loaderConfig.progressPct->store(0);
@@ -771,6 +865,10 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
   if(notCompleted)
   {
     LOGW("Error in processing geometries, completed / required mismatch\nTry using `--processingonly 1`\n");
+  }
+  else
+  {
+    computeHistogramMaxs();
   }
 
   if(endProcessingOnly(notCompleted))

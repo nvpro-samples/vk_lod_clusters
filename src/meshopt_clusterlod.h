@@ -561,13 +561,13 @@ void clodBuild_iterationTask(void* iteration_context, void* output_context, size
 {
 	using namespace clod;
 
-	IterationContext&              context  = *(IterationContext*)iteration_context;
-	std::vector<std::vector<int>>& groups   = context.groups;
-	std::vector<Cluster>&          clusters = context.clusters;
-	std::vector<unsigned char>&    locks    = context.locks;
-	const clodMesh&                mesh     = context.mesh;
-	const clodConfig&              config   = context.config;
-	int                            depth    = context.depth;
+	IterationContext&                    context  = *(IterationContext*)iteration_context;
+	const std::vector<std::vector<int>>& groups   = context.groups;
+	std::vector<Cluster>&                clusters = context.clusters;
+	const std::vector<unsigned char>&    locks    = context.locks;
+	const clodMesh&                      mesh     = context.mesh;
+	const clodConfig&                    config   = context.config;
+	int                                  depth    = context.depth;
 
 	std::vector<unsigned int> merged;
 	merged.reserve(groups[i].size() * config.max_triangles * 3);
@@ -601,6 +601,7 @@ void clodBuild_iterationTask(void* iteration_context, void* output_context, size
 
 	std::vector<Cluster> split = clusterize(config, mesh, simplified.data(), simplified.size());
 
+	// warning these adds are unordered and may cause indeterministic results when threaded
 	size_t cluster_index = context.next_cluster.fetch_add(split.size());
 	size_t pending_index = context.next_pending.fetch_add(split.size());
 

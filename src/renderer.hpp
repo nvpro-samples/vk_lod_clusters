@@ -189,6 +189,13 @@ protected:
 
 //////////////////////////////////////////////////////////////////////////
 
+inline float clusterLodErrorOverDistance(float errorSizeInPixels, float fov, float resolution)
+{
+  return sinf(atanf(tanf(fov * 0.5f) * errorSizeInPixels / resolution));
+}
+
+//////////////////////////////////////////////////////////////////////////
+
 std::unique_ptr<Renderer> makeRendererRasterClustersLod();
 std::unique_ptr<Renderer> makeRendererRayTraceClustersLod();
 

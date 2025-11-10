@@ -114,7 +114,7 @@ vec3 visualizeColor(uint visData, uint instanceID)
   }
 }
 
-vec4 shading(uint instanceID, vec3 wPos, vec3 wNormal, vec4 wTangent, vec2 oUV, uint visData, float overheadLight, float ambientOcclusion
+vec4 shading(uint instanceID, vec3 wPos, vec3 wNormal, vec4 wTangent, vec2 oTexCoord, uint visData, float overheadLight, float ambientOcclusion
 #if USE_DLSS
   , out vec4 dlssAlbedo, out vec3 dlssSpecular, out vec4 dlssNormalRoughness
 #endif
@@ -126,12 +126,12 @@ vec4 shading(uint instanceID, vec3 wPos, vec3 wNormal, vec4 wTangent, vec2 oUV, 
         vec3  materialAlbedo    = visualizeColor(visData, instanceID);
 
   vec4 color   = vec4(0.f);
-  vec3 normal  = normalize(wNormal.xyz);
+  vec3 normal  = wNormal.xyz;
   vec3 wEyePos = vec3(view.viewMatrixI[3].x, view.viewMatrixI[3].y, view.viewMatrixI[3].z);
   vec3 eyeDir  = normalize(wEyePos.xyz - wPos.xyz);
   
   
-#if ALLOW_VERTEX_UVS && 0
+#if ALLOW_VERTEX_TEXCOORDS && 0
   // for debugging decode of attributes
   if (view.visualize == VISUALIZE_GREY){
   
@@ -140,14 +140,14 @@ vec4 shading(uint instanceID, vec3 wPos, vec3 wNormal, vec4 wTangent, vec2 oUV, 
     vec3 bitangent = cross(normal,tangent) * wTangent.w;
     
     vec3 procNrm;
-    procNrm.xy = sin(oUV.xy * 1000) * 0.25;
+    procNrm.xy = sin(oTexCoord.xy * 1000) * 0.25;
     procNrm.z = 1.0;
     procNrm = normalize(procNrm);
     
     normal = normalize(mat3(tangent, bitangent, normal) * procNrm);
   #endif
   
-    materialAlbedo.xy *= (oUV * 0.3) + 0.7;
+    materialAlbedo.xy *= (oTexCoord * 0.3) + 0.7;
   }
 #endif
   

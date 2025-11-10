@@ -155,8 +155,9 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("USE_SEPARATE_GROUPS", config.useSeparateGroups ? "1" : "0");
   options.AddMacroDefinition("USE_DLSS", supportsDLSS && config.useDlss ? "1" : "0");
   options.AddMacroDefinition("ALLOW_VERTEX_NORMALS", rscene.scene->m_hasVertexNormals ? "1" : "0");
-  options.AddMacroDefinition("ALLOW_VERTEX_UVS", rscene.scene->m_hasVertexUVs ? "1" : "0");
   options.AddMacroDefinition("ALLOW_VERTEX_TANGENTS", rscene.scene->m_hasVertexTangents ? "1" : "0");
+  options.AddMacroDefinition("ALLOW_VERTEX_TEXCOORDS", rscene.scene->m_hasVertexTexCoord0 ? "1" : "0");
+  //options.AddMacroDefinition("ALLOW_VERTEX_TEXCOORD_1", rscene.scene->m_hasVertexTexCoord1 ? "1" : "0");
   options.AddMacroDefinition("DEBUG_VISUALIZATION", config.useDebugVisualization ? "1" : "0");
   options.AddMacroDefinition("USE_EXT_MESH_SHADER", fmt::format("{}", config.useEXTmeshShader ? 1 : 0));
   options.AddMacroDefinition("MESHSHADER_WORKGROUP_SIZE", fmt::format("{}", m_meshShaderWorkgroupSize));
@@ -582,8 +583,8 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
   float     pixelScale  = std::min(renderScale.x, renderScale.y);
 
   m_sceneBuildShaderio.errorOverDistanceThreshold =
-      nvclusterlodErrorOverDistance(frame.lodPixelError * pixelScale, frame.frameConstants.fov,
-                                    frame.frameConstants.viewportf.y);
+      clusterLodErrorOverDistance(frame.lodPixelError * pixelScale, frame.frameConstants.fov,
+                                  frame.frameConstants.viewportf.y);
 
   m_sceneBuildShaderio.culledErrorScale      = std::max(1.0f, frame.culledErrorScale);
   m_sceneBuildShaderio.sharingPushCulled     = frame.sharingPushCulled;

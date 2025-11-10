@@ -30,20 +30,10 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/ext/scalar_constants.hpp>
 
-#include "nvclusterlod/nvclusterlod_common.h"
-#include "nvclusterlod/nvclusterlod_hierarchy.h"
 #include "scene.hpp"
 
 
 namespace lodclusters {
-static_assert(sizeof(shaderio::Node) == sizeof(nvclusterlod_HierarchyNode));
-static_assert(offsetof(shaderio::Node, nodeRange) == offsetof(nvclusterlod_HierarchyNode, children));
-static_assert(offsetof(shaderio::Node, traversalMetric) == offsetof(nvclusterlod_HierarchyNode, boundingSphere));
-static_assert(offsetof(shaderio::Node, traversalMetric) + offsetof(shaderio::TraversalMetric, maxQuadricError)
-              == offsetof(nvclusterlod_HierarchyNode, maxClusterQuadricError));
-static_assert(sizeof(glm::vec4) == sizeof(nvclusterlod_Sphere));
-static_assert(NVCLUSTERLOD_ORIGINAL_MESH_GROUP == SHADERIO_ORIGINAL_MESH_GROUP);
-
 
 void Scene::ProcessingInfo::init(float processingThreadsPct)
 {
@@ -76,37 +66,40 @@ void Scene::ProcessingInfo::setupParallelism(size_t geometryCount_, size_t geome
 
   numOuterThreads = preferInnerParallelism ? 1 : numPoolThreads;
   numInnerThreads = preferInnerParallelism ? numPoolThreads : 1;
-
-  nvcluster_ContextCreateInfo clusterContextInfo;
-  clusterContextInfo.parallelize = preferInnerParallelism ? 1 : 0;
-  nvclusterCreateContext(&clusterContextInfo, &clusterContext);
-
-  nvclusterlod_ContextCreateInfo lodContextInfo;
-  lodContextInfo.parallelize    = preferInnerParallelism ? 1 : 0;
-  lodContextInfo.clusterContext = clusterContext;
-  nvclusterlodCreateContext(&lodContextInfo, &lodContext);
 }
 
-void Scene::ProcessingInfo::logBegin()
+void Scene::ProcessingInfo::logBegin(uint64_t totalTriangleCount)
 {
   LOGI("... geometry load & processing: geometries %" PRIu64 ", threads outer %d inner %d\n", geometryCount,
        numOuterThreads, numInnerThreads);
 
   startTime = clock.getMicroseconds();
 
+  triangleCount               = totalTriangleCount;
+  progressTrianglesCompleted  = 0;
   progressGeometriesCompleted = 0;
   progressLastPercentage      = 0;
 }
 
-uint32_t Scene::ProcessingInfo::logCompletedGeometry()
+uint32_t Scene::ProcessingInfo::logCompletedGeometry(uint64_t geometryTriangleCount)
 {
   std::lock_guard lock(progressMutex);
 
   progressGeometriesCompleted++;
+  progressTrianglesCompleted += geometryTriangleCount;
+
+  uint32_t percentage;
+  if(!triangleCount)
+  {
+    percentage = uint32_t(double(progressGeometriesCompleted * 100) / double(geometryCount));
+  }
+  else
+  {
+    percentage = uint32_t((double(progressTrianglesCompleted) * 100) / double(triangleCount));
+  }
 
   // statistics
   const uint32_t precentageGranularity = 5;
-  uint32_t       percentage            = uint32_t(size_t(progressGeometriesCompleted * 100) / geometryCount);
   uint32_t       percentageSnapped     = (percentage / precentageGranularity) * precentageGranularity;
 
   if(percentageSnapped > progressLastPercentage)
@@ -130,86 +123,56 @@ void Scene::ProcessingInfo::logEnd()
     LOGI("Group Data Stats\n");
     LOGI("Groups:               %12" PRIu64 "\n", (uint64_t)stats.groups);
     LOGI("Clusters:             %12" PRIu64 "\n", (uint64_t)stats.clusters);
+    LOGI("Vertices:             %12" PRIu64 "\n", (uint64_t)stats.vertices);
+    LOGI("Group Unique Verts:   %12" PRIu64 "\n", (uint64_t)stats.groupUniqueVertices);
     LOGI("Group Header Bytes:   %12" PRIu64 "\n", (uint64_t)stats.groupHeaderBytes);
     LOGI("Cluster Header Bytes: %12" PRIu64 "\n", (uint64_t)stats.clusterHeaderBytes);
     LOGI("Cluster BBox Bytes:   %12" PRIu64 "\n", (uint64_t)stats.clusterBboxBytes);
     LOGI("Cluster GGrp Bytes:   %12" PRIu64 "\n", (uint64_t)stats.clusterGenBytes);
     LOGI("Triangle Index Bytes: %12" PRIu64 "\n", (uint64_t)stats.triangleIndexBytes);
-    LOGI("Vertex All Bytes:     %12" PRIu64 "\n",
-         (uint64_t)(stats.vertexPosBytes + stats.vertexNrmBytes + stats.vertexTangBytes + stats.vertexUvBytes));
+    LOGI("Vertex All Bytes:     %12" PRIu64 "\n", (uint64_t)(stats.vertexPosBytes + stats.vertexNrmBytes + stats.vertexTexCoordBytes));
     LOGI("Vertex Pos Bytes:     %12" PRIu64 "\n", (uint64_t)stats.vertexPosBytes);
-    LOGI("Vertex Nrm Bytes:     %12" PRIu64 "\n", (uint64_t)stats.vertexNrmBytes);
-    LOGI("Vertex Uv  Bytes:     %12" PRIu64 "\n", (uint64_t)stats.vertexUvBytes);
-    LOGI("Vertex Tan Bytes:     %12" PRIu64 "\n", (uint64_t)stats.vertexTangBytes);
+    LOGI("Vertex TexCrd Bytes:  %12" PRIu64 "\n", (uint64_t)stats.vertexTexCoordBytes);
+    LOGI("Vertex N&T Bytes:     %12" PRIu64 "\n", (uint64_t)stats.vertexNrmBytes);
+    LOGI("Vertex Comp Bytes:    %12" PRIu64 "\n", (uint64_t)stats.vertexCompressedBytes);
     LOGI("\n");
   }
 }
 
 void Scene::ProcessingInfo::deinit()
 {
-  if(lodContext)
-    nvclusterlodDestroyContext(lodContext);
-  if(clusterContext)
-    nvclusterDestroyContext(clusterContext);
-
   if(numPoolThreads != numPoolThreadsOriginal)
     nvutils::get_thread_pool().reset(numPoolThreadsOriginal);
 }
 
-void Scene::openCache()
+void Scene::fillGroupRuntimeData(const GroupInfo& srcGroupInfo,
+                                 const GroupView& srcGroupView,
+                                 uint32_t         groupID,
+                                 uint32_t         groupResidentID,
+                                 uint32_t         clusterResidentID,
+                                 void*            dst,
+                                 size_t           dstSize)
 {
-  if(m_cacheFileMapping.open(m_cacheFilePath))
+  GroupInfo dstGroupInfo = srcGroupInfo;
+  if(srcGroupInfo.uncompressedSizeBytes)
   {
-    m_cacheFileView.init(m_cacheFileMapping.size(), m_cacheFileMapping.data());
-    if(m_cacheFileView.isValid())
-    {
-      // when loading results from the cache, we cannot change the cluster or lod settings of a scene,
-      // it's considered read only.
-      m_loadedFromCache = true;
-      m_cacheFileSize   = m_cacheFileMapping.size();
+    decompressGroup(srcGroupInfo, srcGroupView, dst, dstSize);
 
-      std::string cacheFileName = nvutils::utf8FromPath(m_cacheFilePath);
-      LOGI("Scene::init using cache file:\n  %s\n", cacheFileName.c_str());
-
-      if(m_cacheFileSize > size_t(2) * 1024 * 1024 * 1024)
-      {
-        m_loaderConfig.memoryMappedCache = true;
-      }
-    }
-    else
-    {
-      m_cacheFileView.deinit();
-      m_cacheFileMapping.close();
-    }
+    dstGroupInfo.sizeBytes       = dstGroupInfo.uncompressedSizeBytes;
+    dstGroupInfo.vertexDataCount = dstGroupInfo.uncompressedVertexDataCount;
   }
-}
-
-void Scene::closeCache()
-{
-  if(m_cacheFileView.isValid())
+  else
   {
-    m_cacheFileView.deinit();
-    m_cacheFileMapping.close();
+    assert(srcGroupView.rawSize <= dstSize);
+    memcpy(dst, srcGroupView.raw, srcGroupView.rawSize);
   }
-}
 
-void Scene::fillGroupRuntimeData(const GeometryView& sceneGeometry,
-                                 uint32_t            groupID,
-                                 uint32_t            groupResidentID,
-                                 uint32_t            clusterResidentID,
-                                 void*               dst,
-                                 size_t              dstSize)
-{
-  const GroupInfo groupInfo = sceneGeometry.groupInfos[groupID];
-  GroupView       groupView(sceneGeometry.groupData, groupInfo);
-
-  assert(dstSize <= groupView.rawSize);
-
-  memcpy(dst, groupView.raw, groupView.rawSize);
-
-  GroupStorage groupStorage(dst, groupInfo);
-  groupStorage.group->residentID        = groupResidentID;
-  groupStorage.group->clusterResidentID = clusterResidentID;
+  // final patching
+  {
+    GroupStorage groupStorage(dst, dstGroupInfo);
+    groupStorage.group->residentID        = groupResidentID;
+    groupStorage.group->clusterResidentID = clusterResidentID;
+  }
 }
 
 Scene::Result Scene::init(const std::filesystem::path& filePath, const SceneConfig& config, const SceneLoaderConfig& loaderConfig, bool skipCache)
@@ -223,9 +186,6 @@ Scene::Result Scene::init(const std::filesystem::path& filePath, const SceneConf
   m_cacheFilePath        = filePath;
   m_cachePartialFilePath = filePath;
   m_cacheFileSize        = 0;
-
-  // TODO compression, not yet implemented
-  m_config.useCompressedData = false;
 
   std::string oldExtension = filePath.extension().string();
   m_cacheFilePath.replace_extension(oldExtension + ".nvsngeo");
@@ -264,11 +224,16 @@ Scene::Result Scene::init(const std::filesystem::path& filePath, const SceneConf
     return loadResult;
   }
 
+  if(m_loadedFromCache)
+  {
+    m_cacheFileView.getSceneConfig(m_config);
+    m_cacheFileView.getHistograms(m_histograms);
+  }
+
   m_originalInstanceCount = m_instances.size();
   m_originalGeometryCount = m_geometryViews.size();
   m_activeGeometryCount   = m_originalGeometryCount;
 
-  computeClusterStats();
   computeInstanceBBoxes();
   m_gridBbox = m_bbox;
 
@@ -285,6 +250,8 @@ Scene::Result Scene::init(const std::filesystem::path& filePath, const SceneConf
     m_maxPerGeometryClusters  = std::max(m_maxPerGeometryClusters, geometry.totalClustersCount);
     m_maxClusterVertices      = std::max(m_maxClusterVertices, geometry.clusterMaxVerticesCount);
     m_maxClusterTriangles     = std::max(m_maxClusterTriangles, geometry.clusterMaxTrianglesCount);
+    m_maxLodLevelsCount       = std::max(m_maxLodLevelsCount, geometry.lodLevelsCount);
+
     m_hiTrianglesCount += geometry.hiTriangleCount;
     m_hiClustersCount += geometry.hiClustersCount;
     m_totalClustersCount += geometry.totalClustersCount;
@@ -541,22 +508,6 @@ void Scene::computeInstanceBBoxes()
   }
 }
 
-void Scene::computeClusterStats()
-{
-  for(size_t i = 0; i < m_geometryViews.size(); i++)
-  {
-    m_maxClusterVertices = std::max(m_maxClusterVertices, m_geometryViews[i].clusterMaxVerticesCount);
-  }
-
-  // reset settings in case we had a valid cache file
-  if(m_cacheFileView.isValid())
-  {
-    m_cacheFileView.getSceneLodSettings(m_config);
-  }
-
-  computeHistograms();
-}
-
 void Scene::processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex, bool isCached)
 {
   GeometryStorage& geometryStorage = m_geometryStorages[geometryIndex];
@@ -601,7 +552,7 @@ void Scene::processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex
         buildGeometryDedupVertices(processingInfo, geometryStorage);
       }
 
-      buildGeometryClusterLod(processingInfo, geometryStorage);
+      buildGeometryLod(processingInfo, geometryStorage);
     }
   }
 
@@ -646,6 +597,8 @@ void Scene::computeLodBboxes_recursive(GeometryStorage& geometry, size_t i)
   }
   else
   {
+    ((std::atomic_uint32_t&)m_histograms.nodeChildren[node.nodeRange.childCountMinusOne + 1])++;
+
     for(uint32_t n = 0; n <= node.nodeRange.childCountMinusOne; n++)
     {
       computeLodBboxes_recursive(geometry, node.nodeRange.childOffset + n);
@@ -692,7 +645,7 @@ void Scene::buildGeometryDedupVertices(ProcessingInfo& processingInfo, GeometryS
       streamCount++;
       texOffset = 3;
     }
-    if(geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_UV)
+    if(geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0)
     {
       streams[streamCount].data   = geometry.vertexAttributes.data() + texOffset;
       streams[streamCount].size   = sizeof(float) * 2;
@@ -737,148 +690,38 @@ void Scene::buildGeometryDedupVertices(ProcessingInfo& processingInfo, GeometryS
                            reinterpret_cast<uint32_t*>(geometry.triangles.data()), geometry.triangles.size() * 3, remap.data());
 }
 
-void Scene::computeHistograms()
+void Scene::computeHistogramMaxs()
 {
-  m_clusterTriangleHistogram.resize(m_config.clusterTriangles + 1, 0);
-  m_clusterVertexHistogram.resize(m_config.clusterVertices + 1, 0);
-  m_groupClusterHistogram.resize(m_config.clusterGroupSize + 1, 0);
-  m_nodeChildrenHistogram.resize(32 + 1, 0);
-  m_lodLevelsHistogram.resize(SHADERIO_MAX_LOD_LEVELS + 1, 0);
+  m_histograms.clusterTrianglesMax = 0u;
+  m_histograms.clusterVerticesMax  = 0u;
+  m_histograms.groupClustersMax    = 0u;
+  m_histograms.nodeChildrenMax     = 0u;
+  m_histograms.lodLevelsMax        = 0u;
 
-  m_maxLodLevelsCount = 0;
-
-  double sumOccupancy = 0;
-  double numOccupancy = 0;
-  double minOccupancy = FLT_MAX;
-  double maxOccupancy = 0;
-
-  for(size_t geo = 0; geo < m_geometryViews.size(); geo++)
+  for(size_t i = 0; i < m_histograms.clusterTriangles.size(); i++)
   {
-    const GeometryView& geometry = m_geometryViews[geo];
-
-    assert(geometry.lodLevelsCount < SHADERIO_MAX_LOD_LEVELS);
-    m_maxLodLevelsCount = std::max(m_maxLodLevelsCount, geometry.lodLevelsCount);
-
-    m_lodLevelsHistogram[geometry.lodLevelsCount]++;
-
-    for(size_t g = 0; g < geometry.groupInfos.size(); g++)
-    {
-      const GroupInfo& groupInfo = geometry.groupInfos[g];
-      GroupView        group(geometry.groupData, groupInfo);
-
-      // triangles
-      for(size_t c = 0; c < group.clusters.size(); c++)
-      {
-        const shaderio::Cluster& cluster = group.clusters[c];
-        m_clusterTriangleHistogram[cluster.triangleCountMinusOne + 1]++;
-        m_clusterVertexHistogram[cluster.vertexCountMinusOne + 1]++;
-      }
-
-      // group clusters
-      if(groupInfo.clusterCount + 1 > m_groupClusterHistogram.size())
-      {
-        m_groupClusterHistogram.resize(groupInfo.clusterCount + 1, 0);
-      }
-      m_groupClusterHistogram[groupInfo.clusterCount]++;
-
-      // occupancy
-      if(m_loaderConfig.computeClusterBBoxOccupancy && !m_config.useCompressedData)
-      {
-        for(size_t c = 0; c < group.clusters.size(); c++)
-        {
-          const shaderio::Cluster& cluster  = group.clusters[c];
-          const uint8_t*           indices  = group.getClusterIndices(c);
-          const glm::vec3*         vertices = group.getClusterVertices(c);
-
-          glm::vec3 boxDim = group.clusterBboxes[c].hi - group.clusterBboxes[c].lo;
-
-          double triangleArea = 0.0;
-
-          for(uint32_t t = 0; t <= cluster.triangleCountMinusOne; t++)
-          {
-            glm::vec3 a = glm::vec3(vertices[indices[t * 3 + 0]]);
-            glm::vec3 b = glm::vec3(vertices[indices[t * 3 + 1]]);
-            glm::vec3 c = glm::vec3(vertices[indices[t * 3 + 2]]);
-
-            float e0 = glm::distance(a, b);
-            float e1 = glm::distance(b, c);
-            float e2 = glm::distance(c, a);
-
-            float s = ((e0 + e1 + e2) / 2.0f);
-            float h = s * (s - e0) * (s - e1) * (s - e2);
-
-            if(h > 0.0f)
-            {
-              float area = sqrtf(h);
-              triangleArea += double(area);
-            }
-          }
-
-          double occupancy = triangleArea / (double(boxDim.x * boxDim.y + boxDim.y * boxDim.z + boxDim.x * boxDim.z));
-
-          if(triangleArea && occupancy)
-          {
-            sumOccupancy += occupancy;
-
-            minOccupancy = std::min(occupancy, minOccupancy);
-            maxOccupancy = std::max(occupancy, maxOccupancy);
-            numOccupancy++;
-          }
-        }
-      }
-    }
-
-    for(size_t n = 0; n < geometry.lodNodes.size(); n++)
-    {
-      const shaderio::Node& node = geometry.lodNodes[n];
-      if(node.nodeRange.isGroup)
-      {
-        continue;
-      }
-
-      if(node.nodeRange.childCountMinusOne + 1 + 1 > m_nodeChildrenHistogram.size())
-      {
-        m_nodeChildrenHistogram.resize(node.nodeRange.childCountMinusOne + 1 + 1, 0);
-      }
-      m_nodeChildrenHistogram[node.nodeRange.childCountMinusOne + 1]++;
-    }
+    m_histograms.clusterTrianglesMax = std::max(m_histograms.clusterTrianglesMax, m_histograms.clusterTriangles[i]);
+  }
+  for(size_t i = 0; i < m_histograms.clusterVertices.size(); i++)
+  {
+    m_histograms.clusterVerticesMax = std::max(m_histograms.clusterVerticesMax, m_histograms.clusterVertices[i]);
   }
 
-  if(m_loaderConfig.computeClusterBBoxOccupancy && !m_config.useCompressedData)
+  for(size_t i = 0; i < m_histograms.groupClusters.size(); i++)
   {
-    LOGI("avg cluster bbox occupancy: %.9f\n", sumOccupancy / numOccupancy);
-    LOGI("min cluster bbox occupancy: %.9f\n", minOccupancy);
-    LOGI("max cluster bbox occupancy: %.9f\n", maxOccupancy);
+    m_histograms.groupClustersMax = std::max(m_histograms.groupClustersMax, m_histograms.groupClusters[i]);
   }
 
-  m_lodLevelsHistogram.resize(m_maxLodLevelsCount + 1);
+  for(size_t i = 0; i < m_histograms.nodeChildren.size(); i++)
+  {
+    m_histograms.nodeChildrenMax = std::max(m_histograms.nodeChildrenMax, m_histograms.nodeChildren[i]);
+  }
 
-  m_clusterTriangleHistogramMax = 0u;
-  m_clusterVertexHistogramMax   = 0u;
-  m_groupClusterHistogramMax    = 0u;
-  m_nodeChildrenHistogramMax    = 0u;
-  m_lodLevelsHistogramMax       = 0u;
-
-  for(size_t i = 0; i < m_clusterTriangleHistogram.size(); i++)
+  for(size_t i = 0; i < m_histograms.lodLevels.size(); i++)
   {
-    m_clusterTriangleHistogramMax = std::max(m_clusterTriangleHistogramMax, m_clusterTriangleHistogram[i]);
-  }
-  for(size_t i = 0; i < m_clusterVertexHistogram.size(); i++)
-  {
-    m_clusterVertexHistogramMax = std::max(m_clusterVertexHistogramMax, m_clusterVertexHistogram[i]);
-  }
-  for(size_t i = 0; i < m_groupClusterHistogram.size(); i++)
-  {
-    m_groupClusterHistogramMax = std::max(m_groupClusterHistogramMax, m_groupClusterHistogram[i]);
-  }
-  for(size_t i = 0; i < m_nodeChildrenHistogram.size(); i++)
-  {
-    m_nodeChildrenHistogramMax = std::max(m_nodeChildrenHistogramMax, m_nodeChildrenHistogram[i]);
-  }
-  for(size_t i = 0; i < m_lodLevelsHistogram.size(); i++)
-  {
-    m_lodLevelsHistogramMax = std::max(m_lodLevelsHistogramMax, m_lodLevelsHistogram[i]);
+    m_histograms.lodLevelsMax = std::max(m_histograms.lodLevelsMax, m_histograms.lodLevels[i]);
   }
 }
+
 
 }  // namespace lodclusters

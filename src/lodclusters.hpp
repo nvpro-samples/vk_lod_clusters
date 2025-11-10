@@ -176,13 +176,13 @@ private:
   SceneLoaderConfig      m_sceneLoaderConfig;
   SceneConfig            m_sceneConfig;
   SceneConfig            m_sceneConfigLast;
+  SceneConfig            m_sceneConfigEdit;
   glm::vec3              m_sceneUpVector = glm::vec3(0, 1, 0);
   SceneGridConfig        m_sceneGridConfig;
   SceneGridConfig        m_sceneGridConfigLast;
   std::atomic_bool       m_sceneLoading        = false;
   std::atomic_uint32_t   m_sceneProgress       = 0;
   bool                   m_sceneLoadFromConfig = false;
-  bool                   m_sceneAllowLarge     = false;
 
 
   std::string m_cameraString;
@@ -222,9 +222,9 @@ private:
 
   void updateImguiImage();
 
-  void findSceneClusterConfig();
-  void updatedClusterConfig();
-  void updatedSceneGrid();
+  ClusterConfig findSceneClusterConfig(const SceneConfig& sceneConfig);
+  void          setFromClusterConfig(SceneConfig& sceneConfig, ClusterConfig clusterConfig);
+  void          updatedSceneGrid();
 
   void handleChanges();
 

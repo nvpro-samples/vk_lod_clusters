@@ -288,7 +288,7 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
 
     GeometryGroup geometryGroup     = {uint32_t(geometryIndex), lastLodLevel.groupOffset};
     uint32_t      lastClustersCount = groupInfo.clusterCount;
-    uint64_t      lastGroupSize     = groupInfo.sizeBytes;
+    uint64_t      lastGroupSize     = groupInfo.getDeviceSize();
 
     res.createBuffer(persistentGeometry.lowDetailGroupsData, lastGroupSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     NVVK_DBG_NAME(persistentGeometry.lowDetailGroupsData.buffer);
@@ -306,8 +306,8 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
     // setup and upload geometry data for the lowest detail group
     void* loGroupData = uploader.uploadBuffer(persistentGeometry.lowDetailGroupsData, (void*)nullptr);
 
-    Scene::fillGroupRuntimeData(sceneGeometry, geometryGroup.groupID, rgroup->groupResidentID, rgroup->clusterResidentID,
-                                loGroupData, persistentGeometry.lowDetailGroupsData.bufferSize);
+    Scene::fillGroupRuntimeData(groupInfo, groupView, geometryGroup.groupID, rgroup->groupResidentID,
+                                rgroup->clusterResidentID, loGroupData, persistentGeometry.lowDetailGroupsData.bufferSize);
 
     shaderGeometry.lowDetailClusterID = rgroup->clusterResidentID;
     shaderGeometry.lowDetailTriangles = groupInfo.triangleCount;
@@ -509,7 +509,7 @@ void SceneStreaming::cmdBeginFrame(VkCommandBuffer         cmd,
   m_shaderData.frameIndex               = m_frameIndex;
   m_shaderData.ageThreshold             = settings.ageThreshold;
   m_shaderData.useBlasCaching           = settings.useBlasCaching ? 1 : 0;
-  m_shaderData.clasPositionTruncateBits = m_config.clasPositionTruncateBits;
+  m_shaderData.clasPositionTruncateBits = m_clasTriangleInput.minPositionTruncateBitCount;
 
   // upload final configurations for this frame
   vkCmdUpdateBuffer(cmd, m_shaderBuffer.buffer, 0, sizeof(m_shaderData), &m_shaderData);
@@ -696,7 +696,7 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
     // This includes all relevant cluster data, including vertices, triangle indices...
     const Scene::GroupInfo groupInfo       = sceneGeometry.groupInfos[geometryGroup.groupID];
     uint32_t               clusterCount    = groupInfo.clusterCount;
-    uint64_t               groupSize       = groupInfo.sizeBytes;
+    uint64_t               groupDeviceSize = groupInfo.getDeviceSize();
     uint64_t               groupClasSize   = 0;
     bool                   canAllocateClas = true;
 
@@ -720,8 +720,8 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
     uint64_t                  deviceAddress;
     nvvk::BufferSubAllocation storageHandle;
 
-    bool canTransfer      = m_storage.canTransfer(storageTask, groupSize);
-    bool canStore         = m_storage.allocate(storageHandle, geometryGroup, groupSize, deviceAddress);
+    bool canTransfer      = m_storage.canTransfer(storageTask, groupDeviceSize);
+    bool canStore         = m_storage.allocate(storageHandle, geometryGroup, groupDeviceSize, deviceAddress);
     bool canAllocateGroup = m_resident.canAllocateGroup(clusterCount);
 
     // test if we can allocate
@@ -759,10 +759,17 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
     assert(deviceAddress % 16 == 0);
 
     {
-      // simply copy data as is, the streaming patch will take care of modifying the data
-      // where needed
       Scene::GroupView groupView(sceneGeometry.groupData, groupInfo);
-      memcpy(groupData, groupView.raw, groupView.rawSize);
+      if(groupInfo.uncompressedSizeBytes)
+      {
+        Scene::decompressGroup(groupInfo, groupView, groupData, groupDeviceSize);
+      }
+      else
+      {
+        // simply copy data as is, the streaming patch will take care of modifying the data
+        // where needed
+        memcpy(groupData, groupView.raw, groupView.rawSize);
+      }
     }
 
     m_persistentGeometries[geometryGroup.geometryID].lodLoadedGroupsCount[groupInfo.lodLevel]++;
@@ -1741,8 +1748,10 @@ bool SceneStreaming::initClas()
   m_clasTriangleInput.maxClusterVertexCount         = m_scene->m_maxClusterVertices;
   m_clasTriangleInput.maxClusterUniqueGeometryCount = 1;
   m_clasTriangleInput.maxGeometryIndexValue         = 0;
-  m_clasTriangleInput.minPositionTruncateBitCount   = m_config.clasPositionTruncateBits;
-  m_clasTriangleInput.vertexFormat                  = VK_FORMAT_R32G32B32_SFLOAT;
+  m_clasTriangleInput.minPositionTruncateBitCount =
+      std::max(m_config.clasPositionTruncateBits,
+               m_scene->m_config.useCompressedData ? uint32_t(m_scene->m_config.compressionPosDropBits) : 0);
+  m_clasTriangleInput.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
 
   {
     VkAccelerationStructureBuildSizesInfoKHR buildSizesInfo = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
@@ -1906,9 +1915,13 @@ bool SceneStreaming::initClas()
       const Scene::GroupInfo     sceneGroupInfo = sceneGeometry.groupInfos[residentGroup.geometryGroup.groupID];
       Scene::GroupView           sceneGroupView(sceneGeometry.groupData, sceneGroupInfo);
 
+      uint64_t groupVA     = residentGroup.deviceAddress;
+      size_t   indexOffset = size_t(sceneGroupView.indices.data()) - size_t(sceneGroupView.raw);
+
       blasBuildInfos[g].clusterReferencesCount  = residentGroup.clusterCount;
       blasBuildInfos[g].clusterReferencesStride = sizeof(uint64_t);
       blasBuildInfos[g].clusterReferences = m_shaderData.resident.clasAddresses + sizeof(uint64_t) * clusterOffset;
+
 
       for(uint32_t c = 0; c < residentGroup.clusterCount; c++)
       {
@@ -1918,18 +1931,27 @@ bool SceneStreaming::initClas()
         VkClusterAccelerationStructureBuildTriangleClusterInfoNV& buildInfo = clasBuildInfos[clusterOffset];
         buildInfo                                                           = {};
 
-        uint64_t clusterVA = residentGroup.deviceAddress + sizeof(shaderio::Group) + sizeof(shaderio::Cluster) * c;
+        uint64_t clusterVA = groupVA + sizeof(shaderio::Group) + sizeof(shaderio::Cluster) * c;
 
         buildInfo.baseGeometryIndexAndGeometryFlags.geometryFlags = VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT_NV;
-        buildInfo.clusterID                = residentGroup.clusterResidentID + c;
-        buildInfo.triangleCount            = sceneCluster.triangleCountMinusOne + 1;
-        buildInfo.indexType                = VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_8BIT_NV;
-        buildInfo.indexBufferStride        = 1;
-        buildInfo.indexBuffer              = clusterVA + sceneCluster.indices;
+        buildInfo.clusterID         = residentGroup.clusterResidentID + c;
+        buildInfo.triangleCount     = sceneCluster.triangleCountMinusOne + 1;
+        buildInfo.indexType         = VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_8BIT_NV;
+        buildInfo.indexBufferStride = 1;
+        if(sceneGroupInfo.uncompressedSizeBytes)
+        {
+          buildInfo.indexBuffer = groupVA + indexOffset;
+          indexOffset += buildInfo.triangleCount * 3;
+        }
+        else
+        {
+          buildInfo.indexBuffer = clusterVA + sceneCluster.indices;
+        }
+
         buildInfo.vertexCount              = sceneCluster.vertexCountMinusOne + 1;
         buildInfo.vertexBufferStride       = uint16_t(sizeof(glm::vec3));
         buildInfo.vertexBuffer             = clusterVA + sceneCluster.vertices;
-        buildInfo.positionTruncateBitCount = m_config.clasPositionTruncateBits;
+        buildInfo.positionTruncateBitCount = m_clasTriangleInput.minPositionTruncateBitCount;
 
         clusterOffset++;
       }

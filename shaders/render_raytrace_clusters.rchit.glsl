@@ -62,7 +62,6 @@ spirv_decorate(extensions = ["SPV_NV_cluster_acceleration_structure"], capabilit
 
 
 #include "shaderio.h"
-#include "octant_encoding.h"
 
 /////////////////////////////////
 
@@ -122,8 +121,7 @@ layout(location = 1) rayPayloadEXT float rayHitAO;
 #include "dlss_util.h"
 #endif
 
-#include "octant_encoding.h"
-#include "tangent_encoding.h"
+#include "attribute_encoding.h"
 #include "render_shading.glsl"
 
 /////////////////////////////////
@@ -183,16 +181,15 @@ void main()
 #if ALLOW_SHADING
 
   vec4 wTangent = vec4(1);
-  vec2 oUV = vec2(1);
+  vec2 oTexCoord = vec2(1);
   vec3 oNormal;
   bool backFacing = false;
   
   mat3 worldMatrixI = mat3(instance.worldMatrixI);
 
-#if ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_UVS
-  uint32s_in oNormals = Cluster_getVertexNormals(clusterRef);
-  vec2s_in   oUVs     = Cluster_getVertexUVs(clusterRef);
-  uint16s_in oTangs   = Cluster_getVertexTangents(clusterRef);
+#if ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS
+  uint32s_in oNormals   = Cluster_getVertexNormals(clusterRef);
+  vec2s_in   oTexCoords = Cluster_getVertexTexCoords(clusterRef);
 
   if(view.facetShading != 0 || (cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_NORMAL) == 0)
 #endif
@@ -200,43 +197,45 @@ void main()
     // Otherwise compute geometric normal
     vec3 e0 = gl_HitTriangleVertexPositionsEXT[1] - gl_HitTriangleVertexPositionsEXT[0];
     vec3 e1 = gl_HitTriangleVertexPositionsEXT[2] - gl_HitTriangleVertexPositionsEXT[0];
-    oNormal    = normalize(cross(e0, e1));
+    oNormal    = (cross(e0, e1));
     
     backFacing = dot(oNormal, gl_ObjectRayDirectionEXT) > 0;
   }
 #if ALLOW_VERTEX_NORMALS
   if(view.facetShading == 0)
-  {  
-    vec3 triNormals[3];
-    triNormals[0] = oct32_to_vec(oNormals.d[triangleIndices.x]);
-    triNormals[1] = oct32_to_vec(oNormals.d[triangleIndices.y]);
-    triNormals[2] = oct32_to_vec(oNormals.d[triangleIndices.z]);
+  {
+    uvec3 triNormalsPacked = uvec3(oNormals.d[triangleIndices.x], oNormals.d[triangleIndices.y], oNormals.d[triangleIndices.z]);
+    vec3  triNormals[3];
+    
+    triNormals[0] = normal_unpack(triNormalsPacked.x);
+    triNormals[1] = normal_unpack(triNormalsPacked.y);
+    triNormals[2] = normal_unpack(triNormalsPacked.z);
       
     oNormal = baryWeight.x * triNormals[0] + 
               baryWeight.y * triNormals[1] + 
               baryWeight.z * triNormals[2];
-              
+
   #if ALLOW_VERTEX_TANGENTS
     if ((cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_UV) != 0)
     {
-      vec4 tangent0 = tangent_unpack(triNormals[0], oTangs.d[triangleIndices.x]);
+      vec4 tangent0 = tangent_unpack(triNormals[0], triNormalsPacked.x >> ATTRENC_NORMAL_BITS);
       wTangent.w    = tangent0.w;
 
       vec3 oTangent = baryWeight.x * tangent0.xyz + 
-                      baryWeight.y * tangent_unpack(triNormals[1], oTangs.d[triangleIndices.y]).xyz + 
-                      baryWeight.z * tangent_unpack(triNormals[2], oTangs.d[triangleIndices.z]).xyz;
+                      baryWeight.y * tangent_unpack(triNormals[1],triNormalsPacked.y >> ATTRENC_NORMAL_BITS).xyz + 
+                      baryWeight.z * tangent_unpack(triNormals[2],triNormalsPacked.z >> ATTRENC_NORMAL_BITS).xyz;
             
       wTangent.xyz = oTangent * worldMatrixI;
     }
   #endif
   }
 #endif
-#if ALLOW_VERTEX_UVS
-  if ((cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_UV) != 0)
+#if ALLOW_VERTEX_TEXCOORD_0
+  if ((cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_TEX_0) != 0)
   {
-    oUV = baryWeight.x * oUVs.d[triangleIndices.x] + 
-          baryWeight.y * oUVs.d[triangleIndices.y] + 
-          baryWeight.z * oUVs.d[triangleIndices.z];
+    oTexCoord = baryWeight.x * oTexCoords.d[triangleIndices.x] + 
+                baryWeight.y * oTexCoords.d[triangleIndices.y] + 
+                baryWeight.z * oTexCoords.d[triangleIndices.z];
   }
 #endif
 
@@ -256,7 +255,7 @@ void main()
     if(view.doShadow == 1)
       sunContribution = traceShadowRay(wPos, wNormal, directionToLight);
 
-    shaded = shading(instanceID, wPos, wNormal, wTangent, oUV, visData, sunContribution, ambientOcclusion
+    shaded = shading(instanceID, wPos, wNormal, wTangent, oTexCoord, visData, sunContribution, ambientOcclusion
     #if USE_DLSS
       , rayHit.dlssAlbedo, rayHit.dlssSpecular, rayHit.dlssNormalRoughness
     #endif

@@ -105,8 +105,9 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
   options.AddMacroDefinition("MESHSHADER_WORKGROUP_SIZE", fmt::format("{}", m_meshShaderWorkgroupSize));
   options.AddMacroDefinition("MESHSHADER_BBOX_COUNT", fmt::format("{}", m_meshShaderBoxes));
   options.AddMacroDefinition("ALLOW_VERTEX_NORMALS", rscene.scene->m_hasVertexNormals && res.m_supportsBarycentrics ? "1" : "0");
-  options.AddMacroDefinition("ALLOW_VERTEX_UVS", rscene.scene->m_hasVertexUVs && res.m_supportsBarycentrics ? "1" : "0");
   options.AddMacroDefinition("ALLOW_VERTEX_TANGENTS", rscene.scene->m_hasVertexTangents && res.m_supportsBarycentrics ? "1" : "0");
+  options.AddMacroDefinition("ALLOW_VERTEX_TEXCOORDS", rscene.scene->m_hasVertexTexCoord0 ? "1" : "0");
+  //options.AddMacroDefinition("ALLOW_VERTEX_TEXCOORD_1", rscene.scene->m_hasVertexTexCoord1 ? "1" : "0");
   options.AddMacroDefinition("DEBUG_VISUALIZATION", config.useDebugVisualization && res.m_supportsBarycentrics ? "1" : "0");
 
   res.compileShader(m_shaders.graphicsMesh, VK_SHADER_STAGE_MESH_BIT_NV, "render_raster_clusters.mesh.glsl", &options);
@@ -314,9 +315,10 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
 
   m_sceneBuildShaderio.traversalViewMatrix =
       frame.freezeCulling ? frame.frameConstantsLast.viewMatrix : frame.frameConstants.viewMatrix;
+
   m_sceneBuildShaderio.errorOverDistanceThreshold =
-      nvclusterlodErrorOverDistance(frame.lodPixelError * pixelScale, frame.frameConstants.fov,
-                                    frame.frameConstants.viewportf.y);
+      clusterLodErrorOverDistance(frame.lodPixelError * pixelScale, frame.frameConstants.fov,
+                                  frame.frameConstants.viewportf.y);
 
   const bool useSky = true;  // When using Sky, the sky is rendered first and the rest of the scene is rendered on top of it.
 

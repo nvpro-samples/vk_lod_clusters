@@ -61,7 +61,7 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"clusterconfig"}, (int*)&m_tweak.clusterConfig);
   m_info.parameterRegistry->add({"clustergroupsize"}, &m_sceneConfig.clusterGroupSize);
 
-  m_info.parameterRegistry->add({"simplifyuvweight"}, &m_sceneConfig.simplifyUvWeight);
+  m_info.parameterRegistry->add({"simplifyuvweight"}, &m_sceneConfig.simplifyTexCoordWeight);
   m_info.parameterRegistry->add({"simplifynormalweight"}, &m_sceneConfig.simplifyNormalWeight);
   m_info.parameterRegistry->add({"simplifytangentweight"}, &m_sceneConfig.simplifyTangentWeight);
   m_info.parameterRegistry->add({"simplifytangentsignweight"}, &m_sceneConfig.simplifyTangentSignWeight);
@@ -106,9 +106,7 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"visualize"}, &m_frameConfig.visualize);
   m_info.parameterRegistry->add({"renderstats"}, &m_rendererConfig.useRenderStats);
   m_info.parameterRegistry->add({"extmeshshader"}, &m_rendererConfig.useEXTmeshShader);
-  m_info.parameterRegistry->add({"nvclusterlod"}, &m_sceneConfig.useNvLib);
   m_info.parameterRegistry->add({"forcepreprocessmegabytes"}, (uint32_t*)&m_sceneLoaderConfig.forcePreprocessMiB);
-  m_info.parameterRegistry->add({"clusterbboxoccupancy"}, &m_sceneLoaderConfig.computeClusterBBoxOccupancy);
   m_info.parameterRegistry->add({"facetshading"}, &m_tweak.facetShading);
   m_info.parameterRegistry->add({"flipwinding"}, &m_rendererConfig.flipWinding);
   m_info.parameterRegistry->add({"twosided"}, &m_rendererConfig.twoSided);
@@ -128,6 +126,9 @@ LodClusters::LodClusters(const Info& info)
                                 &m_sceneLoaderConfig.processingMode);
   m_info.parameterRegistry->add({"processingthreadpct", "float percentage of threads during initial file load and processing into lod clusters, default 0.5 == 50 %"},
                                 &m_sceneLoaderConfig.processingThreadsPct);
+  m_info.parameterRegistry->add({"compressed"}, &m_sceneConfig.useCompressedData);
+  m_info.parameterRegistry->add({"compressedpositionbits"}, &m_sceneConfig.compressionPosDropBits);
+  m_info.parameterRegistry->add({"compressedtexcoordbits"}, &m_sceneConfig.compressionTexDropBits);
 
   m_frameConfig.frameConstants                         = {};
   m_frameConfig.frameConstants.wireThickness           = 2.f;
@@ -167,6 +168,11 @@ void LodClusters::initScene(const std::filesystem::path& filePath, bool configCh
     m_sceneLoading  = true;
     m_sceneProgress = 0;
 
+#if USE_DLSS
+    // disable when inactive
+    m_resources.setFramebufferDlss(false, m_rendererConfig.dlssQuality);
+#endif
+
     std::thread([=, this]() {
       auto scene = std::make_unique<Scene>();
       if(scene->init(filePath, m_sceneConfig, m_sceneLoaderConfig, configChange) != Scene::SCENE_RESULT_SUCCESS)
@@ -176,9 +182,9 @@ void LodClusters::initScene(const std::filesystem::path& filePath, bool configCh
       }
       else
       {
-        m_scene         = std::move(scene);
-        m_sceneFilePath = filePath;
-        findSceneClusterConfig();
+        m_scene               = std::move(scene);
+        m_sceneFilePath       = filePath;
+        m_tweak.clusterConfig = findSceneClusterConfig(m_scene->m_config);
 
         m_scene->updateSceneGrid(m_sceneGridConfig);
         m_sceneGridConfigLast = m_sceneGridConfig;
@@ -191,6 +197,7 @@ void LodClusters::initScene(const std::filesystem::path& filePath, bool configCh
           postInitNewScene();
           m_tweakLast       = m_tweak;
           m_sceneConfigLast = m_sceneConfig;
+          m_sceneConfigEdit = m_sceneConfig;
         }
       }
       m_sceneLoading = false;
@@ -355,7 +362,6 @@ void LodClusters::postInitNewScene()
     m_tweak.facetShading = true;
 
   m_frameConfig.frameConstants.skyParams.sunDirection = glm::normalize(m_frameConfig.frameConstants.skyParams.sunDirection);
-  m_sceneAllowLarge = false;
 }
 
 
@@ -437,7 +443,7 @@ void LodClusters::onAttach(nvapp::Application* app)
   m_resources.initFramebuffer({128, 128}, m_tweak.supersample, m_tweak.hbaoFullRes);
   updateImguiImage();
 
-  updatedClusterConfig();
+  setFromClusterConfig(m_sceneConfig, m_tweak.clusterConfig);
 
   if(!m_resources.m_supportsMeshShaderNV)
   {
@@ -488,6 +494,7 @@ void LodClusters::onAttach(nvapp::Application* app)
 
   m_tweakLast          = m_tweak;
   m_sceneConfigLast    = m_sceneConfig;
+  m_sceneConfigEdit    = m_sceneConfig;
   m_rendererConfigLast = m_rendererConfig;
 }
 
@@ -564,7 +571,7 @@ void LodClusters::onFileDrop(const std::filesystem::path& filePath)
 
 void LodClusters::doProcessingOnly()
 {
-  updatedClusterConfig();
+  setFromClusterConfig(m_sceneConfig, m_tweak.clusterConfig);
   assert(m_app == nullptr);
   m_scene = std::make_unique<Scene>();
   m_scene->init(m_sceneFilePath, m_sceneConfig, m_sceneLoaderConfig, false);
@@ -576,27 +583,28 @@ const LodClusters::ClusterInfo LodClusters::s_clusterInfos[NUM_CLUSTER_CONFIGS] 
     {256, 256, CLUSTER_256T_256V},
 };
 
-void LodClusters::findSceneClusterConfig()
+LodClusters::ClusterConfig LodClusters::findSceneClusterConfig(const SceneConfig& sceneConfig)
 {
   for(uint32_t i = 0; i < NUM_CLUSTER_CONFIGS; i++)
   {
     const ClusterInfo& entry = s_clusterInfos[i];
-    if(m_scene->m_config.clusterTriangles <= entry.tris && m_scene->m_config.clusterVertices <= entry.verts)
+    if(sceneConfig.clusterTriangles <= entry.tris && sceneConfig.clusterVertices <= entry.verts)
     {
-      m_tweak.clusterConfig = entry.cfg;
-      return;
+      return entry.cfg;
     }
   }
+
+  return CLUSTER_256T_256V;
 }
 
-void LodClusters::updatedClusterConfig()
+void LodClusters::setFromClusterConfig(SceneConfig& sceneConfig, ClusterConfig clusterConfig)
 {
   for(uint32_t i = 0; i < NUM_CLUSTER_CONFIGS; i++)
   {
-    if(s_clusterInfos[i].cfg == m_tweak.clusterConfig)
+    if(s_clusterInfos[i].cfg == clusterConfig)
     {
-      m_sceneConfig.clusterTriangles = s_clusterInfos[i].tris;
-      m_sceneConfig.clusterVertices  = s_clusterInfos[i].verts;
+      sceneConfig.clusterTriangles = s_clusterInfos[i].tris;
+      sceneConfig.clusterVertices  = s_clusterInfos[i].verts;
       return;
     }
   }
@@ -632,11 +640,6 @@ void LodClusters::handleChanges()
 {
   if(m_sceneLoading)
     return;
-
-  if(m_tweak.clusterConfig != m_tweakLast.clusterConfig)
-  {
-    updatedClusterConfig();
-  }
 
   if(!m_resources.m_supportsMeshShaderNV)
   {

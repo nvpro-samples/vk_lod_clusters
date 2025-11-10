@@ -47,7 +47,6 @@
 #extension GL_EXT_control_flow_attributes : require
 
 #include "shaderio.h"
-#include "octant_encoding.h"
 
 layout(push_constant) uniform pushData
 {
@@ -109,7 +108,7 @@ layout(location = 0) out Interpolants
 OUT[];
 
 
-#if ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_UVS)
+#if ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS)
 layout(location = 3) out Interpolants2
 {
   flat uint vertexID;
@@ -202,7 +201,7 @@ void main()
     #if ALLOW_SHADING
       OUT[vert].wPos                      = wPos.xyz;
     #endif
-    #if ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_UVS)
+    #if ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS)
       OUTBARY[vert].vertexID              = vert;
     #endif
       OUT[vert].clusterID                 = clusterID;

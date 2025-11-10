@@ -20,6 +20,7 @@
 #pragma once
 
 #include <vector>
+#include <array>
 #include <string>
 #include <atomic>
 #include <mutex>
@@ -29,9 +30,6 @@
 #include <nvutils/file_mapping.hpp>
 #include <nvutils/timers.hpp>
 #include <nvutils/alignment.hpp>
-#include <nvclusterlod/nvclusterlod_hierarchy_storage.hpp>
-#include <nvclusterlod/nvclusterlod_mesh_storage.hpp>
-#include <nvclusterlod/nvclusterlod_cache.hpp>
 
 #include "serialization.hpp"
 #include "meshopt_clusterlod.h"
@@ -39,19 +37,16 @@
 
 namespace lodclusters {
 
+// Controls the scene's data generation during loading and processing.
 struct SceneConfig
 {
-  static const uint32_t version = 1;
+  static const uint32_t version = 2;
 
   // cluster and cluster group settings
   uint32_t clusterVertices    = 128;
   uint32_t clusterTriangles   = 128;
   uint32_t clusterGroupSize   = 32;
   uint32_t preferredNodeWidth = 8;
-
-  // uses nv_cluster_lod_builder library,
-  // will be deprecated in future.
-  bool useNvLib = false;
 
   // default setting should prefer ray tracing
   bool meshoptPreferRayTracing = true;
@@ -71,23 +66,28 @@ struct SceneConfig
   // lod error propagation for meshoptimizer's clusterlod
   // These control the error propagation across lod levels to
   // account for simplifying an already simplified mesh.
-  // To get closer to nv_cluster_lod_builder:
-  // previous 1.0f, additive 0.7f
-  // but causes about 50% more triangles during traversal.
+  // error = max(previousError * lodErrorMergePrevious, currentError) +
+  //         lodErrorMergeAdditive * currentError;
   float lodErrorMergePrevious = 1.5;
   float lodErrorMergeAdditive = 0.0f;
 
   // mesh simplification weights for attributes
   // zero to disable
-  float simplifyNormalWeight      = 1.0f;
+  float simplifyNormalWeight      = 0.5f;
   float simplifyTangentWeight     = 0.01f;
   float simplifyTangentSignWeight = 0.5f;
-  float simplifyUvWeight          = 0;
+  float simplifyTexCoordWeight    = 0;
 
-  //
-  uint32_t reservedData[17] = {};
+  // used when compression is enabled
+  uint32_t compressionPosDropBits = 7;
+  uint32_t compressionTexDropBits = 7;
+
+  // may want to allow some binary compatibility with older cache files
+  uint32_t reservedData[15] = {};
 };
 
+// Control the loading and processing procedure of the scene.
+// Not the results.
 struct SceneLoaderConfig
 {
   // Influence the number of geometries that can be processed in parallel.
@@ -114,14 +114,12 @@ struct SceneLoaderConfig
   // and use the cache file afterwards
   size_t forcePreprocessMiB = size_t(2) * 1024;
 
-  // very crude metric to judge how "dense" a cluster is filled.
-  // using the area of triangles divided by area of bbox sides
-  bool computeClusterBBoxOccupancy = false;
-
   // optional thread-safe progress bar updates
   std::atomic_uint32_t* progressPct = nullptr;
 };
 
+// To artificially instance the full scene on a grid multiple times.
+// Useful for benchmarking.
 struct SceneGridConfig
 {
   // when set to true each new set of instance on the grid gets
@@ -136,24 +134,50 @@ struct SceneGridConfig
   float     maxScale                  = 1.0f;
 };
 
+
+// The scene is organized with two separate accessors on the geometry data:
+// - "views" are read-only and used at runtime. They may point to memory mapped files.
+// - "storage" is read-write and used during processing time.
+//   For larger scenes storage is typically discarded.
+
 class Scene
 {
 public:
+  //////////////////////////////////////////////////////////////////////////
+
+  enum Result
+  {
+    SCENE_RESULT_SUCCESS,
+    SCENE_RESULT_CACHE_INVALID,
+    SCENE_RESULT_NEEDS_PREPROCESS,
+    SCENE_RESULT_PREPROCESS_COMPLETED,
+    SCENE_RESULT_ERROR,
+  };
+
+  Result init(const std::filesystem::path& filePath, const SceneConfig& config, const SceneLoaderConfig& loaderConfig, bool skipCache);
+  bool saveCache() const;
+  void deinit();
+
+  void updateSceneGrid(const SceneGridConfig& gridConfig);
+
+  bool isMemoryMappedCache() const { return m_loadedFromCache && m_cacheFileMapping.valid(); }
+
+  const std::filesystem::path& getFilePath() const { return m_filePath; }
+  const std::filesystem::path& getCacheFilePath() const { return m_cacheFilePath; }
+
+
+  //////////////////////////////////////////////////////////////////////////
+
+  // Cluster Group
+
   struct Range
   {
     uint32_t offset;
     uint32_t count;
   };
 
-  struct Instance
-  {
-    glm::mat4      matrix;
-    shaderio::BBox bbox;
-    uint32_t       geometryID = ~0U;
-    uint32_t       materialID = ~0U;
-    glm::vec4      color{0.8, 0.8, 0.8, 1.0f};
-  };
-
+  // To optimize streaming all cluster groups are stored in a contiguous blob of memory.
+  //
   struct GroupInfo
   {
     uint64_t offsetBytes : 42;
@@ -163,10 +187,15 @@ public:
     uint8_t  lodLevel;
     uint8_t  clusterCount;
     uint8_t  attributeBits;
-    uint8_t  reserved1             = 0;
-    uint16_t vertexDataCount       = 0;
-    uint16_t reserved2             = 0;
-    uint32_t uncompressedSizeBytes = 0;
+    uint8_t  reserved1 = 0;
+    uint64_t vertexDataCount : 21;
+    // these must be 0 if group is stored 'uncompressed'
+    // otherwise they provide the size information of the uncompressed state.
+    uint64_t uncompressedVertexDataCount : 21;
+    uint64_t uncompressedSizeBytes : 22;
+
+    // compression may impact the size on device
+    uint32_t getDeviceSize() const { return uint32_t(uncompressedSizeBytes ? uncompressedSizeBytes : sizeBytes); }
 
     // safe upper bound
     uint32_t estimateVertexDataCount() const
@@ -176,15 +205,14 @@ public:
       {
         dataCount += vertexCount * 1;
       }
-      if(attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_UV)
+      if(attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0)
       {
         dataCount += vertexCount * 2;
         dataCount += clusterCount;  // potential padding
       }
-      if(attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT)
+      if(attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1)
       {
-        // 16 bit per entry
-        dataCount += (vertexCount + 1) / 2;
+        dataCount += vertexCount * 2;
         dataCount += clusterCount;  // potential padding
       }
       return dataCount;
@@ -196,14 +224,35 @@ public:
       threadGroupSize        = nvutils::align_up(threadGroupSize, 16) + sizeof(shaderio::Cluster) * clusterCount;
       threadGroupSize        = nvutils::align_up(threadGroupSize, 4) + sizeof(uint32_t) * clusterCount;
       threadGroupSize        = nvutils::align_up(threadGroupSize, 16) + sizeof(shaderio::BBox) * clusterCount;
-      threadGroupSize        = nvutils::align_up(threadGroupSize, 16) + sizeof(float) * vertexDataCount;
       threadGroupSize        = threadGroupSize + sizeof(uint8_t) * triangleCount * 3;
+      threadGroupSize        = nvutils::align_up(threadGroupSize, 8) + sizeof(float) * vertexDataCount;
       return nvutils::align_up(threadGroupSize, 16);
+    }
+
+    size_t computeUncompressedSectionSize() const
+    {
+      size_t threadGroupSize = sizeof(shaderio::Group);
+      threadGroupSize        = nvutils::align_up(threadGroupSize, 16) + sizeof(shaderio::Cluster) * clusterCount;
+      threadGroupSize        = nvutils::align_up(threadGroupSize, 4) + sizeof(uint32_t) * clusterCount;
+      threadGroupSize        = nvutils::align_up(threadGroupSize, 16) + sizeof(shaderio::BBox) * clusterCount;
+      threadGroupSize        = threadGroupSize + sizeof(uint8_t) * triangleCount * 3;
+      threadGroupSize        = nvutils::align_up(threadGroupSize, 8);
+      return threadGroupSize;
     }
   };
 
+  // read-only accessor of cluster groups used at runtime
   struct GroupView
   {
+    const uint8_t*                     raw     = nullptr;
+    const size_t                       rawSize = 0;
+    const shaderio::Group*             group   = nullptr;
+    std::span<const shaderio::Cluster> clusters;
+    std::span<const uint32_t>          clusterGeneratingGroups;
+    std::span<const shaderio::BBox>    clusterBboxes;
+    std::span<const uint8_t>           indices;
+    std::span<const float>             vertices;
+
     GroupView() {};
 
     // input is array over all groupDatas
@@ -222,19 +271,12 @@ public:
       clusterBboxes =
           std::span((const shaderio::BBox*)nvutils::align_up(size_t(clusterGeneratingGroups.data() + info.clusterCount), 16),
                     info.clusterCount);
-      vertices = std::span((const float*)nvutils::align_up(size_t(clusterBboxes.data() + info.clusterCount), 16), info.vertexDataCount);
-      indices = std::span((const uint8_t*)size_t(vertices.data() + info.vertexDataCount), info.triangleCount * 3);
-      assert((size_t(indices.data() + indices.size()) - startAddress) <= size_t(info.sizeBytes));
-    }
 
-    const uint8_t*                     raw     = nullptr;
-    const size_t                       rawSize = 0;
-    const shaderio::Group*             group   = nullptr;
-    std::span<const shaderio::Cluster> clusters;
-    std::span<const uint32_t>          clusterGeneratingGroups;
-    std::span<const shaderio::BBox>    clusterBboxes;
-    std::span<const float>             vertices;
-    std::span<const uint8_t>           indices;
+      indices = std::span((const uint8_t*)size_t(clusterBboxes.data() + info.clusterCount), info.triangleCount * 3);
+
+      vertices = std::span((const float*)nvutils::align_up(size_t(indices.data() + info.triangleCount * 3), 8), info.vertexDataCount);
+      assert((size_t(vertices.data() + info.vertexDataCount) - startAddress) <= size_t(info.sizeBytes));
+    }
 
     const uint8_t* getClusterIndices(size_t clusterIndex) const
     {
@@ -248,8 +290,19 @@ public:
     }
   };
 
+  // read-write accessor used for processing a cluster group.
+  // same structure as above
   struct GroupStorage
   {
+    uint8_t*                     raw;
+    const size_t                 rawSize = 0;
+    shaderio::Group*             group;
+    std::span<shaderio::Cluster> clusters;
+    std::span<uint32_t>          clusterGeneratingGroups;
+    std::span<shaderio::BBox>    clusterBboxes;
+    std::span<uint8_t>           indices;
+    std::span<float>             vertices;
+
     GroupStorage() {};
 
     // input is pointer to local groupData, does not apply info.offsetBytes!
@@ -266,29 +319,43 @@ public:
       clusterBboxes =
           std::span((shaderio::BBox*)nvutils::align_up(size_t(clusterGeneratingGroups.data() + info.clusterCount), 16),
                     info.clusterCount);
-      vertices = std::span((float*)nvutils::align_up(size_t(clusterBboxes.data() + info.clusterCount), 16), info.vertexDataCount);
-      indices = std::span((uint8_t*)size_t(vertices.data() + info.vertexDataCount), info.triangleCount * 3);
-      assert((size_t(indices.data() + indices.size()) - startAddress) <= size_t(info.sizeBytes));
+      indices = std::span((uint8_t*)size_t(clusterBboxes.data() + info.clusterCount), info.triangleCount * 3);
+      vertices = std::span((float*)nvutils::align_up(size_t(indices.data() + info.triangleCount * 3), 8), info.vertexDataCount);
+      assert((size_t(vertices.data() + info.vertexDataCount) - startAddress) <= size_t(info.sizeBytes));
     }
 
     // cluster data pointers are stored as offsets relative to the Cluster's header.
-    uint32_t getClusterLocalOffset(uint32_t clusterIndex, const void* input) const
+    uint32_t getClusterLocalOffset(uint32_t clusterIndex, const void* input, size_t overrideSize = 0) const
     {
       assert(size_t(input) >= size_t(&clusters[clusterIndex]));
-      assert(size_t(input) < size_t(raw + rawSize));
+      assert(size_t(input) < size_t(raw + (overrideSize ? overrideSize : rawSize)));
 
       return uint32_t(size_t(input) - size_t(&clusters[clusterIndex]));
     }
 
-    uint8_t*                     raw;
-    const size_t                 rawSize = 0;
-    shaderio::Group*             group;
-    std::span<shaderio::Cluster> clusters;
-    std::span<uint32_t>          clusterGeneratingGroups;
-    std::span<shaderio::BBox>    clusterBboxes;
-    std::span<float>             vertices;
-    std::span<uint8_t>           indices;
+    uint32_t* getClusterVertexData(uint32_t clusterIndex)
+    {
+      return (uint32_t*)(size_t(&clusters[clusterIndex]) + clusters[clusterIndex].vertices);
+    }
   };
+
+
+  // used for preloaded groups, streamed in groups are patched in shaders.
+  static void fillGroupRuntimeData(const GroupInfo& srcGroupInfo,
+                                   const GroupView& srcGroupView,
+                                   uint32_t         groupID,
+                                   uint32_t         groupResidentID,
+                                   uint32_t         clusterResidentID,
+                                   void*            dst,
+                                   size_t           dstSize);
+
+  // used to decompress group on CPU.
+  static void decompressGroup(const GroupInfo& info, const GroupView& groupView, void* dst, size_t dstSize);
+
+
+  //////////////////////////////////////////////////////////////////////////
+
+  // Geometry
 
   struct GeometryLodInput
   {
@@ -324,8 +391,8 @@ public:
     uint32_t instanceReferenceCount{};
   };
 
-  // not fully leveraged yet, but preparation to have a readonly view on
-  // data accessed from persistently memory mapped files
+  // read-only accessor for the geometry data.
+  // used at runtime.
   struct GeometryView : GeometryBase
   {
     // may contain compressed or uncompressed data
@@ -357,13 +424,27 @@ public:
     }
   };
 
-  // used for preloaded groups, streamed in groups are patched in shaders.
-  static void fillGroupRuntimeData(const GeometryView& sceneGeometry,
-                                   uint32_t            groupID,
-                                   uint32_t            groupResidentID,
-                                   uint32_t            clusterResidentID,
-                                   void*               dst,
-                                   size_t              dstSize);
+  // we virtually instance geometries to avoid higher cpu memory consumption
+  // happens when the grid config is larger
+  const GeometryView& getActiveGeometry(size_t idx) const { return m_geometryViews[idx % m_originalGeometryCount]; }
+  size_t              getActiveGeometryCount() const { return m_activeGeometryCount; }
+
+  uint32_t getGeometryInstanceFactor() const
+  {
+    return m_gridConfig.uniqueGeometriesForCopies ? 1u : uint32_t(m_instances.size() / m_originalInstanceCount);
+  }
+
+
+  //////////////////////////////////////////////////////////////////////////
+
+  struct Instance
+  {
+    glm::mat4      matrix;
+    shaderio::BBox bbox;
+    uint32_t       geometryID = ~0U;
+    uint32_t       materialID = ~0U;
+    glm::vec4      color{0.8, 0.8, 0.8, 1.0f};
+  };
 
   struct Camera
   {
@@ -374,25 +455,28 @@ public:
     float     fovy;
   };
 
-  enum Result
+  //////////////////////////////////////////////////////////////////////////
+
+  // statistics
+
+  struct Histograms
   {
-    SCENE_RESULT_SUCCESS,
-    SCENE_RESULT_CACHE_INVALID,
-    SCENE_RESULT_NEEDS_PREPROCESS,
-    SCENE_RESULT_PREPROCESS_COMPLETED,
-    SCENE_RESULT_ERROR,
+    static const uint32_t version = 1;
+
+    std::array<uint32_t, 256 + 1>                         clusterTriangles = {};
+    std::array<uint32_t, 256 + 1>                         clusterVertices  = {};
+    std::array<uint32_t, SHADERIO_MAX_GROUP_CLUSTERS + 1> groupClusters    = {};
+    std::array<uint32_t, SHADERIO_MAX_NODE_CHILDREN + 1>  nodeChildren     = {};
+    std::array<uint32_t, SHADERIO_MAX_LOD_LEVELS + 1>     lodLevels        = {};
+
+    uint32_t clusterTrianglesMax = {};
+    uint32_t clusterVerticesMax  = {};
+    uint32_t groupClustersMax    = {};
+    uint32_t nodeChildrenMax     = {};
+    uint32_t lodLevelsMax        = {};
   };
 
-  Result init(const std::filesystem::path& filePath, const SceneConfig& config, const SceneLoaderConfig& loaderConfig, bool skipCache);
-  bool saveCache() const;
-  void deinit();
-
-  void updateSceneGrid(const SceneGridConfig& gridConfig);
-
-  bool isMemoryMappedCache() const { return m_loadedFromCache && m_cacheFileMapping.valid(); }
-
-  const std::filesystem::path& getFilePath() const { return m_filePath; }
-  const std::filesystem::path& getCacheFilePath() const { return m_cacheFilePath; }
+  //////////////////////////////////////////////////////////////////////////
 
   SceneConfig       m_config;
   SceneLoaderConfig m_loaderConfig;
@@ -403,16 +487,6 @@ public:
 
   std::vector<Instance> m_instances;
   std::vector<Camera>   m_cameras;
-
-  // we virtually instance geometries to avoid higher cpu memory consumption
-  // happens when the grid config is larger
-  const GeometryView& getActiveGeometry(size_t idx) const { return m_geometryViews[idx % m_originalGeometryCount]; }
-  size_t              getActiveGeometryCount() const { return m_activeGeometryCount; }
-
-  uint32_t getGeometryInstanceFactor() const
-  {
-    return m_gridConfig.uniqueGeometriesForCopies ? 1u : uint32_t(m_instances.size() / m_originalInstanceCount);
-  }
 
   bool m_isBig = false;
 
@@ -433,22 +507,13 @@ public:
   uint64_t m_totalTrianglesCount       = 0;
   uint64_t m_totalVerticesCount        = 0;
 
-  std::vector<uint32_t> m_clusterTriangleHistogram;
-  std::vector<uint32_t> m_clusterVertexHistogram;
-  std::vector<uint32_t> m_groupClusterHistogram;
-  std::vector<uint32_t> m_nodeChildrenHistogram;
-  std::vector<uint32_t> m_lodLevelsHistogram;
+  Histograms m_histograms;
 
-  uint32_t m_clusterTriangleHistogramMax;
-  uint32_t m_clusterVertexHistogramMax;
-  uint32_t m_groupClusterHistogramMax;
-  uint32_t m_nodeChildrenHistogramMax;
-  uint32_t m_lodLevelsHistogramMax;
-
-  bool m_loadedFromCache   = false;
-  bool m_hasVertexNormals  = false;
-  bool m_hasVertexUVs      = false;
-  bool m_hasVertexTangents = false;
+  bool m_loadedFromCache    = false;
+  bool m_hasVertexNormals   = false;
+  bool m_hasVertexTexCoord0 = false;
+  bool m_hasVertexTexCoord1 = false;
+  bool m_hasVertexTangents  = false;
 
   size_t m_originalInstanceCount = 0;
   size_t m_originalGeometryCount = 0;
@@ -456,11 +521,11 @@ public:
   size_t m_cacheFileSize = 0;
 
 private:
-  static bool     loadCached(GeometryView& view, uint64_t dataSize, const void* data);
-  static bool     storeCached(const GeometryView& view, uint64_t dataSize, void* data);
-  static uint64_t storeCached(const GeometryView& view, FILE* outFile);
+  //////////////////////////////////////////////////////////////////////////
 
-  // GeometryStorage allows building and modifying the data in system RAM
+  // Geometry
+
+  // read-write accessor to Geometry. Allows building and modifying the data in system RAM
   struct GeometryStorage : GeometryBase
   {
     // temporary, removed after processing
@@ -470,7 +535,8 @@ private:
 
     uint32_t attributesWithWeights  = 0u;
     uint32_t attributeNormalOffset  = ~0u;
-    uint32_t attributeUvOffset      = ~0u;
+    uint32_t attributeTex0offset    = ~0u;
+    uint32_t attributeTex1offset    = ~0u;
     uint32_t attributeTangentOffset = ~0u;
 
     // persistent used in view
@@ -483,6 +549,25 @@ private:
 
     std::vector<uint32_t> localMaterialIDs;
   };
+
+  size_t m_activeGeometryCount = 0;
+
+  std::vector<GeometryStorage> m_geometryStorages;
+  std::vector<GeometryView>    m_geometryViews;
+
+  //////////////////////////////////////////////////////////////////////////
+
+  // Cache File
+
+  static bool     loadCached(GeometryView& view, uint64_t dataSize, const void* data);
+  static bool     storeCached(const GeometryView& view, uint64_t dataSize, void* data);
+  static uint64_t storeCached(const GeometryView& view, FILE* outFile);
+
+  void openCache();
+  void closeCache();
+
+  bool checkCache(const GeometryLodInput& info, size_t geometryIndex);
+  void loadCachedGeometry(GeometryStorage& geometry, size_t geometryIndex);
 
   class CacheFileHeader
   {
@@ -506,12 +591,14 @@ private:
   private:
     struct Header
     {
-      uint64_t magic            = 0x006f65676e73766eULL;  // nvsngeo
-      uint32_t geoVersion       = 6;
-      uint32_t geoStructSize    = uint32_t(sizeof(GeometryView));
-      uint32_t configVersion    = SceneConfig::version;
-      uint32_t configStructSize = uint32_t(sizeof(SceneConfig));
-      uint64_t alignment        = nvclusterlod::detail::ALIGNMENT;
+      uint64_t magic               = 0x006f65676e73766eULL;  // nvsngeo
+      uint32_t geoVersion          = 7;
+      uint32_t geoStructSize       = uint32_t(sizeof(GeometryView));
+      uint32_t configVersion       = SceneConfig::version;
+      uint32_t configStructSize    = uint32_t(sizeof(SceneConfig));
+      uint32_t histogramsVersion   = Histograms::version;
+      uint32_t histogramStructSize = uint32_t(sizeof(Histograms));
+      uint64_t alignment           = serialization::ALIGNMENT;
 
       // geoVersion history:
       // 1 initial
@@ -520,15 +607,18 @@ private:
       // 4 table is 2 x 64-bit per geometry (offset + size) to allow out of order storage
       // 5
       // 6 reduced shaderio::Group/Cluster structs using relative offsets
+      // 7 compression
     };
 
     Header header;
 
   public:
     SceneConfig config;
+    Histograms  histograms;
+    uint32_t    pad[7];
   };
 
-  static_assert(sizeof(CacheFileHeader) % nvclusterlod::detail::ALIGNMENT == 0, "CacheFileHeader size unaligned");
+  static_assert(sizeof(CacheFileHeader) % serialization::ALIGNMENT == 0, "CacheFileHeader size unaligned");
 
   class CacheFileView
   {
@@ -563,7 +653,8 @@ private:
 
     uint64_t getGeometryCount() const { return m_geometryCount; }
 
-    void getSceneLodSettings(SceneConfig& settings) const;
+    void getSceneConfig(SceneConfig& settings) const;
+    void getHistograms(Histograms& histograms) const;
 
     bool getGeometryView(GeometryView& view, uint64_t geometryIndex) const;
 
@@ -588,12 +679,6 @@ private:
     uint64_t dataSize      = 0;
   };
 
-
-  size_t m_activeGeometryCount = 0;
-
-  std::vector<GeometryStorage> m_geometryStorages;
-  std::vector<GeometryView>    m_geometryViews;
-
   std::filesystem::path m_filePath;
   std::filesystem::path m_cacheFilePath;
   std::filesystem::path m_cachePartialFilePath;
@@ -608,6 +693,10 @@ private:
   nvutils::FileReadMapping m_cacheFileMapping;
   CacheFileView            m_cacheFileView;
 
+  //////////////////////////////////////////////////////////////////////////
+
+  // Processing
+
   // only used in `processingOnly` mode
   FILE*                 m_processingOnlyFile             = nullptr;
   FILE*                 m_processingOnlyPartialFile      = nullptr;
@@ -621,16 +710,17 @@ private:
     // - either over geometries (outer loop)
     // - or within a geometry (inner loops)
 
-    nvcluster_Context    clusterContext{};
-    nvclusterlod_Context lodContext{};
-
     uint32_t numPoolThreadsOriginal = 1;
     uint32_t numPoolThreads         = 1;
 
     uint32_t numOuterThreads = 1;
     uint32_t numInnerThreads = 1;
 
-    size_t geometryCount = 0;
+    // if triangleCount is not 0, then we will track progress
+    // based on completed triangles, otherwise based on
+    // completed geometries
+    size_t   geometryCount = 0;
+    uint64_t triangleCount = 0;
 
     std::mutex processOnlySaveMutex;
 
@@ -638,17 +728,19 @@ private:
 
     struct Stats
     {
-      std::atomic_uint64_t groups             = 0;
-      std::atomic_uint64_t clusters           = 0;
-      std::atomic_uint64_t groupHeaderBytes   = 0;
-      std::atomic_uint64_t triangleIndexBytes = 0;
-      std::atomic_uint64_t vertexPosBytes     = 0;
-      std::atomic_uint64_t vertexUvBytes      = 0;
-      std::atomic_uint64_t vertexNrmBytes     = 0;
-      std::atomic_uint64_t vertexTangBytes    = 0;
-      std::atomic_uint64_t clusterBboxBytes   = 0;
-      std::atomic_uint64_t clusterHeaderBytes = 0;
-      std::atomic_uint64_t clusterGenBytes    = 0;
+      std::atomic_uint64_t groups                = 0;
+      std::atomic_uint64_t clusters              = 0;
+      std::atomic_uint64_t vertices              = 0;
+      std::atomic_uint64_t groupUniqueVertices   = 0;
+      std::atomic_uint64_t groupHeaderBytes      = 0;
+      std::atomic_uint64_t triangleIndexBytes    = 0;
+      std::atomic_uint64_t vertexPosBytes        = 0;
+      std::atomic_uint64_t vertexTexCoordBytes   = 0;
+      std::atomic_uint64_t vertexNrmBytes        = 0;
+      std::atomic_uint64_t vertexCompressedBytes = 0;
+      std::atomic_uint64_t clusterBboxBytes      = 0;
+      std::atomic_uint64_t clusterHeaderBytes    = 0;
+      std::atomic_uint64_t clusterGenBytes       = 0;
     } stats;
 
 
@@ -656,6 +748,7 @@ private:
 
     uint32_t   progressLastPercentage      = 0;
     uint32_t   progressGeometriesCompleted = 0;
+    uint64_t   progressTrianglesCompleted  = 0;
     std::mutex progressMutex;
 
     nvutils::PerformanceTimer clock;
@@ -666,35 +759,33 @@ private:
     void setupParallelism(size_t geometryCount_, size_t geometryCompletedCount, int parallelismMode);
     void deinit();
 
-    void     logBegin();
-    uint32_t logCompletedGeometry();
+    void     logBegin(uint64_t totalTriangleCount);
+    uint32_t logCompletedGeometry(uint64_t triangleCount = 0);
     void     logEnd();
   };
 
   Result loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path& filePath);
 
-  void openCache();
-  void closeCache();
-
-  bool checkCache(const GeometryLodInput& info, size_t geometryIndex);
-
   void processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex, bool isCached);
-  void loadCachedGeometry(GeometryStorage& geometry, size_t geometryIndex);
 
-  void buildGeometryClusterLod(ProcessingInfo& processingInfo, GeometryStorage& geometry);
-  void buildGeometryClusterLodNvLib(ProcessingInfo& processingInfo, GeometryStorage& geometry);
-  void buildGeometryClusterLodMeshoptimizer(ProcessingInfo& processingInfo, GeometryStorage& geometry);
+  void buildGeometryLod(ProcessingInfo& processingInfo, GeometryStorage& geometry);
+  void buildGeometryLodHierarchy(ProcessingInfo& processingInfo, GeometryStorage& geometry);
 
   void computeLodBboxes_recursive(GeometryStorage& geometry, size_t nodeIdx);
   void buildGeometryDedupVertices(ProcessingInfo& processingInfo, GeometryStorage& geometry);
 
+  void computeHistogramMaxs();
+  void computeInstanceBBoxes();
+
+  // these modes always output to the cache directly
   void beginProcessingOnly(size_t geometryCount);
   void saveProcessingOnly(ProcessingInfo& processingInfo, size_t geometryIndex);
   bool endProcessingOnly(bool hadError);
 
-  void computeClusterStats();
-  void computeHistograms();
-  void computeInstanceBBoxes();
+
+  //////////////////////////////////////////////////////////////////////////
+
+  // Cluster Group Building
 
   struct TempContext
   {
@@ -715,11 +806,6 @@ private:
     std::atomic_uint32_t groupIndexOrdered = 0;
     std::atomic_size_t   groupDataOrdered  = 0;
     std::vector<uint8_t> threadGroupDatas;
-
-    // only for nvlib
-    nvclusterlod::LodMesh      lodMesh;
-    nvclusterlod::LodHierarchy lodHierarchy;
-    std::vector<uint8_t>       groupLodLevels;
   };
 
   struct TempGroup
@@ -736,14 +822,14 @@ private:
     uint32_t        generatingGroup = 0;
   };
 
-  uint32_t storeGroup(TempContext*                         context,
-                      uint32_t                             threadIndex,
-                      uint32_t                             groupIndex,
-                      const TempGroup&                     tempGroup,
-                      std::function<TempCluster(uint32_t)> tempClusterFn);
+  uint32_t storeGroup(TempContext*       context,
+                      uint32_t           threadIndex,
+                      uint32_t           groupIndex,
+                      const clodGroup&   group,
+                      uint32_t           clusterCount,
+                      const clodCluster* clusters);
 
-  void buildGeometryLodHierarchyMeshoptimizer(const ProcessingInfo& processingInfo, GeometryStorage& geometry);
-
+  void compressGroup(TempContext* context, GroupStorage& groupTempStorage, GroupInfo& groupInfo, uint32_t* vertexCacheLocal);
 
   static void clodIterationMeshoptimizer(void* iteration_context, void* output_context, int depth, size_t task_count);
   static int  clodGroupMeshoptimizer(void*              output_context,

@@ -26,10 +26,6 @@ if(NOT TARGET meshoptimizer)
   add_subdirectory(external/meshoptimizer)
 endif()
 
-if(NOT TARGET nv_cluster_lod_builder)
-  add_subdirectory(external/nv_cluster_lod_builder)
-endif()
-
 #####################################################################################
 # Source files for this project
 #
@@ -55,7 +51,6 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
   nvpro2::nvutils
   nvpro2::nvvk
   nvpro2::nvvkglsl
-  nv_cluster_lod_builder
   meshoptimizer
   cgltf
 )

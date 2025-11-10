@@ -112,8 +112,12 @@ using namespace glm;
 #define ALLOW_VERTEX_NORMALS 1
 #endif
 
-#ifndef ALLOW_VERTEX_UVS
-#define ALLOW_VERTEX_UVS 1
+#ifndef ALLOW_VERTEX_TEXCOORDS
+#define ALLOW_VERTEX_TEXCOORDS 1
+#endif
+
+#ifndef ALLOW_VERTEX_TEXCOORD_1
+#define ALLOW_VERTEX_TEXCOORD_1 1
 #endif
 
 #ifndef ALLOW_VERTEX_TANGENTS

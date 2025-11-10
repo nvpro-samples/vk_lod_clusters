@@ -14,15 +14,16 @@ We highly recommend having a look at [A Deep Dive into Nanite Virtualized Geomet
 Please have a look at the [vk_animated_clusters](https://github.com/nvpro-samples/vk_animated_clusters) to familiarize yourself with the new ray tracing cluster extension.
 There are some similarities in the organization of this sample with the [vk_tessellated_clusters](https://github.com/nvpro-samples/vk_tessellated_clusters) sample.
 
-The sample makes use of a new open-source library [nv_cluster_lod_builder](https://github.com/nvpro-samples/nv_cluster_lod_builder) to process
+The sample makes use of the [meshoptimizer](https://github.com/zeux/meshoptimizer) library to process
 the model and generate the required cluster and LoD data. The LoD system is organized in groups of clusters whose meshes were simplified together.
-A lot more details on this geometry representation and the LoD system can be found in the documentation of the library.
 
 ![image showing continuous LoD clusters](docs/continuous_lod_clusters.png)
 
 ![screenshot showing a highly detailed classic architectural building](/docs/zorah_scene.jpg)
 
 ## Continuous level of detail using clusters
+
+For some basic description what data structures the continous LoD system uses and how it works please look [here](docs/lod_generation.md).
 
 In principle the rendering loop is similar for rasterization and ray tracing.
 The traversal of the LoD hierarchy and the interaction with the streaming system are the same.
@@ -52,11 +53,12 @@ The sample also showcases a ray tracing specific optimization for [BLAS Sharing]
 
 ### Model processing
 
-This sample provides two options to build the cluster level of detail data structures:
-* A custom fork of [meshoptimizer's](https://github.com/zeux/meshoptimizer) single header [clusterlod.h](src/meshopt_clusterlod.h) to support parallelism. This builder is the default as it is faster and uses a lot less memory at time of writing. This builder is deterministic and we recommend its usage going forward.
-* The [nv_cluster_lod_builder](https://github.com/nvpro-samples/nv_cluster_lod_builder) research library. We recommend looking at its documentation for the basics of how the cluster lod building works. In both builders the principle operations are the same. `--nvclusterlod 1` to enable or via UI (off by default). This builder is _not_ deterministic and will be deprecated and removed in a future version of this application.
+This sample uses a custom fork of [meshoptimizer's](https://github.com/zeux/meshoptimizer) single header [clusterlod.h](src/meshopt_clusterlod.h) to support "inner" parallelism.
 
-Inside [scene_cluster_lod.cpp](/src/scene_cluster_lod.cpp) the `Scene:buildGeometryClusterLod(...)` function covers the usage of the libraries and what data we need to extract from them. The `Scene::storeGroup(...)` function takes the resulting cluster group and packs it into a binary blob used for the runtime representation. The geometry data is later saved into the cache file for faster loading and streaming.
+Inside [scene_cluster_lod.cpp](/src/scene_cluster_lod.cpp) the `Scene:buildGeometryLod(...)` function covers the usage of the libraries and what data we need to extract from them. The `Scene::storeGroup(...)` function takes the resulting cluster group and packs it into a binary blob used for the runtime representation. The geometry data is later saved into the cache file for faster loading and streaming.
+
+The cluster group can be compressed using a lossless compression scheme. However, we recommend the dropping of mantissa bits for both vertex positions and UV coordinates.
+The compression is done in the `Scene::compressGroup(...)` function inside [scene_cluster_compression.cpp](/src/scene_cluster_compression.cpp).
 
 In the UI you can influence the size of clusters and the LoD grouping of them in _"Clusters & LoDs generation"_.
 
@@ -169,10 +171,10 @@ You can use the commandline to change some defaults:
 ## Future Improvements
 
 Next:
-* Compressed cluster groups stored to memory/cache file and uncompressed with a compute shader after upload.
+* For streaming transfer compressed cluster groups and uncompress them in a compute shader after upload.
 Other:
 * Add more material features and basic texturing.
-* Add texture streaming
+* Add texture streaming.
 * Fallback for persistent traversal kernel.
 * Allowing the use of a compute shader to do rasterization of smaller/non-clipped triangles.
 * Implement sorting of streaming requests based on distance of instance. Sorting instances alone is not sufficient.
@@ -223,13 +225,13 @@ This is a glTF export of the highly detailed raw geometry from the [NVIDIA RTX K
 - [zorah_main_public.gltf.7z](http://developer.download.nvidia.com/ProGraphics/nvpro-samples/zorah_main_public.gltf.7z)
   - 1.64 G Triangles, with instancing 18.9 G Triangles
   - Cannot be pre-loaded must be streamed
-  - **~ 12.8 GB 7z**, unpacks to **~ 36.1 GB on disk**
+  - **12.8 GB 7z** - 2025/9/9, unpacks to **36.1 GB on disk**
   - The render cache file will require 62 GB next to the gltf file, it can be downloaded (see next link)
 - [zorah_main_public.gltf.nvsngeo.7z](https://developer.download.nvidia.com/ProGraphics/nvpro-samples/zorah_main_public.gltf.nvsngeo.7z)
-  - **~ 18.3 GB 7z**, unpacks to **~ 45.5 GB on disk**
+  - **19.5 GB 7z** - 2025/11/10, unpacks to **26.0 GB on disk**
   - Ensure that the `zorah_main_public.gltf.nvsngeo` is in the same directory as `zorah_main_public.gltf`.
   - If you want to avoid this big download and do the pre-processing for the cluster lod manually, use the following command-line:
-    - `vk_lod_cluster.exe "zorah_main_public.gltf" --clusterconfig 4 --processingonly 1 --processingthreadpct 0.5 --processingpartial 1 --nvclusterlod 0`
+    - `vk_lod_cluster.exe "zorah_main_public.gltf" --clusterconfig 4 --processingonly 1 --processingthreadpct 0.5 --processingpartial 1`
     - This will use 50% of the local PC's supported concurrency to process the model and allow to abort and resume the processing. On a 16-core Ryzen 9 a value of `0.5` will yield 16 threads, requires 29 GB RAM (brief peak of 44 GB) and takes around 6 minutes. We recommend lower thread percentages on machines with less RAM.
   - **NOTE:** Older versions of this file were larger, this sample has changed the file format of its file cache. When loading an old version, the processing will be triggered automatically and the old cache file is overwritten. It can take a bit until the new file versions have been propagated to servers worldwide.
 
@@ -265,6 +267,6 @@ By default the application now stores a cache file of the last processing (`--au
 
 ## Third Party
 
-[meshoptimizer](https://github.com/zeux/meshoptimizer) is used for various operations, such as building the cluster lod data structures along with the mesh simplification and re-ordering triangles within clusters to improve triangle strips.
+[meshoptimizer](https://github.com/zeux/meshoptimizer) is used for many operations, such as building the cluster lod data structures along with the mesh simplification and re-ordering triangles within clusters.
 
 [vulkan_radix_sort](https://github.com/jaesung-cs/vulkan_radix_sort) is used when "Instance Sorting" is activated prior traversal.

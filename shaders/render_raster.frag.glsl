@@ -28,7 +28,7 @@
 #extension GL_EXT_buffer_reference2 : enable
 #extension GL_EXT_scalar_block_layout : enable
 #extension GL_EXT_shader_atomic_int64 : enable
-#if DEBUG_VISUALIZATION || ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_UVS
+#if DEBUG_VISUALIZATION || ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS
 #extension GL_EXT_fragment_shader_barycentric : enable
 #endif
 
@@ -62,7 +62,7 @@ layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffe
 
 layout(scalar, binding = BINDINGS_SCENEBUILDING_UBO, set = 0) uniform buildBuffer
 {
-  SceneBuilding build;  
+  SceneBuilding build;
 };
 
 #if USE_STREAMING
@@ -78,8 +78,7 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
 
 ///////////////////////////////////////////////////
 
-#include "octant_encoding.h"
-#include "tangent_encoding.h"
+#include "attribute_encoding.h"
 #include "render_shading.glsl"
 
 ///////////////////////////////////////////////////
@@ -94,7 +93,7 @@ layout(location = 0) in Interpolants
 }
 IN;
 
-#if ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_UVS)
+#if ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS)
 layout(location = 3) pervertexEXT in Interpolants2
 {
   uint vertexID;
@@ -112,25 +111,24 @@ layout(early_fragment_tests) in;
 
 void main()
 {
-  vec4 wTangent = vec4(1);
-  vec3 wNormal  = vec3(1);
-  vec2 oUV      = vec2(1);
-  
+  vec4 wTangent  = vec4(1);
+  vec3 wNormal   = vec3(1);
+  vec2 oTexCoord = vec2(1);
+
   RenderInstance instance = instances[IN.instanceID];
 #if USE_STREAMING
   Cluster_in clusterRef = Cluster_in(streaming.resident.clusters.d[IN.clusterID]);
 #else
-  Geometry geometry = geometries[instances[IN.instanceID].geometryID];
+  Geometry   geometry   = geometries[instances[IN.instanceID].geometryID];
   Cluster_in clusterRef = Cluster_in(geometry.preloadedClusters.d[IN.clusterID]);
 #endif
-  
+
 #if ALLOW_SHADING
-#if ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_UVS
-  Cluster cluster = clusterRef.d;
-  uint32s_in oNormals = Cluster_getVertexNormals(clusterRef);
-  vec2s_in   oUVs     = Cluster_getVertexUVs(clusterRef);
-  uint16s_in oTangs   = Cluster_getVertexTangents(clusterRef);
-  
+#if ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS
+  Cluster    cluster    = clusterRef.d;
+  uint32s_in oNormals   = Cluster_getVertexNormals(clusterRef);
+  vec2s_in   oTexCoords = Cluster_getVertexTexCoords(clusterRef);
+
   uvec3 triangleIndices = uvec3(INBARY[0].vertexID, INBARY[1].vertexID, INBARY[2].vertexID);
 #endif
 
@@ -139,66 +137,65 @@ void main()
 #endif
   {
     wNormal = -cross(dFdx(IN.wPos), dFdy(IN.wPos));
+    wNormal = normalize(wNormal);
   }
 #if ALLOW_VERTEX_NORMALS
   else
   {
+    vec3 baryWeight   = gl_BaryCoordEXT;
     mat3 worldMatrixI = mat3(instance.worldMatrixI);
-    
+
+    uvec3 triNormalsPacked =
+        uvec3(oNormals.d[triangleIndices.x], oNormals.d[triangleIndices.y], oNormals.d[triangleIndices.z]);
     vec3 triNormals[3];
-    triNormals[0] = oct32_to_vec(oNormals.d[triangleIndices.x]);
-    triNormals[1] = oct32_to_vec(oNormals.d[triangleIndices.y]);
-    triNormals[2] = oct32_to_vec(oNormals.d[triangleIndices.z]);
-      
-    vec3 oNormal = gl_BaryCoordEXT.x * triNormals[0] + 
-                   gl_BaryCoordEXT.y * triNormals[1] + 
-                   gl_BaryCoordEXT.z * triNormals[2];
-                   
-  
-    wNormal = oNormal * worldMatrixI;
-    if(view.flipWinding == 1 || (view.flipWinding == 2 && !gl_FrontFacing))
+
+    triNormals[0] = normal_unpack(triNormalsPacked.x);
+    triNormals[1] = normal_unpack(triNormalsPacked.y);
+    triNormals[2] = normal_unpack(triNormalsPacked.z);
+
+    vec3 oNormal = baryWeight.x * triNormals[0] + baryWeight.y * triNormals[1] + baryWeight.z * triNormals[2];
+
+    wNormal = normalize(vec3(oNormal * worldMatrixI));
+
+#if ALLOW_VERTEX_TANGENTS
+    if((cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_UV) != 0)
     {
-      wNormal = -wNormal;
-    }
-    
-  #if ALLOW_VERTEX_TANGENTS
-    if ((cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_UV) != 0)
-    {
-      vec4 tangent0 = tangent_unpack(triNormals[0], oTangs.d[triangleIndices.x]);
+      vec4 tangent0 = tangent_unpack(triNormals[0], triNormalsPacked.x >> ATTRENC_NORMAL_BITS);
       wTangent.w    = tangent0.w;
 
-      vec3 oTangent = gl_BaryCoordEXT.x * tangent0.xyz + 
-                      gl_BaryCoordEXT.y * tangent_unpack(triNormals[1], oTangs.d[triangleIndices.y]).xyz + 
-                      gl_BaryCoordEXT.z * tangent_unpack(triNormals[2], oTangs.d[triangleIndices.z]).xyz;
-            
+      vec3 oTangent = baryWeight.x * tangent0.xyz
+                      + baryWeight.y * tangent_unpack(triNormals[1], triNormalsPacked.y >> ATTRENC_NORMAL_BITS).xyz
+                      + baryWeight.z * tangent_unpack(triNormals[2], triNormalsPacked.z >> ATTRENC_NORMAL_BITS).xyz;
+
       wTangent.xyz = oTangent * worldMatrixI;
     }
-  #endif
+#endif
   }
 #endif
-#if ALLOW_VERTEX_UVS
-  if ((cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_UV) != 0)
+#if ALLOW_VERTEX_TEXCOORD_0
+  if((cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_TEX_0) != 0)
   {
-    oUV = gl_BaryCoordEXT.x * oUVs.d[triangleIndices.x] + 
-          gl_BaryCoordEXT.y * oUVs.d[triangleIndices.y] + 
-          gl_BaryCoordEXT.z * oUVs.d[triangleIndices.z];
+    oTexCoord = gl_BaryCoordEXT.x * oTexCoords.d[triangleIndices.x]
+              + gl_BaryCoordEXT.y * oTexCoords.d[triangleIndices.y]
+              + gl_BaryCoordEXT.z * oTexCoords.d[triangleIndices.z];
   }
 #endif
 #endif
 
   uint visData = IN.clusterID;
-  if (view.visualize == VISUALIZE_LOD || view.visualize == VISUALIZE_GROUP)
+  if(view.visualize == VISUALIZE_LOD || view.visualize == VISUALIZE_GROUP)
   {
-    if (view.visualize == VISUALIZE_LOD)
+    if(view.visualize == VISUALIZE_LOD)
     {
       visData = floatBitsToUint(float(clusterRef.d.lodLevel) * instances[IN.instanceID].maxLodLevelRcp);
     }
-    else {
-      uvec2 baseAddress =  unpackUint2x32(uint64_t(clusterRef) - clusterRef.d.groupChildIndex * Cluster_size);
-      visData =  baseAddress.x ^ baseAddress.y;
+    else
+    {
+      uvec2 baseAddress = unpackUint2x32(uint64_t(clusterRef) - clusterRef.d.groupChildIndex * Cluster_size);
+      visData           = baseAddress.x ^ baseAddress.y;
     }
   }
-  else if (view.visualize == VISUALIZE_TRIANGLE)
+  else if(view.visualize == VISUALIZE_TRIANGLE)
   {
     visData = IN.clusterID * 256 + uint(gl_PrimitiveID);
   }
@@ -209,7 +206,7 @@ void main()
     const float overHeadLight = 1.0f;
     const float ambientLight  = 0.7f;
 
-    out_Color = shading(IN.instanceID, IN.wPos, wNormal, wTangent, oUV, visData, overHeadLight, ambientLight);
+    out_Color = shading(IN.instanceID, IN.wPos, wNormal, wTangent, oTexCoord, visData, overHeadLight, ambientLight);
   }
 #else
   {

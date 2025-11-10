@@ -83,10 +83,11 @@ std::string formatMetric(size_t size)
   return fmt::format("{:.3} {}", fsize, units[currentUnit]);
 }
 
-template <typename T>
-void uiPlot(const std::string& plotName, const std::string& tooltipFormat, const std::vector<T>& data, const T& maxValue, int offset = 0)
+template <typename T, typename Tcont>
+void uiPlot(const std::string& plotName, const std::string& tooltipFormat, const Tcont& data, const T& maxValue, int offset = 0, size_t sizeOverride = 0)
 {
   ImVec2 plotSize = ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y / 2);
+  size_t size     = sizeOverride ? sizeOverride : data.size();
 
   // Ensure minimum height to avoid overly squished graphics
   plotSize.y = std::max(plotSize.y, ImGui::GetTextLineHeight() * 20);
@@ -99,18 +100,18 @@ void uiPlot(const std::string& plotName, const std::string& tooltipFormat, const
   {
     ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_NoButtons);
     ImPlot::SetupAxes(nullptr, "Count", axesFlags, axesFlags);
-    ImPlot::SetupAxesLimits(0, double(data.size()), 0, static_cast<double>(maxValue), ImPlotCond_Always);
+    ImPlot::SetupAxesLimits(0, double(size), 0, static_cast<double>(maxValue), ImPlotCond_Always);
 
     ImPlot::PushStyleVar(ImPlotStyleVar_FillAlpha, 0.25f);
     ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
     ImPlot::SetNextFillStyle(plotColor);
-    ImPlot::PlotShaded("", data.data(), (int)data.size(), -INFINITY, 1.0, 0.0, 0, offset);
+    ImPlot::PlotShaded("", data.data(), (int)size, -INFINITY, 1.0, 0.0, 0, offset);
     ImPlot::PopStyleVar();
 
     if(ImPlot::IsPlotHovered())
     {
       ImPlotPoint mouse       = ImPlot::GetPlotMousePos();
-      int         mouseOffset = (int(mouse.x)) % (int)data.size();
+      int         mouseOffset = (int(mouse.x)) % (int)size;
       ImGui::BeginTooltip();
       ImGui::Text(tooltipFormat.c_str(), mouseOffset, data[mouseOffset]);
       ImGui::EndTooltip();
@@ -333,6 +334,7 @@ void LodClusters::onUIRender()
 
   // for emphasized parameter we want to recommend to the user
   const ImVec4 recommendedColor = ImVec4(0.0, 1.0, 0.0, 1.0);
+  const ImVec4 changesColor     = ImVec4(1.0f, 1.0f, 0.1f, 1.0f);
 
   UsagePercentages pct = {};
   if(m_renderer)
@@ -603,48 +605,129 @@ void LodClusters::onUIRender()
         ImGui::EndTable();
       }
     }
+
     if(ImGui::CollapsingHeader("Clusters & LoDs generation", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {
-      ImGui::Text("Changes can take significant time");
-      bool largeCache = m_scene && m_scene->m_cacheFileSize > size_t(512) * 1024 * 1024;
+      ImGui::Text("Applying changes can take significant time");
 
       PE::begin("##Clusters", ImGuiTableFlags_Resizable);
-      if(largeCache)
+      if(PE::entry("Cluster/meshlet size",
+                   [&]() { return m_ui.enumCombobox(GUI_MESHLET, "##cluster", &m_tweak.clusterConfig); }))
       {
-        PE::Checkbox("Allow large file processing", &m_sceneAllowLarge);
+        setFromClusterConfig(m_sceneConfigEdit, m_tweak.clusterConfig);
       }
-      ImGui::BeginDisabled(largeCache && !m_sceneAllowLarge);
-      PE::entry("Cluster/meshlet size",
-                [&]() { return m_ui.enumCombobox(GUI_MESHLET, "##cluster", &m_tweak.clusterConfig); });
-      if(PE::treeNode("Other settings"))
-      {
-        PE::Checkbox("Use NV lod library", &m_sceneConfig.useNvLib,
-                     "uses nv_cluster_lod_builder library. Warning: slower and significantly more RAM usage during processing. Less control.");
 
-        PE::InputIntClamped("LoD group size", (int*)&m_sceneConfig.clusterGroupSize, 8, 128, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
-                            "number of clusters that make lod group. Their triangles are decimated together and they share a common error property");
-        if(!m_sceneConfig.useNvLib)
-        {
-          PE::InputIntClamped("Preferred node width", (int*)&m_sceneConfig.preferredNodeWidth, 4, 32, 1, 1,
-                              ImGuiInputTextFlags_EnterReturnsTrue,
-                              "number of children a lod node should have (max is always 32). Currently _not_ implemented for nv_cluster_lod_builder.");
-          PE::InputFloat("Error merge previous", &m_sceneConfig.lodErrorMergePrevious, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
-                         "Mesh error propagation: scales previous lod error before combining it with the current error to compute the group error as max(previous_error * factor, error).");
-          PE::InputFloat("Error merge additive", &m_sceneConfig.lodErrorMergeAdditive, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
-                         "Mesh error propagation: adds scaled current error to the group error after the maximum computation.");
-          PE::Checkbox("Prefer ray tracing (RT)", &m_sceneConfig.meshoptPreferRayTracing,
-                       "Configures meshoptimizer's lod cluster builder to prefer ray tracing over rasterization.");
-          PE::InputFloat("RT fill weight", &m_sceneConfig.meshoptFillWeight, 0, 0, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue,
-                         "If ray tracing is preferred, influences weight between SAH optimized (towards zero), or filling clusters (higher value).");
-          PE::InputFloat("RA split factor", &m_sceneConfig.meshoptSplitFactor, 0, 0, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue,
-                         "If raster is preferred, influences the maximum size of a cluster prior splitting it up.");
-        }
-        m_sceneConfig.lodErrorMergePrevious = std::max(1.0f, m_sceneConfig.lodErrorMergePrevious);
-        m_sceneConfig.lodErrorMergeAdditive = std::max(0.0f, m_sceneConfig.lodErrorMergeAdditive);
+      if(PE::treeNode("Compression settings"))
+      {
+        PE::Checkbox("Enable compression", &m_sceneConfigEdit.useCompressedData, "Lowers cache file size, can speed up streaming");
+        PE::InputIntClamped("POS Mantissa drop bits", (int*)&m_sceneConfigEdit.compressionPosDropBits, 0, 22, 1, 1,
+                            ImGuiInputTextFlags_EnterReturnsTrue,
+                            "position number of mantissa bits to drop (zeroed) to improve compression");
+        PE::InputIntClamped("TC Mantissa drop bits", (int*)&m_sceneConfigEdit.compressionTexDropBits, 0, 22, 1, 1,
+                            ImGuiInputTextFlags_EnterReturnsTrue,
+                            "texcoord number of mantissa bits to drop (zeroed) to improve compression");
         PE::treePop();
       }
+
+      if(PE::treeNode("Other settings"))
+      {
+        PE::InputIntClamped("LoD group size", (int*)&m_sceneConfigEdit.clusterGroupSize, 8, 128, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
+                            "number of clusters that make a lod group. Their triangles are decimated together and they share a common error property");
+        PE::InputIntClamped("Preferred node width", (int*)&m_sceneConfigEdit.preferredNodeWidth, 4, 32, 1, 1,
+                            ImGuiInputTextFlags_EnterReturnsTrue,
+                            "number of children a lod node should have (max is always 32). Currently _not_ implemented for nv_cluster_lod_builder.");
+        PE::Checkbox("Prefer ray tracing (RT)", &m_sceneConfigEdit.meshoptPreferRayTracing,
+                     "Configures meshoptimizer's lod cluster builder to prefer ray tracing over rasterization.");
+        PE::InputFloat("RT fill weight", &m_sceneConfigEdit.meshoptFillWeight, 0, 0, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue,
+                       "If ray tracing is preferred, influences weight between SAH optimized (towards zero), or filling clusters (higher value).");
+        PE::InputFloat("RA split factor", &m_sceneConfigEdit.meshoptSplitFactor, 0, 0, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue,
+                       "If raster is preferred, influences the maximum size of a cluster prior splitting it up.");
+
+        PE::entry("Enabled Attributes", [&] {
+          for(uint32_t i = 0; i < 4; i++)
+          {
+            ImGui::PushID(i);
+            uint32_t bit  = (1 << i);
+            bool     used = (m_sceneConfigEdit.enabledAttributes & bit) != 0;
+
+            const char* what = "error";
+
+            switch(bit)
+            {
+              case shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL:
+                what = "NRM";
+                break;
+              case shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT:
+                what = "TAN";
+                break;
+              case shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0:
+                what = "TEX 0";
+                break;
+              case shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1:
+                what = "TEX 1";
+                break;
+            }
+
+            ImGui::Checkbox(what, &used);
+            if((i % 2) < 1)
+              ImGui::SameLine();
+            if(used)
+              m_sceneConfigEdit.enabledAttributes |= bit;
+            else
+              m_sceneConfigEdit.enabledAttributes &= ~bit;
+            ImGui::PopID();
+          }
+          return false;
+        });
+
+        PE::treePop();
+      }
+
+      if(PE::treeNode("Mesh error settings"))
+      {
+        PE::InputFloat("Error merge previous", &m_sceneConfigEdit.lodErrorMergePrevious, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
+                       "Mesh error propagation: scales previous lod error before combining it with the current error to compute the group error as max(previous_error * factor, error).");
+        PE::InputFloat("Error merge additive", &m_sceneConfigEdit.lodErrorMergeAdditive, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
+                       "Mesh error propagation: adds scaled current error to the group error after the maximum computation.");
+        PE::InputFloat("Normal weight", &m_sceneConfigEdit.simplifyNormalWeight, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
+                       "How much to weight this attribute for the error metric. 0 Disables");
+        PE::InputFloat("TexCoord weight", &m_sceneConfigEdit.simplifyTexCoordWeight, 0, 0, "%.3f",
+                       ImGuiInputTextFlags_EnterReturnsTrue, "How much to weight this attribute for the error metric. 0 Disables");
+        PE::InputFloat("Tangent weight", &m_sceneConfigEdit.simplifyTangentWeight, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
+                       "How much to weight this attribute for the error metric. 0 Disables");
+        PE::InputFloat("BiTangent Sign weight", &m_sceneConfigEdit.simplifyTangentSignWeight, 0, 0, "%.3f",
+                       ImGuiInputTextFlags_EnterReturnsTrue, "How much to weight this attribute for the error metric. 0 Disables");
+        m_sceneConfigEdit.lodErrorMergePrevious = std::max(1.0f, m_sceneConfigEdit.lodErrorMergePrevious);
+        m_sceneConfigEdit.lodErrorMergeAdditive = std::max(0.0f, m_sceneConfigEdit.lodErrorMergeAdditive);
+        PE::treePop();
+      }
+
+      bool hasChanges = memcmp(&m_sceneConfigEdit, &m_sceneConfig, sizeof(m_sceneConfigEdit)) != 0;
+
+      ImGui::BeginDisabled(!hasChanges);
+      if(hasChanges)
+      {
+        ImGui::PushStyleColor(ImGuiCol_Text, changesColor);
+      }
+
+      ImVec2 buttonSize = {100.0f * ImGui::GetWindowDpiScale(), 20 * ImGui::GetWindowDpiScale()};
+      if(PE::entry("Operations", [&] { return ImGui::Button("Apply Changes", buttonSize); }, "Applying changes triggers reload and processing of the scene"))
+      {
+        m_sceneConfig = m_sceneConfigEdit;
+      }
+      if(hasChanges)
+      {
+        ImGui::PopStyleColor();
+      }
+      if(PE::entry("", [&] { return ImGui::Button("Reset Changes", buttonSize); }, "Resets the current edits"))
+      {
+        m_sceneConfigEdit     = m_sceneConfig;
+        m_tweak.clusterConfig = findSceneClusterConfig(m_sceneConfig);
+      }
       ImGui::EndDisabled();
+
       PE::end();
+
 
       if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
       {
@@ -1045,20 +1128,28 @@ void LodClusters::onUIRender()
       ImGui::Text("Cluster max vertices: %d", m_scene->m_maxClusterVertices);
       ImGui::Text("Cluster count: %" PRIu64, m_scene->m_totalClustersCount);
       ImGui::Text("Clusters with config (%u) triangles: %u (%.1f%%)", m_scene->m_config.clusterTriangles,
-                  m_scene->m_clusterTriangleHistogram.back(),
-                  float(m_scene->m_clusterTriangleHistogram.back()) * 100.f / float(m_scene->m_totalClustersCount));
+                  m_scene->m_histograms.clusterTriangles[m_scene->m_config.clusterTriangles],
+                  float(m_scene->m_histograms.clusterTriangles[m_scene->m_config.clusterTriangles]) * 100.f
+                      / float(m_scene->m_totalClustersCount));
       ImGui::Text("Geometry max lod levels: %d", m_scene->m_maxLodLevelsCount);
 
       uiPlot(std::string("Cluster Triangles Histogram"), std::string("Cluster count with %d triangles: %u"),
-             m_scene->m_clusterTriangleHistogram, m_scene->m_clusterTriangleHistogramMax);
+             m_scene->m_histograms.clusterTriangles, m_scene->m_histograms.clusterTrianglesMax, 0,
+             m_scene->m_config.clusterTriangles + 1);
+
       uiPlot(std::string("Cluster Vertices Histogram"), std::string("Cluster count with %d vertices: %u"),
-             m_scene->m_clusterVertexHistogram, m_scene->m_clusterVertexHistogramMax);
-      uiPlot(std::string("Lod-Group Clusters Histogram"), std::string("Group count with %d clusters: %u"),
-             m_scene->m_groupClusterHistogram, m_scene->m_groupClusterHistogramMax);
-      uiPlot(std::string("Lod-Node Children Histogram"), std::string("Node count with %d children: %u"),
-             m_scene->m_nodeChildrenHistogram, m_scene->m_nodeChildrenHistogramMax);
-      uiPlot(std::string("Geometry Lod Levels Histogram"), std::string("Geometry count with %d lod levels: %u"),
-             m_scene->m_lodLevelsHistogram, m_scene->m_lodLevelsHistogramMax);
+             m_scene->m_histograms.clusterVertices, m_scene->m_histograms.clusterVerticesMax, 0,
+             m_scene->m_config.clusterVertices + 1);
+
+      uiPlot(std::string("Group Clusters Histogram"), std::string("Group count with %d clusters: %u"),
+             m_scene->m_histograms.groupClusters, m_scene->m_histograms.groupClustersMax, 0,
+             m_scene->m_config.clusterGroupSize + 1);
+
+      uiPlot(std::string("Node Children Histogram"), std::string("Node count with %d children: %u"),
+             m_scene->m_histograms.nodeChildren, m_scene->m_histograms.nodeChildrenMax);
+
+      uiPlot(std::string("LOD Levels Histogram"), std::string("Mesh count with %d LOD levels: %u"),
+             m_scene->m_histograms.lodLevels, m_scene->m_histograms.lodLevelsMax, 0, m_scene->m_maxLodLevelsCount + 1);
     }
   }
   ImGui::End();

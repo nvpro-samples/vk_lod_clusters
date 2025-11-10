@@ -1,13 +1,27 @@
 # Changelog for vk_lod_clusters
+* 2025-11-10:
+
+  **WARNING** Old cache files are not be compatible anymore. First time loading such scenes will trigger processing and overwrite / delete them.
+
+  * Removed `nv_cluster_lod_library` usage and dependency, `meshoptimizer`'s cluster lod builder is now the only implementation and enabled the removal of some abstractions.
+  * Added [documentation](docs/lod_generation.md) about cluster lod generation, that originated from the nv library.
+  * Combined vertex normal and tangent to single 32-bit value.
+  * Revised UI around cluster settings
+  * Revised progress bar for processing/loading to be based on triangle count, not geometry count
+  * Added second texture coordinate attribute (unused so far)
+  * Added histograms to scene cache file for faster loading times (avoids iterating clusters).
+  * Added support for basic cluster group compression. See `Scene::compressGroup` within [scene_cluster_compression.cpp](src/scene_cluster_compression.cpp). Position and texcoord floats are encoded lossless, however, we recommend combining it with dropping mantissa bits for better compression. New command-line options are `--compressed 0/1`, `--compressedpositionbits <dropped bits>` and  `--compressedtexcoordbits <dropped bits>`. Currently decompression is done prior upload via `Scene::decompressGroup`, however we intend to do this in a compute shader after upload, to reduce the streaming traffic.
+
 * 2025-10-30:
+
+  **WARNING** Old cache files are not be compatible anymore. First time loading such scenes will trigger processing and overwrite / delete them.
+
   * Major refactoring of the scene cache file. It now stores the runtime data so that it can be easily streamed in
     using a single binary blob for the whole group. The `shaderio::Cluster` and `shaderio::Group` data structures
     were changed to allow more optional vertex attributes, as well as ease compatibility with HLSL / byte offsets
     and not relying on 64-bit VAs.
 
     Further work is being done on compressed representations for the disk cache that are decoded by compute shaders, and will be the next bigger update.
-
-    **WARNING** Old cache files will not be compatible anymore. First time loading such scenes will trigger processing and overwrite / delete them.
   * Spatial sorting of cluster groups within a lod level to help with streaming locality. Thanks to
     Arseny Kapoulkine for the `partition_sort` option that was added to `meshopt_clusterlod.h`
   * Preparations for enhanced materials have been done. UV and tangent space vertex attributes were added.

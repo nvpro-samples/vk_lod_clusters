@@ -28,16 +28,24 @@ using namespace glm;
 
 enum ClusterAttributeBits
 {
-  CLUSTER_ATTRIBUTE_VERTEX_NORMAL  = 1,
-  CLUSTER_ATTRIBUTE_VERTEX_UV      = 2,
-  CLUSTER_ATTRIBUTE_VERTEX_TANGENT = 4,
+  CLUSTER_ATTRIBUTE_VERTEX_NORMAL           = 1,
+  CLUSTER_ATTRIBUTE_VERTEX_TANGENT          = 2,
+  CLUSTER_ATTRIBUTE_VERTEX_TEX_0            = 4,
+  CLUSTER_ATTRIBUTE_VERTEX_TEX_1            = 8,
+  CLUSTER_ATTRIBUTE_COMPRESSED_VERTEX_TEX_0 = 32,
+  CLUSTER_ATTRIBUTE_COMPRESSED_VERTEX_TEX_1 = 64,
+  CLUSTER_ATTRIBUTE_COMPRESSED_VERTEX_POS   = 128,
 };
 
 #else
 
 #define CLUSTER_ATTRIBUTE_VERTEX_NORMAL 1
-#define CLUSTER_ATTRIBUTE_VERTEX_UV 2
-#define CLUSTER_ATTRIBUTE_VERTEX_TANGENT 4
+#define CLUSTER_ATTRIBUTE_VERTEX_TANGENT 2
+#define CLUSTER_ATTRIBUTE_VERTEX_TEX_0 4
+#define CLUSTER_ATTRIBUTE_VERTEX_TEX_1 8
+#define CLUSTER_ATTRIBUTE_COMPRESSED_VERTEX_TEX_0 32
+#define CLUSTER_ATTRIBUTE_COMPRESSED_VERTEX_TEX_1 64
+#define CLUSTER_ATTRIBUTE_COMPRESSED_VERTEX_POS 128
 
 #ifndef CLUSTER_VERTEX_COUNT
 #define CLUSTER_VERTEX_COUNT 32
@@ -51,6 +59,7 @@ enum ClusterAttributeBits
 
 #define SHADERIO_ORIGINAL_MESH_GROUP 0xffffffffu
 #define SHADERIO_MAX_LOD_LEVELS 32
+#define SHADERIO_MAX_NODE_CHILDREN 32
 #define SHADERIO_MAX_GROUP_CLUSTERS 128
 
 struct BBox
@@ -77,8 +86,10 @@ struct Cluster
   uint8_t  localMaterialID;  // if 0xFF then a per-triangle index is used
   uint16_t reserved;
 
+  // byte offset relative to cluster
   uint32_t vertices;  // vec3 positions[vertexCount], followed by optional per-vertex attributes
   uint32_t indices;   // uint8_t indices[triangleCount * 3], followed by optional per-triangle material index
+  // if compressed then indices stores compressed vertices offsets
 };
 BUFFER_REF_DECLARE(Cluster_in, Cluster, , 16);
 BUFFER_REF_DECLARE_ARRAY(Clusters_inout, Cluster, , 16);
@@ -93,15 +104,11 @@ uint32s_in Cluster_getVertexNormals(Cluster_in cluster)
 {
   return uint32s_in(uint64_t(cluster) + (cluster.d.vertices + 4 * 3 * (cluster.d.vertexCountMinusOne + 1)));
 }
-vec2s_in Cluster_getVertexUVs(Cluster_in cluster)
+vec2s_in Cluster_getVertexTexCoords(Cluster_in cluster)
 {
+  // texcoords come after position and normal & tangent
   uint32_t elems = (cluster.d.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_NORMAL) == 0 ? 3 : 4;
   return vec2s_in(uint64_t(cluster) + (((cluster.d.vertices + 4 * elems * (cluster.d.vertexCountMinusOne + 1)) + 7) & ~7));
-}
-uint16s_in Cluster_getVertexTangents(Cluster_in cluster)
-{
-  // tangents only exist if normals and uvs do as well
-  return uint16s_in(uint64_t(Cluster_getVertexUVs(cluster)) + ((cluster.d.vertexCountMinusOne + 1) * 4 * 2));
 }
 uint8s_in Cluster_getTriangleIndices(Cluster_in cluster)
 {

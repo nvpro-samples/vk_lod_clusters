@@ -20,6 +20,9 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
+#include <cassert>
+#include <span>
 
 namespace serialization {
 

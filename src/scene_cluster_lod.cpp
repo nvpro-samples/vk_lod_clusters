@@ -24,24 +24,21 @@
 #include <meshoptimizer.h>
 
 #include "scene.hpp"
-#include "../shaders/octant_encoding.h"
-#include "../shaders/tangent_encoding.h"
+#include "../shaders/attribute_encoding.h"
 
 namespace lodclusters {
 
-void Scene::buildGeometryClusterLod(ProcessingInfo& processingInfo, GeometryStorage& geometry)
+template <typename T0, typename T1>
+void padZeroes(std::span<T0>& previous, T1* next)
 {
-  if(m_config.useNvLib)
+  // fill padded array with zero
   {
-    buildGeometryClusterLodNvLib(processingInfo, geometry);
+    size_t padSize = size_t(next) - size_t(previous.data() + previous.size());
+    if(padSize)
+    {
+      memset(previous.data() + previous.size(), 0, padSize);
+    }
   }
-  else
-  {
-    buildGeometryClusterLodMeshoptimizer(processingInfo, geometry);
-  }
-
-  geometry.lodNodeBboxes.resize(geometry.lodNodes.size());
-  computeLodBboxes_recursive(geometry, 0);
 }
 
 // Takes the resulting cluster group of the lod generation and stores it into
@@ -49,18 +46,18 @@ void Scene::buildGeometryClusterLod(ProcessingInfo& processingInfo, GeometryStor
 // as is into the scene cache file and patched after upload when streamed in.
 // Some abstraction is used to deal with results from either `meshoptimizer's` clusterlod,
 // or `nv_cluster_lod_builder`.
-uint32_t Scene::storeGroup(TempContext*                         context,
-                           uint32_t                             threadIndex,
-                           uint32_t                             groupIndex,
-                           const TempGroup&                     group,
-                           std::function<TempCluster(uint32_t)> tempClusterFn)
+uint32_t Scene::storeGroup(TempContext*       context,
+                           uint32_t           threadIndex,
+                           uint32_t           groupIndex,
+                           const clodGroup&   group,
+                           uint32_t           clusterCount,
+                           const clodCluster* clusters)
 {
   ProcessingInfo&  processing = context->processingInfo;
   GeometryStorage& geometry   = context->geometry;
   Scene::GroupInfo groupInfo  = {};
 
-  uint32_t level        = uint32_t(group.lodLevel);
-  uint32_t clusterCount = uint32_t(group.clusterCount);
+  uint32_t level = uint32_t(group.depth);
 
   uint8_t* groupTempData = &context->threadGroupDatas[context->threadGroupSize * threadIndex];
 
@@ -69,39 +66,50 @@ uint32_t Scene::storeGroup(TempContext*                         context,
 
   std::span<uint32_t> vertexCacheEarlyValue((uint32_t*)(groupTempData + context->threadGroupStorageSize), 256);
   std::span<uint32_t> vertexCacheEarlyPos((uint32_t*)vertexCacheEarlyValue.data() + 256, 256);
-  std::span<uint32_t> localVertices(vertexCacheEarlyPos.data() + 256, 256);
+  std::span<uint32_t> vertexCacheLocal(vertexCacheEarlyPos.data() + 256, m_config.clusterGroupSize * m_config.clusterVertices);
 
   uint32_t       clusterMaxVerticesCount  = 0;
   uint32_t       clusterMaxTrianglesCount = 0;
   shaderio::BBox groupBbox                = {{FLT_MAX, FLT_MAX, FLT_MAX}, {-FLT_MAX, -FLT_MAX, -FLT_MAX}, 0, 0};
 
-  {
-    // compute storage size, need to de-duplicate all vertices
+  // Fill all data into temporary group storage.
+  // This also does vertex de-duplication, prior that we don't know the final group storage
+  // requirements in advance.
+  //
+  // After this pass we make the allocation request within a mutex in which we
+  // mostly just copy out the data.
 
-    uint32_t triangleOffset   = 0;
-    uint32_t vertexOffset     = 0;
+  {
+    // running offsets
+    uint32_t triangleOffset = 0;
+    uint32_t vertexOffset   = 0;
+
+    // runtime offset so all vertex data for a cluster
+    // is in a contiguous region
     uint32_t vertexDataOffset = 0;
 
-    size_t vertexPosBytes  = 0;
-    size_t vertexNrmBytes  = 0;
-    size_t vertexTangBytes = 0;
-    size_t vertexUvBytes   = 0;
+    // stats
+    size_t vertexPosBytes      = 0;
+    size_t vertexNrmBytes      = 0;
+    size_t vertexTexCoordBytes = 0;
 
     uint32_t attributeStride = uint32_t(geometry.vertexAttributes.size() / geometry.vertexPositions.size());
 
     for(uint32_t c = 0; c < clusterCount; c++)
     {
-      TempCluster tempCluster = tempClusterFn(c);
+      uint32_t* localVertices = &vertexCacheLocal[vertexOffset];
+
+      const clodCluster& tempCluster = clusters[c];
 
       shaderio::Cluster& groupCluster  = groupTempStorage.clusters[c];
-      uint32_t           triangleCount = tempCluster.indexCount / 3;
+      uint32_t           triangleCount = uint32_t(tempCluster.index_count / 3);
       uint32_t           vertexCount   = 0;
 
       groupCluster.vertices = vertexDataOffset;
       groupCluster.indices  = triangleOffset * 3;
 
       memset(vertexCacheEarlyValue.data(), ~0, vertexCacheEarlyValue.size_bytes());
-      for(uint32_t i = 0; i < tempCluster.indexCount; i++)
+      for(uint32_t i = 0; i < tempCluster.index_count; i++)
       {
         uint32_t vertexIndex = tempCluster.indices[i];
         uint32_t cacheIndex  = ~0;
@@ -137,77 +145,100 @@ uint32_t Scene::storeGroup(TempContext*                         context,
       shaderio::BBox bbox = {{FLT_MAX, FLT_MAX, FLT_MAX}, {-FLT_MAX, -FLT_MAX, -FLT_MAX}, FLT_MAX, -FLT_MAX};
 
       {
-        for(uint32_t v = 0; v < vertexCount; v++)
+        // in compression case we pack the attributes later
+        if(m_config.useCompressedData)
         {
-          // copy position
-          glm::vec3 pos = geometry.vertexPositions[localVertices[v]];
-          *(glm::vec3*)&groupTempStorage.vertices[vertexDataOffset + v * 3] = pos;
+          for(uint32_t v = 0; v < vertexCount; v++)
+          {
+            glm::vec3 pos = geometry.vertexPositions[localVertices[v]];
 
-          // local bbox
-          bbox.lo = glm::min(bbox.lo, glm::vec3(pos));
-          bbox.hi = glm::max(bbox.hi, glm::vec3(pos));
+            // local bbox
+            bbox.lo = glm::min(bbox.lo, glm::vec3(pos));
+            bbox.hi = glm::max(bbox.hi, glm::vec3(pos));
+          }
         }
-        vertexDataOffset += vertexCount * 3;
+        else
+        {
+          for(uint32_t v = 0; v < vertexCount; v++)
+          {
+            // copy position
+            glm::vec3 pos = geometry.vertexPositions[localVertices[v]];
+            *(glm::vec3*)&groupTempStorage.vertices[vertexDataOffset + v * 3] = pos;
 
+            // local bbox
+            bbox.lo = glm::min(bbox.lo, glm::vec3(pos));
+            bbox.hi = glm::max(bbox.hi, glm::vec3(pos));
+          }
+        }
+
+        vertexDataOffset += vertexCount * 3;
         vertexPosBytes += sizeof(float) * 3 * vertexCount;
       }
 
       if(geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL)
       {
-        for(uint32_t v = 0; v < vertexCount; v++)
+        // in compression case we pack attributes later
+        if(!m_config.useCompressedData)
         {
-          glm::vec3 tmp =
-              *(const glm::vec3*)(&geometry.vertexAttributes[localVertices[v] * attributeStride + geometry.attributeNormalOffset]);
-          uint32_t encoded                                             = shaderio::vec_to_oct32(tmp);
-          *(uint32_t*)&groupTempStorage.vertices[vertexDataOffset + v] = encoded;
-        }
+          if(geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT)
+          {
+            for(uint32_t v = 0; v < vertexCount; v++)
+            {
+              glm::vec3 normal =
+                  *(const glm::vec3*)(&geometry.vertexAttributes[localVertices[v] * attributeStride + geometry.attributeNormalOffset]);
+              glm::vec4 tangent =
+                  *(const glm::vec4*)(&geometry.vertexAttributes[localVertices[v] * attributeStride + geometry.attributeTangentOffset]);
 
-        vertexNrmBytes += sizeof(uint32_t) * vertexCount;
+              uint32_t encoded = shaderio::normal_pack(normal);
+              encoded |= shaderio::tangent_pack(normal, tangent) << ATTRENC_NORMAL_BITS;
+
+              *(uint32_t*)&groupTempStorage.vertices[vertexDataOffset + v] = encoded;
+            }
+          }
+          else
+          {
+            for(uint32_t v = 0; v < vertexCount; v++)
+            {
+              glm::vec3 tmp =
+                  *(const glm::vec3*)(&geometry.vertexAttributes[localVertices[v] * attributeStride + geometry.attributeNormalOffset]);
+
+              uint32_t encoded                                             = shaderio::normal_pack(tmp);
+              *(uint32_t*)&groupTempStorage.vertices[vertexDataOffset + v] = encoded;
+            }
+          }
+        }
 
         vertexDataOffset += vertexCount;
+        vertexNrmBytes += sizeof(uint32_t) * vertexCount;
       }
 
-      if(geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_UV)
+      for(uint32_t t = 0; t < 2; t++)
       {
-        // align to vec2
-        vertexDataOffset = (vertexDataOffset + 1) & ~1;
+        shaderio::ClusterAttributeBits usedBit =
+            t == 0 ? shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0 : shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1;
+        uint32_t attributeTexOffset = t == 0 ? geometry.attributeTex0offset : geometry.attributeTex1offset;
 
-        for(uint32_t v = 0; v < vertexCount; v++)
+        if(geometry.attributeBits & usedBit)
         {
-          glm::vec2 tmp =
-              *(const glm::vec2*)(&geometry.vertexAttributes[localVertices[v] * attributeStride + geometry.attributeUvOffset]);
-          *(glm::vec2*)&groupTempStorage.vertices[vertexDataOffset + v * 2] = tmp;
+          // align to vec2
+          vertexDataOffset = (vertexDataOffset + 1) & ~1;
+
+          if(!m_config.useCompressedData)
+          {
+            for(uint32_t v = 0; v < vertexCount; v++)
+            {
+              glm::vec2 tmp =
+                  *(const glm::vec2*)(&geometry.vertexAttributes[localVertices[v] * attributeStride + attributeTexOffset]);
+              *(glm::vec2*)&groupTempStorage.vertices[vertexDataOffset + v * 2] = tmp;
+            }
+          }
+
+          vertexDataOffset += vertexCount * 2;
+          vertexTexCoordBytes += sizeof(float) * 2 * vertexCount;
         }
-
-        vertexUvBytes += sizeof(float) * 2 * vertexCount;
-
-        vertexDataOffset += vertexCount * 2;
       }
 
-      if(geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT)
-      {
-        // last element might be partially written, clear to zero
-        uint32_t elementCount                                          = (vertexCount + 1) / 2;
-        groupTempStorage.vertices[vertexDataOffset + elementCount - 1] = 0;
-
-        for(uint32_t v = 0; v < vertexCount; v++)
-        {
-          glm::vec4 userTangent =
-              *(const glm::vec4*)(&geometry.vertexAttributes[localVertices[v] * attributeStride + geometry.attributeTangentOffset]);
-          glm::vec3 userNormal = *(const glm::vec3*)(&geometry.vertexAttributes[localVertices[v] * attributeStride]);
-
-          uint16_t encoded = shaderio::tangent_pack(userNormal, userTangent);
-
-          // put sign in lowest bit
-          ((uint16_t*)&groupTempStorage.vertices[vertexDataOffset])[v] = encoded;
-        }
-
-        vertexTangBytes += sizeof(float) * elementCount;
-
-        vertexDataOffset += elementCount;
-      }
-
-      // find longest edge
+      // find shortest and longest edge
       for(uint32_t t = 0; t < triangleCount; t++)
       {
         glm::vec3 trianglePositions[3];
@@ -230,7 +261,7 @@ uint32_t Scene::storeGroup(TempContext*                         context,
       groupBbox.hi = glm::max(groupBbox.hi, bbox.hi);
 
       groupTempStorage.clusterBboxes[c]           = bbox;
-      groupTempStorage.clusterGeneratingGroups[c] = tempCluster.generatingGroup;
+      groupTempStorage.clusterGeneratingGroups[c] = uint32_t(tempCluster.refined);
 
       groupCluster.triangleCountMinusOne = uint8_t(triangleCount - 1);
       groupCluster.vertexCountMinusOne   = uint8_t(vertexCount - 1);
@@ -243,22 +274,29 @@ uint32_t Scene::storeGroup(TempContext*                         context,
       clusterMaxTrianglesCount = std::max(clusterMaxTrianglesCount, triangleCount);
       clusterMaxVerticesCount  = std::max(clusterMaxVerticesCount, vertexCount);
 
+      ((std::atomic_uint32_t&)m_histograms.clusterTriangles[triangleCount])++;
+      ((std::atomic_uint32_t&)m_histograms.clusterVertices[vertexCount])++;
+
       vertexOffset += vertexCount;
       triangleOffset += triangleCount;
     }
 
-    groupInfo.offsetBytes     = 0;
-    groupInfo.clusterCount    = uint8_t(clusterCount);
-    groupInfo.triangleCount   = uint16_t(triangleOffset);
-    groupInfo.vertexCount     = uint16_t(vertexOffset);
-    groupInfo.lodLevel        = uint8_t(level);
-    groupInfo.attributeBits   = uint8_t(geometry.attributeBits);
-    groupInfo.vertexDataCount = uint16_t(vertexDataOffset);
-    groupInfo.sizeBytes       = groupInfo.computeSize();
+    groupInfo.offsetBytes                 = 0;
+    groupInfo.reserved1                   = 0;
+    groupInfo.clusterCount                = uint8_t(clusterCount);
+    groupInfo.triangleCount               = uint16_t(triangleOffset);
+    groupInfo.vertexCount                 = uint16_t(vertexOffset);
+    groupInfo.lodLevel                    = uint8_t(level);
+    groupInfo.attributeBits               = uint8_t(geometry.attributeBits);
+    groupInfo.vertexDataCount             = vertexDataOffset;
+    groupInfo.uncompressedVertexDataCount = 0;
+    groupInfo.uncompressedSizeBytes       = 0;
+    groupInfo.sizeBytes                   = groupInfo.computeSize();
 
     {
       processing.stats.groups++;
       processing.stats.clusters += clusterCount;
+      processing.stats.vertices += vertexOffset;
       processing.stats.groupHeaderBytes += sizeof(shaderio::Group);
       processing.stats.clusterHeaderBytes += sizeof(shaderio::Cluster) * clusterCount;
       processing.stats.clusterBboxBytes += sizeof(shaderio::BBox) * clusterCount;
@@ -266,8 +304,14 @@ uint32_t Scene::storeGroup(TempContext*                         context,
       processing.stats.triangleIndexBytes += sizeof(uint8_t) * triangleOffset * 3;
       processing.stats.vertexPosBytes += vertexPosBytes;
       processing.stats.vertexNrmBytes += vertexNrmBytes;
-      processing.stats.vertexUvBytes += vertexUvBytes;
-      processing.stats.vertexTangBytes += vertexTangBytes;
+      processing.stats.vertexTexCoordBytes += vertexTexCoordBytes;
+
+      ((std::atomic_uint32_t&)m_histograms.groupClusters[clusterCount])++;
+    }
+
+    if(m_config.useCompressedData)
+    {
+      compressGroup(context, groupTempStorage, groupInfo, vertexCacheLocal.data());
     }
   }
 
@@ -304,10 +348,10 @@ uint32_t Scene::storeGroup(TempContext*                         context,
     geometry.bbox.lo = glm::min(groupBbox.lo, geometry.bbox.lo);
     geometry.bbox.hi = glm::max(groupBbox.hi, geometry.bbox.hi);
 
-    if(context->lodLevel != group.lodLevel)
+    if(context->lodLevel != uint32_t(group.depth))
     {
-      context->lodLevel                  = group.lodLevel;
-      const shaderio::LodLevel* previous = group.lodLevel ? &geometry.lodLevels[group.lodLevel - 1] : nullptr;
+      context->lodLevel                  = uint32_t(group.depth);
+      const shaderio::LodLevel* previous = group.depth ? &geometry.lodLevels[group.depth - 1] : nullptr;
 
       shaderio::LodLevel initLevel{};
       initLevel.clusterOffset = previous ? previous->clusterOffset + previous->clusterCount : 0;
@@ -338,9 +382,9 @@ uint32_t Scene::storeGroup(TempContext*                         context,
     // See `instance_classify_lod.comp.glsl` shader.
 
     geometry.lodLevels[level].minBoundingSphereRadius =
-        std::min(geometry.lodLevels[level].minBoundingSphereRadius, group.traversalMetric.boundingSphereRadius);
+        std::min(geometry.lodLevels[level].minBoundingSphereRadius, group.simplified.radius);
     geometry.lodLevels[level].minMaxQuadricError =
-        std::min(geometry.lodLevels[level].minMaxQuadricError, group.traversalMetric.maxQuadricError);
+        std::min(geometry.lodLevels[level].minMaxQuadricError, group.simplified.error);
 
     // stats
 
@@ -393,9 +437,13 @@ uint32_t Scene::storeGroup(TempContext*                         context,
       groupStorage.group->clusterResidentID = 0;
 
       // regular values
-      groupStorage.group->lodLevel        = level;
-      groupStorage.group->clusterCount    = groupInfo.clusterCount;
-      groupStorage.group->traversalMetric = group.traversalMetric;
+      groupStorage.group->lodLevel                             = level;
+      groupStorage.group->clusterCount                         = groupInfo.clusterCount;
+      groupStorage.group->traversalMetric.boundingSphereX      = group.simplified.center[0];
+      groupStorage.group->traversalMetric.boundingSphereY      = group.simplified.center[1];
+      groupStorage.group->traversalMetric.boundingSphereZ      = group.simplified.center[2];
+      groupStorage.group->traversalMetric.boundingSphereRadius = group.simplified.radius;
+      groupStorage.group->traversalMetric.maxQuadricError      = group.simplified.error;
 
       memcpy(groupStorage.clusters.data(), groupTempStorage.clusters.data(), groupStorage.clusters.size_bytes());
 
@@ -403,33 +451,27 @@ uint32_t Scene::storeGroup(TempContext*                         context,
       for(uint32_t c = 0; c < clusterCount; c++)
       {
         shaderio::Cluster& groupCluster = groupStorage.clusters[c];
-        groupCluster.vertices = groupStorage.getClusterLocalOffset(c, groupStorage.vertices.data() + groupCluster.vertices);
-        groupCluster.indices = groupStorage.getClusterLocalOffset(c, groupStorage.indices.data() + groupCluster.indices);
+
+        if(groupInfo.uncompressedSizeBytes)
+        {
+          groupCluster.vertices = groupStorage.getClusterLocalOffset(c, groupStorage.vertices.data() + groupCluster.vertices,
+                                                                     groupInfo.uncompressedSizeBytes);
+          groupCluster.indices = groupStorage.getClusterLocalOffset(c, groupStorage.vertices.data() + groupCluster.indices);
+        }
+        else
+        {
+          groupCluster.vertices = groupStorage.getClusterLocalOffset(c, groupStorage.vertices.data() + groupCluster.vertices);
+          groupCluster.indices = groupStorage.getClusterLocalOffset(c, groupStorage.indices.data() + groupCluster.indices);
+        }
       }
       memcpy(groupStorage.clusterGeneratingGroups.data(), groupTempStorage.clusterGeneratingGroups.data(),
              groupStorage.clusterGeneratingGroups.size_bytes());
-      // fill padded array with zero
-      {
-        size_t padSize =
-            size_t(groupStorage.clusterBboxes.data()) - size_t(groupStorage.clusterGeneratingGroups.data() + clusterCount);
-        if(padSize)
-        {
-          memset(groupStorage.clusterGeneratingGroups.data() + clusterCount, 0, padSize);
-        }
-      }
-
+      padZeroes(groupStorage.clusterGeneratingGroups, groupStorage.clusterBboxes.data());
       memcpy(groupStorage.clusterBboxes.data(), groupTempStorage.clusterBboxes.data(), groupStorage.clusterBboxes.size_bytes());
-      memcpy(groupStorage.vertices.data(), groupTempStorage.vertices.data(), groupStorage.vertices.size_bytes());
       memcpy(groupStorage.indices.data(), groupTempStorage.indices.data(), groupStorage.indices.size_bytes());
-      // fill padded array with zeros
-      {
-        size_t padSize = size_t(groupStorage.raw + groupInfo.sizeBytes)
-                         - size_t(groupStorage.indices.data() + groupInfo.triangleCount * 3);
-        if(padSize)
-        {
-          memset(groupStorage.indices.data() + groupInfo.triangleCount * 3, 0, padSize);
-        }
-      }
+      padZeroes(groupStorage.indices, groupStorage.vertices.data());
+      memcpy(groupStorage.vertices.data(), groupTempStorage.vertices.data(), groupStorage.vertices.size_bytes());
+      padZeroes(groupStorage.vertices, (uint32_t*)(groupStorage.raw + groupInfo.sizeBytes));
     }
   }
 
@@ -470,34 +512,13 @@ int Scene::clodGroupMeshoptimizer(void* output_context, clodGroup group, const c
   TempContext*     context  = reinterpret_cast<TempContext*>(output_context);
   GeometryStorage& geometry = context->geometry;
 
-  TempGroup tempGroup;
-  tempGroup.lodLevel                             = group.depth;
-  tempGroup.clusterCount                         = uint32_t(cluster_count);
-  tempGroup.traversalMetric.boundingSphereX      = group.simplified.center[0];
-  tempGroup.traversalMetric.boundingSphereY      = group.simplified.center[1];
-  tempGroup.traversalMetric.boundingSphereZ      = group.simplified.center[2];
-  tempGroup.traversalMetric.boundingSphereRadius = group.simplified.radius;
-  tempGroup.traversalMetric.maxQuadricError      = group.simplified.error;
-
-  auto fnClusterProvider = [&clusters](uint32_t c) {
-    TempCluster cluster;
-    cluster.generatingGroup = clusters[c].refined;
-    cluster.indexCount      = uint32_t(clusters[c].index_count);
-    cluster.indices         = clusters[c].indices;
-    return cluster;
-  };
-
-  // we test against `context->levelGroupOffsetValid` because this function is also called for
-  // the last lod-level without being wrapped by `clodIterationMeshoptimizer`, which does do the setup
-  // of `context->levelGroupOffset`
-
   uint32_t groupIndex =
       context->innerThreadingActive && context->levelGroupOffsetValid ? uint32_t(context->levelGroupOffset + task_index) : ~0u;
 
-  return context->scene.storeGroup(context, thread_index, groupIndex, tempGroup, fnClusterProvider);
+  return context->scene.storeGroup(context, thread_index, groupIndex, group, uint32_t(cluster_count), clusters);
 }
 
-void Scene::buildGeometryClusterLodMeshoptimizer(ProcessingInfo& processingInfo, GeometryStorage& geometry)
+void Scene::buildGeometryLod(ProcessingInfo& processingInfo, GeometryStorage& geometry)
 {
   clodConfig clodInfo = m_config.meshoptPreferRayTracing ? clodDefaultConfigRT(m_config.clusterTriangles) :
                                                            clodDefaultConfig(m_config.clusterTriangles);
@@ -540,10 +561,15 @@ void Scene::buildGeometryClusterLodMeshoptimizer(ProcessingInfo& processingInfo,
       attributeWeights[geometry.attributeNormalOffset + 1] = m_config.simplifyNormalWeight;
       attributeWeights[geometry.attributeNormalOffset + 2] = m_config.simplifyNormalWeight;
     }
-    if(m_config.simplifyUvWeight > 0 && (geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_UV))
+    if(m_config.simplifyTexCoordWeight > 0 && (geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0))
     {
-      attributeWeights[geometry.attributeUvOffset + 0] = m_config.simplifyUvWeight;
-      attributeWeights[geometry.attributeUvOffset + 1] = m_config.simplifyUvWeight;
+      attributeWeights[geometry.attributeTex0offset + 0] = m_config.simplifyTexCoordWeight;
+      attributeWeights[geometry.attributeTex0offset + 1] = m_config.simplifyTexCoordWeight;
+    }
+    if(m_config.simplifyTexCoordWeight > 0 && (geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1))
+    {
+      attributeWeights[geometry.attributeTex1offset + 0] = m_config.simplifyTexCoordWeight;
+      attributeWeights[geometry.attributeTex1offset + 1] = m_config.simplifyTexCoordWeight;
     }
     if(m_config.simplifyTangentWeight > 0 && m_config.simplifyTangentSignWeight > 0
        && (geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT))
@@ -574,7 +600,8 @@ void Scene::buildGeometryClusterLodMeshoptimizer(ProcessingInfo& processingInfo,
   context.innerThreadingActive   = processingInfo.numInnerThreads > 1;
   context.threadGroupInfo        = worstGroup;
   context.threadGroupStorageSize = uint32_t(worstGroup.computeSize());
-  context.threadGroupSize        = nvutils::align_up(context.threadGroupStorageSize, 4) + sizeof(uint32_t) * 256 * 3;
+  context.threadGroupSize        = nvutils::align_up(context.threadGroupStorageSize, 4) + sizeof(uint32_t) * 256 * 2
+                            + sizeof(uint32_t) * m_config.clusterGroupSize * m_config.clusterVertices;
   context.threadGroupDatas.resize(context.threadGroupSize * processingInfo.numInnerThreads);
 
   size_t reservedClusters  = (geometry.triangles.size() + m_config.clusterTriangles - 1) / m_config.clusterTriangles;
@@ -625,10 +652,15 @@ void Scene::buildGeometryClusterLodMeshoptimizer(ProcessingInfo& processingInfo,
   geometry.groupData.shrink_to_fit();
   geometry.lodLevels.shrink_to_fit();
 
-  buildGeometryLodHierarchyMeshoptimizer(processingInfo, geometry);
+  buildGeometryLodHierarchy(processingInfo, geometry);
+
+  geometry.lodNodeBboxes.resize(geometry.lodNodes.size());
+  computeLodBboxes_recursive(geometry, 0);
+
+  ((std::atomic_uint32_t&)m_histograms.lodLevels[geometry.lodLevelsCount])++;
 }
 
-void Scene::buildGeometryLodHierarchyMeshoptimizer(const ProcessingInfo& processingInfo, GeometryStorage& geometry)
+void Scene::buildGeometryLodHierarchy(ProcessingInfo& processingInfo, GeometryStorage& geometry)
 {
   // for each lod level build hierarchy
 
@@ -800,158 +832,4 @@ void Scene::buildGeometryLodHierarchyMeshoptimizer(const ProcessingInfo& process
     }
   }
 }
-
-void Scene::buildGeometryClusterLodNvLib(ProcessingInfo& processingInfo, GeometryStorage& geometry)
-{
-  // WARNING: to be removed / deprecated
-  // NVIDIA will deprecate the cluster lod builder library in favor of recommending the use of meshoptimizer.
-
-  nvclusterlod_Result result;
-
-  nvclusterlod_MeshInput lodMeshInput;
-  lodMeshInput.decimationFactor = m_config.lodLevelDecimationFactor;
-  lodMeshInput.triangleCount    = uint32_t(geometry.triangles.size());
-  lodMeshInput.triangleVertices = reinterpret_cast<const nvclusterlod_Vec3u*>(geometry.triangles.data());
-  lodMeshInput.vertexCount      = uint32_t(geometry.vertexPositions.size());
-  lodMeshInput.vertexStride     = sizeof(glm::vec4);
-  lodMeshInput.vertexPositions  = reinterpret_cast<const nvcluster_Vec3f*>(geometry.vertexPositions.data());
-
-  lodMeshInput.clusterConfig.minClusterSize = (m_config.clusterTriangles * 3) / 4;
-  lodMeshInput.clusterConfig.maxClusterSize = m_config.clusterTriangles;
-
-  if(m_config.clusterVertices < m_config.clusterTriangles * 3)
-  {
-    lodMeshInput.clusterConfig.maxClusterVertices = m_config.clusterVertices;
-    lodMeshInput.clusterConfig.itemVertexCount    = 3;
-  }
-
-  lodMeshInput.groupConfig.minClusterSize = (m_config.clusterGroupSize * 3) / 4;
-  lodMeshInput.groupConfig.maxClusterSize = m_config.clusterGroupSize;
-
-  TempContext temp = {processingInfo, geometry, *this};
-  result           = nvclusterlod::generateLodMesh(processingInfo.lodContext, lodMeshInput, temp.lodMesh);
-  if(result != NVCLUSTERLOD_SUCCESS)
-  {
-    assert(0);
-    LOGE("nvclusterlod::generateLodMesh failed: %d\n", result);
-    std::exit(-1);
-  }
-
-  // can remove original triangle indices
-  geometry.triangles = {};
-
-  // vectors are resized at end of lod processing,
-  // but might still occupy a lot of memory
-  temp.lodMesh.triangleVertices.shrink_to_fit();
-  temp.lodMesh.clusterTriangleRanges.shrink_to_fit();
-  temp.lodMesh.clusterGeneratingGroups.shrink_to_fit();
-  temp.lodMesh.clusterBoundingSpheres.shrink_to_fit();
-  temp.lodMesh.groupQuadricErrors.shrink_to_fit();
-  temp.lodMesh.groupClusterRanges.shrink_to_fit();
-  temp.lodMesh.lodLevelGroupRanges.shrink_to_fit();
-
-
-  nvclusterlod_HierarchyInput hierarchyInput = {};
-  hierarchyInput.clusterCount                = uint32_t(temp.lodMesh.clusterBoundingSpheres.size());
-  hierarchyInput.clusterBoundingSpheres      = temp.lodMesh.clusterBoundingSpheres.data();
-  hierarchyInput.clusterGeneratingGroups     = temp.lodMesh.clusterGeneratingGroups.data();
-  hierarchyInput.groupClusterRanges          = temp.lodMesh.groupClusterRanges.data();
-  hierarchyInput.groupQuadricErrors          = temp.lodMesh.groupQuadricErrors.data();
-  hierarchyInput.lodLevelGroupRanges         = temp.lodMesh.lodLevelGroupRanges.data();
-  hierarchyInput.lodLevelCount               = uint32_t(temp.lodMesh.lodLevelGroupRanges.size());
-  hierarchyInput.groupCount                  = int32_t(temp.lodMesh.groupClusterRanges.size());
-
-  // required to later traverse the lod hierarchy in parallel
-  // Note we build hierarchies over each lod level's groups
-  // and then join them together to a single hierarchy.
-  // This is key to the parallel traversal algorithm that traverse multiple lod levels
-  // at once.
-
-  result = nvclusterlod::generateLodHierarchy(processingInfo.lodContext, hierarchyInput, temp.lodHierarchy);
-  if(result != NVCLUSTERLOD_SUCCESS)
-  {
-    assert(0);
-    LOGE("nvclusterlod::generateLodHierarchy failed: %d\n", result);
-    std::exit(-1);
-  }
-
-  // vectors are resized at end of lod processing,
-  // but might still occupy a lot of memory
-  temp.lodHierarchy.nodes.shrink_to_fit();
-  temp.lodHierarchy.groupCumulativeBoundingSpheres.shrink_to_fit();
-  temp.lodHierarchy.groupCumulativeQuadricError.shrink_to_fit();
-
-  // these are compatible
-  std::vector<nvclusterlod_HierarchyNode>& nodes = (std::vector<nvclusterlod_HierarchyNode>&)geometry.lodNodes;
-  nodes                                          = std::move(temp.lodHierarchy.nodes);
-
-  // no longer needed
-  temp.lodMesh.groupQuadricErrors = {};
-
-  geometry.lodLevelsCount = uint32_t(temp.lodMesh.lodLevelGroupRanges.size());
-  geometry.lodLevels.reserve(temp.lodMesh.lodLevelGroupRanges.size());
-  temp.groupLodLevels.resize(temp.lodMesh.groupClusterRanges.size());
-
-  for(size_t level = 0; level < temp.lodMesh.lodLevelGroupRanges.size(); level++)
-  {
-    nvcluster_Range groupRange = temp.lodMesh.lodLevelGroupRanges[level];
-
-    for(size_t g = groupRange.offset; g < groupRange.offset + groupRange.count; g++)
-    {
-      temp.groupLodLevels[g] = uint8_t(level);
-    }
-  }
-
-  GroupInfo worstGroup       = {};
-  worstGroup.clusterCount    = uint8_t(m_config.clusterGroupSize);
-  worstGroup.vertexCount     = uint16_t(m_config.clusterGroupSize * m_config.clusterVertices);
-  worstGroup.triangleCount   = uint16_t(m_config.clusterGroupSize * m_config.clusterTriangles);
-  worstGroup.attributeBits   = geometry.attributeBits;
-  worstGroup.vertexDataCount = worstGroup.estimateVertexDataCount();
-  worstGroup.sizeBytes       = worstGroup.computeSize();
-
-  temp.innerThreadingActive   = processingInfo.numInnerThreads > 1;
-  temp.threadGroupInfo        = worstGroup;
-  temp.threadGroupStorageSize = uint32_t(worstGroup.computeSize());
-  temp.threadGroupSize        = nvutils::align_up(temp.threadGroupStorageSize, 4) + sizeof(uint32_t) * 256 * 3;
-  temp.threadGroupDatas.resize(temp.threadGroupSize * processingInfo.numInnerThreads);
-
-  geometry.groupInfos.resize(temp.lodMesh.groupClusterRanges.size());
-
-  // process groups in parallel
-  nvutils::parallel_batches_pooled(
-      temp.lodMesh.groupClusterRanges.size(),
-      [&](uint64_t idx, uint32_t threadInnerIdx) {
-        TempGroup group;
-        group.clusterCount = temp.lodMesh.groupClusterRanges[idx].count;
-        group.lodLevel     = temp.groupLodLevels[idx];
-
-        nvclusterlod_Sphere sphere                 = temp.lodHierarchy.groupCumulativeBoundingSpheres[idx];
-        group.traversalMetric.boundingSphereX      = sphere.center.x;
-        group.traversalMetric.boundingSphereY      = sphere.center.y;
-        group.traversalMetric.boundingSphereZ      = sphere.center.z;
-        group.traversalMetric.boundingSphereRadius = sphere.radius;
-        group.traversalMetric.maxQuadricError      = temp.lodHierarchy.groupCumulativeQuadricError[idx];
-
-        nvcluster_Range clusterRange = temp.lodMesh.groupClusterRanges[idx];
-
-        auto fnClusterProvider = [&](uint32_t c) {
-          TempCluster     cluster;
-          uint32_t        clusterIndex  = clusterRange.offset + c;
-          nvcluster_Range triangleRange = temp.lodMesh.clusterTriangleRanges[clusterIndex];
-
-          cluster.generatingGroup = temp.lodMesh.clusterGeneratingGroups[clusterIndex];
-          cluster.indexCount      = triangleRange.count * 3;
-          cluster.indices         = &temp.lodMesh.triangleVertices[triangleRange.offset].x;
-          return cluster;
-        };
-
-        storeGroup(&temp, threadInnerIdx, uint32_t(idx), group, fnClusterProvider);
-      },
-      processingInfo.numInnerThreads);
-
-  geometry.vertexPositions  = {};
-  geometry.vertexAttributes = {};
-}
-
 }  // namespace lodclusters

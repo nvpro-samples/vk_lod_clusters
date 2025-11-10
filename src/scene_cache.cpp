@@ -191,11 +191,18 @@ bool Scene::CacheFileView::init(uint64_t dataSize, const void* data)
 }
 
 
-void Scene::CacheFileView::getSceneLodSettings(SceneConfig& settings) const
+void Scene::CacheFileView::getSceneConfig(SceneConfig& settings) const
 {
   const CacheFileHeader* cacheHeader = (const CacheFileHeader*)(m_dataBytes);
 
   settings = cacheHeader->config;
+}
+
+void Scene::CacheFileView::getHistograms(Histograms& histograms) const
+{
+  const CacheFileHeader* cacheHeader = (const CacheFileHeader*)(m_dataBytes);
+
+  histograms = cacheHeader->histograms;
 }
 
 bool Scene::CacheFileView::getGeometryView(GeometryView& view, uint64_t geometryIndex) const
@@ -262,6 +269,44 @@ void Scene::loadCachedGeometry(GeometryStorage& storage, size_t geometryIndex)
   fillVector(storage.localMaterialIDs, view.localMaterialIDs);
 }
 
+
+void Scene::openCache()
+{
+  if(m_cacheFileMapping.open(m_cacheFilePath))
+  {
+    m_cacheFileView.init(m_cacheFileMapping.size(), m_cacheFileMapping.data());
+    if(m_cacheFileView.isValid())
+    {
+      // when loading results from the cache, we cannot change the cluster or lod settings of a scene,
+      // it's considered read only.
+      m_loadedFromCache = true;
+      m_cacheFileSize   = m_cacheFileMapping.size();
+
+      std::string cacheFileName = nvutils::utf8FromPath(m_cacheFilePath);
+      LOGI("Scene::init using cache file:\n  %s\n", cacheFileName.c_str());
+
+      if(m_cacheFileSize > size_t(2) * 1024 * 1024 * 1024)
+      {
+        m_loaderConfig.memoryMappedCache = true;
+      }
+    }
+    else
+    {
+      m_cacheFileView.deinit();
+      m_cacheFileMapping.close();
+    }
+  }
+}
+
+void Scene::closeCache()
+{
+  if(m_cacheFileView.isValid())
+  {
+    m_cacheFileView.deinit();
+    m_cacheFileMapping.close();
+  }
+}
+
 bool Scene::saveCache() const
 {
   uint64_t dataOffset = sizeof(Scene::CacheFileHeader);
@@ -297,7 +342,8 @@ bool Scene::saveCache() const
 
   // write header
   Scene::CacheFileHeader cacheHeader;
-  cacheHeader.config = m_config;
+  cacheHeader.config     = m_config;
+  cacheHeader.histograms = m_histograms;
   memcpy(mappingData, &cacheHeader, sizeof(cacheHeader));
   // write offset table at end
   memcpy(mappingData + tableOffset, geometryOffsets.data(), sizeof(uint64_t) * geometryOffsets.size());
@@ -400,7 +446,8 @@ void Scene::beginProcessingOnly(size_t geometryCount)
   {
     // write header to cache file (unless we are resuming a partial processing)
     Scene::CacheFileHeader header;
-    header.config = m_config;
+    header.config     = m_config;
+    header.histograms = m_histograms;
 
     fwrite(&header, sizeof(header), 1, m_processingOnlyFile);
   }
@@ -466,6 +513,10 @@ bool Scene::endProcessingOnly(bool hadError)
   {
     fwrite(m_processingOnlyGeometryOffsets.data(), m_processingOnlyGeometryOffsets.size() * sizeof(uint64_t), 1, m_processingOnlyFile);
   }
+
+  // patch in histogram
+  fseek(m_processingOnlyFile, offsetof(CacheFileHeader, histograms), SEEK_SET);
+  fwrite(&m_histograms, sizeof(m_histograms), 1, m_processingOnlyFile);
 
   fclose(m_processingOnlyFile);
   if(m_processingOnlyPartialFile)
