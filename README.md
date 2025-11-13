@@ -231,7 +231,7 @@ This is a glTF export of the highly detailed raw geometry from the [NVIDIA RTX K
   - **19.5 GB 7z** - 2025/11/10, unpacks to **26.0 GB on disk**
   - Ensure that the `zorah_main_public.gltf.nvsngeo` is in the same directory as `zorah_main_public.gltf`.
   - If you want to avoid this big download and do the pre-processing for the cluster lod manually, use the following command-line:
-    - `vk_lod_cluster.exe "zorah_main_public.gltf" --clusterconfig 4 --processingonly 1 --processingthreadpct 0.5 --processingpartial 1`
+    - `vk_lod_cluster.exe "zorah_main_public.gltf" --clusterconfig 4 --processingonly 1 --processingthreadpct 0.5 --processingpartial 1 --compressed 1`
     - This will use 50% of the local PC's supported concurrency to process the model and allow to abort and resume the processing. On a 16-core Ryzen 9 a value of `0.5` will yield 16 threads, requires 29 GB RAM (brief peak of 44 GB) and takes around 6 minutes. We recommend lower thread percentages on machines with less RAM.
   - **NOTE:** Older versions of this file were larger, this sample has changed the file format of its file cache. When loading an old version, the processing will be triggered automatically and the old cache file is overwritten. It can take a bit until the new file versions have been propagated to servers worldwide.
 

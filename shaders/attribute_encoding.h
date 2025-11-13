@@ -141,6 +141,9 @@ ATTRENC_INLINE uint32_t normal_pack(vec3 normal)
   return packed;
 }
 
+// Tangent packing based on "3 BYTE TANGENT FRAMES"
+// https://advances.realtimerendering.com/s2020/RenderingDoomEternal.pdf
+
 //-----------------------------------------------------------------------------
 // Builds an orthonormal basis: given only a normal vector, returns a
 // tangent and bitangent.

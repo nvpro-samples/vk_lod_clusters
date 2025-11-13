@@ -216,7 +216,7 @@ void main()
               baryWeight.z * triNormals[2];
 
   #if ALLOW_VERTEX_TANGENTS
-    if ((cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_UV) != 0)
+    if ((cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_TANGENT) != 0)
     {
       vec4 tangent0 = tangent_unpack(triNormals[0], triNormalsPacked.x >> ATTRENC_NORMAL_BITS);
       wTangent.w    = tangent0.w;
