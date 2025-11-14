@@ -1,4 +1,8 @@
 # Changelog for vk_lod_clusters
+* 2025-11-13:
+  * Skip loading glTF buffers when file cache is used
+  * Bugfix shader compilation bug
+  * Add note about tangent space encoding
 * 2025-11-10:
 
   **WARNING** Old cache files are not be compatible anymore. First time loading such scenes will trigger processing and overwrite / delete them.

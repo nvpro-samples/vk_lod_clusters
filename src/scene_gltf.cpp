@@ -270,15 +270,19 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
     return SCENE_RESULT_ERROR;
   }
 
-  // For now, also tell cgltf to go ahead and load all buffers.
-  cgltfResult = cgltf_load_buffers(&options, data.get(), fileName.c_str());
-  if(cgltfResult != cgltf_result_success)
+  // if we are loading from a cache file, we don't need any of the raw buffers
+  if(!m_cacheFileView.isValid())
   {
-    LOGE(
-        "loadGLTF: The glTF file was valid, but cgltf_load_buffers failed. Are the glTF file's referenced file paths "
-        "valid? (cgltf result: %d)\n",
-        cgltfResult);
-    return SCENE_RESULT_ERROR;
+    // For now, also tell cgltf to go ahead and load all buffers.
+    cgltfResult = cgltf_load_buffers(&options, data.get(), fileName.c_str());
+    if(cgltfResult != cgltf_result_success)
+    {
+      LOGE(
+          "loadGLTF: The glTF file was valid, but cgltf_load_buffers failed. Are the glTF file's referenced file paths "
+          "valid? (cgltf result: %d)\n",
+          cgltfResult);
+      return SCENE_RESULT_ERROR;
+    }
   }
 
   // glTF doesn't have trivial instancing of meshes with different materials.

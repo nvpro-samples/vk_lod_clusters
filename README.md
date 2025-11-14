@@ -242,6 +242,7 @@ Make sure to use an NVME or SSD drive for storing these files. We recommend GPUs
 > Make sure the processed `zorah_main_public.gltf.nvsngeo` was either downloaded or generated as described above.
 
 Known Issues:
+* Some versions of the Vulkan Validation Layer may trigger complaints about non-optional variables being zero. When in fact they are optional and allowed to be zero. This will be fixed in future versions.
 * Compared to the original demo the vegetation had to be removed to make the sharing of the glTF possible (the asset itself is licensed under MIT License).
 * Some objects float a bit strangely in the air and lack animation, this is expected for this scene and sample.
 * The vegetation will appear to fade out a bit quickly, especially the grass. This is a known limitation for mesh-based simplifcation on
