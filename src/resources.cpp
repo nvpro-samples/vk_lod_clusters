@@ -17,6 +17,7 @@
 * SPDX-License-Identifier: Apache-2.0
 */
 
+#include <volk.h>
 #include <nvutils/file_operations.hpp>
 #include <nvutils/logger.hpp>
 #include <nvutils/spirv.hpp>
@@ -274,14 +275,34 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample, b
     wasResize = true;
   }
 
-  m_basicGraphicsState.rasterizationState.lineWidth = float(supersample);
-
   bool oldResolved = m_frameBuffer.supersample > 1;
 
-  m_frameBuffer.renderSize.width  = windowSize.width * supersample;
-  m_frameBuffer.renderSize.height = windowSize.height * supersample;
-  m_frameBuffer.targetSize        = m_frameBuffer.renderSize;
-  m_frameBuffer.windowSize        = windowSize;
+  switch(supersample)
+  {
+    case 720:
+      m_frameBuffer.renderSize.width  = 1280;
+      m_frameBuffer.renderSize.height = 720;
+      break;
+    case 1080:
+      m_frameBuffer.renderSize.width  = 1920;
+      m_frameBuffer.renderSize.height = 1080;
+      break;
+    case 1440:
+      m_frameBuffer.renderSize.width  = 2560;
+      m_frameBuffer.renderSize.height = 1440;
+      break;
+    default:
+      m_frameBuffer.renderSize.width  = windowSize.width * supersample;
+      m_frameBuffer.renderSize.height = windowSize.height * supersample;
+      break;
+  }
+
+  m_frameBuffer.pixelScale = std::max(float(m_frameBuffer.renderSize.width) / float(windowSize.width),
+                                      float(m_frameBuffer.renderSize.height) / float(windowSize.height));
+  m_basicGraphicsState.rasterizationState.lineWidth = m_frameBuffer.pixelScale;
+
+  m_frameBuffer.targetSize = m_frameBuffer.renderSize;
+  m_frameBuffer.windowSize = windowSize;
 
   m_frameBuffer.supersample = supersample;
   m_hbaoFullRes             = hbaoFullRes;
@@ -441,6 +462,41 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
     NVVK_CHECK(vkCreateImageView(m_device, &dsImageViewInfo, nullptr, &m_frameBuffer.viewDepth));
   }
 
+  {
+    // compute rasterization
+    VkImageCreateInfo imageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    imageInfo.imageType         = VK_IMAGE_TYPE_2D;
+    imageInfo.format            = VK_FORMAT_R64_UINT;
+    imageInfo.extent.width      = m_frameBuffer.renderSize.width;
+    imageInfo.extent.height     = m_frameBuffer.renderSize.height;
+    imageInfo.extent.depth      = 1;
+    imageInfo.mipLevels         = 1;
+    imageInfo.arrayLayers       = 1;
+    imageInfo.samples           = samplesUsed;
+    imageInfo.tiling            = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.flags             = 0;
+    imageInfo.initialLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+
+    VkImageViewCreateInfo imageViewInfo           = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    imageViewInfo.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
+    imageViewInfo.format                          = imageInfo.format;
+    imageViewInfo.components.r                    = VK_COMPONENT_SWIZZLE_R;
+    imageViewInfo.components.g                    = VK_COMPONENT_SWIZZLE_G;
+    imageViewInfo.components.b                    = VK_COMPONENT_SWIZZLE_B;
+    imageViewInfo.components.a                    = VK_COMPONENT_SWIZZLE_A;
+    imageViewInfo.flags                           = 0;
+    imageViewInfo.subresourceRange.levelCount     = 1;
+    imageViewInfo.subresourceRange.baseMipLevel   = 0;
+    imageViewInfo.subresourceRange.layerCount     = 1;
+    imageViewInfo.subresourceRange.baseArrayLayer = 0;
+    imageViewInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+
+    NVVK_CHECK(m_allocator.createImage(m_frameBuffer.imgRasterAtomic, imageInfo, imageViewInfo));
+    NVVK_DBG_NAME(m_frameBuffer.imgRasterAtomic.image);
+    NVVK_DBG_NAME(m_frameBuffer.imgRasterAtomic.descriptor.imageView);
+  }
+
 
   if(m_supportsClusterRaytracing)
   {
@@ -523,8 +579,6 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
   {
     HbaoPass::FrameConfig config;
     config.blend                   = true;
-    config.sourceHeightScale       = m_hbaoFullRes ? 1 : m_frameBuffer.supersample;
-    config.sourceWidthScale        = m_hbaoFullRes ? 1 : m_frameBuffer.supersample;
     config.targetWidth             = m_hbaoFullRes ? m_frameBuffer.renderSize.width : m_frameBuffer.windowSize.width;
     config.targetHeight            = m_hbaoFullRes ? m_frameBuffer.renderSize.height : m_frameBuffer.windowSize.height;
     config.sourceDepth.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -543,6 +597,10 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
   if(m_frameBuffer.imgRaytracingDepth.image)
   {
     cmdImageTransition(cmd, m_frameBuffer.imgRaytracingDepth, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
+  }
+  if(m_frameBuffer.imgRasterAtomic.image)
+  {
+    cmdImageTransition(cmd, m_frameBuffer.imgRasterAtomic, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
   }
 
   {
@@ -606,6 +664,7 @@ void Resources::deinitFramebufferRenderSizeDependent()
   m_allocator.destroyImage(m_frameBuffer.imgDepthStencil);
   m_allocator.destroyImage(m_frameBuffer.imgHizFar);
   m_allocator.destroyImage(m_frameBuffer.imgRaytracingDepth);
+  m_allocator.destroyImage(m_frameBuffer.imgRasterAtomic);
 
   vkDestroyImageView(m_device, m_frameBuffer.viewDepth, nullptr);
   m_frameBuffer.viewDepth = VK_NULL_HANDLE;

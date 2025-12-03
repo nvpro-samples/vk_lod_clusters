@@ -32,8 +32,8 @@
 #undef VK_NO_PROTOTYPES
 #endif
 
+#include <volk.h>
 #include <imgui/imgui.h>
-
 #include <nvvk/validation_settings.hpp>
 #include <nvapp/elem_logger.hpp>
 #include <nvapp/elem_profiler.hpp>
@@ -66,6 +66,8 @@ int main(int argc, char** argv)
   VkPhysicalDeviceFragmentShadingRateFeaturesKHR shadingRateFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR};
   VkPhysicalDeviceFragmentShaderBarycentricFeaturesKHR barycentricFeatures{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_BARYCENTRIC_FEATURES_KHR};
+  VkPhysicalDeviceShaderImageAtomicInt64FeaturesEXT shaderImageAtomic64Features{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_IMAGE_ATOMIC_INT64_FEATURES_EXT};
 
   nvvk::ContextInitInfo vkSetup{
       .instanceExtensions = {VK_EXT_DEBUG_UTILS_EXTENSION_NAME},
@@ -80,12 +82,14 @@ int main(int argc, char** argv)
   // not used, but to silence validation layer
   vkSetup.deviceExtensions.push_back({VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME, &shadingRateFeatures});
 
-
   // always enable ray tracing, avoids chasing down the various barrier bits
   vkSetup.deviceExtensions.push_back({VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME});
   vkSetup.deviceExtensions.push_back({VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME, &accKHR});
   vkSetup.deviceExtensions.push_back({VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME, &rayKHR});
   vkSetup.deviceExtensions.push_back({VK_KHR_RAY_QUERY_EXTENSION_NAME, &rayQueryKHR});
+
+  // used for compute rasterization
+  vkSetup.deviceExtensions.push_back({VK_EXT_SHADER_IMAGE_ATOMIC_INT64_EXTENSION_NAME, &shaderImageAtomic64Features});
 
 #if 1
   vkSetup.deviceExtensions.push_back({VK_KHR_RAY_TRACING_POSITION_FETCH_EXTENSION_NAME, &rayPosKHR, false});

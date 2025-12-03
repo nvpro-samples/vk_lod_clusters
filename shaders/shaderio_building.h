@@ -143,12 +143,14 @@ struct SceneBuilding
 
   float errorOverDistanceThreshold;
   float culledErrorScale;
+  float swRasterThreshold;
 
   uint sharingEnabledLevels;
   uint sharingTolerantLevels;
   uint sharingPushCulled;
 
   uint renderClusterCounter;
+  uint renderClusterCounterSW;
 
   int  traversalTaskCounter;
   uint traversalInfoReadCounter;
@@ -173,14 +175,24 @@ struct SceneBuilding
   // rasterization related
   //////////////////////////////////////////////////
 
-  // nv
+  // hw rasterization via nv
   DrawMeshTasksIndirectCommandNV indirectDrawClustersNV;
   DrawMeshTasksIndirectCommandNV indirectDrawClusterBoxesNV;
 
-  // ext
+  // hw rasterization via ext
   DrawMeshTasksIndirectCommandEXT indirectDrawClustersEXT;
   DrawMeshTasksIndirectCommandEXT indirectDrawClusterBoxesEXT;
   uint                            numRenderedClusters;
+
+  // sw rasterization
+  DispatchIndirectCommand indirectDrawClustersSW;
+  uint                    numRenderedClustersSW;
+
+  // clusters classified for sw-rasterization.
+  // We simply have two lists, we could use a single list
+  // and append front or back to conserve memory, however
+  // for simplicity two are used.
+  BUFFER_REF(ClusterInfos_inout) renderClusterInfosSW;
 
   // ray tracing related
   //////////////////////////////////////////////////

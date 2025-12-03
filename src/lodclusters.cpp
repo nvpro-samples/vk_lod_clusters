@@ -19,6 +19,7 @@
 
 #include <thread>
 
+#include <volk.h>
 #include <fmt/format.h>
 #include <nvutils/file_operations.hpp>
 #include <nvgui/camera.hpp>
@@ -104,6 +105,7 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"renderclusterbits"}, &m_rendererConfig.numRenderClusterBits);
   m_info.parameterRegistry->add({"rendertraversalbits"}, &m_rendererConfig.numTraversalTaskBits);
   m_info.parameterRegistry->add({"visualize"}, &m_frameConfig.visualize);
+  m_info.parameterRegistry->add({"swraster"}, &m_rendererConfig.useComputeRaster);
   m_info.parameterRegistry->add({"renderstats"}, &m_rendererConfig.useRenderStats);
   m_info.parameterRegistry->add({"extmeshshader"}, &m_rendererConfig.useEXTmeshShader);
   m_info.parameterRegistry->add({"forcepreprocessmegabytes"}, (uint32_t*)&m_sceneLoaderConfig.forcePreprocessMiB);
@@ -194,6 +196,7 @@ void LodClusters::initScene(const std::filesystem::path& filePath, bool configCh
 
         if(!configChange)
         {
+          m_sceneConfig = m_scene->m_config;
           postInitNewScene();
           m_tweakLast       = m_tweak;
           m_sceneConfigLast = m_sceneConfig;
@@ -419,9 +422,13 @@ void LodClusters::onAttach(nvapp::Application* app)
 
     m_ui.enumAdd(GUI_SUPERSAMPLE, 1, "none");
     m_ui.enumAdd(GUI_SUPERSAMPLE, 2, "4x");
+    m_ui.enumAdd(GUI_SUPERSAMPLE, 720, "720p");
+    m_ui.enumAdd(GUI_SUPERSAMPLE, 1080, "1080p");
+    m_ui.enumAdd(GUI_SUPERSAMPLE, 1440, "1440p");
 
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_MATERIAL, "material");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_GREY, "grey");
+    m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_VIS_BUFFER, "visibility buffer");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_CLUSTER, "clusters");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_GROUP, "cluster groups");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_LOD, "lod levels");
@@ -657,6 +664,22 @@ void LodClusters::handleChanges()
     m_rendererConfig.useBlasCaching = false;
   }
 
+  if(m_frameConfig.visualize == VISUALIZE_VIS_BUFFER && m_rendererConfig.useShading)
+  {
+    m_rendererConfig.useShading = false;
+  }
+  if(m_frameConfig.visualize != VISUALIZE_VIS_BUFFER && !m_rendererConfig.useShading)
+  {
+    m_rendererConfig.useShading = true;
+  }
+
+  if(m_rendererConfig.useComputeRaster
+     && (!m_rendererConfig.useSeparateGroups || !m_rendererConfig.useCulling || m_rendererConfig.useShading))
+  {
+    m_rendererConfig.useComputeRaster = false;
+  }
+
+
   bool frameBufferChanged = false;
   if(tweakChanged(m_tweak.supersample) || tweakChanged(m_tweak.hbaoFullRes))
   {
@@ -722,10 +745,11 @@ void LodClusters::handleChanges()
        || rendererCfgChanged(m_rendererConfig.flipWinding) || rendererCfgChanged(m_rendererConfig.useDebugVisualization)
        || rendererCfgChanged(m_rendererConfig.useCulling) || rendererCfgChanged(m_rendererConfig.twoSided)
        || rendererCfgChanged(m_rendererConfig.useSorting) || rendererCfgChanged(m_rendererConfig.numRenderClusterBits)
-       || rendererCfgChanged(m_rendererConfig.numTraversalTaskBits)
+       || rendererCfgChanged(m_rendererConfig.numTraversalTaskBits) || rendererCfgChanged(m_rendererConfig.useShading)
        || rendererCfgChanged(m_rendererConfig.useBlasSharing) || rendererCfgChanged(m_rendererConfig.useRenderStats)
        || rendererCfgChanged(m_rendererConfig.useSeparateGroups) || rendererCfgChanged(m_rendererConfig.useBlasMerging)
-       || rendererCfgChanged(m_rendererConfig.useBlasCaching) || rendererCfgChanged(m_rendererConfig.useEXTmeshShader))
+       || rendererCfgChanged(m_rendererConfig.useBlasCaching) || rendererCfgChanged(m_rendererConfig.useEXTmeshShader)
+       || rendererCfgChanged(m_rendererConfig.useComputeRaster))
     {
       if(rendererCfgChanged(m_rendererConfig.useBlasCaching))
       {
@@ -794,6 +818,9 @@ void LodClusters::onRender(VkCommandBuffer cmd)
 
     int supersample = m_tweak.supersample;
 
+    uint32_t windowWidth  = m_resources.m_frameBuffer.windowSize.width;
+    uint32_t windowHeight = m_resources.m_frameBuffer.windowSize.height;
+
     uint32_t renderWidth  = m_resources.m_frameBuffer.renderSize.width;
     uint32_t renderHeight = m_resources.m_frameBuffer.renderSize.height;
 
@@ -825,7 +852,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     frameConstants.fov = glm::radians(m_info.cameraManipulator->getFov());
 
     glm::mat4 projection =
-        glm::perspectiveRH_ZO(glm::radians(m_info.cameraManipulator->getFov()), float(renderWidth) / float(renderHeight),
+        glm::perspectiveRH_ZO(glm::radians(m_info.cameraManipulator->getFov()), float(windowWidth) / float(windowHeight),
                               frameConstants.nearPlane, frameConstants.farPlane);
     projection[1][1] *= -1;
 

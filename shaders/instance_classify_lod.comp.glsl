@@ -120,7 +120,7 @@ void main()
   bool clipValid;
   
   bool inFrustum = intersectFrustum(geometry.bbox.lo, geometry.bbox.hi, instance.worldMatrix, clipMin, clipMax, clipValid);
-  bool isVisible = inFrustum && (!clipValid || (intersectSize(clipMin, clipMax) && intersectHiz(clipMin, clipMax)));
+  bool isVisible = inFrustum && (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax)));
   
   uint visibilityState = isVisible ? INSTANCE_VISIBLE_BIT : 0;
   

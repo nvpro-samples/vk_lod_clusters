@@ -130,8 +130,18 @@ layout(local_size_x=TRAVERSAL_GROUPS_WORKGROUP) in;
 
 #if USE_CULLING && TARGETS_RASTERIZATION
 
+#if USE_SW_RASTER
+bool intersectSize(vec4 clipMin, vec4 clipMax, float threshold, float scale)
+{
+  vec2 rect = (clipMax.xy - clipMin.xy) * 0.5 * scale * viewLast.viewportf.xy;
+  vec2 clipThreshold = vec2(threshold);
+  
+  return any(greaterThan(rect,clipThreshold));
+}
+#endif
+
 // simplified occlusion culling based on last frame's depth buffer
-bool queryWasVisible(mat4 instanceTransform, BBox bbox)
+bool queryWasVisible(mat4 instanceTransform, BBox bbox, inout bool outRenderClusterSW)
 {
   vec3 bboxMin = bbox.lo;
   vec3 bboxMax = bbox.hi;
@@ -144,7 +154,20 @@ bool queryWasVisible(mat4 instanceTransform, BBox bbox)
   
   bool inFrustum = intersectFrustum(bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
   bool isVisible = inFrustum && 
-    (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax) && intersectHiz(clipMin, clipMax)));
+    (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax)));
+  
+#if USE_SW_RASTER
+  // check if sw rasterization is okay to use (not near/far clipped and smaller than threshold)
+
+  // TODO should embed this relative longest edge in bbox instead
+  vec3 bboxDim       = bboxMax - bboxMin;
+  float relativeSize = bbox.longestEdge / length(bboxDim);
+  
+  if (isVisible && clipMin.z > 0 && clipMax.z < 1 && clipValid && !intersectSize(clipMin, clipMax, build.swRasterThreshold, relativeSize))
+  {
+    outRenderClusterSW = true;
+  }
+#endif
   
   return isVisible;
 }
@@ -261,7 +284,8 @@ void main()
 
     // perform traversal & culling logic  
   #if USE_CULLING && TARGETS_RASTERIZATION
-    isValid            = isValid && queryWasVisible(worldMatrix, bbox);
+    bool renderClusterSW = false;
+    isValid            = isValid && queryWasVisible(worldMatrix, bbox, renderClusterSW);
   #endif
     bool traverse      = testForTraversal(traversalMatrix, uniformScale, traversalMetric, errorScale);
     bool renderCluster = isValid && (!traverse || forceCluster);  // clusters use negated test or are forced
@@ -272,6 +296,19 @@ void main()
     // we use subgroup intrinsics to avoid doing per-thread
     // atomics to get the storage offsets
     
+  #if TARGETS_RASTERIZATION && USE_SW_RASTER    
+    if (renderCluster && renderClusterSW){
+      renderCluster = false;
+    }
+    else {
+      renderClusterSW = false;
+    }
+    
+    uvec4 voteClustersSW  = subgroupBallot(renderClusterSW);
+    uint countClustersSW  = subgroupBallotBitCount(voteClustersSW);
+    uint offsetClustersSW = 0;
+  #endif
+    
     uvec4 voteClusters  = subgroupBallot(renderCluster);
     uint countClusters  = subgroupBallotBitCount(voteClusters);
     uint offsetClusters = 0;
@@ -279,12 +316,22 @@ void main()
     if (subgroupElect())
     {
       offsetClusters = atomicAdd(buildRW.renderClusterCounter, countClusters);
+    #if TARGETS_RASTERIZATION && USE_SW_RASTER
+      offsetClustersSW = atomicAdd(buildRW.renderClusterCounterSW, countClustersSW);
+    #endif
     }
 
     offsetClusters = subgroupBroadcastFirst(offsetClusters);
     offsetClusters += subgroupBallotExclusiveBitCount(voteClusters);
     
     renderCluster = renderCluster && offsetClusters < build.maxRenderClusters;
+    
+  #if TARGETS_RASTERIZATION && USE_SW_RASTER
+    offsetClustersSW = subgroupBroadcastFirst(offsetClustersSW);
+    offsetClustersSW += subgroupBallotExclusiveBitCount(voteClustersSW);
+    
+    renderClusterSW = renderClusterSW && offsetClustersSW < build.maxRenderClusters;
+  #endif
 
   #if TARGETS_RAY_TRACING
     if (renderCluster)
@@ -300,13 +347,23 @@ void main()
     }
   #endif
     
+  #if TARGETS_RASTERIZATION && USE_SW_RASTER
+    // a single thread represents a cluster that can only be either sw or hw
+    if (renderCluster || renderClusterSW)
+  #else
     if (renderCluster)
+  #endif
     {  
       // given TraversalInfo and ClusterInfo were chosen to alias in memory and be a single u64
       // we do just have to adjust the output addresses.
       
+    #if TARGETS_RASTERIZATION && USE_SW_RASTER
+      uint writeIndex          = renderCluster ? offsetClusters : offsetClustersSW;
+      uint64s_coh writePointer = uint64s_coh(uint64_t(renderCluster ? build.renderClusterInfos : build.renderClusterInfosSW));
+    #else
       uint writeIndex          = offsetClusters;
       uint64s_coh writePointer = uint64s_coh(uint64_t(build.renderClusterInfos));
+    #endif
       
     #if USE_ATOMIC_LOAD_STORE
       atomicStore(writePointer.d[writeIndex], packTraversalInfo(traversalInfo), gl_ScopeDevice, gl_StorageSemanticsBuffer, gl_SemanticsRelease);

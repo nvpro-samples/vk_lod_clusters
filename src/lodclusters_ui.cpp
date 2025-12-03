@@ -132,23 +132,18 @@ static uint32_t getUsagePct(uint64_t requested, uint64_t reserved)
 
 struct UsagePercentages
 {
-  uint32_t pctClusters     = 0;
-  uint32_t pctTasks        = 0;
-  uint32_t pctResident     = 0;
-  uint32_t pctBlas         = 0;
-  uint32_t pctClasLeft     = 100;
-  uint32_t pctGeoMemory    = 0;
-  uint32_t clampedClusters = 0;
-  uint32_t clampedTasks    = 0;
+  uint32_t pctClusters  = 0;
+  uint32_t pctTasks     = 0;
+  uint32_t pctResident  = 0;
+  uint32_t pctBlas      = 0;
+  uint32_t pctClasLeft  = 100;
+  uint32_t pctGeoMemory = 0;
 
   void setupPercentages(shaderio::Readback& readback, uint64_t maxRenderClusters, uint64_t maxTraversalTasks, uint64_t maxBlasBuilds)
   {
-    pctClusters = getUsagePct(readback.numRenderClusters, maxRenderClusters);
+    pctClusters = getUsagePct(std::max(readback.numRenderClusters, readback.numRenderClustersSW), maxRenderClusters);
     pctTasks    = getUsagePct(readback.numTraversalTasks, maxTraversalTasks);
     pctBlas     = getUsagePct(readback.numBlasBuilds, maxBlasBuilds);
-
-    clampedClusters = std::min(readback.numRenderClusters, uint32_t(maxRenderClusters));
-    clampedTasks    = std::min(readback.numTraversalTasks, uint32_t(maxTraversalTasks));
   }
 
   void setupPercentages(StreamingStats& stats, const StreamingConfig& streamingConfig)
@@ -570,6 +565,12 @@ void LodClusters::onUIRender()
         ImGui::BeginDisabled(!m_rendererConfig.useCulling);
         PE::Checkbox("Culling / LoD Freeze", &m_frameConfig.freezeCulling);
         ImGui::EndDisabled();
+        ImGui::BeginDisabled(!(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD && m_frameConfig.visualize == VISUALIZE_VIS_BUFFER
+                               && m_rendererConfig.useCulling && m_rendererConfig.useSeparateGroups));
+        PE::Checkbox("Allow SW-Raster", (bool*)&m_rendererConfig.useComputeRaster, "Allows use of compute-shader based rasterization");
+        PE::InputFloat("SW-Raster threshold", &m_frameConfig.swRasterThreshold, 1.0f, 1.0f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue,
+                       "cluster uses SW-Raster if its longest edge has less than the specified projected pixels");
+        ImGui::EndDisabled();
         PE::treePop();
       }
       PE::end();
@@ -601,6 +602,31 @@ void LodClusters::onUIRender()
         else
         {
           ImGui::Text("N/A");
+        }
+        if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD && m_rendererConfig.useComputeRaster)
+        {
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+          ImGui::Text("Enqueued Clusters SW");
+          ImGui::TableNextColumn();
+          ImGui::Text("%s", formatMetric(readback.numRenderedClustersSW).c_str());
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+          ImGui::Text("Enqueued Triangles SW");
+          ImGui::TableNextColumn();
+          ImGui::Text("%s", formatMetric(readback.numRenderedTrianglesSW).c_str());
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+          ImGui::Text("Enqueued Tri/Cluster SW");
+          ImGui::TableNextColumn();
+          if(readback.numRenderedClustersSW > 0)
+          {
+            ImGui::Text("%.1f", float(readback.numRenderedTrianglesSW) / float(readback.numRenderedClustersSW));
+          }
+          else
+          {
+            ImGui::Text("N/A");
+          }
         }
         ImGui::EndTable();
       }

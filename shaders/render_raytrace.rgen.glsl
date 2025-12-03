@@ -96,7 +96,7 @@ void main()
   float tMin = view.nearPlane;
   float tMax = view.farPlane;
 
-#if DEBUG_VISUALIZATION
+#if DEBUG_VISUALIZATION && ALLOW_SHADING
   vec2 uvOffset            = (vec2(gl_LaunchIDEXT.xy) + vec2(1.5, 1.5)) / vec2(gl_LaunchSizeEXT.xy);
   vec2 dOffset             = uvOffset * 2.0 - 1.0;
   vec4 targetOffsetX       = normalize(view.projMatrixI * vec4(dOffset.x, d.y, 1, 1));
@@ -107,13 +107,14 @@ void main()
   rayHit.differentialY.xyz = directionOffsetY.xyz;
 #endif
 
+#if ALLOW_SHADING
   vec3  mirrorCenter = view.wMirrorBox.xyz;
   float mirrorSize   = view.wMirrorBox.w;
   vec3 mirrorHitPoint;
   vec3 mirrorNormal;
   bool mirrorHit = false;
   float mirrorT;
-  
+
   if (view.useMirrorBox != 0)
   {
     mirrorT = hitBbox(origin.xyz, direction.xyz, mirrorCenter - mirrorSize, mirrorCenter + mirrorSize);
@@ -129,6 +130,7 @@ void main()
       tMax = mirrorT;
     }
   }
+#endif
 
   traceRayEXT(asScene, view.flipWinding == 2 ? 0 : gl_RayFlagsCullBackFacingTrianglesEXT, 0xff, 0, 0,  // hit offset, hit stride
               0,                                                           // miss offset
@@ -136,6 +138,7 @@ void main()
               0  // rayPayloadNV location qualifier
   );
   
+#if ALLOW_SHADING
   if (view.useMirrorBox != 0)
   {
     if (rayHit.hitT == 0 && mirrorHit)
@@ -150,7 +153,8 @@ void main()
       rayHit.hitT = mirrorT;
     }
   }
-  
+#endif
+
   bool  hitValid = rayHit.hitT != 0;  
   vec3  hitPos   = origin.xyz + direction.xyz * (hitValid ? rayHit.hitT : view.farPlane * 0.99f);
   float hitDepth = 1;
@@ -168,11 +172,17 @@ void main()
   
   motionVec = calculateMotionVector(hitPos, view.viewProjMatrixPrev,
                                     view.viewProjMatrix, view.viewportf);
-
+                                    
   imageStore(imgDlssMotion, screen, vec4(motionVec.x, motionVec.y, 0, 0));
+#if ALLOW_SHADING
   imageStore(imgDlssAlbedo, screen, rayHit.dlssAlbedo);
   imageStore(imgDlssSpecAlbedo, screen, vec4(rayHit.dlssSpecular, 1.0f));
   imageStore(imgDlssNormalRoughness, screen, rayHit.dlssNormalRoughness);
+#else
+  imageStore(imgDlssAlbedo, screen, vec4(rayHit.color.xyz, 1));
+  imageStore(imgDlssSpecAlbedo, screen, vec4(vec3(0), 1.0f));
+  imageStore(imgDlssNormalRoughness, screen, vec4(0));
+#endif
 #endif
   
 }

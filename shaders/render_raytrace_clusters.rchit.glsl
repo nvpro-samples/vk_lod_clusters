@@ -146,7 +146,10 @@ void main()
 #endif
   Cluster_in clusterRef = Cluster_in(clusterAddress);
   Cluster cluster = clusterRef.d;
-
+  
+  uint visData = clusterID;
+  
+#if ALLOW_SHADING
   vec3s_in  oVertices      = vec3s_in(Cluster_getVertexPositions(Cluster_in(clusterRef)));
   uint8s_in localIndices   = uint8s_in(Cluster_getTriangleIndices(Cluster_in(clusterRef)));
   
@@ -161,7 +164,6 @@ void main()
               baryWeight.z * gl_HitTriangleVertexPositionsEXT[2];    
   vec3 wPos = vec3(gl_ObjectToWorldEXT * vec4(oPos, 1.0));
   
-  uint visData = clusterID;
   if (view.visualize == VISUALIZE_LOD || view.visualize == VISUALIZE_GROUP)
   {
     if (view.visualize == VISUALIZE_LOD)
@@ -177,8 +179,6 @@ void main()
   {
     visData = clusterID * 256 + uint(triangleID);
   }
-
-#if ALLOW_SHADING
 
   vec4 wTangent = vec4(1);
   vec2 oTexCoord = vec2(1);
@@ -262,10 +262,11 @@ void main()
     );
   }
 #else
-  vec4 shaded = vec4(visualizeColor(visData), 1.0);
+  float relative = (float(gl_PrimitiveID) / float(clusterRef.d.triangleCountMinusOne)) * 0.25 + 0.75;
+  vec4 shaded = vec4(colorizeID(visData) * relative, 1.0);
 #endif
 
-#if DEBUG_VISUALIZATION
+#if DEBUG_VISUALIZATION && ALLOW_SHADING
   if(view.doWireframe != 0)
   {
     vec3 derivativeTargetX = gl_WorldToObjectEXT * vec4(gl_WorldRayOriginEXT + rayHit.color.xyz, 1);
@@ -288,9 +289,12 @@ void main()
   {
     rayHit.color.xyz = shaded.xyz;
   }
-
+  
   if(gl_LaunchIDEXT.xy == view.mousePosition)
   {
+  #if !ALLOW_SHADING
+    vec3 wPos = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
+  #endif
     vec4  projected            = (view.viewProjMatrix * vec4(wPos, 1.f));
     float depth                = projected.z / projected.w;
     readback.clusterTriangleId = packPickingValue((clusterID << 8) | triangleID, depth);

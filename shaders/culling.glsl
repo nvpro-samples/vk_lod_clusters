@@ -26,10 +26,10 @@
 const float c_epsilon    = 1.2e-07f;
 const float c_depthNudge = 2.0/float(1<<24);
 
-bool intersectSize(vec4 clipMin, vec4 clipMax)
+bool intersectSize(vec4 clipMin, vec4 clipMax, float threshold)
 {
-  vec2 rect = clipMax.xy - clipMin.xy;
-  vec2 clipThreshold = vec2(2.0) / viewLast.viewportf.xy;
+  vec2 rect = (clipMax.xy - clipMin.xy) * 0.5 * viewLast.viewportf.xy;
+  vec2 clipThreshold = vec2(threshold);
   return any(greaterThan(rect,clipThreshold));
 }
 

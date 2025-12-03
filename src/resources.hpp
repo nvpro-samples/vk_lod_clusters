@@ -66,6 +66,9 @@ struct FrameConfig
   float lodPixelError      = 1.0f;
   // increase error by this for instances not having primary visibility in ray tracing
   float culledErrorScale = 2.0f;
+  // if less pixels than this, use sw raster
+  float swRasterThreshold = 8.0f;
+
   // how many frames until we schedule a group for unloading
   uint32_t streamingAgeThreshold = 16;
 
@@ -192,8 +195,9 @@ public:
     VkExtent2D targetSize{};
     VkExtent2D windowSize{};
 
-    int  supersample = 0;
-    bool useResolved = false;
+    int   supersample = 0;
+    bool  useResolved = false;
+    float pixelScale  = 1;
 
     VkFormat colorFormat = VK_FORMAT_R8G8B8A8_UNORM;
     VkFormat depthStencilFormat;
@@ -209,6 +213,8 @@ public:
 
     VkFormat    raytracingDepthFormat = VK_FORMAT_R32_SFLOAT;
     nvvk::Image imgRaytracingDepth    = {};
+
+    nvvk::Image imgRasterAtomic = {};
 
     nvvk::Image imgHizFar = {};
 
@@ -499,7 +505,7 @@ public:
   nvvk::GraphicsPipelineState      m_basicGraphicsState = {};
   uint32_t                         m_cycleIndex         = 0;
   size_t                           m_fboChangeID        = ~0;
-  glm::vec4                        m_bgColor            = {0.1, 0.13, 0.15, 1.0};
+  glm::vec4                        m_bgColor            = {0, 0, 0, 1.0};
 
   VkPhysicalDeviceMeshShaderPropertiesEXT m_meshShaderPropsEXT = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT};
   VkPhysicalDeviceMeshShaderPropertiesNV m_meshShaderPropsNV = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_NV};

@@ -17,6 +17,17 @@
 * SPDX-License-Identifier: Apache-2.0
 */
 
+/*
+  
+  Shader Description
+  ==================
+
+  This fragment shader colorizes the cluster.
+  Note when USE_SW_RASTER is active, it will not do a regular
+  framebuffer attachment output, but write using 64-bit atomics.
+
+*/
+
 #version 460
 
 #extension GL_GOOGLE_include_directive : enable
@@ -28,8 +39,11 @@
 #extension GL_EXT_buffer_reference2 : enable
 #extension GL_EXT_scalar_block_layout : enable
 #extension GL_EXT_shader_atomic_int64 : enable
-#if DEBUG_VISUALIZATION || ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS
+#if ALLOW_SHADING && (DEBUG_VISUALIZATION || ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS)
 #extension GL_EXT_fragment_shader_barycentric : enable
+#endif
+#if USE_SW_RASTER
+#extension GL_EXT_shader_image_int64 : enable
 #endif
 
 #include "shaderio.h"
@@ -76,6 +90,10 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
 };
 #endif
 
+#if USE_SW_RASTER
+layout(set = 0, binding = BINDINGS_RASTER_ATOMIC, r64ui) uniform u64image2D imgRasterAtomic;
+#endif
+
 ///////////////////////////////////////////////////
 
 #include "attribute_encoding.h"
@@ -103,7 +121,11 @@ INBARY[];
 
 ///////////////////////////////////////////////////
 
+#if !USE_SW_RASTER
 layout(location = 0, index = 0) out vec4 out_Color;
+#else
+vec4 out_Color;
+#endif
 layout(early_fragment_tests) in;
 
 ///////////////////////////////////////////////////
@@ -119,7 +141,7 @@ void main()
 #if USE_STREAMING
   Cluster_in clusterRef = Cluster_in(streaming.resident.clusters.d[IN.clusterID]);
 #else
-  Geometry   geometry   = geometries[instances[IN.instanceID].geometryID];
+  Geometry   geometry   = geometries[instance.geometryID];
   Cluster_in clusterRef = Cluster_in(geometry.preloadedClusters.d[IN.clusterID]);
 #endif
 
@@ -183,6 +205,8 @@ void main()
 #endif
 
   uint visData = IN.clusterID;
+  
+#if ALLOW_SHADING
   if(view.visualize == VISUALIZE_LOD || view.visualize == VISUALIZE_GROUP)
   {
     if(view.visualize == VISUALIZE_LOD)
@@ -201,23 +225,22 @@ void main()
   }
 
   out_Color.w = 1.f;
-#if ALLOW_SHADING
   {
     const float overHeadLight = 1.0f;
     const float ambientLight  = 0.7f;
 
     out_Color = shading(IN.instanceID, IN.wPos, wNormal, wTangent, oTexCoord, visData, overHeadLight, ambientLight);
+  #if DEBUG_VISUALIZATION
+    if(view.doWireframe != 0)
+    {
+      out_Color.xyz = addWireframe(out_Color.xyz, gl_BaryCoordEXT, true, fwidthFine(gl_BaryCoordEXT), view.wireColor);
+    }
+  #endif
   }
 #else
   {
-    out_Color = vec4(visualizeColor(visData), 1.0);
-  }
-#endif
-
-#if DEBUG_VISUALIZATION
-  if(view.doWireframe != 0)
-  {
-    out_Color.xyz = addWireframe(out_Color.xyz, gl_BaryCoordEXT, true, fwidthFine(gl_BaryCoordEXT), view.wireColor);
+    float relative = (float(gl_PrimitiveID) / float(clusterRef.d.triangleCountMinusOne)) * 0.25 + 0.75;
+    out_Color = vec4(colorizeID(visData) * relative, 1.0);
   }
 #endif
 
@@ -228,4 +251,11 @@ void main()
     atomicMax(readback.clusterTriangleId, packPickingValue(packedClusterTriangleId, gl_FragCoord.z));
     atomicMax(readback.instanceId, packPickingValue(IN.instanceID, gl_FragCoord.z));
   }
+  
+#if USE_SW_RASTER
+  {
+    uint64_t u64 = packUint2x32(uvec2(packUnorm4x8(out_Color), floatBitsToUint(gl_FragCoord.z)));
+    imageAtomicMin(imgRasterAtomic, ivec2(gl_FragCoord.xy), u64);
+  }
+#endif
 }

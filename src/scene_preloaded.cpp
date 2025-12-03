@@ -17,6 +17,7 @@
 * SPDX-License-Identifier: Apache-2.0
 */
 
+#include <volk.h>
 #include "scene_preloaded.hpp"
 
 namespace lodclusters {

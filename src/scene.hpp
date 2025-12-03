@@ -24,6 +24,7 @@
 #include <string>
 #include <atomic>
 #include <mutex>
+#include <unordered_set>
 #include <functional>
 
 #include <glm/glm.hpp>
@@ -51,9 +52,11 @@ struct SceneConfig
   // default setting should prefer ray tracing
   bool meshoptPreferRayTracing = true;
 
-  // not yet implemented, but add to make cache files binary compatible
+  // store groups in a compressed way
+  // uncompress at runtime
   bool useCompressedData = false;
 
+  // due to the simple shading, only enable normals for now
   uint32_t enabledAttributes = shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL;
 
   // settings that affect clusterization
@@ -724,6 +727,11 @@ private:
 
     std::mutex processOnlySaveMutex;
 
+    // bufferview compression
+
+    std::vector<uint32_t> bufferViewUsers;
+    std::vector<uint32_t> bufferViewLocks;
+
     // stats
 
     struct Stats
@@ -757,6 +765,7 @@ private:
     void init(float pct);
     // parallelismMode: <0 inner, ==0 auto, >0 outer
     void setupParallelism(size_t geometryCount_, size_t geometryCompletedCount, int parallelismMode);
+    void setupCompressedGltf(size_t bufferViewCount);
     void deinit();
 
     void     logBegin(uint64_t totalTriangleCount);
@@ -765,6 +774,17 @@ private:
   };
 
   Result loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path& filePath);
+
+private:
+  void loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIndex, size_t meshIndex, const struct cgltf_data* gltf);
+
+  // to handle glTF EXT_meshopt_compression
+  bool loadCompressedViewsGLTF(ProcessingInfo&                                processingInfo,
+                               std::unordered_set<struct cgltf_buffer_view*>& bufferViews,
+                               const struct cgltf_data*                       gltf);
+  void unloadCompressedViewsGLTF(ProcessingInfo&                                processingInfo,
+                                 std::unordered_set<struct cgltf_buffer_view*>& bufferViews,
+                                 const struct cgltf_data*                       gltf);
 
   void processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex, bool isCached);
 

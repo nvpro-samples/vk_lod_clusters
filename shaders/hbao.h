@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2023, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2018-2025, NVIDIA CORPORATION.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * SPDX-FileCopyrightText: Copyright (c) 2018-2023 NVIDIA CORPORATION
+ * SPDX-FileCopyrightText: Copyright (c) 2018-2025 NVIDIA CORPORATION
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -63,15 +63,13 @@ struct NVHBAOData
   vec2 InvFullResolution;
   vec2 InvQuarterResolution;
 
-  ivec2 SourceResolutionScale;
   float AOMultiplier;
   float PowExponent;
+  int   projOrtho;
+  int   _pad0;
 
   vec4  projReconstruct;
   vec4  projInfo;
-  int   projOrtho;
-  int   _pad0;
-  ivec2 _pad1;
 
   ivec2 FullResolution;
   ivec2 QuarterResolution;

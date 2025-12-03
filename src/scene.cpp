@@ -68,6 +68,12 @@ void Scene::ProcessingInfo::setupParallelism(size_t geometryCount_, size_t geome
   numInnerThreads = preferInnerParallelism ? numPoolThreads : 1;
 }
 
+void Scene::ProcessingInfo::setupCompressedGltf(size_t bufferViewCount)
+{
+  bufferViewUsers.resize(bufferViewCount, {0});
+  bufferViewLocks.resize(bufferViewCount, {0});
+}
+
 void Scene::ProcessingInfo::logBegin(uint64_t totalTriangleCount)
 {
   LOGI("... geometry load & processing: geometries %" PRIu64 ", threads outer %d inner %d\n", geometryCount,
@@ -722,6 +728,4 @@ void Scene::computeHistogramMaxs()
     m_histograms.lodLevelsMax = std::max(m_histograms.lodLevelsMax, m_histograms.lodLevels[i]);
   }
 }
-
-
 }  // namespace lodclusters

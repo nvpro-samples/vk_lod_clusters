@@ -106,7 +106,10 @@ Relevant files to traversal in their usage order:
 Does not need the BLAS and TLAS build steps and can render directly from `SceneBuilding::renderClusterInfos`.
 Frustum and occlusion culling can be done to reduce the number of rendered clusters during traversal.
 * [shaders/render_raster_clusters.mesh.glsl](/shaders/render_raster_clusters.mesh.glsl): Mesh shader to render a cluster.
+* [shaders/render_raster_clusters_sw.comp.glsl](/shaders/render_raster_clusters.mesh.glsl): Compute shader to rasterize a cluster. It is only used when the "Allow SW-Raster" traversal option is active.
 * [shaders/render_raster.frag.glsl](/shaders/render_raster.frag.glsl)
+
+In some conditions (visualize == visibility buffer, separate groups on, culling on) one can enable the usage of a basic compute-shader based rasterizer. However it hasn't been tuned yet and in typical usage scenarios is not faster than the mesh-shader because clusters tend to have larger than single pixel triangles. You can look for `USE_SW_RASTER` in the code where it does affect traversal.
 
 **Ray Tracing:**
 After the BLAS are built, also runs the TLAS build or update and then traces rays.
@@ -176,7 +179,6 @@ Other:
 * Add more material features and basic texturing.
 * Add texture streaming.
 * Fallback for persistent traversal kernel.
-* Allowing the use of a compute shader to do rasterization of smaller/non-clipped triangles.
 * Implement sorting of streaming requests based on distance of instance. Sorting instances alone is not sufficient.
 
 ## Building and Running

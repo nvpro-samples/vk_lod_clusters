@@ -56,9 +56,6 @@ public:
   {
     bool blend;
 
-    uint32_t sourceWidthScale;
-    uint32_t sourceHeightScale;
-
     uint32_t targetWidth;
     uint32_t targetHeight;
 

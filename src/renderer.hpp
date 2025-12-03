@@ -70,9 +70,11 @@ struct RendererConfig
   bool useBlasSharing        = true;
   bool useBlasMerging        = true;
   bool useBlasCaching        = false;
+  bool useShading            = true;
   bool useDebugVisualization = true;
   bool useSeparateGroups     = true;
   bool useEXTmeshShader      = false;
+  bool useComputeRaster      = false;
 
   bool useDlss = false;
 #if USE_DLSS
@@ -138,6 +140,7 @@ protected:
   void initBasicPipelines(Resources& res, RenderScene& rscene, const RendererConfig& config);
   void updateBasicDescriptors(Resources& res, RenderScene& scene, const nvvk::Buffer* sceneBuildBuffer = nullptr);
 
+  void writeAtomicRaster(VkCommandBuffer cmd);
   void writeRayTracingDepthBuffer(VkCommandBuffer cmd);
   void writeBackgroundSky(VkCommandBuffer cmd);
   void renderInstanceBboxes(VkCommandBuffer cmd);
@@ -148,6 +151,7 @@ protected:
     shaderc::SpvCompilationResult fullScreenVertexShader;
     shaderc::SpvCompilationResult fullScreenWriteDepthFragShader;
     shaderc::SpvCompilationResult fullScreenBackgroundFragShader;
+    shaderc::SpvCompilationResult fullscreenAtomicRasterFragmentShader;
 
     shaderc::SpvCompilationResult renderInstanceBboxesFragmentShader;
     shaderc::SpvCompilationResult renderInstanceBboxesMeshShader;
@@ -160,6 +164,7 @@ protected:
   {
     VkPipeline writeDepth{};
     VkPipeline background{};
+    VkPipeline atomicRaster{};
     VkPipeline renderInstanceBboxes{};
     VkPipeline renderClusterBboxes{};
   };
@@ -191,7 +196,9 @@ protected:
 
 inline float clusterLodErrorOverDistance(float errorSizeInPixels, float fov, float resolution)
 {
-  return sinf(atanf(tanf(fov * 0.5f) * errorSizeInPixels / resolution));
+  // note we use half-pixel sizes: error taken as radius, not as diameter.
+  // otherwise there was more LoD popping.
+  return (tanf(fov * 0.5f) * errorSizeInPixels / resolution);
 }
 
 //////////////////////////////////////////////////////////////////////////

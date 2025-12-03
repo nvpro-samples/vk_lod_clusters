@@ -17,6 +17,7 @@
 * SPDX-License-Identifier: Apache-2.0
 */
 
+#include <volk.h>
 #include <nvvk/sbt_generator.hpp>
 #include <nvutils/parallel_work.hpp>
 #include <nvutils/alignment.hpp>
@@ -158,10 +159,13 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("ALLOW_VERTEX_TANGENTS", rscene.scene->m_hasVertexTangents ? "1" : "0");
   options.AddMacroDefinition("ALLOW_VERTEX_TEXCOORDS", rscene.scene->m_hasVertexTexCoord0 ? "1" : "0");
   //options.AddMacroDefinition("ALLOW_VERTEX_TEXCOORD_1", rscene.scene->m_hasVertexTexCoord1 ? "1" : "0");
+  options.AddMacroDefinition("ALLOW_SHADING", config.useShading ? "1" : "0");
   options.AddMacroDefinition("DEBUG_VISUALIZATION", config.useDebugVisualization ? "1" : "0");
   options.AddMacroDefinition("USE_EXT_MESH_SHADER", fmt::format("{}", config.useEXTmeshShader ? 1 : 0));
   options.AddMacroDefinition("MESHSHADER_WORKGROUP_SIZE", fmt::format("{}", m_meshShaderWorkgroupSize));
   options.AddMacroDefinition("MESHSHADER_BBOX_COUNT", fmt::format("{}", m_meshShaderBoxes));
+  options.AddMacroDefinition("USE_SW_RASTER", "0");
+  options.AddMacroDefinition("USE_TWO_SIDED", config.twoSided ? "1" : "0");
 
   shaderc::CompileOptions optionsAO = options;
   options.AddMacroDefinition("RAYTRACING_PAYLOAD_INDEX", "0");
@@ -1178,7 +1182,7 @@ void RendererRayTraceClustersLod::initRayTracingPipeline(Resources& res)
       .pStages                      = stages.data(),
       .groupCount                   = static_cast<uint32_t>(shaderGroups.size()),
       .pGroups                      = shaderGroups.data(),
-      .maxPipelineRayRecursionDepth = 2,
+      .maxPipelineRayRecursionDepth = m_config.useShading ? 2u : 1u,
       .layout                       = m_pipelineLayout,
   };
 

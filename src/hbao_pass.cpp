@@ -21,7 +21,6 @@
 #include <random>
 
 #include <volk.h>
-
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <nvvk/default_structs.hpp>
@@ -417,11 +416,10 @@ void HbaoPass::updateUbo(VkCommandBuffer cmd, const Frame& frame, const Settings
   int quarterWidth  = ((width + 3) / 4);
   int quarterHeight = ((height + 3) / 4);
 
-  hbaoData.InvQuarterResolution  = glm::vec2(1.0f / float(quarterWidth), 1.0f / float(quarterHeight));
-  hbaoData.InvFullResolution     = glm::vec2(1.0f / float(width), 1.0f / float(height));
-  hbaoData.SourceResolutionScale = glm::ivec2(frame.config.sourceWidthScale, frame.config.sourceHeightScale);
-  hbaoData.FullResolution        = glm::ivec2(width, height);
-  hbaoData.QuarterResolution     = glm::ivec2(quarterWidth, quarterHeight);
+  hbaoData.InvQuarterResolution = glm::vec2(1.0f / float(quarterWidth), 1.0f / float(quarterHeight));
+  hbaoData.InvFullResolution    = glm::vec2(1.0f / float(width), 1.0f / float(height));
+  hbaoData.FullResolution       = glm::ivec2(width, height);
+  hbaoData.QuarterResolution    = glm::ivec2(quarterWidth, quarterHeight);
 
   for(int i = 0; i < RANDOM_ELEMENTS; i++)
   {

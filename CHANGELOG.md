@@ -1,6 +1,14 @@
 # Changelog for vk_lod_clusters
+* 2025-12-2:
+  * Added `Allow SW-Raster` option for compute-based rasterization and a few conditions (visibility buffer mode, culling on, separate groups on). Very crude basic implementation so far.
+  * Added `720p`, `1080p` and `1440p` as "super sampling" modes to set fixed resolutions.
+* 2025-12-1:
+  * Added `visibility buffer` visualization mode that turns off all shading.
+* 2025-11-25:
+  * Refactored glTF loading to use dedicated `Scene::loadGeometryGLTF`
+  * Added support for glTF `EXT_meshopt_compression`
 * 2025-11-13:
-  * Skip loading glTF buffers when file cache is used
+  * Skip file mapping glTF buffers when file cache is used
   * Bugfix shader compilation bug
   * Add note about tangent space encoding
 * 2025-11-10:

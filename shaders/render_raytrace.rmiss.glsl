@@ -49,6 +49,7 @@ layout(location = RAYTRACING_PAYLOAD_INDEX) rayPayloadInEXT float rayHit;
 void main()
 {
 #if RAYTRACING_PAYLOAD_INDEX == 0
+#if ALLOW_SHADING
   vec3 skyColor = evalSimpleSky(view.skyParams, gl_WorldRayDirectionEXT);
   rayHit.color = skyColor;
   rayHit.hitT  = 0;
@@ -57,6 +58,10 @@ void main()
     rayHit.dlssNormalRoughness = vec4(0);
     rayHit.dlssSpecular = vec3(0);
   #endif
+#else
+  rayHit.color = vec3(0);
+  rayHit.hitT  = 0;
+#endif
 #else
   rayHit = 0;
 #endif

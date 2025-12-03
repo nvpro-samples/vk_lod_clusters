@@ -28,18 +28,15 @@
 
 /////////////////////////////////////////
 
-#define ALLOW_SHADING 1
-
-/////////////////////////////////////////
-
 #define VISUALIZE_MATERIAL 0
 #define VISUALIZE_GREY 1
-#define VISUALIZE_CLUSTER 2
-#define VISUALIZE_GROUP 3
-#define VISUALIZE_LOD 4
-#define VISUALIZE_TRIANGLE 5
-#define VISUALIZE_BLAS 6
-#define VISUALIZE_BLAS_CACHED 7
+#define VISUALIZE_VIS_BUFFER 2
+#define VISUALIZE_CLUSTER 3
+#define VISUALIZE_GROUP 4
+#define VISUALIZE_LOD 5
+#define VISUALIZE_TRIANGLE 6
+#define VISUALIZE_BLAS 7
+#define VISUALIZE_BLAS_CACHED 8
 
 #define MESHSHADER_BBOX_VERTICES 8
 #define MESHSHADER_BBOX_LINES 12
@@ -58,8 +55,9 @@
 #define BINDINGS_STREAMING_SSBO 8
 #define BINDINGS_TLAS 9
 #define BINDINGS_RAYTRACING_DEPTH 10
+#define BINDINGS_RASTER_ATOMIC 11
 // DLSS buffers start here as well
-#define BINDINGS_RENDER_TARGET 11
+#define BINDINGS_RENDER_TARGET 12
 
 /////////////////////////////////////////
 
@@ -108,6 +106,10 @@ using namespace glm;
 
 #else
 
+#ifndef ALLOW_SHADING
+#define ALLOW_SHADING 1
+#endif
+
 #ifndef ALLOW_VERTEX_NORMALS
 #define ALLOW_VERTEX_NORMALS 1
 #endif
@@ -122,6 +124,10 @@ using namespace glm;
 
 #ifndef ALLOW_VERTEX_TANGENTS
 #define ALLOW_VERTEX_TANGENTS 1
+#endif
+
+#ifndef USE_SW_RASTER
+#define USE_SW_RASTER 1
 #endif
 
 #ifndef USE_RENDER_STATS
@@ -156,12 +162,16 @@ using namespace glm;
 #define USE_STREAMING 0
 #endif
 
+#ifndef USE_TWO_SIDED
+#define USE_TWO_SIDED 1
+#endif
+
 #ifndef MAX_VISIBLE_CLUSTERS
 #define MAX_VISIBLE_CLUSTERS 1024
 #endif
 
 #ifndef TARGETS_RASTERIZATION
-#define TARGETS_RASTERIZATION 0
+#define TARGETS_RASTERIZATION 1
 #endif
 
 #define TARGETS_RAY_TRACING (!(TARGETS_RASTERIZATION))
@@ -176,11 +186,11 @@ struct RayPayload
   // Closest hit returns the shaded color there.
   vec3  color;
   float hitT;
-#if DEBUG_VISUALIZATION
+#if DEBUG_VISUALIZATION && ALLOW_SHADING
   // Ray direction through the pixel at y+1 for ray differentials
   vec4 differentialY;
 #endif
-#if USE_DLSS
+#if USE_DLSS && ALLOW_SHADING
   vec4 dlssNormalRoughness;
   vec4 dlssAlbedo;
   vec3 dlssSpecular;
@@ -270,10 +280,13 @@ struct FrameConstants
 struct Readback
 {
   uint     numRenderClusters;
+  uint     numRenderClustersSW;
   uint     numTraversalTasks;
   uint     numBlasBuilds;
   uint     numRenderedClusters;
+  uint     numRenderedClustersSW;
   uint64_t numRenderedTriangles;
+  uint64_t numRenderedTrianglesSW;
 
   uint64_t blasActualSizes;
 

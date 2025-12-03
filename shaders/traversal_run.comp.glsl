@@ -204,7 +204,7 @@ bool queryWasVisible(mat4 instanceTransform, BBox bbox)
   
   bool inFrustum = intersectFrustum(bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
   bool isVisible = inFrustum && 
-    (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax) && intersectHiz(clipMin, clipMax)));
+    (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax)));
   
   return isVisible;
 }
