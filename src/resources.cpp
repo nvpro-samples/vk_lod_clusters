@@ -685,6 +685,12 @@ void Resources::deinitFramebuffer()
 
 glm::vec2 Resources::getFramebufferWindow2RenderScale() const
 {
+  if(m_frameBuffer.supersample >= 720)
+  {
+    // for fixed resolutions
+    return glm::vec2(1, 1);
+  }
+
   return glm::vec2(m_frameBuffer.renderSize.width, m_frameBuffer.renderSize.height)
          / glm::vec2(m_frameBuffer.windowSize.width, m_frameBuffer.windowSize.height);
 }

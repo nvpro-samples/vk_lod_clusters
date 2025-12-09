@@ -195,7 +195,15 @@ public:
     VkExtent2D targetSize{};
     VkExtent2D windowSize{};
 
-    int   supersample = 0;
+    // typically super resolution with respect to the window size
+    // 0: off - use window resolution
+    // 1: off - use window resolution
+    // 2: 2x resolution along width and height
+    // 720:  fix render resolution to 1280 x 720, aspect from window
+    // 1080: fix render resolution to 1920 x 1080, aspect from window
+    // 1440: fix render resolution to 2560 x 1440, aspect from window
+    int supersample = 0;
+
     bool  useResolved = false;
     float pixelScale  = 1;
 

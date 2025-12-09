@@ -1,4 +1,8 @@
 # Changelog for vk_lod_clusters
+* 2025-12-9:
+  * Removed meshoptimizer as submodule, it is now part of nvpro_core2
+  * Removed LoD pixel scale adjustment when using the fixed super resolutions (`720p`...)
+  * Disable HBAO in `visibility buffer` mode
 * 2025-12-2:
   * Added `Allow SW-Raster` option for compute-based rasterization and a few conditions (visibility buffer mode, culling on, separate groups on). Very crude basic implementation so far.
   * Added `720p`, `1080p` and `1440p` as "super sampling" modes to set fixed resolutions.

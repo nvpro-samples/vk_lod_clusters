@@ -130,19 +130,6 @@ struct FileMappingList
   }
 };
 
-const uint8_t* cgltf_buffer_view_data(const cgltf_buffer_view* view)
-{
-  if(view->data)
-    return (const uint8_t*)view->data;
-
-  if(!view->buffer->data)
-    return NULL;
-
-  const uint8_t* result = (const uint8_t*)view->buffer->data;
-  result += view->offset;
-  return result;
-}
-
 cgltf_result cgltf_read(const struct cgltf_memory_options* memory_options,
                         const struct cgltf_file_options*   file_options,
                         const char*                        path,

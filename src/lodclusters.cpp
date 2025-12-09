@@ -804,7 +804,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
       m_rendererFboChangeID = m_resources.m_fboChangeID;
     }
 
-    m_frameConfig.hbaoActive = m_tweak.hbaoActive && m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD;
+    m_frameConfig.hbaoActive = m_rendererConfig.useShading && m_tweak.hbaoActive && m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD;
 
     shaderio::FrameConstants& frameConstants = m_frameConfig.frameConstants;
 

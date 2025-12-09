@@ -20,13 +20,6 @@ set(CMAKE_CXX_STANDARD 20)
 download_files(FILENAMES bunny_v2.zip EXTRACT)
 
 #####################################################################################
-# extra libraries
-
-if(NOT TARGET meshoptimizer)
-  add_subdirectory(external/meshoptimizer)
-endif()
-
-#####################################################################################
 # Source files for this project
 #
 file(GLOB SOURCE_FILES src/*.*)
