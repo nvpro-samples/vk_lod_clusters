@@ -85,8 +85,12 @@ struct SceneConfig
   uint32_t compressionPosDropBits = 7;
   uint32_t compressionTexDropBits = 7;
 
-  // may want to allow some binary compatibility with older cache files
-  uint32_t reservedData[15] = {};
+  // experimental meshoptimizer, try to remove small triangles despite high error
+  float lodErrorEdgeLimit = 0;
+
+  // want to allow some binary compatibility with older cache files
+  // safe to add new variables into this section as long as they are zeroed by default
+  uint32_t reservedData[14] = {};
 };
 
 // Control the loading and processing procedure of the scene.

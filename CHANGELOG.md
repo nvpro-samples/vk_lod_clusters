@@ -1,4 +1,8 @@
 # Changelog for vk_lod_clusters
+* 2025-12-10:
+  * Updated `meshopt_clusterlod.h` to reflect new options from meshoptimizer v1
+  * Added `primitive culling` support for `NV_mesh_shader`
+  * Improved back-face culling, using flip of the triangle winding based on instance matrix determinant. (Material-based two-sided yet to be done).
 * 2025-12-9:
   * Removed meshoptimizer as submodule, it is now part of nvpro_core2
   * Removed LoD pixel scale adjustment when using the fixed super resolutions (`720p`...)

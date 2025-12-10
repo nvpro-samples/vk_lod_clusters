@@ -122,6 +122,7 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
   options.AddMacroDefinition("DEBUG_VISUALIZATION", config.useDebugVisualization && res.m_supportsBarycentrics ? "1" : "0");
   options.AddMacroDefinition("USE_SW_RASTER", config.useComputeRaster ? "1" : "0");
   options.AddMacroDefinition("USE_TWO_SIDED", config.twoSided ? "1" : "0");
+  options.AddMacroDefinition("USE_PRIMITIVE_CULLING", config.usePrimitiveCulling ? "1" : "0");
 
   res.compileShader(m_shaders.graphicsMesh, VK_SHADER_STAGE_MESH_BIT_NV, "render_raster_clusters.mesh.glsl", &options);
   res.compileShader(m_shaders.graphicsFragment, VK_SHADER_STAGE_FRAGMENT_BIT, "render_raster.frag.glsl", &options);
@@ -289,7 +290,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     graphicsGen.renderingState.stencilAttachmentFormat = res.m_frameBuffer.pipelineRenderingInfo.stencilAttachmentFormat;
     graphicsGen.colorFormats = {res.m_frameBuffer.colorFormat};
 
-    state.rasterizationState.frontFace = config.flipWinding ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    state.rasterizationState.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     if(config.twoSided)
     {
       state.rasterizationState.cullMode = VK_CULL_MODE_NONE;

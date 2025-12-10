@@ -543,6 +543,7 @@ void Scene::buildGeometryLod(ProcessingInfo& processingInfo, GeometryStorage& ge
   // account for simplifying an already simplified mesh.
   clodInfo.simplify_error_merge_previous = m_config.lodErrorMergePrevious;
   clodInfo.simplify_error_merge_additive = m_config.lodErrorMergeAdditive;
+  clodInfo.simplify_error_edge_limit     = m_config.lodErrorEdgeLimit;
 
   clodMesh inputMesh                = {};
   inputMesh.vertex_positions        = reinterpret_cast<const float*>(geometry.vertexPositions.data());

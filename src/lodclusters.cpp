@@ -70,6 +70,7 @@ LodClusters::LodClusters(const Info& info)
 
   m_info.parameterRegistry->add({"loderrormergeprevious"}, &m_sceneConfig.lodErrorMergePrevious);
   m_info.parameterRegistry->add({"loderrormergeadditive"}, &m_sceneConfig.lodErrorMergeAdditive);
+  m_info.parameterRegistry->add({"loderroredgelimit"}, &m_sceneConfig.lodErrorEdgeLimit);
   m_info.parameterRegistry->add({"lodnodewidth"}, &m_sceneConfig.preferredNodeWidth);
   m_info.parameterRegistry->add({"loddecimationfactor"}, &m_sceneConfig.lodLevelDecimationFactor);
   m_info.parameterRegistry->add({"meshoptpreferrt"}, &m_sceneConfig.meshoptPreferRayTracing);
@@ -749,7 +750,7 @@ void LodClusters::handleChanges()
        || rendererCfgChanged(m_rendererConfig.useBlasSharing) || rendererCfgChanged(m_rendererConfig.useRenderStats)
        || rendererCfgChanged(m_rendererConfig.useSeparateGroups) || rendererCfgChanged(m_rendererConfig.useBlasMerging)
        || rendererCfgChanged(m_rendererConfig.useBlasCaching) || rendererCfgChanged(m_rendererConfig.useEXTmeshShader)
-       || rendererCfgChanged(m_rendererConfig.useComputeRaster))
+       || rendererCfgChanged(m_rendererConfig.useComputeRaster) || rendererCfgChanged(m_rendererConfig.usePrimitiveCulling))
     {
       if(rendererCfgChanged(m_rendererConfig.useBlasCaching))
       {

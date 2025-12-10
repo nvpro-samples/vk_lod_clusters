@@ -1241,7 +1241,13 @@ void RendererRayTraceClustersLod::initRayTracingTlas(Resources& res, const Rende
     instance.mask                                   = 0xFF;                      // All objects
     instance.instanceShaderBindingTableRecordOffset = 0,  // We will use the same hit group for all object
         instance.flags                              = VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
-    if(config.flipWinding)
+
+    if(m_renderInstances[i].twoSided)
+    {
+      instance.flags |= VK_GEOMETRY_INSTANCE_TRIANGLE_CULL_DISABLE_BIT_NV;
+    }
+
+    if(m_renderInstances[i].flipWinding)
     {
       instance.flags |= VK_GEOMETRY_INSTANCE_TRIANGLE_FRONT_COUNTERCLOCKWISE_BIT_KHR;
     }

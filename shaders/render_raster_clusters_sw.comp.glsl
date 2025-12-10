@@ -40,6 +40,8 @@
 #extension GL_EXT_scalar_block_layout : enable
 #extension GL_EXT_shader_image_int64 : enable
 #extension GL_EXT_control_flow_attributes : require
+#extension GL_KHR_shader_subgroup_ballot : require
+
 
 #include "shaderio.h"
 
@@ -114,101 +116,6 @@ const uint MESHLET_TRIANGLE_ITERATIONS = ((CLUSTER_TRIANGLE_COUNT + COMPUTE_WORK
 #include "culling.glsl"
 #include "render_shading.glsl"
 
-////////////////////////////////////////////
-
-#define RasterVertex vec4
-#define RasterVertex_cullBits(r)  floatBitsToUint(r.w)
-
-vec2 getScreenPos(vec4 hPos)
-{
-  return vec2(((hPos.xy/hPos.w) * 0.5 + 0.5) * view.viewportf.xy);
-}
-
-RasterVertex getRasterVertex(vec4 hPos)
-{
-  RasterVertex vtx;
-  vtx.xy    = getScreenPos(hPos);
-  vtx.z     = hPos.z/hPos.w;
-  vtx.w     = uintBitsToFloat(getCullBits(hPos));
-  
-  return vtx;
-}
-
-void pixelBboxEpsilon(inout vec2 pixelMin, inout vec2 pixelMax)
-{
-  // apply some safety around the bbox to take into account fixed point rasterization
-  // (our rasterization grid is 1/256)
-  
-  const float epsilon = (1.0 / 256);
-  pixelMin -= epsilon;
-  pixelMax += epsilon;
-  pixelMin = round(pixelMin);
-  pixelMax = round(pixelMax);
-}
-
-bool pixelBboxCull(vec2 pixelMin, vec2 pixelMax){
-  // bbox culling
-  bool cull = ( ( pixelMin.x == pixelMax.x) || ( pixelMin.y == pixelMax.y));
-  return cull;
-}
-
-bool pixelViewportCull(vec2 pixelMin, vec2 pixelMax)
-{
-  return ((pixelMax.x < 0) || (pixelMin.x >= view.viewportf.x) || (pixelMax.y < 0) || (pixelMin.y >= view.viewportf.y));
-}
-
-bool testTriangle(vec2 a, vec2 b, vec2 c, float winding, bool frustum, out vec2 pixelMin, out vec2 pixelMax, out float triArea)
-{
-  // back face culling
-  vec2 ab = b.xy - a.xy;
-  vec2 ac = c.xy - a.xy;
-  float cross_product = ab.y * ac.x - ab.x * ac.y;   
-  
-#if USE_TWO_SIDED
-  triArea = cross_product;
-#else
-  triArea = cross_product * winding;
-
-  if (cross_product * winding < 0) return false;
-#endif
-
-  // compute the min and max in each X and Y direction
-  pixelMin = min(a,min(b,c));
-  pixelMax = max(a,max(b,c));
-  
-  pixelBboxEpsilon(pixelMin, pixelMax);
-  
-  if (frustum && pixelViewportCull(pixelMin, pixelMax)) return false;
-  
-  if (pixelBboxCull(pixelMin, pixelMax)) return false;
-  
-  return true;
-}
-
-bool testTriangle(RasterVertex a, RasterVertex b, RasterVertex c, float winding, out vec2 pixelMin, out vec2 pixelMax, out float triArea)
-{
-  
-  if ((RasterVertex_cullBits(a) & RasterVertex_cullBits(b) & RasterVertex_cullBits(c)) == 0 &&
-      // don't attempt to to rasterize specially clipped triangles 
-      (((RasterVertex_cullBits(a) | RasterVertex_cullBits(b) | RasterVertex_cullBits(c)) & (16 | 32 |64)) == 0))
-  {
-    return testTriangle(a.xy,b.xy,c.xy,winding, false, pixelMin, pixelMax, triArea);
-  }
-  return false;
-}
-
-bool testTriangle(RasterVertex a, RasterVertex b, RasterVertex c, float winding)
-{
-  if ((RasterVertex_cullBits(a) & RasterVertex_cullBits(b) & RasterVertex_cullBits(c)) == 0){
-    vec2 pixelMin;
-    vec2 pixelMax;
-    float triArea;
-    // trivially accept complex triangles, let hw culling take care of those
-    return (((RasterVertex_cullBits(a) | RasterVertex_cullBits(b) | RasterVertex_cullBits(c)) & 64) != 0) 
-           || testTriangle(a.xy,b.xy,c.xy,winding, false, pixelMin, pixelMax, triArea);
-  }
-  return false;
-}
 
 ////////////////////////////////////////////
 
@@ -295,12 +202,19 @@ void main()
   memoryBarrierShared();
   barrier();
   
+  uint numRasteredTriangles = 0;
+  
   for(uint tri = gl_LocalInvocationID.x; tri <= triMax; tri += COMPUTE_WORKGROUP_SIZE )
   {
     uint triLoad  = tri;
     uvec3 indices = uvec3(localIndices.d[triLoad * 3 + 0],
                           localIndices.d[triLoad * 3 + 1],
                           localIndices.d[triLoad * 3 + 2]);
+
+    if (instance.flipWinding != 0)
+    {
+      indices.xy = indices.yx;
+    }
 
     RasterVertex a = (s_vertices[indices.x]);
     RasterVertex b = (s_vertices[indices.y]);
@@ -310,7 +224,7 @@ void main()
     vec2 pixelMax;
     float triArea;
     
-    bool visible  = testTriangle(a,b,c, 1.0, pixelMin, pixelMax, triArea);
+    bool visible  = testTriangle(a,b,c, pixelMin, pixelMax, triArea);
     float winding = 1.0;
   #if USE_TWO_SIDED
     if (triArea < 0)
@@ -337,6 +251,14 @@ void main()
           
         rasterTriangle(pixel, packedColor, indices, a, b, c, triArea, winding);
       }
+#if USE_RENDER_STATS
+      numRasteredTriangles += subgroupBallotBitCount(subgroupBallot(true));
+#endif
     }
   }
+#if USE_RENDER_STATS
+  if (subgroupElect()) {
+    atomicAdd(readback.numRasteredTrianglesSW, numRasteredTriangles);
+  }
+#endif
 }

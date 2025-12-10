@@ -89,6 +89,7 @@ bool intersectFrustum(vec3 bboxMin, vec3 bboxMax, mat4 worldTM, out vec4 oClipmi
   return bits == 0;
 }
 
+#ifndef CULLING_NO_HIZ
 bool intersectHiz(vec4 clipMin, vec4 clipMax)
 {
   clipMin.xy = clipMin.xy * 0.5 + 0.5;
@@ -108,4 +109,103 @@ bool intersectHiz(vec4 clipMin, vec4 clipMax)
   bool result = clipMin.z <= depth + c_depthNudge;
 
   return result;
+}
+#endif
+
+////////////////////////////////////////////////////////////////////////////
+
+#define RasterVertex vec4
+#define RasterVertex_cullBits(r)  floatBitsToUint(r.w)
+
+vec2 getScreenPos(vec4 hPos)
+{
+  return vec2(((hPos.xy/hPos.w) * 0.5 + 0.5) * view.viewportf.xy);
+}
+
+RasterVertex getRasterVertex(vec4 hPos)
+{
+  RasterVertex vtx;
+  vtx.xy    = getScreenPos(hPos);
+  vtx.z     = hPos.z/hPos.w;
+  vtx.w     = uintBitsToFloat(getCullBits(hPos));
+
+  return vtx;
+}
+
+void pixelBboxEpsilon(inout vec2 pixelMin, inout vec2 pixelMax)
+{
+  // apply some safety around the bbox to take into account fixed point rasterization
+  // (our rasterization grid is 1/256)
+
+  const float epsilon = (1.0 / 256);
+  pixelMin -= epsilon;
+  pixelMax += epsilon;
+  pixelMin = round(pixelMin);
+  pixelMax = round(pixelMax);
+}
+
+bool pixelBboxCull(vec2 pixelMin, vec2 pixelMax){
+  // bbox culling
+  bool cull = ( ( pixelMin.x == pixelMax.x) || ( pixelMin.y == pixelMax.y));
+  return cull;
+}
+
+bool pixelViewportCull(vec2 pixelMin, vec2 pixelMax)
+{
+  return ((pixelMax.x < 0) || (pixelMin.x >= view.viewportf.x) || (pixelMax.y < 0) || (pixelMin.y >= view.viewportf.y));
+}
+
+bool testTriangle(vec2 a, vec2 b, vec2 c, bool frustum, out vec2 pixelMin, out vec2 pixelMax, out float triArea)
+{
+  // back face culling
+  vec2 ab = b.xy - a.xy;
+  vec2 ac = c.xy - a.xy;
+  float cross_product = ab.y * ac.x - ab.x * ac.y;   
+
+  triArea = cross_product;
+#if !USE_TWO_SIDED
+  if (cross_product < 0) return false;
+#endif
+
+  // compute the min and max in each X and Y direction
+  pixelMin = min(a,min(b,c));
+  pixelMax = max(a,max(b,c));
+
+  pixelBboxEpsilon(pixelMin, pixelMax);
+
+  // we may not test against frustum / viewport, given the hierarchical culling was doing that on a cluster level already
+  if (frustum && pixelViewportCull(pixelMin, pixelMax)) return false;
+
+  if (pixelBboxCull(pixelMin, pixelMax)) return false;
+
+  return true;
+}
+
+bool testTriangle(RasterVertex a, RasterVertex b, RasterVertex c, out vec2 pixelMin, out vec2 pixelMax, out float triArea)
+{
+#if 1
+  // skip detailed tests, given sw-raster is only triggered if cluster is within frustum / no complex clip
+  if (true)
+#else
+  if ((RasterVertex_cullBits(a) & RasterVertex_cullBits(b) & RasterVertex_cullBits(c)) == 0 &&
+    // don't attempt to to rasterize specially clipped triangles 
+    (((RasterVertex_cullBits(a) | RasterVertex_cullBits(b) | RasterVertex_cullBits(c)) & (16 | 32 |64)) == 0))
+#endif
+  {
+    return testTriangle(a.xy,b.xy,c.xy, false, pixelMin, pixelMax, triArea);
+  }
+  return false;
+}
+
+bool testTriangle(vec4 ha, vec4 hb, vec4 hc)
+{
+  RasterVertex a = getRasterVertex(ha);
+  RasterVertex b = getRasterVertex(hb);
+  RasterVertex c = getRasterVertex(hc);
+
+  vec2 pixelMin;
+  vec2 pixelMax;
+  float triArea;
+
+  return testTriangle(a.xy, b.xy, c.xy, false, pixelMin, pixelMax, triArea);
 }

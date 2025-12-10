@@ -142,6 +142,11 @@ using namespace glm;
 #define USE_CULLING 1
 #endif
 
+// only effective in NV_mesh_shader
+#ifndef USE_PRIMITIVE_CULLING
+#define USE_PRIMITIVE_CULLING 1
+#endif
+
 #ifndef USE_INSTANCE_SORTING
 #define USE_INSTANCE_SORTING 1
 #endif
@@ -287,6 +292,8 @@ struct Readback
   uint     numRenderedClustersSW;
   uint64_t numRenderedTriangles;
   uint64_t numRenderedTrianglesSW;
+  uint64_t numRasteredTriangles;
+  uint64_t numRasteredTrianglesSW;
 
   uint64_t blasActualSizes;
 

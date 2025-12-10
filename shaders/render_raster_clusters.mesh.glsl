@@ -37,6 +37,7 @@
 #extension GL_EXT_buffer_reference : enable
 #extension GL_EXT_buffer_reference2 : enable
 #extension GL_EXT_scalar_block_layout : enable
+#extension GL_KHR_shader_subgroup_ballot : require
 
 #if USE_EXT_MESH_SHADER
 #extension GL_EXT_mesh_shader : require
@@ -48,6 +49,12 @@
 
 #include "shaderio.h"
 
+// disable invalid config
+#if USE_PRIMITIVE_CULLING && (USE_EXT_MESH_SHADER || !USE_CULLING)
+#undef USE_PRIMITIVE_CULLING
+#define USE_PRIMITIVE_CULLING 0
+#endif
+
 layout(push_constant) uniform pushData
 {
   uint instanceID;
@@ -57,6 +64,7 @@ push;
 layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuffer
 {
   FrameConstants view;
+  FrameConstants viewLast;
 };
 
 layout(scalar,binding=BINDINGS_READBACK_SSBO,set=0) buffer readbackBuffer
@@ -109,6 +117,7 @@ OUT[];
 
 
 #if ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS)
+// maybe remove, could load triangle indices in fragment shader as well
 layout(location = 3) out Interpolants2
 {
   flat uint vertexID;
@@ -128,6 +137,13 @@ layout(triangles) out;
 
 const uint MESHLET_VERTEX_ITERATIONS = ((CLUSTER_VERTEX_COUNT + MESHSHADER_WORKGROUP_SIZE - 1) / MESHSHADER_WORKGROUP_SIZE);
 const uint MESHLET_TRIANGLE_ITERATIONS = ((CLUSTER_TRIANGLE_COUNT + MESHSHADER_WORKGROUP_SIZE - 1) / MESHSHADER_WORKGROUP_SIZE);
+
+////////////////////////////////////////////
+
+#if USE_PRIMITIVE_CULLING
+#define CULLING_NO_HIZ
+#include "culling.glsl"
+#endif
 
 ////////////////////////////////////////////
 
@@ -166,7 +182,7 @@ void main()
   SetMeshOutputsEXT(vertCount, triCount);
   if (triCount == 0)
     return;
-#else
+#elif !USE_PRIMITIVE_CULLING
   if (gl_LocalInvocationID.x == 0) {
     gl_PrimitiveCountNV = triMax + 1;
   }
@@ -175,6 +191,9 @@ void main()
 #if USE_RENDER_STATS
   if (gl_LocalInvocationID.x == 0) {
     atomicAdd(readback.numRenderedTriangles, uint(triMax + 1));
+  #if !USE_PRIMITIVE_CULLING
+    atomicAdd(readback.numRasteredTriangles, uint(triMax + 1));
+  #endif
   }
 #endif
 
@@ -208,6 +227,8 @@ void main()
       OUT[vert].instanceID                = instanceID;
     }
   }
+  
+  uint triOutCount = 0;
 
   [[unroll]] for(uint i = 0; i < uint(MESHLET_TRIANGLE_ITERATIONS); i++)
   {
@@ -217,18 +238,49 @@ void main()
     uvec3 indices = uvec3(localIndices.d[triLoad * 3 + 0],
                           localIndices.d[triLoad * 3 + 1],
                           localIndices.d[triLoad * 3 + 2]);
+                          
+    if (instance.flipWinding != 0)
+    {
+      indices.xy = indices.yx;
+    }
+    // TODO flip if twoSided via instance.twoSided
+    
+#if USE_PRIMITIVE_CULLING
+    bool isRendered = tri <= triMax
+       && testTriangle( gl_MeshVerticesNV[indices.x].gl_Position,
+                        gl_MeshVerticesNV[indices.y].gl_Position,
+                        gl_MeshVerticesNV[indices.z].gl_Position);
+    
+    uvec4 voteRendered = subgroupBallot(isRendered);
+    
+    uint triOut = subgroupBallotExclusiveBitCount(voteRendered) + triOutCount;
+    triOutCount += subgroupBallotBitCount(voteRendered);
+#else
+    bool isRendered = tri <= triMax;
+    uint triOut     = tri;
+#endif
 
-    if(tri <= triMax)
+    if(isRendered)
     {
     #if USE_EXT_MESH_SHADER
-      gl_PrimitiveTriangleIndicesEXT[tri] = indices;
-      gl_MeshPrimitivesEXT[tri].gl_PrimitiveID = int(tri);
+      gl_PrimitiveTriangleIndicesEXT[triOut] = indices;
+      gl_MeshPrimitivesEXT[triOut].gl_PrimitiveID = int(tri);
     #else
-      gl_PrimitiveIndicesNV[tri * 3 + 0] = indices.x;
-      gl_PrimitiveIndicesNV[tri * 3 + 1] = indices.y;
-      gl_PrimitiveIndicesNV[tri * 3 + 2] = indices.z;
-      gl_MeshPrimitivesNV[tri].gl_PrimitiveID = int(tri);
+      gl_PrimitiveIndicesNV[triOut * 3 + 0] = indices.x;
+      gl_PrimitiveIndicesNV[triOut * 3 + 1] = indices.y;
+      gl_PrimitiveIndicesNV[triOut * 3 + 2] = indices.z;
+      gl_MeshPrimitivesNV[triOut].gl_PrimitiveID = int(tri);
     #endif
     }
   }
+#if USE_PRIMITIVE_CULLING
+  if (gl_LocalInvocationID.x == 0) {
+    gl_PrimitiveCountNV = triOutCount;
+  }
+#if USE_RENDER_STATS
+  if (gl_LocalInvocationID.x == 0) {
+    atomicAdd(readback.numRasteredTriangles, triOutCount);
+  }
+#endif
+#endif
 }

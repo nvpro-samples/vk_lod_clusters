@@ -75,6 +75,7 @@ struct RendererConfig
   bool useSeparateGroups     = true;
   bool useEXTmeshShader      = false;
   bool useComputeRaster      = false;
+  bool usePrimitiveCulling   = false;
 
   bool useDlss = false;
 #if USE_DLSS

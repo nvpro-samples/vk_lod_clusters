@@ -275,12 +275,15 @@ BUFFER_REF_DECLARE(Geometry_inout, Geometry, , 16);
 struct RenderInstance
 {
   mat4 worldMatrix;
-  mat4 worldMatrixI;
 
   uint32_t geometryID;
-  uint32_t materialID;
+  uint16_t materialID;
+  uint8_t  flipWinding;
+  uint8_t  twoSided;
   float    maxLodLevelRcp;
   uint32_t packedColor;
+
+  mat4 worldMatrixI;
 };
 BUFFER_REF_DECLARE_ARRAY(RenderInstances_in, RenderInstance, readonly, 16);
 

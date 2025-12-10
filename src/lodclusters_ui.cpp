@@ -565,9 +565,14 @@ void LodClusters::onUIRender()
         ImGui::BeginDisabled(!m_rendererConfig.useCulling);
         PE::Checkbox("Culling / LoD Freeze", &m_frameConfig.freezeCulling);
         ImGui::EndDisabled();
+        ImGui::BeginDisabled(!(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD && !m_rendererConfig.useEXTmeshShader
+                               && m_rendererConfig.useCulling && m_resources.m_supportsMeshShaderNV));
+        PE::Checkbox("Use Primitive Culling", (bool*)&m_rendererConfig.usePrimitiveCulling, "Use primitive culling in NV mesh shader");
+        ImGui::EndDisabled();
         ImGui::BeginDisabled(!(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD && m_frameConfig.visualize == VISUALIZE_VIS_BUFFER
                                && m_rendererConfig.useCulling && m_rendererConfig.useSeparateGroups));
-        PE::Checkbox("Allow SW-Raster", (bool*)&m_rendererConfig.useComputeRaster, "Allows use of compute-shader based rasterization");
+        PE::Checkbox("Allow SW-Raster", (bool*)&m_rendererConfig.useComputeRaster,
+                     "Allows use of compute-shader based rasterization (if visualize == visibility buffer)");
         PE::InputFloat("SW-Raster threshold", &m_frameConfig.swRasterThreshold, 1.0f, 1.0f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue,
                        "cluster uses SW-Raster if its longest edge has less than the specified projected pixels");
         ImGui::EndDisabled();
@@ -603,6 +608,11 @@ void LodClusters::onUIRender()
         {
           ImGui::Text("N/A");
         }
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::Text("Rastered Triangles");
+        ImGui::Text("%s", formatMetric(readback.numRasteredTriangles).c_str());
+
         if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD && m_rendererConfig.useComputeRaster)
         {
           ImGui::TableNextRow();
@@ -627,6 +637,10 @@ void LodClusters::onUIRender()
           {
             ImGui::Text("N/A");
           }
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+          ImGui::Text("Rastered Triangles SW");
+          ImGui::Text("%s", formatMetric(readback.numRasteredTrianglesSW).c_str());
         }
         ImGui::EndTable();
       }
@@ -1225,6 +1239,7 @@ void LodClusters::onUIRender()
       if(m_resources.m_supportsMeshShaderNV)
       {
         PE::Checkbox("Use EXT Mesh shader", &m_rendererConfig.useEXTmeshShader);
+        PE::Checkbox("Use Primitive Culling", (bool*)&m_rendererConfig.usePrimitiveCulling, "Use primitive culling in NV mesh shader");
       }
       PE::end();
     }
