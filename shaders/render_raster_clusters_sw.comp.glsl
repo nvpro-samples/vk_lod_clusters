@@ -191,11 +191,11 @@ void main()
     uint vertLoad    = min(vert, vertMax);
     
     vec3 oPos = oVertices.d[vertLoad]; 
-    vec4 wPos = instance.worldMatrix * vec4(oPos, 1.0f);
+    vec3 wPos = instance.worldMatrix * vec4(oPos, 1.0f);
 
     if(vert <= vertMax)
     {
-      s_vertices[vert] = getRasterVertex(view.viewProjMatrix * wPos);
+      s_vertices[vert] = getRasterVertex(view.viewProjMatrix * vec4(wPos,1));
     }
   }
   
@@ -210,23 +210,30 @@ void main()
     uvec3 indices = uvec3(localIndices.d[triLoad * 3 + 0],
                           localIndices.d[triLoad * 3 + 1],
                           localIndices.d[triLoad * 3 + 2]);
-
-    if (instance.flipWinding != 0)
+#if !USE_FORCED_TWO_SIDED
+    if (instance.flipWinding != 0
+#if USE_TWO_SIDED
+      || (instance.twoSided != 0 && !isFrontFacingSW(s_vertices[indices.x],
+                                                     s_vertices[indices.y],
+                                                     s_vertices[indices.z]))
+#endif
+    )
     {
       indices.xy = indices.yx;
     }
+#endif
 
-    RasterVertex a = (s_vertices[indices.x]);
-    RasterVertex b = (s_vertices[indices.y]);
-    RasterVertex c = (s_vertices[indices.z]);
+    RasterVertex a = s_vertices[indices.x];
+    RasterVertex b = s_vertices[indices.y];
+    RasterVertex c = s_vertices[indices.z];
     
     vec2 pixelMin;
     vec2 pixelMax;
     float triArea;
     
-    bool visible  = testTriangle(a,b,c, pixelMin, pixelMax, triArea);
+    bool visible  = testTriangleSW(a,b,c, pixelMin, pixelMax, triArea);
     float winding = 1.0;
-  #if USE_TWO_SIDED
+  #if USE_FORCED_TWO_SIDED
     if (triArea < 0)
     {
       triArea = -triArea;

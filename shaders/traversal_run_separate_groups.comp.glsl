@@ -141,7 +141,7 @@ bool intersectSize(vec4 clipMin, vec4 clipMax, float threshold, float scale)
 #endif
 
 // simplified occlusion culling based on last frame's depth buffer
-bool queryWasVisible(mat4 instanceTransform, BBox bbox, inout bool outRenderClusterSW)
+bool queryWasVisible(mat4x3 instanceTransform, BBox bbox, inout bool outRenderClusterSW)
 {
   vec3 bboxMin = bbox.lo;
   vec3 bboxMax = bbox.hi;
@@ -196,7 +196,7 @@ void main()
   BBox bbox;
 #endif
 
-  mat4 worldMatrix   = instances[instanceID].worldMatrix;
+  mat4x3 worldMatrix = instances[instanceID].worldMatrix;
   float uniformScale = computeUniformScale(worldMatrix);
   float errorScale   = 1.0;
 #if USE_CULLING && TARGETS_RAY_TRACING
@@ -204,14 +204,14 @@ void main()
   // instance is not primary visible, apply different error scale
   if ((visibilityState & INSTANCE_VISIBLE_BIT) == 0) errorScale = build.culledErrorScale;
 #endif
-  mat4x3 traversalMatrix = mat4x3(build.traversalViewMatrix * worldMatrix);
+  mat4x3 traversalMatrix = mat4x3(build.traversalViewMatrix * toMat4(worldMatrix));
 
 #if USE_STREAMING
   // traversal_run ensured we never get here without ensuring residency
   // and we never traverse to a group that isn't resident.
   Group_in groupRef = Group_in(geometry.streamingGroupAddresses.d[groupIndex]);
   Group group = groupRef.d;
-  #if USE_BLAS_MERGING
+  #if USE_BLAS_MERGING && TARGETS_RAY_TRACING
     // handled in traversal_run
   #else
     streaming.resident.groups.d[group.residentID].age = uint16_t(0);

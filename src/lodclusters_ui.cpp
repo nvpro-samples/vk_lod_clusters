@@ -354,7 +354,7 @@ void LodClusters::onUIRender()
     {
       PE::begin("##Scene Complexity", ImGuiTableFlags_Resizable);
       PE::Checkbox("Flip faces winding", &m_rendererConfig.flipWinding);
-      PE::Checkbox("Disable back-face culling", &m_rendererConfig.twoSided);
+      PE::Checkbox("Disable back-face culling", &m_rendererConfig.forceTwoSided);
 
       if(PE::treeNode("Render grid settings", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanFullWidth))
       {

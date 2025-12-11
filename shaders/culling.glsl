@@ -57,9 +57,9 @@ vec4 getBoxCorner(vec3 bboxMin, vec3 bboxMax, int n)
   return vec4(mix(bboxMin, bboxMax, useMax),1);
 }
 
-bool intersectFrustum(vec3 bboxMin, vec3 bboxMax, mat4 worldTM, out vec4 oClipmin, out vec4 oClipmax, out bool oClipvalid)
+bool intersectFrustum(vec3 bboxMin, vec3 bboxMax, mat4x3 worldTM, out vec4 oClipmin, out vec4 oClipmax, out bool oClipvalid)
 {
-  mat4 worldViewProjTM = viewLast.viewProjMatrix * worldTM;
+  mat4 worldViewProjTM = viewLast.viewProjMatrix * toMat4(worldTM);
   bool valid;
   // clipspace bbox
   vec4 hPos     = worldViewProjTM * getBoxCorner(bboxMin, bboxMax, 0);
@@ -114,8 +114,10 @@ bool intersectHiz(vec4 clipMin, vec4 clipMax)
 
 ////////////////////////////////////////////////////////////////////////////
 
-#define RasterVertex vec4
-#define RasterVertex_cullBits(r)  floatBitsToUint(r.w)
+struct RasterVertex {
+  vec2  xy;
+  float z;
+};
 
 vec2 getScreenPos(vec4 hPos)
 {
@@ -125,11 +127,24 @@ vec2 getScreenPos(vec4 hPos)
 RasterVertex getRasterVertex(vec4 hPos)
 {
   RasterVertex vtx;
-  vtx.xy    = getScreenPos(hPos);
-  vtx.z     = hPos.z/hPos.w;
-  vtx.w     = uintBitsToFloat(getCullBits(hPos));
+  vtx.xy       = getScreenPos(hPos);
+  vtx.z        = hPos.z/hPos.w;
 
   return vtx;
+}
+
+bool isFrontFacingSW(RasterVertex a, RasterVertex b, RasterVertex c)
+{
+  vec2 ab = b.xy - a.xy;
+  vec2 ac = c.xy - a.xy;
+  float cross_product = ab.y * ac.x - ab.x * ac.y;
+  return cross_product >= 0;
+}
+
+bool isFrontFacingHW(vec4 ha, vec4 hb, vec4 hc)
+{
+  // https://zeux.io/2023/04/28/triangle-backface-culling/
+  return determinant(mat3(ha.xyw, hb.xyw, hc.xyw)) <= 0;
 }
 
 void pixelBboxEpsilon(inout vec2 pixelMin, inout vec2 pixelMax)
@@ -155,18 +170,8 @@ bool pixelViewportCull(vec2 pixelMin, vec2 pixelMax)
   return ((pixelMax.x < 0) || (pixelMin.x >= view.viewportf.x) || (pixelMax.y < 0) || (pixelMin.y >= view.viewportf.y));
 }
 
-bool testTriangle(vec2 a, vec2 b, vec2 c, bool frustum, out vec2 pixelMin, out vec2 pixelMax, out float triArea)
+bool testTrianglePixel(vec2 a, vec2 b, vec2 c, bool frustum, out vec2 pixelMin, out vec2 pixelMax)
 {
-  // back face culling
-  vec2 ab = b.xy - a.xy;
-  vec2 ac = c.xy - a.xy;
-  float cross_product = ab.y * ac.x - ab.x * ac.y;   
-
-  triArea = cross_product;
-#if !USE_TWO_SIDED
-  if (cross_product < 0) return false;
-#endif
-
   // compute the min and max in each X and Y direction
   pixelMin = min(a,min(b,c));
   pixelMax = max(a,max(b,c));
@@ -177,35 +182,42 @@ bool testTriangle(vec2 a, vec2 b, vec2 c, bool frustum, out vec2 pixelMin, out v
   if (frustum && pixelViewportCull(pixelMin, pixelMax)) return false;
 
   if (pixelBboxCull(pixelMin, pixelMax)) return false;
-
+  
   return true;
 }
 
-bool testTriangle(RasterVertex a, RasterVertex b, RasterVertex c, out vec2 pixelMin, out vec2 pixelMax, out float triArea)
+bool testTriangleSW(RasterVertex a, RasterVertex b, RasterVertex c, out vec2 pixelMin, out vec2 pixelMax, out float triArea)
 {
-#if 1
-  // skip detailed tests, given sw-raster is only triggered if cluster is within frustum / no complex clip
-  if (true)
-#else
-  if ((RasterVertex_cullBits(a) & RasterVertex_cullBits(b) & RasterVertex_cullBits(c)) == 0 &&
-    // don't attempt to to rasterize specially clipped triangles 
-    (((RasterVertex_cullBits(a) | RasterVertex_cullBits(b) | RasterVertex_cullBits(c)) & (16 | 32 |64)) == 0))
+  // back face culling
+  vec2 ab = b.xy - a.xy;
+  vec2 ac = c.xy - a.xy;
+  float cross_product = ab.y * ac.x - ab.x * ac.y;   
+
+  triArea = cross_product;
+#if !USE_FORCED_TWO_SIDED
+  if (cross_product < 0) return false;
 #endif
-  {
-    return testTriangle(a.xy,b.xy,c.xy, false, pixelMin, pixelMax, triArea);
-  }
-  return false;
+
+  return testTrianglePixel(a.xy, b.xy, c.xy, false, pixelMin, pixelMax);
 }
 
-bool testTriangle(vec4 ha, vec4 hb, vec4 hc)
-{
+bool testTriangleHW(vec4 ha, vec4 hb, vec4 hc)
+{  
+#if !USE_FORCED_TWO_SIDED
+  if (!isFrontFacingHW(ha,hb,hc))
+  {
+    return false;
+  }
+#endif
+
   RasterVertex a = getRasterVertex(ha);
   RasterVertex b = getRasterVertex(hb);
   RasterVertex c = getRasterVertex(hc);
 
   vec2 pixelMin;
   vec2 pixelMax;
-  float triArea;
-
-  return testTriangle(a.xy, b.xy, c.xy, false, pixelMin, pixelMax, triArea);
+  
+  return testTrianglePixel(a.xy, b.xy, c.xy, false, pixelMin, pixelMax);
 }
+
+

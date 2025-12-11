@@ -112,7 +112,7 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"forcepreprocessmegabytes"}, (uint32_t*)&m_sceneLoaderConfig.forcePreprocessMiB);
   m_info.parameterRegistry->add({"facetshading"}, &m_tweak.facetShading);
   m_info.parameterRegistry->add({"flipwinding"}, &m_rendererConfig.flipWinding);
-  m_info.parameterRegistry->add({"twosided"}, &m_rendererConfig.twoSided);
+  m_info.parameterRegistry->add({"forcetwosided"}, &m_rendererConfig.forceTwoSided);
   m_info.parameterRegistry->add({"autosharing", "automatically set blas sharing based on scene's instancing usage. default true"},
                                 &m_tweak.autoSharing);
   m_info.parameterRegistry->add({"autosavecache", "automatically store cache file for loaded scene. default true"},
@@ -132,6 +132,14 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"compressed"}, &m_sceneConfig.useCompressedData);
   m_info.parameterRegistry->add({"compressedpositionbits"}, &m_sceneConfig.compressionPosDropBits);
   m_info.parameterRegistry->add({"compressedtexcoordbits"}, &m_sceneConfig.compressionTexDropBits);
+
+
+  {
+    // HACK as zorah.cfg ships with twosided, but is no longer required due to material two-sided handling
+    bool dummy;
+    m_info.parameterRegistry->add(
+        {"twosided", "no longer active due to detecting doubleSided materials - there is a new forcetwosided"}, &dummy);
+  }
 
   m_frameConfig.frameConstants                         = {};
   m_frameConfig.frameConstants.wireThickness           = 2.f;
@@ -744,7 +752,7 @@ void LodClusters::handleChanges()
        || rendererCfgChanged(m_rendererConfig.useDlss) || rendererCfgChanged(m_rendererConfig.dlssQuality)
 #endif
        || rendererCfgChanged(m_rendererConfig.flipWinding) || rendererCfgChanged(m_rendererConfig.useDebugVisualization)
-       || rendererCfgChanged(m_rendererConfig.useCulling) || rendererCfgChanged(m_rendererConfig.twoSided)
+       || rendererCfgChanged(m_rendererConfig.useCulling) || rendererCfgChanged(m_rendererConfig.forceTwoSided)
        || rendererCfgChanged(m_rendererConfig.useSorting) || rendererCfgChanged(m_rendererConfig.numRenderClusterBits)
        || rendererCfgChanged(m_rendererConfig.numTraversalTaskBits) || rendererCfgChanged(m_rendererConfig.useShading)
        || rendererCfgChanged(m_rendererConfig.useBlasSharing) || rendererCfgChanged(m_rendererConfig.useRenderStats)
@@ -835,12 +843,6 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     }
 
     frameConstants.bgColor     = m_resources.m_bgColor;
-    frameConstants.flipWinding = m_rendererConfig.flipWinding ? 1 : 0;
-    if(m_rendererConfig.twoSided)
-    {
-      frameConstants.flipWinding = 2;
-    }
-
     frameConstants.viewport    = glm::ivec2(renderWidth, renderHeight);
     frameConstants.viewportf   = glm::vec2(renderWidth, renderHeight);
     frameConstants.supersample = m_tweak.supersample;

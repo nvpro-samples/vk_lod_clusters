@@ -274,7 +274,8 @@ BUFFER_REF_DECLARE(Geometry_inout, Geometry, , 16);
 
 struct RenderInstance
 {
-  mat4 worldMatrix;
+  mat4x3 worldMatrix;
+  mat4x3 worldMatrixI;
 
   uint32_t geometryID;
   uint16_t materialID;
@@ -283,7 +284,7 @@ struct RenderInstance
   float    maxLodLevelRcp;
   uint32_t packedColor;
 
-  mat4 worldMatrixI;
+  vec4 _pad;
 };
 BUFFER_REF_DECLARE_ARRAY(RenderInstances_in, RenderInstance, readonly, 16);
 

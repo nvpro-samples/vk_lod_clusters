@@ -155,7 +155,7 @@ void main()
   
   uvec3 triangleIndices    = uvec3(localIndices.d[triangleID * 3 + 0],
                                    localIndices.d[triangleID * 3 + 1],
-                                   localIndices.d[triangleID * 3 + 2]);
+                                   localIndices.d[triangleID * 3 + 2]);  
 
   vec3 baryWeight = vec3((1.f - barycentrics[0] - barycentrics[1]), barycentrics[0], barycentrics[1]);
 
@@ -190,11 +190,9 @@ void main()
 #if ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS
   uint32s_in oNormals   = Cluster_getVertexNormals(clusterRef);
   vec2s_in   oTexCoords = Cluster_getVertexTexCoords(clusterRef);
-
-  if(view.facetShading != 0 || (cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_NORMAL) == 0)
 #endif
   {
-    // Otherwise compute geometric normal
+    // always compute geometric normal
     vec3 e0 = gl_HitTriangleVertexPositionsEXT[1] - gl_HitTriangleVertexPositionsEXT[0];
     vec3 e1 = gl_HitTriangleVertexPositionsEXT[2] - gl_HitTriangleVertexPositionsEXT[0];
     oNormal    = (cross(e0, e1));
@@ -202,7 +200,7 @@ void main()
     backFacing = dot(oNormal, gl_ObjectRayDirectionEXT) > 0;
   }
 #if ALLOW_VERTEX_NORMALS
-  if(view.facetShading == 0)
+  if(view.facetShading == 0 && (cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_NORMAL) != 0)
   {
     uvec3 triNormalsPacked = uvec3(oNormals.d[triangleIndices.x], oNormals.d[triangleIndices.y], oNormals.d[triangleIndices.z]);
     vec3  triNormals[3];
@@ -240,7 +238,7 @@ void main()
 #endif
 
   vec3 wNormal = normalize(vec3(oNormal * worldMatrixI));
-  if(view.flipWinding == 1 || (view.flipWinding == 2 && backFacing))
+  if(backFacing)
   {
     wNormal = -wNormal;
   }

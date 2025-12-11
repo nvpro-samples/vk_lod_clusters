@@ -121,7 +121,8 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
   options.AddMacroDefinition("ALLOW_SHADING", config.useShading && !config.useComputeRaster ? "1" : "0");
   options.AddMacroDefinition("DEBUG_VISUALIZATION", config.useDebugVisualization && res.m_supportsBarycentrics ? "1" : "0");
   options.AddMacroDefinition("USE_SW_RASTER", config.useComputeRaster ? "1" : "0");
-  options.AddMacroDefinition("USE_TWO_SIDED", config.twoSided ? "1" : "0");
+  options.AddMacroDefinition("USE_TWO_SIDED", rscene.scene->m_hasTwoSided && !config.forceTwoSided ? "1" : "0");
+  options.AddMacroDefinition("USE_FORCED_TWO_SIDED", config.forceTwoSided ? "1" : "0");
   options.AddMacroDefinition("USE_PRIMITIVE_CULLING", config.usePrimitiveCulling ? "1" : "0");
 
   res.compileShader(m_shaders.graphicsMesh, VK_SHADER_STAGE_MESH_BIT_NV, "render_raster_clusters.mesh.glsl", &options);
@@ -291,7 +292,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     graphicsGen.colorFormats = {res.m_frameBuffer.colorFormat};
 
     state.rasterizationState.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    if(config.twoSided)
+    if(config.forceTwoSided)
     {
       state.rasterizationState.cullMode = VK_CULL_MODE_NONE;
     }

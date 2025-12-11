@@ -147,14 +147,14 @@ void main()
     Node childNode          = geometry.nodes.d[childOffset + childNodeIndex];
     TraversalMetric traversalMetric = childNode.traversalMetric;
   
-    mat4  worldMatrix  = instances[instanceID].worldMatrix;
+    mat4x3 worldMatrix = instances[instanceID].worldMatrix;
     float uniformScale = computeUniformScale(worldMatrix);
     float errorScale   = 1.0;
   #if USE_CULLING && TARGETS_RAY_TRACING
     if (visibilityState == 0) errorScale = build.culledErrorScale;
   #endif
   
-    mat4 transform = build.traversalViewMatrix * worldMatrix;
+    mat4 transform = build.traversalViewMatrix * toMat4(worldMatrix);
   
     // if there is no need to traverse the pen ultimate lod level,
     // then just insert the last lod level node's cluster directly

@@ -212,79 +212,6 @@ inline glm::vec4 quantizeFloat(const glm::vec4& vec, uint32_t dropBits)
   res.w = quantizeFloat(vec.w, dropBits);
   return res;
 }
-
-// Traverses the glTF node and any of its children, adding a MeshInstance to
-// the meshSet for each referenced glTF primitive.
-void addInstancesFromNode(std::vector<lodclusters::Scene::Instance>&     instances,
-                          std::vector<lodclusters::Scene::GeometryView>& geometryViews,
-                          const std::vector<size_t>&                     meshToGeometry,
-                          const cgltf_data*                              data,
-                          const cgltf_node*                              node,
-                          const glm::mat4                                parentObjToWorldTransform = glm::mat4(1))
-{
-  if(node == nullptr)
-    return;
-
-  // Compute this node's object-to-world transform.
-  // See https://github.com/KhronosGroup/glTF-Tutorials/blob/master/gltfTutorial/gltfTutorial_004_ScenesNodes.md .
-  // Note that this depends on glm::mat4 being column-major.
-  // The documentation above also means that vectors are multiplied on the right.
-  glm::mat4 localNodeTransform(1);
-  cgltf_node_transform_local(node, glm::value_ptr(localNodeTransform));
-  const glm::mat4 nodeObjToWorldTransform = parentObjToWorldTransform * localNodeTransform;
-
-  // If this node has a mesh, add instances for its primitives.
-  if(node->mesh != nullptr)
-  {
-    lodclusters::Scene::Instance instance{};
-    const ptrdiff_t              meshIndex   = (node->mesh) - data->meshes;
-    const cgltf_material*        material    = node->mesh->primitives[0].material;
-    bool                         addInstance = true;
-
-    if(material)
-    {
-      instance.materialID = uint32_t(material - data->materials);
-      if(material->unlit || material->has_pbr_metallic_roughness)
-      {
-        instance.color.x = material->pbr_metallic_roughness.base_color_factor[0];
-        instance.color.y = material->pbr_metallic_roughness.base_color_factor[1];
-        instance.color.z = material->pbr_metallic_roughness.base_color_factor[2];
-        instance.color.w = material->pbr_metallic_roughness.base_color_factor[3];
-      }
-      else if(material->has_pbr_specular_glossiness)
-      {
-        instance.color.x = material->pbr_specular_glossiness.diffuse_factor[0];
-        instance.color.y = material->pbr_specular_glossiness.diffuse_factor[1];
-        instance.color.z = material->pbr_specular_glossiness.diffuse_factor[2];
-        instance.color.w = material->pbr_specular_glossiness.diffuse_factor[3];
-      }
-
-      if(material->alpha_mode == cgltf_alpha_mode_blend)
-      {
-        addInstance = false;
-      }
-    }
-
-    if(addInstance)
-    {
-      instance.geometryID = uint32_t(meshToGeometry[meshIndex]);
-      instance.matrix     = nodeObjToWorldTransform;
-
-      geometryViews[instance.geometryID].instanceReferenceCount++;
-
-
-      instances.push_back(instance);
-    }
-  }
-
-  // Recurse over any children of this node.
-  const size_t numChildren = node->children_count;
-  for(size_t childIdx = 0; childIdx < numChildren; childIdx++)
-  {
-    addInstancesFromNode(instances, geometryViews, meshToGeometry, data, node->children[childIdx], nodeObjToWorldTransform);
-  }
-}
-
 }  // namespace
 
 
@@ -525,7 +452,7 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
     const cgltf_scene scene = (gltf->scene != nullptr) ? (*(gltf->scene)) : (gltf->scenes[0]);
     for(size_t nodeIdx = 0; nodeIdx < scene.nodes_count; nodeIdx++)
     {
-      addInstancesFromNode(m_instances, m_geometryViews, meshToGeometry, gltf.get(), scene.nodes[nodeIdx]);
+      addInstancesFromNodeGLTF(meshToGeometry, gltf.get(), scene.nodes[nodeIdx]);
     }
   }
   else
@@ -534,7 +461,7 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
     {
       if(gltf->nodes[nodeIdx].parent == nullptr)
       {
-        addInstancesFromNode(m_instances, m_geometryViews, meshToGeometry, gltf.get(), &(gltf->nodes[nodeIdx]));
+        addInstancesFromNodeGLTF(meshToGeometry, gltf.get(), &(gltf->nodes[nodeIdx]));
       }
     }
   }
@@ -561,6 +488,85 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
   return SCENE_RESULT_SUCCESS;
 }
 
+
+// Traverses the glTF node and any of its children, adding a MeshInstance to
+// the meshSet for each referenced glTF primitive.
+void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
+                                     const struct cgltf_data*   data,
+                                     const struct cgltf_node*   node,
+                                     const glm::mat4            parentObjToWorldTransform)
+{
+  if(node == nullptr)
+    return;
+
+  // Compute this node's object-to-world transform.
+  // See https://github.com/KhronosGroup/glTF-Tutorials/blob/master/gltfTutorial/gltfTutorial_004_ScenesNodes.md .
+  // Note that this depends on glm::mat4 being column-major.
+  // The documentation above also means that vectors are multiplied on the right.
+  glm::mat4 localNodeTransform(1);
+  cgltf_node_transform_local(node, glm::value_ptr(localNodeTransform));
+  const glm::mat4 nodeObjToWorldTransform = parentObjToWorldTransform * localNodeTransform;
+
+  // If this node has a mesh, add instances for its primitives.
+  if(node->mesh != nullptr)
+  {
+    lodclusters::Scene::Instance instance{};
+    const ptrdiff_t              meshIndex   = (node->mesh) - data->meshes;
+    const cgltf_material*        material    = node->mesh->primitives[0].material;
+    bool                         addInstance = true;
+
+    if(material)
+    {
+      instance.materialID = uint32_t(material - data->materials);
+      if(material->unlit || material->has_pbr_metallic_roughness)
+      {
+        instance.color.x = material->pbr_metallic_roughness.base_color_factor[0];
+        instance.color.y = material->pbr_metallic_roughness.base_color_factor[1];
+        instance.color.z = material->pbr_metallic_roughness.base_color_factor[2];
+        instance.color.w = material->pbr_metallic_roughness.base_color_factor[3];
+      }
+      else if(material->has_pbr_specular_glossiness)
+      {
+        instance.color.x = material->pbr_specular_glossiness.diffuse_factor[0];
+        instance.color.y = material->pbr_specular_glossiness.diffuse_factor[1];
+        instance.color.z = material->pbr_specular_glossiness.diffuse_factor[2];
+        instance.color.w = material->pbr_specular_glossiness.diffuse_factor[3];
+      }
+
+      if(material->alpha_mode == cgltf_alpha_mode_blend)
+      {
+        addInstance = false;
+      }
+
+      if(material->double_sided)
+      {
+        instance.twoSided = true;
+      }
+    }
+
+    if(addInstance)
+    {
+      instance.geometryID = uint32_t(meshToGeometry[meshIndex]);
+      instance.matrix     = nodeObjToWorldTransform;
+
+      m_geometryViews[instance.geometryID].instanceReferenceCount++;
+
+      if(instance.twoSided)
+      {
+        m_hasTwoSided = true;
+      }
+
+      m_instances.push_back(instance);
+    }
+  }
+
+  // Recurse over any children of this node.
+  const size_t numChildren = node->children_count;
+  for(size_t childIdx = 0; childIdx < numChildren; childIdx++)
+  {
+    addInstancesFromNodeGLTF(meshToGeometry, data, node->children[childIdx], nodeObjToWorldTransform);
+  }
+}
 
 bool Scene::loadCompressedViewsGLTF(ProcessingInfo&                                processingInfo,
                                     std::unordered_set<struct cgltf_buffer_view*>& compressedViews,

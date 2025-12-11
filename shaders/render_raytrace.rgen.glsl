@@ -132,7 +132,7 @@ void main()
   }
 #endif
 
-  traceRayEXT(asScene, view.flipWinding == 2 ? 0 : gl_RayFlagsCullBackFacingTrianglesEXT, 0xff, 0, 0,  // hit offset, hit stride
+  traceRayEXT(asScene, USE_FORCED_TWO_SIDED != 0 ? 0 : gl_RayFlagsCullBackFacingTrianglesEXT, 0xff, 0, 0,  // hit offset, hit stride
               0,                                                           // miss offset
               origin.xyz, tMin, direction.xyz, tMax,
               0  // rayPayloadNV location qualifier
@@ -143,7 +143,7 @@ void main()
   {
     if (rayHit.hitT == 0 && mirrorHit)
     {
-      traceRayEXT(asScene, view.flipWinding == 2 ? 0 : gl_RayFlagsCullBackFacingTrianglesEXT, 0xff, 0, 0,  // hit offset, hit stride
+      traceRayEXT(asScene, USE_FORCED_TWO_SIDED != 0 ? 0 : gl_RayFlagsCullBackFacingTrianglesEXT, 0xff, 0, 0,  // hit offset, hit stride
                 0,                                                           // miss offset
                 mirrorHitPoint, 0, reflect(direction.xyz, mirrorNormal), view.farPlane + mirrorT,
                 0  // rayPayloadNV location qualifier

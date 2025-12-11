@@ -110,6 +110,11 @@ uint murmurHash(uint idx)
 
 #define BUFFER_REF_DECLARE_SIZE(sizename, typ, size) const uint32_t sizename = size
 
+mat4 toMat4(mat4x3 m)
+{
+  return mat4(vec4(m[0], 0.0), vec4(m[1], 0.0), vec4(m[2], 0.0), vec4(m[3], 1.0));
+}
+
 #endif
 
 BUFFER_REF_DECLARE_ARRAY(uint8s_in, uint8_t, readonly, 1);

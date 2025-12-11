@@ -192,20 +192,15 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
     const Scene::GeometryView& geometry       = scene.getActiveGeometry(sceneInstance.geometryID);
 
     renderInstance                = {};
-    renderInstance.worldMatrix    = sceneInstance.matrix;
-    renderInstance.worldMatrixI   = glm::inverse(sceneInstance.matrix);
+    renderInstance.worldMatrix    = glm::mat4x3(sceneInstance.matrix);
+    renderInstance.worldMatrixI   = glm::mat4x3(glm::inverse(sceneInstance.matrix));
     renderInstance.geometryID     = sceneInstance.geometryID;
     renderInstance.materialID     = uint16_t(sceneInstance.materialID);
     renderInstance.maxLodLevelRcp = geometry.lodLevelsCount > 1 ? 1.0f / float(geometry.lodLevelsCount - 1) : 0.0f;
     renderInstance.packedColor    = glm::packUnorm4x8(sceneInstance.color);
-    renderInstance.flipWinding    = ((glm::determinant(sceneInstance.matrix) <= 0) != config.flipWinding) ? 1 : 0;
-
-    // TODO get twoSided state from material
-    renderInstance.twoSided = false;
-    if(m_renderInstances[i].twoSided)
-    {
-      renderInstance.flipWinding = false;
-    }
+    renderInstance.twoSided       = sceneInstance.twoSided ? 1 : 0;
+    renderInstance.flipWinding =
+        (!sceneInstance.twoSided && ((glm::determinant(sceneInstance.matrix) <= 0) != config.flipWinding)) ? 1 : 0;
   }
 
   res.createBuffer(m_renderInstanceBuffer, sizeof(shaderio::RenderInstance) * m_renderInstances.size(),

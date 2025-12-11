@@ -37,6 +37,11 @@ float computeUniformScale(mat4 transform)
   return max(max(length(vec3(transform[0])), length(vec3(transform[1]))), length(vec3(transform[2])));
 }
 
+float computeUniformScale(mat4x3 transform)
+{
+  return max(max(length(vec3(transform[0])), length(vec3(transform[1]))), length(vec3(transform[2])));
+}
+
 vec3 TraversalMetric_getSphere(TraversalMetric metric)
 {
   return vec3(metric.boundingSphereX, metric.boundingSphereY, metric.boundingSphereZ);

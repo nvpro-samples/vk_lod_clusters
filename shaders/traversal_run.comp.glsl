@@ -191,7 +191,7 @@ uint setupTask(inout TraversalInfo traversalInfo, uint readIndex, uint pass)
 #if USE_CULLING && TARGETS_RASTERIZATION
 
 // simplified occlusion culling based on last frame's depth buffer
-bool queryWasVisible(mat4 instanceTransform, BBox bbox)
+bool queryWasVisible(mat4x3 instanceTransform, BBox bbox)
 {
   vec3 bboxMin = bbox.lo;
   vec3 bboxMax = bbox.hi;
@@ -349,7 +349,7 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   
   // perform traversal & culling logic
   
-  mat4 worldMatrix   = instances[instanceID].worldMatrix;
+  mat4x3 worldMatrix = instances[instanceID].worldMatrix;
   float uniformScale = computeUniformScale(worldMatrix);
   float errorScale   = 1.0;
 #if USE_CULLING && TARGETS_RASTERIZATION
@@ -361,7 +361,7 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
     if ((visibilityState & INSTANCE_VISIBLE_BIT) == 0) errorScale = build.culledErrorScale;
   #endif  
 #endif
-  bool traverse      = testForTraversal(mat4x3(build.traversalViewMatrix * worldMatrix), uniformScale, traversalMetric, errorScale);
+  bool traverse      = testForTraversal(mat4x3(build.traversalViewMatrix * toMat4(worldMatrix)), uniformScale, traversalMetric, errorScale);
   bool traverseNode  = isValid && isNode && (traverse);                    // nodes test if we can descend
   bool renderCluster = isValid && !isNode && (!traverse || forceCluster);  // clusters use negated test or are forced
   
@@ -374,7 +374,7 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
          isGroup    = PACKED_GET(traversalInfo.packedNode, Node_packed_isGroup) != 0;
     uint groupIndex = PACKED_GET(traversalInfo.packedNode, Node_packed_groupIndex);
     
-  #if USE_BLAS_MERGING
+  #if USE_BLAS_MERGING && TARGETS_RAY_TRACING
     if (isGroup && ((visibilityState & INSTANCE_USES_MERGED_BIT) != 0))
     {
       // no need to actually traverse the group

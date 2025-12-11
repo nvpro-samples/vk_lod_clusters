@@ -141,7 +141,7 @@ void main()
     #else
       gl_MeshVerticesNV[vert].gl_Position = 
     #endif
-        view.viewProjMatrix * (instance.worldMatrix * vec4(cornerPos,1));
+        view.viewProjMatrix * vec4(instance.worldMatrix * vec4(cornerPos,1), 1);
       OUT[vert].instanceID = baseID + box;
     }
   }

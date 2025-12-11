@@ -1,4 +1,10 @@
 # Changelog for vk_lod_clusters
+* 2025-12-11:
+  * Bugfix in ray tracing's flip winding handling (regression from previous change). No need to set the flag, as ray tracing handles negative determinants automatically.
+  * Added support for glTF "doubleSided" material property handling.
+  * Removed `twosided` command-line parameter (silently ignored as used by zorah config file), added `forcetwosided` instead.
+  * Improved `primitive culling` using determinant as mentioned in https://zeux.io/2023/04/28/triangle-backface-culling/
+  * Switched to `mat4x3` to keep `RenderInstance` in 128 bytes.
 * 2025-12-10:
   * Updated `meshopt_clusterlod.h` to reflect new options from meshoptimizer v1
   * Added `primitive culling` support for `NV_mesh_shader`

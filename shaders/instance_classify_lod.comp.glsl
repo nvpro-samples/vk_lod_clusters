@@ -129,16 +129,17 @@ void main()
   if (isValid)
   {
     // setup evaluation of lod metric
-    mat4  worldMatrix  = instances[instanceID].worldMatrix;
-    float uniformScale = computeUniformScale(worldMatrix);
-    float errorScale   = 1.0;
+    mat4x3 worldMatrix  = instances[instanceID].worldMatrix;
+    mat4x3 worldMatrixI = instances[instanceID].worldMatrixI;
+    float uniformScale  = computeUniformScale(worldMatrix);
+    float errorScale    = 1.0;
   #if USE_CULLING
     // instance is not primary visible, apply different error scale
     if (visibilityState == 0) errorScale = build.culledErrorScale;
   #endif
   
-    mat4 transform = build.traversalViewMatrix * worldMatrix;
-    vec3 oViewPos  = (inverse(worldMatrix) * vec4(view.viewPos.xyz,1)).xyz;
+    mat4 transform = build.traversalViewMatrix * toMat4(worldMatrix);
+    vec3 oViewPos  = (worldMatrixI * vec4(view.viewPos.xyz,1));
     
     // The geometry's root node contains one child node for each lod level.
     // We will iterate over them.

@@ -165,7 +165,8 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("MESHSHADER_WORKGROUP_SIZE", fmt::format("{}", m_meshShaderWorkgroupSize));
   options.AddMacroDefinition("MESHSHADER_BBOX_COUNT", fmt::format("{}", m_meshShaderBoxes));
   options.AddMacroDefinition("USE_SW_RASTER", "0");
-  options.AddMacroDefinition("USE_TWO_SIDED", config.twoSided ? "1" : "0");
+  options.AddMacroDefinition("USE_TWO_SIDED", rscene.scene->m_hasTwoSided && !config.forceTwoSided ? "1" : "0");
+  options.AddMacroDefinition("USE_FORCED_TWO_SIDED", config.forceTwoSided ? "1" : "0");
 
   shaderc::CompileOptions optionsAO = options;
   options.AddMacroDefinition("RAYTRACING_PAYLOAD_INDEX", "0");
@@ -1239,18 +1240,21 @@ void RendererRayTraceClustersLod::initRayTracingTlas(Resources& res, const Rende
     instance.transform                              = nvvk::toTransformMatrixKHR(m_renderInstances[i].worldMatrix);
     instance.instanceCustomIndex                    = static_cast<uint32_t>(i);  // gl_InstanceCustomIndexEX
     instance.mask                                   = 0xFF;                      // All objects
-    instance.instanceShaderBindingTableRecordOffset = 0,  // We will use the same hit group for all object
-        instance.flags                              = VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
+    instance.instanceShaderBindingTableRecordOffset = 0;  // We will use the same hit group for all object
+    instance.flags                                  = VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
 
     if(m_renderInstances[i].twoSided)
     {
-      instance.flags |= VK_GEOMETRY_INSTANCE_TRIANGLE_CULL_DISABLE_BIT_NV;
+      instance.flags |= VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
     }
 
-    if(m_renderInstances[i].flipWinding)
+    // no need to use m_renderInstances[i].flipWinding, as ray tracing handles
+    // negative determinants automatically
+    if(config.flipWinding)
     {
       instance.flags |= VK_GEOMETRY_INSTANCE_TRIANGLE_FRONT_COUNTERCLOCKWISE_BIT_KHR;
     }
+
     // patched in at render time
     instance.accelerationStructureReference = 0;
     tlasInstances[i]                        = instance;

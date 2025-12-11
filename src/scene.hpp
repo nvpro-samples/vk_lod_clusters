@@ -450,6 +450,7 @@ public:
     shaderio::BBox bbox;
     uint32_t       geometryID = ~0U;
     uint32_t       materialID = ~0U;
+    bool           twoSided   = false;
     glm::vec4      color{0.8, 0.8, 0.8, 1.0f};
   };
 
@@ -495,7 +496,8 @@ public:
   std::vector<Instance> m_instances;
   std::vector<Camera>   m_cameras;
 
-  bool m_isBig = false;
+  bool m_isBig       = false;
+  bool m_hasTwoSided = false;
 
   uint32_t m_maxClusterTriangles       = 0;
   uint32_t m_maxClusterVertices        = 0;
@@ -781,6 +783,10 @@ private:
 
 private:
   void loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIndex, size_t meshIndex, const struct cgltf_data* gltf);
+  void addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
+                                const struct cgltf_data*   data,
+                                const struct cgltf_node*   node,
+                                const glm::mat4            parentObjToWorldTransform = glm::mat4(1));
 
   // to handle glTF EXT_meshopt_compression
   bool loadCompressedViewsGLTF(ProcessingInfo&                                processingInfo,

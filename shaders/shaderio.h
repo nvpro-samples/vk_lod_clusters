@@ -127,7 +127,7 @@ using namespace glm;
 #endif
 
 #ifndef USE_SW_RASTER
-#define USE_SW_RASTER 1
+#define USE_SW_RASTER 0
 #endif
 
 #ifndef USE_RENDER_STATS
@@ -169,6 +169,10 @@ using namespace glm;
 
 #ifndef USE_TWO_SIDED
 #define USE_TWO_SIDED 1
+#endif
+
+#ifndef USE_FORCED_TWO_SIDED
+#define USE_FORCED_TWO_SIDED 0
 #endif
 
 #ifndef MAX_VISIBLE_CLUSTERS
@@ -239,7 +243,7 @@ struct FrameConstants
 
   vec4 wMirrorBox;
 
-  uint  flipWinding;
+  uint  _pad1;
   uint  useMirrorBox;
   uint  visualize;
   float fov;

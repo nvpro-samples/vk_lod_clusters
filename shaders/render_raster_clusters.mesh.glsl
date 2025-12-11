@@ -140,7 +140,7 @@ const uint MESHLET_TRIANGLE_ITERATIONS = ((CLUSTER_TRIANGLE_COUNT + MESHSHADER_W
 
 ////////////////////////////////////////////
 
-#if USE_PRIMITIVE_CULLING
+#if USE_PRIMITIVE_CULLING || USE_TWO_SIDED
 #define CULLING_NO_HIZ
 #include "culling.glsl"
 #endif
@@ -206,7 +206,7 @@ void main()
     uint vertLoad    = min(vert, vertMax);
     
     vec3 oPos = oVertices.d[vertLoad]; 
-    vec4 wPos = instance.worldMatrix * vec4(oPos, 1.0f);
+    vec3 wPos = instance.worldMatrix * vec4(oPos, 1.0f);
 
     if(vert <= vertMax)
     {
@@ -215,7 +215,7 @@ void main()
     #else
       gl_MeshVerticesNV[vert].gl_Position = 
     #endif
-                                            view.viewProjMatrix * wPos;
+                                            view.viewProjMatrix * vec4(wPos,1);
       
     #if ALLOW_SHADING
       OUT[vert].wPos                      = wPos.xyz;
@@ -238,18 +238,24 @@ void main()
     uvec3 indices = uvec3(localIndices.d[triLoad * 3 + 0],
                           localIndices.d[triLoad * 3 + 1],
                           localIndices.d[triLoad * 3 + 2]);
-                          
-    if (instance.flipWinding != 0)
+#if !USE_FORCED_TWO_SIDED
+    if (instance.flipWinding != 0
+#if USE_TWO_SIDED && !USE_EXT_MESH_SHADER
+      || (instance.twoSided != 0 && !isFrontFacingHW(gl_MeshVerticesNV[indices.x].gl_Position,
+                                                     gl_MeshVerticesNV[indices.y].gl_Position,
+                                                     gl_MeshVerticesNV[indices.z].gl_Position))
+#endif
+    )
     {
       indices.xy = indices.yx;
     }
-    // TODO flip if twoSided via instance.twoSided
+#endif
     
 #if USE_PRIMITIVE_CULLING
     bool isRendered = tri <= triMax
-       && testTriangle( gl_MeshVerticesNV[indices.x].gl_Position,
-                        gl_MeshVerticesNV[indices.y].gl_Position,
-                        gl_MeshVerticesNV[indices.z].gl_Position);
+       && testTriangleHW( gl_MeshVerticesNV[indices.x].gl_Position,
+                          gl_MeshVerticesNV[indices.y].gl_Position,
+                          gl_MeshVerticesNV[indices.z].gl_Position);
     
     uvec4 voteRendered = subgroupBallot(isRendered);
     

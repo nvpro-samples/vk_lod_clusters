@@ -170,6 +170,7 @@ You can use the commandline to change some defaults:
 * Few error checks are performed on out of memory situations, which can happen on higher _"render copies"_ values, or the complexity of the loaded scene
 * The number of threads used in the persistent kernel is based on a crude heuristic for now and was not evaluated to be the optimal amount.
 * The bounding box visualizations don't show for ray tracing when DLSS is active, and they will only show clusters that are part of BLAS builds in the current frame. Prefer using rasterization to see them.
+* Per-primitive culling and `doubleSided` materials aren't handled in `EXT_mesh_shader` rasterization, but supported in `NV_mesh_shader` due to easy read access of gl_Position.
 
 ## Future Improvements
 
@@ -250,6 +251,10 @@ Known Issues:
 * The vegetation will appear to fade out a bit quickly, especially the grass. This is a known limitation for mesh-based simplifcation on
   sparse geometry like this. We do not use any techniques that preserve volume during decimation.
 * Trees can appear a bit blurry with DLSS and very noisy without it. We will try to improve future versions of DLSS denoising this scenario.
+* The ray tracing performance does suffer from the background mountains overlapping with the primary buildings. One can remove them by modifying the materials in the gltf file (this will not invalidate the scene cache file): 
+  * Look for materials whose names contains `MI_Mountains_Background`
+  * Add `"alphaMode": "BLEND",` to the material, it will cause the instances to be removed from rendering.
+  * In the config file increase both `--hbaoradius` and `--aoradius` to `0.002`, as the value is relative to the overall scene size, which is now smaller.
 
 ### Threedscans Statues
 

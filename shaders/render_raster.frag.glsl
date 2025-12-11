@@ -178,6 +178,22 @@ void main()
     vec3 oNormal = baryWeight.x * triNormals[0] + baryWeight.y * triNormals[1] + baryWeight.z * triNormals[2];
 
     wNormal = normalize(vec3(oNormal * worldMatrixI));
+    
+#if USE_FORCED_TWO_SIDED
+    if (!gl_FrontFacing){
+      wNormal = -wNormal;
+    }
+#elif USE_TWO_SIDED
+  if (instance.twoSided != 0) {
+    // more complicated, need to test if winding was changed
+    uint8s_in localIndices = uint8s_in(Cluster_getTriangleIndices(clusterRef));
+    uint triangleIndicesRef = localIndices.d[gl_PrimitiveID * 3 + 0];
+    
+    if (triangleIndicesRef != triangleIndices.x) {
+      wNormal = -wNormal;
+    }
+  }
+#endif
 
 #if ALLOW_VERTEX_TANGENTS
     if((cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_TANGENT) != 0)
