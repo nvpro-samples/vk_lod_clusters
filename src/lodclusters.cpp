@@ -136,7 +136,7 @@ LodClusters::LodClusters(const Info& info)
 
   {
     // HACK as zorah.cfg ships with twosided, but is no longer required due to material two-sided handling
-    bool dummy;
+    static bool dummy;
     m_info.parameterRegistry->add(
         {"twosided", "no longer active due to detecting doubleSided materials - there is a new forcetwosided"}, &dummy);
   }
