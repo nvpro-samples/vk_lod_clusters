@@ -208,7 +208,7 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
     config.reversedZ               = false;
     config.supportsMinmaxFilter    = true;
     config.supportsSubGroupShuffle = true;
-    m_hiz.init(m_device, config, 1);
+    m_hiz.init(m_device, config, 2);
 
     shaderc::SpvCompilationResult shaderResults[NVHizVK::SHADER_COUNT];
     for(uint32_t i = 0; i < NVHizVK::SHADER_COUNT; i++)
@@ -280,34 +280,47 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample, b
   switch(supersample)
   {
     case 720:
-      m_frameBuffer.renderSize.width  = 1280;
-      m_frameBuffer.renderSize.height = 720;
+      m_frameBuffer.targetSize.width  = 1280;
+      m_frameBuffer.targetSize.height = 720;
       break;
     case 1080:
-      m_frameBuffer.renderSize.width  = 1920;
-      m_frameBuffer.renderSize.height = 1080;
+      m_frameBuffer.targetSize.width  = 1920;
+      m_frameBuffer.targetSize.height = 1080;
       break;
     case 1440:
-      m_frameBuffer.renderSize.width  = 2560;
-      m_frameBuffer.renderSize.height = 1440;
+      m_frameBuffer.targetSize.width  = 2560;
+      m_frameBuffer.targetSize.height = 1440;
+      break;
+    case 1024:
+      m_frameBuffer.targetSize.width  = 1024;
+      m_frameBuffer.targetSize.height = 1024;
+      break;
+    case 2048:
+      m_frameBuffer.targetSize.width  = 2048;
+      m_frameBuffer.targetSize.height = 2048;
+      break;
+    case 4096:
+      m_frameBuffer.targetSize.width  = 4096;
+      m_frameBuffer.targetSize.height = 4096;
       break;
     default:
-      m_frameBuffer.renderSize.width  = windowSize.width * supersample;
-      m_frameBuffer.renderSize.height = windowSize.height * supersample;
+      m_frameBuffer.targetSize.width  = windowSize.width * std::min(supersample, 4);
+      m_frameBuffer.targetSize.height = windowSize.height * std::min(supersample, 4);
       break;
   }
 
-  m_frameBuffer.pixelScale = std::max(float(m_frameBuffer.renderSize.width) / float(windowSize.width),
-                                      float(m_frameBuffer.renderSize.height) / float(windowSize.height));
+  m_frameBuffer.pixelScale = std::max(float(m_frameBuffer.targetSize.width) / float(windowSize.width),
+                                      float(m_frameBuffer.targetSize.height) / float(windowSize.height));
   m_basicGraphicsState.rasterizationState.lineWidth = m_frameBuffer.pixelScale;
 
-  m_frameBuffer.targetSize = m_frameBuffer.renderSize;
+  // may be lowered due to DLSS
+  m_frameBuffer.renderSize = m_frameBuffer.targetSize;
   m_frameBuffer.windowSize = windowSize;
 
   m_frameBuffer.supersample = supersample;
   m_hbaoFullRes             = hbaoFullRes;
 
-  LOGI("framebuffer: %d x %d\n", m_frameBuffer.targetSize.width, m_frameBuffer.targetSize.height);
+  LOGI("framebuffer: %d x %d (target)\n", m_frameBuffer.targetSize.width, m_frameBuffer.targetSize.height);
 
   m_frameBuffer.useResolved = supersample > 1;
 
@@ -545,17 +558,19 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
 #endif
   }
 
+  // for two pass culling in rasterization need two
+  for(uint32_t i = 0; i < 2; i++)
   {
-    m_hiz.setupUpdateInfos(m_hizUpdate, m_frameBuffer.renderSize.width, m_frameBuffer.renderSize.height,
+    m_hiz.setupUpdateInfos(m_hizUpdate[i], m_frameBuffer.renderSize.width, m_frameBuffer.renderSize.height,
                            m_frameBuffer.depthStencilFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
 
     // hiz
     VkImageCreateInfo hizImageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     hizImageInfo.imageType         = VK_IMAGE_TYPE_2D;
-    hizImageInfo.format            = m_hizUpdate.farInfo.format;
-    hizImageInfo.extent.width      = m_hizUpdate.farInfo.width;
-    hizImageInfo.extent.height     = m_hizUpdate.farInfo.height;
-    hizImageInfo.mipLevels         = m_hizUpdate.farInfo.mipLevels;
+    hizImageInfo.format            = m_hizUpdate[i].farInfo.format;
+    hizImageInfo.extent.width      = m_hizUpdate[i].farInfo.width;
+    hizImageInfo.extent.height     = m_hizUpdate[i].farInfo.height;
+    hizImageInfo.mipLevels         = m_hizUpdate[i].farInfo.mipLevels;
     hizImageInfo.extent.depth      = 1;
     hizImageInfo.arrayLayers       = 1;
     hizImageInfo.samples           = VK_SAMPLE_COUNT_1_BIT;
@@ -564,17 +579,16 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
     hizImageInfo.flags             = 0;
     hizImageInfo.initialLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    NVVK_CHECK(m_allocator.createImage(m_frameBuffer.imgHizFar, hizImageInfo));
-    NVVK_DBG_NAME(m_frameBuffer.imgHizFar.image);
+    NVVK_CHECK(m_allocator.createImage(m_frameBuffer.imgHizFar[i], hizImageInfo));
+    NVVK_DBG_NAME(m_frameBuffer.imgHizFar[i].image);
 
-    m_hizUpdate.sourceImage = m_frameBuffer.imgDepthStencil.image;
-    m_hizUpdate.farImage    = m_frameBuffer.imgHizFar.image;
-    m_hizUpdate.nearImage   = VK_NULL_HANDLE;
+    m_hizUpdate[i].sourceImage = m_frameBuffer.imgDepthStencil.image;
+    m_hizUpdate[i].farImage    = m_frameBuffer.imgHizFar[i].image;
+    m_hizUpdate[i].nearImage   = VK_NULL_HANDLE;
+
+    m_hiz.initUpdateViews(m_hizUpdate[i]);
+    m_hiz.updateDescriptorSet(m_hizUpdate[i], i);
   }
-
-  m_hiz.initUpdateViews(m_hizUpdate);
-  m_hiz.updateDescriptorSet(m_hizUpdate, 0);
-
 
   {
     HbaoPass::FrameConfig config;
@@ -593,7 +607,8 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
     m_hbaoPass.initFrame(m_hbaoFrame, config, cmd);
   }
 
-  cmdImageTransition(cmd, m_frameBuffer.imgHizFar, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
+  cmdImageTransition(cmd, m_frameBuffer.imgHizFar[0], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
+  cmdImageTransition(cmd, m_frameBuffer.imgHizFar[1], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
   if(m_frameBuffer.imgRaytracingDepth.image)
   {
     cmdImageTransition(cmd, m_frameBuffer.imgRaytracingDepth, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
@@ -662,14 +677,16 @@ void Resources::setFramebufferDlss(bool enabled, NVSDK_NGX_PerfQuality_Value dls
 void Resources::deinitFramebufferRenderSizeDependent()
 {
   m_allocator.destroyImage(m_frameBuffer.imgDepthStencil);
-  m_allocator.destroyImage(m_frameBuffer.imgHizFar);
+  m_allocator.destroyImage(m_frameBuffer.imgHizFar[0]);
+  m_allocator.destroyImage(m_frameBuffer.imgHizFar[1]);
   m_allocator.destroyImage(m_frameBuffer.imgRaytracingDepth);
   m_allocator.destroyImage(m_frameBuffer.imgRasterAtomic);
 
   vkDestroyImageView(m_device, m_frameBuffer.viewDepth, nullptr);
   m_frameBuffer.viewDepth = VK_NULL_HANDLE;
 
-  m_hiz.deinitUpdateViews(m_hizUpdate);
+  m_hiz.deinitUpdateViews(m_hizUpdate[0]);
+  m_hiz.deinitUpdateViews(m_hizUpdate[1]);
   m_hbaoPass.deinitFrame(m_hbaoFrame);
 }
 
@@ -701,7 +718,7 @@ void Resources::getReadbackData(shaderio::Readback& readback)
   readback                            = pReadback[m_cycleIndex];
 }
 
-void Resources::cmdBuildHiz(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler)
+void Resources::cmdBuildHiz(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler, uint32_t idx)
 {
   auto timerSection = profiler.cmdFrameSection(cmd, "HiZ");
 
@@ -709,7 +726,7 @@ void Resources::cmdBuildHiz(VkCommandBuffer cmd, const FrameConfig& frame, nvvk:
   cmdImageTransition(cmd, m_frameBuffer.imgDepthStencil, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-  m_hiz.cmdUpdateHiz(cmd, m_hizUpdate, (uint32_t)0);
+  m_hiz.cmdUpdateHiz(cmd, m_hizUpdate[idx], idx);
 }
 
 void Resources::cmdHBAO(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler)

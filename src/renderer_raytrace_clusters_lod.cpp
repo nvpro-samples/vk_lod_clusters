@@ -149,6 +149,7 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("USE_STREAMING", rscene.useStreaming ? "1" : "0");
   options.AddMacroDefinition("USE_SORTING", config.useSorting ? "1" : "0");
   options.AddMacroDefinition("USE_CULLING", config.useCulling ? "1" : "0");
+  options.AddMacroDefinition("USE_TWO_PASS_CULLING", "0");
   options.AddMacroDefinition("USE_BLAS_SHARING", config.useBlasSharing ? "1" : "0");
   options.AddMacroDefinition("USE_BLAS_MERGING", config.useBlasSharing && config.useBlasMerging ? "1" : "0");
   options.AddMacroDefinition("USE_BLAS_CACHING", config.useBlasSharing && config.useBlasCaching ? "1" : "0");
@@ -160,6 +161,7 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("ALLOW_VERTEX_TEXCOORDS", rscene.scene->m_hasVertexTexCoord0 ? "1" : "0");
   //options.AddMacroDefinition("ALLOW_VERTEX_TEXCOORD_1", rscene.scene->m_hasVertexTexCoord1 ? "1" : "0");
   options.AddMacroDefinition("ALLOW_SHADING", config.useShading ? "1" : "0");
+  options.AddMacroDefinition("USE_DEPTH_ONLY", !config.useShading && config.useDepthOnly ? "1" : "0");
   options.AddMacroDefinition("DEBUG_VISUALIZATION", config.useDebugVisualization ? "1" : "0");
   options.AddMacroDefinition("USE_EXT_MESH_SHADER", fmt::format("{}", config.useEXTmeshShader ? 1 : 0));
   options.AddMacroDefinition("MESHSHADER_WORKGROUP_SIZE", fmt::format("{}", m_meshShaderWorkgroupSize));
@@ -469,7 +471,7 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_RENDERINSTANCES_SSBO), m_renderInstanceBuffer);
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_SCENEBUILDING_SSBO), m_sceneBuildBuffer);
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_SCENEBUILDING_UBO), m_sceneBuildBuffer);
-    writeSets.append(m_dsetPack.makeWrite(BINDINGS_HIZ_TEX), &res.m_hizUpdate.farImageInfo);
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_HIZ_TEX), &res.m_hizUpdate[0].farImageInfo);
     if(rscene.useStreaming)
     {
       writeSets.append(m_dsetPack.makeWrite(BINDINGS_STREAMING_SSBO), rscene.sceneStreaming.getShaderStreamingBuffer());
@@ -581,8 +583,8 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
 {
   VkMemoryBarrier memBarrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
 
-  m_sceneBuildShaderio.traversalViewMatrix =
-      frame.freezeCulling ? frame.frameConstantsLast.viewMatrix : frame.frameConstants.viewMatrix;
+  if(!frame.freezeLoD || m_sceneBuildShaderio.traversalViewMatrix[3][3] == 0)
+    m_sceneBuildShaderio.traversalViewMatrix = frame.frameConstants.viewMatrix;
 
   glm::vec2 renderScale = res.getFramebufferWindow2RenderScale();
   float     pixelScale  = std::min(renderScale.x, renderScale.y);
@@ -990,7 +992,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
 
   if(!frame.freezeCulling)
   {
-    res.cmdBuildHiz(cmd, frame, profiler);
+    res.cmdBuildHiz(cmd, frame, profiler, 0);
   }
 
 #if USE_DLSS
@@ -1336,7 +1338,7 @@ void RendererRayTraceClustersLod::updatedFrameBuffer(Resources& res, RenderScene
 
   nvvk::WriteSetContainer writeSets;
 
-  writeSets.append(m_dsetPack.makeWrite(BINDINGS_HIZ_TEX), &res.m_hizUpdate.farImageInfo);
+  writeSets.append(m_dsetPack.makeWrite(BINDINGS_HIZ_TEX), &res.m_hizUpdate[0].farImageInfo);
   writeSets.append(m_dsetPack.makeWrite(BINDINGS_RAYTRACING_DEPTH), res.m_frameBuffer.imgRaytracingDepth);
 
 #if USE_DLSS

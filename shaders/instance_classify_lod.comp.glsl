@@ -119,8 +119,8 @@ void main()
   vec4 clipMax;
   bool clipValid;
   
-  bool inFrustum = intersectFrustum(geometry.bbox.lo, geometry.bbox.hi, instance.worldMatrix, clipMin, clipMax, clipValid);
-  bool isVisible = inFrustum && (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax)));
+  bool inFrustum = intersectFrustum(viewLast.viewProjMatrix, geometry.bbox.lo, geometry.bbox.hi, instance.worldMatrix, clipMin, clipMax, clipValid);
+  bool isVisible = inFrustum && (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 0)));
   
   uint visibilityState = isVisible ? INSTANCE_VISIBLE_BIT : 0;
   

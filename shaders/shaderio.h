@@ -37,6 +37,7 @@
 #define VISUALIZE_TRIANGLE 6
 #define VISUALIZE_BLAS 7
 #define VISUALIZE_BLAS_CACHED 8
+#define VISUALIZE_DEPTH_ONLY 9
 
 #define MESHSHADER_BBOX_VERTICES 8
 #define MESHSHADER_BBOX_LINES 12
@@ -142,6 +143,10 @@ using namespace glm;
 #define USE_CULLING 1
 #endif
 
+#ifndef USE_TWO_PASS_CULLING
+#define USE_TWO_PASS_CULLING 1
+#endif
+
 // only effective in NV_mesh_shader
 #ifndef USE_PRIMITIVE_CULLING
 #define USE_PRIMITIVE_CULLING 1
@@ -191,9 +196,11 @@ using namespace glm;
 
 struct RayPayload
 {
+#if !USE_DEPTH_ONLY
   // Ray gen writes the direction through the pixel at x+1 for ray differentials.
   // Closest hit returns the shaded color there.
   vec3  color;
+#endif
   float hitT;
 #if DEBUG_VISUALIZATION && ALLOW_SHADING
   // Ray direction through the pixel at y+1 for ray differentials
@@ -232,9 +239,6 @@ struct FrameConstants
   vec2 viewPixelSize;
   vec2 viewClipSize;
 
-  vec2 jitter;
-  vec2 _pad;
-
   vec3  wLightPos;
   float lightMixer;
 
@@ -243,7 +247,7 @@ struct FrameConstants
 
   vec4 wMirrorBox;
 
-  uint  _pad1;
+  uint  colorXor;
   uint  useMirrorBox;
   uint  visualize;
   float fov;
@@ -258,8 +262,7 @@ struct FrameConstants
 
   float hizSizeMax;
   int   facetShading;
-  int   supersample;
-  uint  colorXor;
+  vec2  jitter;
 
   uint  dbgUint;
   float dbgFloat;
@@ -291,6 +294,7 @@ struct Readback
   uint     numRenderClusters;
   uint     numRenderClustersSW;
   uint     numTraversalTasks;
+  uint     numTraversedTasks;
   uint     numBlasBuilds;
   uint     numRenderedClusters;
   uint     numRenderedClustersSW;

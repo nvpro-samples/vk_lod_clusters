@@ -67,6 +67,7 @@ struct RendererConfig
   bool useSorting            = false;
   bool useRenderStats        = false;
   bool useCulling            = true;
+  bool useTwoPassCulling     = false;
   bool useBlasSharing        = true;
   bool useBlasMerging        = true;
   bool useBlasCaching        = false;
@@ -76,6 +77,7 @@ struct RendererConfig
   bool useEXTmeshShader      = false;
   bool useComputeRaster      = false;
   bool usePrimitiveCulling   = false;
+  bool useDepthOnly          = false;
 
   bool useDlss = false;
 #if USE_DLSS

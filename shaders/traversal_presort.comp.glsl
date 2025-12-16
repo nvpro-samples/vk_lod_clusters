@@ -72,7 +72,11 @@ layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffe
   Geometry geometries[];
 };
 
+#if USE_TWO_PASS_CULLING
+layout(binding = BINDINGS_HIZ_TEX)  uniform sampler2D texHizFar[2];
+#else
 layout(binding = BINDINGS_HIZ_TEX)  uniform sampler2D texHizFar;
+#endif
 
 layout(scalar, binding = BINDINGS_SCENEBUILDING_UBO, set = 0) uniform buildBuffer
 {

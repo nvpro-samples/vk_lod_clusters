@@ -156,9 +156,9 @@ void NVHizVK::init(VkDevice device, const Config& config, uint32_t descrSetsCoun
     assert(result == VK_SUCCESS);
 
     m_poolSizes[0].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    m_poolSizes[0].descriptorCount = 2;
+    m_poolSizes[0].descriptorCount = std::max(m_descrSetsCount, 1u) * 2;
     m_poolSizes[1].type            = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    m_poolSizes[1].descriptorCount = 1 + MAX_MIP_LEVELS;
+    m_poolSizes[1].descriptorCount = std::max(m_descrSetsCount, 1u) * (1 + MAX_MIP_LEVELS);
   }
 
   if(m_descrSetsCount)

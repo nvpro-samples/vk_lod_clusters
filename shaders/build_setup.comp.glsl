@@ -98,6 +98,20 @@ layout(local_size_x=1) in;
 #define MESHSHADER_BBOX_COUNT 8
 #endif
 
+
+#if USE_TWO_PASS_CULLING
+void setupSecondPass()
+{
+  // setup second pass  
+  buildRW.pass = 1;
+  buildRW.traversalTaskCounter = 0;
+  buildRW.traversalGroupCounter = 0;
+  buildRW.renderClusterCounter = 0;
+  buildRW.renderClusterCounterSW = 0;
+  buildRW.traversalInfoReadCounter = 0;
+}
+#endif
+
 void main()
 {  
   // special operations for setting up indirect dispatches
@@ -151,18 +165,24 @@ void main()
   #endif
     buildRW.numRenderedClustersSW = numRenderedClustersSW;
 
-    // keep originals for array size warnings 
-    readback.numRenderClusters    = renderClusterCounter;
-    readback.numRenderClustersSW  = renderClusterCounterSW;
+    // keep originals for array size warnings
+    // use max if there is two passes
+    atomicMax(readback.numRenderClusters,   renderClusterCounter);
+    atomicMax(readback.numRenderClustersSW, renderClusterCounterSW);
   #if USE_SEPARATE_GROUPS
-    readback.numTraversalTasks    = max(buildRW.traversalInfoWriteCounter, buildRW.traversalGroupCounter);
+    atomicMax(readback.numTraversalTasks, max(buildRW.traversalInfoWriteCounter, buildRW.traversalGroupCounter));
   #else
-    readback.numTraversalTasks    = buildRW.traversalInfoWriteCounter;
+    atomicMax(readback.numTraversalTasks, buildRW.traversalInfoWriteCounter);
   #endif
 
   #if USE_RENDER_STATS
-    readback.numRenderedClusters   = numRenderedClusters;
-    readback.numRenderedClustersSW = numRenderedClustersSW;
+    readback.numRenderedClusters   += numRenderedClusters;
+    readback.numRenderedClustersSW += numRenderedClustersSW;
+    readback.numTraversedTasks     += buildRW.traversalInfoWriteCounter;
+  #endif
+  
+  #if USE_TWO_PASS_CULLING
+    setupSecondPass();
   #endif
   }
 #elif TARGETS_RASTERIZATION
@@ -194,15 +214,21 @@ void main()
     buildRW.numRenderedClusters = numRenderedClusters;
 
     // keep originals for array size warnings 
-    readback.numRenderClusters  = renderClusterCounter;
+    // use max if there is two passes
+    atomicMax(readback.numRenderClusters, renderClusterCounter);
   #if USE_SEPARATE_GROUPS
-    readback.numTraversalTasks  = max(buildRW.traversalInfoWriteCounter, buildRW.traversalGroupCounter);
+    atomicMax(readback.numTraversalTasks, max(buildRW.traversalInfoWriteCounter, buildRW.traversalGroupCounter));
   #else
-    readback.numTraversalTasks  = buildRW.traversalInfoWriteCounter;
+    atomicMax(readback.numTraversalTasks, buildRW.traversalInfoWriteCounter);
   #endif
 
   #if USE_RENDER_STATS
-    readback.numRenderedClusters = numRenderedClusters;
+    readback.numRenderedClusters += numRenderedClusters;
+    readback.numTraversedTasks   += buildRW.traversalInfoWriteCounter;
+  #endif
+  
+  #if USE_TWO_PASS_CULLING
+    setupSecondPass();
   #endif
   }
 #endif
@@ -236,6 +262,7 @@ void main()
   #endif
 
   #if USE_RENDER_STATS
+    readback.numTraversedTasks   = buildRW.traversalInfoWriteCounter;
     readback.numRenderedClusters = numRenderedClusters;
   #endif
   

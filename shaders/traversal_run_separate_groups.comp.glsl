@@ -90,7 +90,11 @@ layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffe
   Geometry geometries[];
 };
 
+#if USE_TWO_PASS_CULLING && TARGETS_RASTERIZATION
+layout(binding = BINDINGS_HIZ_TEX)  uniform sampler2D texHizFar[2];
+#else
 layout(binding = BINDINGS_HIZ_TEX)  uniform sampler2D texHizFar;
+#endif
 
 layout(scalar, binding = BINDINGS_SCENEBUILDING_UBO, set = 0) uniform buildBuffer
 {
@@ -140,7 +144,6 @@ bool intersectSize(vec4 clipMin, vec4 clipMax, float threshold, float scale)
 }
 #endif
 
-// simplified occlusion culling based on last frame's depth buffer
 bool queryWasVisible(mat4x3 instanceTransform, BBox bbox, inout bool outRenderClusterSW)
 {
   vec3 bboxMin = bbox.lo;
@@ -152,10 +155,29 @@ bool queryWasVisible(mat4x3 instanceTransform, BBox bbox, inout bool outRenderCl
   
   bool useOcclusion = true;
   
-  bool inFrustum = intersectFrustum(bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
+  // test if visible in last frame  
+  bool inFrustum = intersectFrustum(viewLast.viewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
   bool isVisible = inFrustum && 
-    (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax)));
+    (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 0)));
   
+#if USE_TWO_PASS_CULLING
+  if (build.pass == 1) 
+  {
+    // in second pass also test against current visibility
+    
+    if (isVisible) {
+      // was rendered in first pass already
+      isVisible = false;
+    }
+    else {
+      // test against current
+      inFrustum = intersectFrustum(view.viewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
+      isVisible = inFrustum && 
+        (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 1)));
+    }
+  }
+#endif
+
 #if USE_SW_RASTER
   // check if sw rasterization is okay to use (not near/far clipped and smaller than threshold)
 

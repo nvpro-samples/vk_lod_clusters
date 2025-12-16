@@ -62,6 +62,7 @@ struct FrameConfig
   bool  showInstanceBboxes = false;
   bool  showClusterBboxes  = false;
   bool  freezeCulling      = false;
+  bool  freezeLoD          = false;
   bool  hbaoActive         = true;
   float lodPixelError      = 1.0f;
   // increase error by this for instances not having primary visibility in ray tracing
@@ -224,7 +225,7 @@ public:
 
     nvvk::Image imgRasterAtomic = {};
 
-    nvvk::Image imgHizFar = {};
+    nvvk::Image imgHizFar[2] = {};
 
     VkPipelineRenderingCreateInfo pipelineRenderingInfo = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
 
@@ -254,7 +255,7 @@ public:
   void emptyFrame(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler);
   void endFrame();
 
-  void cmdBuildHiz(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler);
+  void cmdBuildHiz(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler, uint32_t idx);
   void cmdHBAO(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler);
 
   // some vulkan implementations only support 16 bit per grid component
@@ -530,7 +531,7 @@ public:
   HbaoPass::Frame m_hbaoFrame;
 
   NVHizVK                       m_hiz;
-  NVHizVK::Update               m_hizUpdate;
+  NVHizVK::Update               m_hizUpdate[2];
   shaderc::SpvCompilationResult m_hizShaders[NVHizVK::SHADER_COUNT];
 
   QueueStateManager m_queueStates;

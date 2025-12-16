@@ -164,7 +164,9 @@ void main()
     hitDepth = screenPos.z / screenPos.w;
   }
   
+#if !USE_DEPTH_ONLY
   imageStore(imgColor, screen, vec4(rayHit.color.xyz, 1));
+#endif
   imageStore(imgRaytracingDepth, screen, vec4(hitDepth, 0.f, 0.f, 0.f));
   
 #if USE_DLSS

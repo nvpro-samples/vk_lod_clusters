@@ -134,7 +134,11 @@ layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffe
   Geometry geometries[];
 };
 
+#if USE_TWO_PASS_CULLING && TARGETS_RASTERIZATION
+layout(binding = BINDINGS_HIZ_TEX)  uniform sampler2D texHizFar[2];
+#else
 layout(binding = BINDINGS_HIZ_TEX)  uniform sampler2D texHizFar;
+#endif
 
 layout(scalar, binding = BINDINGS_SCENEBUILDING_UBO, set = 0) uniform buildBuffer
 {
@@ -190,8 +194,7 @@ uint setupTask(inout TraversalInfo traversalInfo, uint readIndex, uint pass)
 
 #if USE_CULLING && TARGETS_RASTERIZATION
 
-// simplified occlusion culling based on last frame's depth buffer
-bool queryWasVisible(mat4x3 instanceTransform, BBox bbox)
+bool queryWasVisible(mat4x3 instanceTransform, BBox bbox, bool isNode)
 {
   vec3 bboxMin = bbox.lo;
   vec3 bboxMax = bbox.hi;
@@ -200,11 +203,42 @@ bool queryWasVisible(mat4x3 instanceTransform, BBox bbox)
   vec4 clipMax;
   bool clipValid;
   
-  bool useOcclusion = true;
-  
-  bool inFrustum = intersectFrustum(bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
+#if USE_TWO_PASS_CULLING
+
+#if USE_SEPARATE_GROUPS
+  isNode = true;
+#endif
+
+  // clusters are always first tested against last hiz
+  // node's should be tested against best available hiz
+  bool useLast = !isNode || build.pass == 0;
+
+  bool inFrustum = intersectFrustum(useLast ? viewLast.viewProjMatrix : view.viewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
   bool isVisible = inFrustum && 
-    (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax)));
+    (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, useLast ? 0 : 1)));
+  
+#if !USE_SEPARATE_GROUPS
+  // clusters are tested twice, against current hiz in the second pass
+  if (!isNode && build.pass == 1) 
+  {
+    if (isVisible) {
+      // was rendered in first pass
+      isVisible = false;
+    }
+    else {
+      // test against current hiz to determine rendering
+      inFrustum = intersectFrustum(view.viewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
+      isVisible = inFrustum && 
+        (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 1)));
+    }
+  }
+#endif
+#else
+  // always test against last frame visiblity
+  bool inFrustum = intersectFrustum(viewLast.viewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
+  bool isVisible = inFrustum && 
+    (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 0)));
+#endif
   
   return isVisible;
 }
@@ -353,7 +387,7 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   float uniformScale = computeUniformScale(worldMatrix);
   float errorScale   = 1.0;
 #if USE_CULLING && TARGETS_RASTERIZATION
-  isValid            = isValid && queryWasVisible(worldMatrix, bbox);
+  isValid            = isValid && queryWasVisible(worldMatrix, bbox, isNode);
 #elif (USE_CULLING || USE_BLAS_MERGING) && TARGETS_RAY_TRACING
   uint visibilityState = build.instanceVisibility.d[instanceID];
   #if USE_CULLING
@@ -641,7 +675,7 @@ void processAllSubTasks(inout TraversalInfo traversalInfo, bool threadRunnable, 
 ////////////////////////////////////////////
 
 void run()
-{
+{    
   // This implements a persistent kernel that implements
   // a producer/consumer loop.
   //
@@ -738,9 +772,16 @@ void run()
       
       processAllSubTasks(nodeTraversalInfo, threadRunnable, threadSubCount, threadReadIndex, pass);
       
-      // All processed items need to decrement the global task counter
-      // and reset their complete state.
+    #if USE_TWO_PASS_CULLING && TARGETS_RASTERIZATION
+      // when using two passes, we need to reset the used traversalNodeInfos to ~0
+      // so that they are "invalid" in the second pass
+      if (build.pass == 0 && threadRunnable) {
+        build.traversalNodeInfos.d[threadReadIndex] = uint64_t(packUint2x32(uvec2(~0, ~0)));
+      }
+    #endif
       
+      // All processed items need to decrement the global task counter
+      // and reset their complete state.      
       uint numRunnable = subgroupBallotBitCount(subgroupBallot(threadRunnable));
       
       if (subgroupElect()) {

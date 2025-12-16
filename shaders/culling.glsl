@@ -28,7 +28,7 @@ const float c_depthNudge = 2.0/float(1<<24);
 
 bool intersectSize(vec4 clipMin, vec4 clipMax, float threshold)
 {
-  vec2 rect = (clipMax.xy - clipMin.xy) * 0.5 * viewLast.viewportf.xy;
+  vec2 rect = (clipMax.xy - clipMin.xy) * 0.5 * view.viewportf.xy;
   vec2 clipThreshold = vec2(threshold);
   return any(greaterThan(rect,clipThreshold));
 }
@@ -57,9 +57,9 @@ vec4 getBoxCorner(vec3 bboxMin, vec3 bboxMax, int n)
   return vec4(mix(bboxMin, bboxMax, useMax),1);
 }
 
-bool intersectFrustum(vec3 bboxMin, vec3 bboxMax, mat4x3 worldTM, out vec4 oClipmin, out vec4 oClipmax, out bool oClipvalid)
+bool intersectFrustum(mat4 viewProjMatrix, vec3 bboxMin, vec3 bboxMax, mat4x3 worldTM, out vec4 oClipmin, out vec4 oClipmax, out bool oClipvalid)
 {
-  mat4 worldViewProjTM = viewLast.viewProjMatrix * toMat4(worldTM);
+  mat4 worldViewProjTM = viewProjMatrix * toMat4(worldTM);
   bool valid;
   // clipspace bbox
   vec4 hPos     = worldViewProjTM * getBoxCorner(bboxMin, bboxMax, 0);
@@ -90,22 +90,25 @@ bool intersectFrustum(vec3 bboxMin, vec3 bboxMax, mat4x3 worldTM, out vec4 oClip
 }
 
 #ifndef CULLING_NO_HIZ
-bool intersectHiz(vec4 clipMin, vec4 clipMax)
+bool intersectHiz(vec4 clipMin, vec4 clipMax, uint idx)
 {
   clipMin.xy = clipMin.xy * 0.5 + 0.5;
   clipMax.xy = clipMax.xy * 0.5 + 0.5;
   
-  clipMin.xy *= viewLast.hizSizeFactors.xy;
-  clipMax.xy *= viewLast.hizSizeFactors.xy;
+  clipMin.xy *= view.hizSizeFactors.xy;
+  clipMax.xy *= view.hizSizeFactors.xy;
    
-  clipMin.xy = min(clipMin.xy, viewLast.hizSizeFactors.zw);
-  clipMax.xy = min(clipMax.xy, viewLast.hizSizeFactors.zw);
+  clipMin.xy = min(clipMin.xy, view.hizSizeFactors.zw);
+  clipMax.xy = min(clipMax.xy, view.hizSizeFactors.zw);
   
   vec2  size = (clipMax.xy - clipMin.xy);
-  float maxsize = max(size.x, size.y) * viewLast.hizSizeMax;
+  float maxsize = max(size.x, size.y) * view.hizSizeMax;
   float miplevel = ceil(log2(maxsize));
-
+#if USE_TWO_PASS_CULLING
+  float depth = textureLod(texHizFar[idx], ((clipMin.xy + clipMax.xy)*0.5),miplevel).r;
+#else
   float depth = textureLod(texHizFar, ((clipMin.xy + clipMax.xy)*0.5),miplevel).r;
+#endif
   bool result = clipMin.z <= depth + c_depthNudge;
 
   return result;

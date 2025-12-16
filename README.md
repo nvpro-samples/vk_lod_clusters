@@ -170,8 +170,7 @@ You can use the commandline to change some defaults:
 * Few error checks are performed on out of memory situations, which can happen on higher _"render copies"_ values, or the complexity of the loaded scene
 * The number of threads used in the persistent kernel is based on a crude heuristic for now and was not evaluated to be the optimal amount.
 * The bounding box visualizations don't show for ray tracing when DLSS is active, and they will only show clusters that are part of BLAS builds in the current frame. Prefer using rasterization to see them.
-* Per-primitive culling and `doubleSided` materials aren't handled in `EXT_mesh_shader` rasterization, but supported in `NV_mesh_shader` due to easy read access of gl_Position.
-
+* `doubleSided` materials are a lot slower with `EXT_mesh_shader` than with `NV_mesh_shader` on NVIDIA hardware. Primitive culling is still exclusive to NV_mesh_shader, given there is no reasonable portable and fast way for EXT_mesh_shader.
 ## Future Improvements
 
 Next:

@@ -75,7 +75,11 @@ layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffe
   Geometry geometries[];
 };
 
+#if USE_TWO_PASS_CULLING && TARGETS_RASTERIZATION
+layout(binding = BINDINGS_HIZ_TEX)  uniform sampler2D texHizFar[2];
+#else
 layout(binding = BINDINGS_HIZ_TEX)  uniform sampler2D texHizFar;
+#endif
 
 layout(scalar, binding = BINDINGS_SCENEBUILDING_UBO, set = 0) uniform buildBuffer
 {
@@ -118,8 +122,19 @@ void main()
   vec4 clipMax;
   bool clipValid;
   
-  bool inFrustum = intersectFrustum(geometry.bbox.lo, geometry.bbox.hi, instance.worldMatrix, clipMin, clipMax, clipValid);
-  bool isVisible = inFrustum && (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax)));
+#if USE_TWO_PASS_CULLING && TARGETS_RASTERIZATION
+  bool inFrustum = intersectFrustum( build.pass == 0 ? viewLast.viewProjMatrix : view.viewProjMatrix, geometry.bbox.lo, geometry.bbox.hi, instance.worldMatrix, clipMin, clipMax, clipValid);
+  bool isVisible = inFrustum && (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, build.pass)));
+  
+  // if smallish and was already drawn, don't process again
+  if (build.pass == 1 && isVisible && clipValid && !intersectSize(clipMin, clipMax, 8.0) && ((uint(build.instanceVisibility.d[instanceLoad]) & INSTANCE_VISIBLE_BIT) != 0)) {
+    isVisible = false;
+  }
+  
+#else
+  bool inFrustum = intersectFrustum(viewLast.viewProjMatrix, geometry.bbox.lo, geometry.bbox.hi, instance.worldMatrix, clipMin, clipMax, clipValid);
+  bool isVisible = inFrustum && (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 0)));
+#endif
   
   uint visibilityState = isVisible ? INSTANCE_VISIBLE_BIT : 0;
   
@@ -221,6 +236,10 @@ void main()
     build.instanceBuildInfos.d[instanceID].clusterReferencesCount = 0;
     build.instanceBuildInfos.d[instanceID].blasBuildIndex         = blasBuildIndex;
     build.tlasInstances.d[instanceID].blasReference               = geometry.lowDetailBlasAddress;
+  }
+#elif USE_TWO_PASS_CULLING && TARGETS_RASTERIZATION
+  if (build.pass == 0 && isValid) {
+    build.instanceVisibility.d[instanceID]                        = uint8_t(visibilityState);
   }
 #endif
 }

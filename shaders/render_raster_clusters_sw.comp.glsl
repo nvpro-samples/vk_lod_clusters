@@ -93,8 +93,11 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
 };
 #endif
 
-
+#if USE_TWO_PASS_CULLING
+layout(binding = BINDINGS_HIZ_TEX)  uniform sampler2D texHizFar[2];
+#else
 layout(binding = BINDINGS_HIZ_TEX)  uniform sampler2D texHizFar;
+#endif
 
 layout(set = 0, binding = BINDINGS_RASTER_ATOMIC, r64ui) uniform u64image2D imgRasterAtomic;
 
@@ -244,9 +247,14 @@ void main()
     if (visible) 
     {
       float relative   = (float(tri) / float(triMax)) * 0.25 + 0.75;
+      
+    #if USE_DEPTH_ONLY
+      uint packedColor = packUnorm4x8(vec4(0,0,0,1));
+    #else
       vec4 color       = vec4(colorizeID(clusterID) * relative, 1.0);
       uint packedColor = packUnorm4x8(color);
-      
+    #endif
+    
       uvec2 pixelDim  = uvec2(pixelMax - pixelMin);
 
       for (uint p = 0; p < pixelDim.x * pixelDim.y; p++)

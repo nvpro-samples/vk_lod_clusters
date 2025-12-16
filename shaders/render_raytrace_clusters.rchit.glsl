@@ -128,6 +128,9 @@ layout(location = 1) rayPayloadEXT float rayHitAO;
 
 void main()
 {
+  rayHit.hitT = gl_HitTEXT;
+
+#if !USE_DEPTH_ONLY
   // get IDs
   uint clusterID  = gl_ClusterIDNV_;
   uint instanceID = gl_InstanceID;
@@ -264,6 +267,7 @@ void main()
   vec4 shaded = vec4(colorizeID(visData) * relative, 1.0);
 #endif
 
+
 #if DEBUG_VISUALIZATION && ALLOW_SHADING
   if(view.doWireframe != 0)
   {
@@ -298,6 +302,5 @@ void main()
     readback.clusterTriangleId = packPickingValue((clusterID << 8) | triangleID, depth);
     readback.instanceId        = packPickingValue(instanceID, depth);
   }
-
-  rayHit.hitT = gl_HitTEXT;
+#endif
 }

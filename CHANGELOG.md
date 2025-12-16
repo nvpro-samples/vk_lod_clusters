@@ -1,4 +1,15 @@
 # Changelog for vk_lod_clusters
+* 2025-12-15:
+  WARNING: Needs updated nvpro_core2
+  * Added `Two Pass Culling` to Traversal options, to do proper temporal coherent occlusion culling for rasterization.
+    This fixes the artifacts on the screen borders on rapid movement.
+    The first pass uses the previous frame's HiZ to do the occlusion culling. After its rendering a new HiZ is built.
+    The second pass renders everything that wasn't rendered in the first pass (passes old HiZ) and passes the new HiZ.
+    After the second pass the HiZ is updated again, to be used for the next frame.
+  * Support two-sided materials in `EXT_mesh_shader`, note this is a lot slower than `NV_mesh_shader` due to use of shared memory to dynamically flip the winding to be always front-facing. The alternative is to use two PSOs, with different rasterization state and then bin clusters accordingly.
+  * Added `depth only (black)` visualize mode to emulate shadow map rendering.
+  * Split `Culling / LoD Freeze` into `Freeze Lod` and `Freeze Culling`, also for shadow map style rendering emulation.
+  * Added a few fixed size square texture modes for super resolution.
 * 2025-12-11:
   * Bugfix in ray tracing's flip winding handling (regression from previous change). No need to set the flag, as ray tracing handles negative determinants automatically.
   * Added support for glTF "doubleSided" material property handling.

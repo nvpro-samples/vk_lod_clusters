@@ -92,6 +92,8 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"maxframeunloadrequests"}, &m_streamingConfig.maxPerFrameUnloadRequests);
   m_info.parameterRegistry->add({"cullederrorscale"}, &m_frameConfig.culledErrorScale);
   m_info.parameterRegistry->add({"culling"}, &m_rendererConfig.useCulling);
+  m_info.parameterRegistry->add({"primitiveculling"}, &m_rendererConfig.usePrimitiveCulling);
+  m_info.parameterRegistry->add({"twopassculling"}, &m_rendererConfig.useTwoPassCulling);
   m_info.parameterRegistry->add({"dlss"}, &m_rendererConfig.useDlss);
   m_info.parameterRegistry->add({"dlssquality"}, (int*)&m_rendererConfig.dlssQuality);
   m_info.parameterRegistry->add({"blassharing"}, &m_rendererConfig.useBlasSharing);
@@ -434,6 +436,9 @@ void LodClusters::onAttach(nvapp::Application* app)
     m_ui.enumAdd(GUI_SUPERSAMPLE, 720, "720p");
     m_ui.enumAdd(GUI_SUPERSAMPLE, 1080, "1080p");
     m_ui.enumAdd(GUI_SUPERSAMPLE, 1440, "1440p");
+    m_ui.enumAdd(GUI_SUPERSAMPLE, 1024, "1024 sq");
+    m_ui.enumAdd(GUI_SUPERSAMPLE, 2048, "2048 sq");
+    m_ui.enumAdd(GUI_SUPERSAMPLE, 4096, "4096 sq");
 
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_MATERIAL, "material");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_GREY, "grey");
@@ -444,6 +449,7 @@ void LodClusters::onAttach(nvapp::Application* app)
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_TRIANGLE, "triangles");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_BLAS, "blas");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_BLAS_CACHED, "blas cached");
+    m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_DEPTH_ONLY, "depth only (black)");
   }
 
   // Initialize core components
@@ -673,14 +679,18 @@ void LodClusters::handleChanges()
     m_rendererConfig.useBlasCaching = false;
   }
 
-  if(m_frameConfig.visualize == VISUALIZE_VIS_BUFFER && m_rendererConfig.useShading)
+  if((m_frameConfig.visualize == VISUALIZE_VIS_BUFFER || m_frameConfig.visualize == VISUALIZE_DEPTH_ONLY)
+     && m_rendererConfig.useShading)
   {
     m_rendererConfig.useShading = false;
   }
-  if(m_frameConfig.visualize != VISUALIZE_VIS_BUFFER && !m_rendererConfig.useShading)
+  if(!(m_frameConfig.visualize == VISUALIZE_VIS_BUFFER || m_frameConfig.visualize == VISUALIZE_DEPTH_ONLY)
+     && !m_rendererConfig.useShading)
   {
     m_rendererConfig.useShading = true;
   }
+  m_rendererConfig.useDepthOnly = m_frameConfig.visualize == VISUALIZE_DEPTH_ONLY;
+
 
   if(m_rendererConfig.useComputeRaster
      && (!m_rendererConfig.useSeparateGroups || !m_rendererConfig.useCulling || m_rendererConfig.useShading))
@@ -758,7 +768,8 @@ void LodClusters::handleChanges()
        || rendererCfgChanged(m_rendererConfig.useBlasSharing) || rendererCfgChanged(m_rendererConfig.useRenderStats)
        || rendererCfgChanged(m_rendererConfig.useSeparateGroups) || rendererCfgChanged(m_rendererConfig.useBlasMerging)
        || rendererCfgChanged(m_rendererConfig.useBlasCaching) || rendererCfgChanged(m_rendererConfig.useEXTmeshShader)
-       || rendererCfgChanged(m_rendererConfig.useComputeRaster) || rendererCfgChanged(m_rendererConfig.usePrimitiveCulling))
+       || rendererCfgChanged(m_rendererConfig.useComputeRaster) || rendererCfgChanged(m_rendererConfig.usePrimitiveCulling)
+       || rendererCfgChanged(m_rendererConfig.useTwoPassCulling) || rendererCfgChanged(m_rendererConfig.useDepthOnly))
     {
       if(rendererCfgChanged(m_rendererConfig.useBlasCaching))
       {
@@ -827,11 +838,11 @@ void LodClusters::onRender(VkCommandBuffer cmd)
 
     int supersample = m_tweak.supersample;
 
-    uint32_t windowWidth  = m_resources.m_frameBuffer.windowSize.width;
-    uint32_t windowHeight = m_resources.m_frameBuffer.windowSize.height;
-
     uint32_t renderWidth  = m_resources.m_frameBuffer.renderSize.width;
     uint32_t renderHeight = m_resources.m_frameBuffer.renderSize.height;
+
+    uint32_t targetWidth  = m_resources.m_frameBuffer.targetSize.width;
+    uint32_t targetHeight = m_resources.m_frameBuffer.targetSize.height;
 
     frameConstants.facetShading = m_tweak.facetShading ? 1 : 0;
     frameConstants.visualize    = m_frameConfig.visualize;
@@ -842,20 +853,19 @@ void LodClusters::onRender(VkCommandBuffer cmd)
       frameConstants.visFilterInstanceID = ~0;
     }
 
-    frameConstants.bgColor     = m_resources.m_bgColor;
-    frameConstants.viewport    = glm::ivec2(renderWidth, renderHeight);
-    frameConstants.viewportf   = glm::vec2(renderWidth, renderHeight);
-    frameConstants.supersample = m_tweak.supersample;
-    frameConstants.nearPlane   = m_info.cameraManipulator->getClipPlanes().x;
-    frameConstants.farPlane    = m_info.cameraManipulator->getClipPlanes().y;
-    frameConstants.wUpDir      = m_info.cameraManipulator->getUp();
+    frameConstants.bgColor   = m_resources.m_bgColor;
+    frameConstants.viewport  = glm::ivec2(renderWidth, renderHeight);
+    frameConstants.viewportf = glm::vec2(renderWidth, renderHeight);
+    frameConstants.nearPlane = m_info.cameraManipulator->getClipPlanes().x;
+    frameConstants.farPlane  = m_info.cameraManipulator->getClipPlanes().y;
+    frameConstants.wUpDir    = m_info.cameraManipulator->getUp();
 #if USE_DLSS
     frameConstants.jitter = shaderio::dlssJitter(m_frames);
 #endif
     frameConstants.fov = glm::radians(m_info.cameraManipulator->getFov());
 
     glm::mat4 projection =
-        glm::perspectiveRH_ZO(glm::radians(m_info.cameraManipulator->getFov()), float(windowWidth) / float(windowHeight),
+        glm::perspectiveRH_ZO(glm::radians(m_info.cameraManipulator->getFov()), float(targetWidth) / float(targetHeight),
                               frameConstants.nearPlane, frameConstants.farPlane);
     projection[1][1] *= -1;
 
@@ -901,8 +911,8 @@ void LodClusters::onRender(VkCommandBuffer cmd)
 
     {
       // hiz
-      m_resources.m_hizUpdate.farInfo.getShaderFactors((float*)&frameConstants.hizSizeFactors);
-      frameConstants.hizSizeMax = m_resources.m_hizUpdate.farInfo.getSizeMax();
+      m_resources.m_hizUpdate[0].farInfo.getShaderFactors((float*)&frameConstants.hizSizeFactors);
+      frameConstants.hizSizeMax = m_resources.m_hizUpdate[0].farInfo.getSizeMax();
     }
 
     {

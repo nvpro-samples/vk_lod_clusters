@@ -105,6 +105,8 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
 
 ////////////////////////////////////////////
 
+#if !USE_DEPTH_ONLY
+
 layout(location = 0) out Interpolants
 {
   flat uint clusterID;
@@ -123,6 +125,8 @@ layout(location = 3) out Interpolants2
   flat uint vertexID;
 }
 OUTBARY[];
+#endif
+
 #endif
 
 ////////////////////////////////////////////
@@ -144,6 +148,11 @@ const uint MESHLET_TRIANGLE_ITERATIONS = ((CLUSTER_TRIANGLE_COUNT + MESHSHADER_W
 #define CULLING_NO_HIZ
 #include "culling.glsl"
 #endif
+
+#if USE_EXT_MESH_SHADER && USE_TWO_SIDED
+shared vec4 s_vertices[CLUSTER_VERTEX_COUNT];
+#endif
+
 
 ////////////////////////////////////////////
 
@@ -210,13 +219,18 @@ void main()
 
     if(vert <= vertMax)
     {
+      vec4 hPos = view.viewProjMatrix * vec4(wPos,1);
     #if USE_EXT_MESH_SHADER
-      gl_MeshVerticesEXT[vert].gl_Position = 
+      gl_MeshVerticesEXT[vert].gl_Position = hPos;
     #else
-      gl_MeshVerticesNV[vert].gl_Position = 
+      gl_MeshVerticesNV[vert].gl_Position = hPos;
     #endif
-                                            view.viewProjMatrix * vec4(wPos,1);
-      
+
+    #if USE_EXT_MESH_SHADER && USE_TWO_SIDED
+      s_vertices[vert] = hPos;
+    #endif
+    
+    #if !USE_DEPTH_ONLY
     #if ALLOW_SHADING
       OUT[vert].wPos                      = wPos.xyz;
     #endif
@@ -225,6 +239,7 @@ void main()
     #endif
       OUT[vert].clusterID                 = clusterID;
       OUT[vert].instanceID                = instanceID;
+    #endif
     }
   }
   
@@ -244,6 +259,10 @@ void main()
       || (instance.twoSided != 0 && !isFrontFacingHW(gl_MeshVerticesNV[indices.x].gl_Position,
                                                      gl_MeshVerticesNV[indices.y].gl_Position,
                                                      gl_MeshVerticesNV[indices.z].gl_Position))
+#elif USE_TWO_SIDED && USE_EXT_MESH_SHADER
+      || (instance.twoSided != 0 && !isFrontFacingHW(s_vertices[indices.x],
+                                                     s_vertices[indices.y],
+                                                     s_vertices[indices.z]))
 #endif
     )
     {
@@ -270,12 +289,16 @@ void main()
     {
     #if USE_EXT_MESH_SHADER
       gl_PrimitiveTriangleIndicesEXT[triOut] = indices;
+      #if !USE_DEPTH_ONLY
       gl_MeshPrimitivesEXT[triOut].gl_PrimitiveID = int(tri);
+      #endif
     #else
       gl_PrimitiveIndicesNV[triOut * 3 + 0] = indices.x;
       gl_PrimitiveIndicesNV[triOut * 3 + 1] = indices.y;
       gl_PrimitiveIndicesNV[triOut * 3 + 2] = indices.z;
+      #if !USE_DEPTH_ONLY
       gl_MeshPrimitivesNV[triOut].gl_PrimitiveID = int(tri);
+      #endif
     #endif
     }
   }

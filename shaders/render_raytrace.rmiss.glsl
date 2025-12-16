@@ -58,6 +58,8 @@ void main()
     rayHit.dlssNormalRoughness = vec4(0);
     rayHit.dlssSpecular = vec3(0);
   #endif
+#elif USE_DEPTH_ONLY
+  rayHit.hitT  = 0;
 #else
   rayHit.color = vec3(0);
   rayHit.hitT  = 0;

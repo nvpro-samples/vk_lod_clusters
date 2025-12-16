@@ -136,6 +136,10 @@ struct SceneBuilding
 {
   mat4 traversalViewMatrix;
 
+  // for two pass culling
+  uint pass;
+  uint _pad;
+
   uint numGeometries;
   uint numRenderInstances;
   uint maxRenderClusters;
