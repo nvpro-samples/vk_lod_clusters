@@ -291,6 +291,10 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample, b
       m_frameBuffer.targetSize.width  = 2560;
       m_frameBuffer.targetSize.height = 1440;
       break;
+    case 2160:
+      m_frameBuffer.targetSize.width  = 3840;
+      m_frameBuffer.targetSize.height = 2160;
+      break;
     case 1024:
       m_frameBuffer.targetSize.width  = 1024;
       m_frameBuffer.targetSize.height = 1024;

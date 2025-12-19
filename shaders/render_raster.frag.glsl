@@ -255,11 +255,14 @@ void main()
   }
 #else
   {
-    float relative = (float(gl_PrimitiveID) / float(clusterRef.d.triangleCountMinusOne)) * 0.25 + 0.75;
+    //uint triangleCountMinusOne = clusterRef.d.triangleCountMinusOne;
+    uint triangleCountMinusOne = CLUSTER_TRIANGLE_COUNT-1;
+    float relative = (float(gl_PrimitiveID) / float(triangleCountMinusOne)) * 0.25 + 0.75;
     out_Color = vec4(colorizeID(visData) * relative, 1.0);
   }
 #endif
 
+#if 1
   uvec2 pixelCoord = uvec2(gl_FragCoord.xy);
   if(pixelCoord == view.mousePosition)
   {
@@ -267,6 +270,7 @@ void main()
     atomicMax(readback.clusterTriangleId, packPickingValue(packedClusterTriangleId, gl_FragCoord.z));
     atomicMax(readback.instanceId, packPickingValue(IN.instanceID, gl_FragCoord.z));
   }
+#endif
   
 #if USE_SW_RASTER
   {

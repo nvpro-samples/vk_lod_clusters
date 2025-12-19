@@ -246,7 +246,9 @@ void main()
     
     if (visible) 
     {
-      float relative   = (float(tri) / float(triMax)) * 0.25 + 0.75;
+      //uint triangleCountMinusOne = triMax;
+      uint triangleCountMinusOne = CLUSTER_TRIANGLE_COUNT-1;
+      float relative   = (float(tri) / float(triangleCountMinusOne)) * 0.25 + 0.75;
       
     #if USE_DEPTH_ONLY
       uint packedColor = packUnorm4x8(vec4(0,0,0,1));

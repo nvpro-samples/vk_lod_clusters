@@ -263,7 +263,9 @@ void main()
     );
   }
 #else
-  float relative = (float(gl_PrimitiveID) / float(clusterRef.d.triangleCountMinusOne)) * 0.25 + 0.75;
+  //uint triangleCountMinusOne = clusterRef.d.triangleCountMinusOne;
+   uint triangleCountMinusOne = CLUSTER_TRIANGLE_COUNT-1;
+  float relative = (float(gl_PrimitiveID) / float(triangleCountMinusOne)) * 0.25 + 0.75;
   vec4 shaded = vec4(colorizeID(visData) * relative, 1.0);
 #endif
 
