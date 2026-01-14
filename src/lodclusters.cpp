@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -81,7 +81,7 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"aoradius"}, &m_frameConfig.frameConstants.ambientOcclusionRadius);
   m_info.parameterRegistry->add({"hbao"}, &m_tweak.hbaoActive);
   m_info.parameterRegistry->add({"hbaoradius"}, &m_tweak.hbaoRadius);
-  m_info.parameterRegistry->add({"hbaofullres"}, &m_tweak.hbaoFullRes);
+  m_info.parameterRegistry->add({"hbaoblur"}, &m_frameConfig.hbaoSettings.blur);
   m_info.parameterRegistry->add({"claspositionbits"}, &m_streamingConfig.clasPositionTruncateBits);
   m_info.parameterRegistry->add({"maxtransfermegabytes"}, (uint32_t*)&m_streamingConfig.maxTransferMegaBytes);
   m_info.parameterRegistry->add({"maxblascachingmegabytes"}, (uint32_t*)&m_streamingConfig.maxBlasCachingMegaBytes);
@@ -137,10 +137,11 @@ LodClusters::LodClusters(const Info& info)
 
 
   {
-    // HACK as zorah.cfg ships with twosided, but is no longer required due to material two-sided handling
+    // HACK as zorah.cfg ships with some deprecated settings
     static bool dummy;
-    m_info.parameterRegistry->add(
-        {"twosided", "no longer active due to detecting doubleSided materials - there is a new forcetwosided"}, &dummy);
+    m_info.parameterRegistry->add({"twosided", "deprecated - now detecting doubleSided materials - there is a new forcetwosided"},
+                                  &dummy);
+    m_info.parameterRegistry->add({"hbaofullres", "deprecated - now always using full resolution"}, &dummy);
   }
 
   m_frameConfig.frameConstants                         = {};
@@ -277,7 +278,7 @@ void LodClusters::deinitScene()
 void LodClusters::onResize(VkCommandBuffer cmd, const VkExtent2D& size)
 {
   m_windowSize = size;
-  m_resources.initFramebuffer(m_windowSize, m_tweak.supersample, m_tweak.hbaoFullRes);
+  m_resources.initFramebuffer(m_windowSize, m_tweak.supersample);
   updateImguiImage();
   if(m_renderer)
   {
@@ -463,7 +464,7 @@ void LodClusters::onAttach(nvapp::Application* app)
     NVVK_DBG_NAME(m_imguiSampler);
   }
 
-  m_resources.initFramebuffer({128, 128}, m_tweak.supersample, m_tweak.hbaoFullRes);
+  m_resources.initFramebuffer({128, 128}, m_tweak.supersample);
   updateImguiImage();
 
   setFromClusterConfig(m_sceneConfig, m_tweak.clusterConfig);
@@ -701,9 +702,9 @@ void LodClusters::handleChanges()
 
 
   bool frameBufferChanged = false;
-  if(tweakChanged(m_tweak.supersample) || tweakChanged(m_tweak.hbaoFullRes))
+  if(tweakChanged(m_tweak.supersample))
   {
-    m_resources.initFramebuffer(m_windowSize, m_tweak.supersample, m_tweak.hbaoFullRes);
+    m_resources.initFramebuffer(m_windowSize, m_tweak.supersample);
     updateImguiImage();
 
     frameBufferChanged = true;
@@ -778,6 +779,12 @@ void LodClusters::handleChanges()
       }
 
       initRenderer(m_tweak.renderer);
+
+      if(shaderChanged)
+      {
+        m_resources.m_hbaoPass.reloadShaders();
+        //m_resources.m_hiz.initPipelines();
+      }
     }
     else if(m_renderer && frameBufferChanged)
     {
@@ -865,9 +872,8 @@ void LodClusters::onRender(VkCommandBuffer cmd)
 #endif
     frameConstants.fov = glm::radians(m_info.cameraManipulator->getFov());
 
-    glm::mat4 projection =
-        glm::perspectiveRH_ZO(glm::radians(m_info.cameraManipulator->getFov()), float(targetWidth) / float(targetHeight),
-                              frameConstants.nearPlane, frameConstants.farPlane);
+    glm::mat4 projection = glm::perspectiveRH_ZO(frameConstants.fov, float(targetWidth) / float(targetHeight),
+                                                 frameConstants.farPlane, frameConstants.nearPlane);
     projection[1][1] *= -1;
 
     glm::mat4 view  = m_info.cameraManipulator->getViewMatrix();
@@ -918,18 +924,14 @@ void LodClusters::onRender(VkCommandBuffer cmd)
 
     {
       // hbao setup
-      auto& hbaoView                    = m_frameConfig.hbaoSettings.view;
-      hbaoView.farPlane                 = frameConstants.farPlane;
-      hbaoView.nearPlane                = frameConstants.nearPlane;
-      hbaoView.isOrtho                  = false;
-      hbaoView.projectionMatrix         = projection;
-      m_frameConfig.hbaoSettings.radius = glm::length(m_scene->m_bbox.hi - m_scene->m_bbox.lo) * m_tweak.hbaoRadius;
+      auto& hbaoView            = m_frameConfig.hbaoSettings.view;
+      hbaoView.farPlane         = frameConstants.farPlane;
+      hbaoView.nearPlane        = frameConstants.nearPlane;
+      hbaoView.projectionMatrix = projection;
+      hbaoView.viewMatrix       = view;
+      hbaoView.tanFovy          = tanf(frameConstants.fov * 0.5f);
 
-      glm::vec4 hi = frameConstants.projMatrixI * glm::vec4(1, 1, -0.9, 1);
-      hi /= hi.w;
-      float tanx           = hi.x / fabsf(hi.z);
-      float tany           = hi.y / fabsf(hi.z);
-      hbaoView.halfFovyTan = tany;
+      m_frameConfig.hbaoSettings.radius = glm::length(m_scene->m_bbox.hi - m_scene->m_bbox.lo) * m_tweak.hbaoRadius;
     }
 
     if(!m_frames)

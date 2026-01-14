@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -483,9 +483,9 @@ void LodClusters::onUIRender()
         }
         if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD)
         {
+          PE::Checkbox("Blur", &m_frameConfig.hbaoSettings.blur);
           PE::InputFloat("Radius", &m_tweak.hbaoRadius, 0.01f, 0, "%.6f");
-          PE::Checkbox("Full resolution", &m_tweak.hbaoFullRes);
-          PE::InputFloat("Blur sharpness", &m_frameConfig.hbaoSettings.blurSharpness, 1.0f);
+          PE::InputFloat("Sharpness", &m_frameConfig.hbaoSettings.powerExponent, 1.0f);
           PE::InputFloat("Intensity", &m_frameConfig.hbaoSettings.intensity, 0.1f);
           PE::InputFloat("Bias", &m_frameConfig.hbaoSettings.bias, 0.01f);
         }

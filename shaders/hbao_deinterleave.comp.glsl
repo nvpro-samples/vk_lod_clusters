@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2023, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2018-2026, NVIDIA CORPORATION.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,56 +13,60 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * SPDX-FileCopyrightText: Copyright (c) 2018-2023 NVIDIA CORPORATION
+ * SPDX-FileCopyrightText: Copyright (c) 2018-2026 NVIDIA CORPORATION
  * SPDX-License-Identifier: Apache-2.0
  */
+ 
+// based on
+// https://github.com/NVIDIA-RTX/Donut/blob/main/shaders/passes/ssao_deinterleave_cs.hlsl
 
 #version 460
 #extension GL_GOOGLE_include_directive : enable
 #extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_scalar_block_layout : require
 
 #include "hbao.h"
 
-layout(binding=NVHBAO_MAIN_TEX_LINDEPTH)         uniform sampler2D      texLinearDepth;
-layout(binding=NVHBAO_MAIN_IMG_DEPTHARRAY,r32f)  uniform image2DArray   imgDepthArray;
-
-//----------------------------------------------------------------------------------
-
-void outputColor(ivec2 intCoord, int layer, float value)
+layout(scalar, binding = NVHBAO_MAIN_UBO) uniform controlBuffer
 {
-  imageStore(imgDepthArray, ivec3(intCoord,layer), vec4(value,0,0,0));
-}
+  NVHBAOData g_Ssao;
+};
 
+layout(binding=NVHBAO_MAIN_TEX_DEPTH)            uniform sampler2D      texInputDepth;
+layout(binding=NVHBAO_MAIN_IMG_DEPTHARRAY,r32f)  uniform image2DArray   imgDepthArray;
+layout(binding=NVHBAO_MAIN_IMG_DEPTHARRAY,rgba8) uniform image2D        imgViewNormal;
+
+layout(local_size_x = 8, local_size_y = 8) in;
 void main()
 {
-  ivec2 intCoord;
-  vec2  texCoord;
+  ivec3 globalId  = ivec3(gl_GlobalInvocationID);
+  ivec2 groupBase = globalId.xy * 4;
   
-  if (setupCoordQuarter(intCoord, texCoord)) return;
+  float depths[4 * 4];
 
-  vec2 uv = vec2(intCoord) * 4.0 + 0.5;
-  uv *= control.InvFullResolution;  
-  
-  vec4 S0 = textureGather      (texLinearDepth, uv, 0);
-  vec4 S1 = textureGatherOffset(texLinearDepth, uv, ivec2(2,0), 0);
-  vec4 S2 = textureGatherOffset(texLinearDepth, uv, ivec2(0,2), 0);
-  vec4 S3 = textureGatherOffset(texLinearDepth, uv, ivec2(2,2), 0);
- 
-  outputColor(intCoord, 0, S0.w);
-  outputColor(intCoord, 1, S0.z);
-  outputColor(intCoord, 2, S1.w);
-  outputColor(intCoord, 3, S1.z);
-  outputColor(intCoord, 4, S0.x);
-  outputColor(intCoord, 5, S0.y);
-  outputColor(intCoord, 6, S1.x);
-  outputColor(intCoord, 7, S1.y);
-  
-  outputColor(intCoord, 0 + 8, S2.w);
-  outputColor(intCoord, 1 + 8, S2.z);
-  outputColor(intCoord, 2 + 8, S3.w);
-  outputColor(intCoord, 3 + 8, S3.z);
-  outputColor(intCoord, 4 + 8, S2.x);
-  outputColor(intCoord, 5 + 8, S2.y);
-  outputColor(intCoord, 6 + 8, S3.x);
-  outputColor(intCoord, 7 + 8, S3.y);
+  [[unroll]]
+  for (int y = 0; y < 4; y++)
+  { 
+    [[unroll]]
+    for (int x = 0; x < 4; x++)
+    {
+      ivec2 gbufferSamplePos = groupBase + ivec2(x, y);
+      float depth = texelFetch(texInputDepth, gbufferSamplePos, 0).x;
+
+      vec4 clipPos = vec4(0, 0, depth, 1);
+      vec4 viewPos = g_Ssao.view.matClipToView * clipPos;
+      float linearDepth = -viewPos.z / viewPos.w;
+
+      depths[y * 4 + x] = linearDepth;
+    }
+  }
+
+  ivec2 quarterResPos = groupBase >> 2;
+    
+  [[unroll]]
+  for(uint i = 0; i < 16; i++)
+  {
+    float depth = depths[i];
+    imageStore(imgDepthArray, ivec3(quarterResPos.xy, i), vec4(depth));
+  }
 }

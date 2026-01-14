@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -37,14 +37,10 @@ void Resources::postProcessFrame(VkCommandBuffer cmd, const FrameConfig& frame, 
 {
   auto sec = profiler.cmdFrameSection(cmd, "Post-process");
 
-  bool doHbao = frame.hbaoActive;
-
   // do hbao on the full-res input image
-  if(frame.hbaoActive && (m_hbaoFullRes || !m_frameBuffer.useResolved))
+  if(frame.hbaoActive)
   {
     cmdHBAO(cmd, frame, profiler);
-
-    doHbao = false;
   }
 
   if(m_frameBuffer.useResolved)
@@ -67,11 +63,6 @@ void Resources::postProcessFrame(VkCommandBuffer cmd, const FrameConfig& frame, 
 
     vkCmdBlitImage(cmd, m_frameBuffer.imgColor.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                    m_frameBuffer.imgColorResolved.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_LINEAR);
-
-    if(doHbao)
-    {
-      cmdHBAO(cmd, frame, profiler);
-    }
 
     cmdImageTransition(cmd, m_frameBuffer.imgColorResolved, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
   }
@@ -113,6 +104,8 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
   vkGetPhysicalDeviceMemoryProperties(physicalDevice, &m_memoryProperties);
 
   m_use16bitDispatch = m_physicalDeviceInfo.properties10.limits.maxComputeWorkGroupCount[0] < (1 << 30);
+
+  m_basicGraphicsState.depthStencilState.depthCompareOp = VK_COMPARE_OP_GREATER;
 
   {
     VkPhysicalDeviceProperties2 props2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
@@ -205,7 +198,7 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
   {
     NVHizVK::Config config;
     config.msaaSamples             = 0;
-    config.reversedZ               = false;
+    config.reversedZ               = true;
     config.supportsMinmaxFilter    = true;
     config.supportsSubGroupShuffle = true;
     m_hiz.init(m_device, config, 2);
@@ -262,7 +255,7 @@ void Resources::deinit()
   m_allocator.deinit();
 }
 
-bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample, bool hbaoFullRes)
+bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
 {
   m_fboChangeID++;
 
@@ -322,7 +315,6 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample, b
   m_frameBuffer.windowSize = windowSize;
 
   m_frameBuffer.supersample = supersample;
-  m_hbaoFullRes             = hbaoFullRes;
 
   LOGI("framebuffer: %d x %d (target)\n", m_frameBuffer.targetSize.width, m_frameBuffer.targetSize.height);
 
@@ -579,9 +571,9 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
     hizImageInfo.arrayLayers       = 1;
     hizImageInfo.samples           = VK_SAMPLE_COUNT_1_BIT;
     hizImageInfo.tiling            = VK_IMAGE_TILING_OPTIMAL;
-    hizImageInfo.usage             = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
-    hizImageInfo.flags             = 0;
-    hizImageInfo.initialLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
+    hizImageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    hizImageInfo.flags = 0;
+    hizImageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     NVVK_CHECK(m_allocator.createImage(m_frameBuffer.imgHizFar[i], hizImageInfo));
     NVVK_DBG_NAME(m_frameBuffer.imgHizFar[i].image);
@@ -596,16 +588,13 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
 
   {
     HbaoPass::FrameConfig config;
-    config.blend                   = true;
-    config.targetWidth             = m_hbaoFullRes ? m_frameBuffer.renderSize.width : m_frameBuffer.windowSize.width;
-    config.targetHeight            = m_hbaoFullRes ? m_frameBuffer.renderSize.height : m_frameBuffer.windowSize.height;
+    config.targetWidth             = m_frameBuffer.renderSize.width;
+    config.targetHeight            = m_frameBuffer.renderSize.height;
     config.sourceDepth.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     config.sourceDepth.imageView   = m_frameBuffer.viewDepth;
     config.sourceDepth.sampler     = VK_NULL_HANDLE;
     config.targetColor.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-    config.targetColor.imageView   = m_frameBuffer.useResolved && !m_hbaoFullRes ?
-                                         m_frameBuffer.imgColorResolved.descriptor.imageView :
-                                         m_frameBuffer.imgColor.descriptor.imageView;
+    config.targetColor.imageView   = m_frameBuffer.imgColor.descriptor.imageView;
     config.targetColor.sampler     = VK_NULL_HANDLE;
 
     m_hbaoPass.initFrame(m_hbaoFrame, config, cmd);
@@ -620,6 +609,23 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
   if(m_frameBuffer.imgRasterAtomic.image)
   {
     cmdImageTransition(cmd, m_frameBuffer.imgRasterAtomic, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
+  }
+
+  {
+    VkClearColorValue clear = {};
+    clear.float32[0]        = 0.0f;
+    clear.float32[1]        = 0.0f;
+    clear.float32[2]        = 0.0f;
+    clear.float32[3]        = 0.0f;
+
+    VkImageSubresourceRange subResourceRange;
+    subResourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+    subResourceRange.baseArrayLayer = 0;
+    subResourceRange.baseMipLevel   = 0;
+    subResourceRange.layerCount     = VK_REMAINING_ARRAY_LAYERS;
+    subResourceRange.levelCount     = VK_REMAINING_MIP_LEVELS;
+    vkCmdClearColorImage(cmd, m_frameBuffer.imgHizFar[0].image, VK_IMAGE_LAYOUT_GENERAL, &clear, 1, &subResourceRange);
+    vkCmdClearColorImage(cmd, m_frameBuffer.imgHizFar[1].image, VK_IMAGE_LAYOUT_GENERAL, &clear, 1, &subResourceRange);
   }
 
   {
@@ -737,11 +743,8 @@ void Resources::cmdHBAO(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::Pro
 {
   auto timerSection = profiler.cmdFrameSection(cmd, "HBAO");
 
-  bool useResolved = m_frameBuffer.useResolved && !m_hbaoFullRes;
-
   // transition color to general
-  cmdImageTransition(cmd, useResolved ? m_frameBuffer.imgColorResolved : m_frameBuffer.imgColor,
-                     VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
+  cmdImageTransition(cmd, m_frameBuffer.imgColor, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
 
   // transition depth read optimal
   cmdImageTransition(cmd, m_frameBuffer.imgDepthStencil, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
@@ -822,7 +825,7 @@ void Resources::tempSyncSubmit(VkCommandBuffer cmd)
 void Resources::cmdBeginRendering(VkCommandBuffer cmd, bool hasSecondary, VkAttachmentLoadOp loadOpColor, VkAttachmentLoadOp loadOpDepth)
 {
   VkClearValue colorClear{.color = {m_bgColor.x, m_bgColor.y, m_bgColor.z, m_bgColor.w}};
-  VkClearValue depthClear{.depthStencil = {1.0F, 0}};
+  VkClearValue depthClear{.depthStencil = {0.0F, 0}};
 
   cmdImageTransition(cmd, m_frameBuffer.imgColor, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
   cmdImageTransition(cmd, m_frameBuffer.imgDepthStencil, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,

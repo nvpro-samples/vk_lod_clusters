@@ -1,4 +1,7 @@
 # Changelog for vk_lod_clusters
+* 2026-1-8:
+  * Updated SSAO implementation, taken from [NVIDIA-RTX/Donut](https://github.com/NVIDIA-RTX/Donut)
+  * Use "reverse z" to improve depth precision in rasterization.
 * 2025-12-15:
   WARNING: Needs updated nvpro_core2
   * Added `Two Pass Culling` to Traversal options, to do proper temporal coherent occlusion culling for rasterization.

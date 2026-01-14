@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -83,9 +83,8 @@ public:
     bool autoResetTimers = false;
     bool autoSharing     = true;
 
-    bool  hbaoFullRes = false;
-    bool  hbaoActive  = true;
-    float hbaoRadius  = 0.05f;
+    bool  hbaoActive = true;
+    float hbaoRadius = 0.05f;
 
     float mirrorBoxScale  = 0.2f;
     float clickSpeedScale = 0.33f;

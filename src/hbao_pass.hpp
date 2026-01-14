@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -35,6 +35,9 @@
 /// horizon-based ambient occlusion.
 /// See https://github.com/nvpro-samples/gl_ssao
 /// for more details
+///
+/// Newer version was derived from
+/// https://github.com/NVIDIA-RTX/Donut/blob/main/shaders/passes/ssao_compute_cs.hlsl
 
 class HbaoPass
 {
@@ -54,8 +57,6 @@ public:
 
   struct FrameConfig
   {
-    bool blend;
-
     uint32_t targetWidth;
     uint32_t targetHeight;
 
@@ -63,18 +64,20 @@ public:
     VkDescriptorImageInfo targetColor;
   };
 
-  struct FrameIMGs
+  struct FrameImages
   {
-    nvvk::Image depthlinear, viewnormal, result, blur, resultarray, deptharray;
+    nvvk::Image resultArray;
+    nvvk::Image linearDepthArray;
+    nvvk::Image viewNormal;
   };
 
   struct Frame
   {
     uint32_t slot = ~0u;
 
-    FrameIMGs images;
-    int       width;
-    int       height;
+    FrameImages images;
+    int         width;
+    int         height;
 
     FrameConfig config;
   };
@@ -85,22 +88,25 @@ public:
 
   struct View
   {
-    bool      isOrtho;
     float     nearPlane;
     float     farPlane;
-    float     halfFovyTan;
+    float     tanFovy;
     glm::mat4 projectionMatrix;
+    glm::mat4 viewMatrix;
   };
 
   struct Settings
   {
     View view;
 
-    float unit2viewspace = 1.0f;
-    float intensity      = 1.0f;
-    float radius         = 1.0f;
-    float bias           = 0.1f;
-    float blurSharpness  = 40.0f;
+    // percentage of far plane at which we fade out AO effect
+    float backgroundViewDepth = 0.5f;
+
+    float intensity     = 1.0f;
+    float radius        = 1.0f;
+    float bias          = 0.1f;
+    float powerExponent = 4.0;
+    bool  blur          = true;
   };
 
   // before: must do appropriate barriers for color write access and depth read access
@@ -110,24 +116,20 @@ public:
 private:
   struct Shaders
   {
-    shaderc::SpvCompilationResult depth_linearize{};
-    shaderc::SpvCompilationResult viewnormal{};
-    shaderc::SpvCompilationResult blur{};
-    shaderc::SpvCompilationResult blur_apply{};
     shaderc::SpvCompilationResult deinterleave{};
     shaderc::SpvCompilationResult calc{};
-    shaderc::SpvCompilationResult reinterleave{};
+    shaderc::SpvCompilationResult applyRaw{};
+    shaderc::SpvCompilationResult applyBlurred{};
+    shaderc::SpvCompilationResult viewNormal{};
   };
 
   struct Pipelines
   {
-    VkPipeline depth_linearize{};
-    VkPipeline viewnormal{};
-    VkPipeline blur{};
-    VkPipeline blur_apply{};
     VkPipeline deinterleave{};
     VkPipeline calc{};
-    VkPipeline reinterleave{};
+    VkPipeline applyRaw{};
+    VkPipeline applyBlurred{};
+    VkPipeline viewNormal{};
   };
 
   VkDevice                 m_device{};
@@ -149,8 +151,6 @@ private:
 
   Shaders   m_shaders;
   Pipelines m_pipelines;
-
-  glm::vec4 m_hbaoRandom[RANDOM_ELEMENTS];
 
   void updatePipelines();
   void updateUbo(VkCommandBuffer cmd, const Frame& frame, const Settings& settings) const;
