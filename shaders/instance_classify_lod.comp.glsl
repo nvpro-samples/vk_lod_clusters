@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -133,7 +133,7 @@ void main()
     mat4x3 worldMatrixI = instances[instanceID].worldMatrixI;
     float uniformScale  = computeUniformScale(worldMatrix);
     float errorScale    = 1.0;
-  #if USE_CULLING
+  #if USE_CULLING && !USE_FORCED_INVISIBLE_CULLING
     // instance is not primary visible, apply different error scale
     if (visibilityState == 0) errorScale = build.culledErrorScale;
   #endif
@@ -158,131 +158,137 @@ void main()
     uint lodLevelMin = 0;
     uint lodLevelMax = geometryLodLevelMax;
     
-    // lodLevelMin means a low lod/mip level and represents higher detail
-    // lodLevelMax represents lower detail
-    //
-    // An instance may span multiple lod levels, meaning it has cluster
-    // groups from different lod levels. 
-    // This result depends on distance and orientation of the instance towards
-    // the camera.
-    //
-    //   camera ->             [instance lodLevelMin  .... lodLevelMax]
-    //
-
-    for (uint lodLevel = 0; lodLevel < geometry.lodLevelsCount; lodLevel++)
+  #if USE_CULLING && USE_FORCED_INVISIBLE_CULLING
+    if(isVisible)
+  #endif
     {
-      Node childNode                  = geometry.nodes.d[childOffset + lodLevel];
-      TraversalMetric traversalMetric = childNode.traversalMetric;
+      
+      // lodLevelMin means a low lod/mip level and represents higher detail
+      // lodLevelMax represents lower detail
+      //
+      // An instance may span multiple lod levels, meaning it has cluster
+      // groups from different lod levels. 
+      // This result depends on distance and orientation of the instance towards
+      // the camera.
+      //
+      //   camera ->             [instance lodLevelMin  .... lodLevelMax]
+      //
 
-      // During lod traversal, we use the offline accumulated maximum sphere of the cluster groups stored into lod nodes
-      // to test whether there is potentially something to be rendered. We want to optimize for the highest
-      // error we get away with. So we test in detail if something is "coarse enough" (error > threshold).
-      // `childNode.traversalMetric` provides the data for the maximum sphere.
-      //
-      // An actual cluster is rendered if 
-      //  1) cluster's group            ` error over distance > threshold` (group's lod level is coarse enough)
-      //  2) clusters' generating group `!error over distance > threshold` (generating group is in lod level - 1)
-      
-      // Example:
-      //
-      //  lod level                   | 0 | 1 | 2 | 3 | 4
-      //  testForTraversal(maxSphere) | - | x | x | x | x
-      //
-      // In the example it's guaranteed that at least 1 cluster could be rendered at lod level 1.
-      //   1) is ensured due to one group being represented within the accumulated maximum sphere
-      //   2) is ensured because no such parent group can exist, otherwise `testForTraversal(maxSphere)` 
-      //      would have evaluated to true for lod level 0.
-      //
-      // The first transition of the metric determines the lod level of a certain surface region.
-      // This serves as the "fine enough".
-      // Clusters from higher, less detailed, lod levels (e.g 2,3,4) of the same
-      // region will not trigger, because their generating group's will not pass 2)
-      //
-      // We will use this reasoning to find the highest possible lod level as well.
+      for (uint lodLevel = 0; lodLevel < geometry.lodLevelsCount; lodLevel++)
+      {
+        Node childNode                  = geometry.nodes.d[childOffset + lodLevel];
+        TraversalMetric traversalMetric = childNode.traversalMetric;
 
-      if (findMin && testForTraversal(mat4x3(transform), uniformScale, traversalMetric, errorScale))
-      {
-        findMin     = false;
-        lodLevelMin = lodLevel;
-      }
-      
-      // When using blas sharing for this geometry, we also need to find
-      // the lodLevelMax value. This way we know from which lod level onwards
-      // an instance's blas can be used rotational invariant.
-      if (geometryUsesBlasSharing && !findMin)
-      {
-        // This time we use the smallest possible sphere for each lod level.
-        // 
-        // The smallest possible sphere was pre-computed for the geometry for each lod level.
-        // We took the smallest radius, and the smallest `maxQuadraticError` found in any group,
-        // and the sphere is put at the furthest possible distance from the camera,
-        // while still within the maximum sphere.
-        // These conditions ensure that nothing with a smaller `error over distance`
-        // behavior can exist.
+        // During lod traversal, we use the offline accumulated maximum sphere of the cluster groups stored into lod nodes
+        // to test whether there is potentially something to be rendered. We want to optimize for the highest
+        // error we get away with. So we test in detail if something is "coarse enough" (error > threshold).
+        // `childNode.traversalMetric` provides the data for the maximum sphere.
+        //
+        // An actual cluster is rendered if 
+        //  1) cluster's group            ` error over distance > threshold` (group's lod level is coarse enough)
+        //  2) clusters' generating group `!error over distance > threshold` (generating group is in lod level - 1)
         
-        vec3 oSpherePos = TraversalMetric_getSphere(traversalMetric);
-        vec3 oViewDir   = normalize(oSpherePos - oViewPos);
-        
-        oSpherePos.xyz += oViewDir * (traversalMetric.boundingSphereRadius - geometry.lodLevels.d[lodLevel].minBoundingSphereRadius);
-        
-        traversalMetric.boundingSphereX = oSpherePos.x;
-        traversalMetric.boundingSphereY = oSpherePos.y;
-        traversalMetric.boundingSphereZ = oSpherePos.z;
-        traversalMetric.boundingSphereRadius = geometry.lodLevels.d[lodLevel].minBoundingSphereRadius;
-        traversalMetric.maxQuadricError      = geometry.lodLevels.d[lodLevel].minMaxQuadricError;
-      
-        // Example: 
+        // Example:
         //
         //  lod level                   | 0 | 1 | 2 | 3 | 4
-        //  testForTraversal(minSphere) | - | - | - | x | x
+        //  testForTraversal(maxSphere) | - | x | x | x | x
         //
-        // If even the smallest possible group in lod level 3 is coarse enough, it
-        // means there cannot be a group that would first transition in lod level 4
+        // In the example it's guaranteed that at least 1 cluster could be rendered at lod level 1.
+        //   1) is ensured due to one group being represented within the accumulated maximum sphere
+        //   2) is ensured because no such parent group can exist, otherwise `testForTraversal(maxSphere)` 
+        //      would have evaluated to true for lod level 0.
         //
-        // Therefore lod level 3 is guaranteed to be the last active lod level.
-        
-        if (testForTraversal(mat4x3(transform), uniformScale, traversalMetric, errorScale))
+        // The first transition of the metric determines the lod level of a certain surface region.
+        // This serves as the "fine enough".
+        // Clusters from higher, less detailed, lod levels (e.g 2,3,4) of the same
+        // region will not trigger, because their generating group's will not pass 2)
+        //
+        // We will use this reasoning to find the highest possible lod level as well.
+
+        if (findMin && testForTraversal(mat4x3(transform), uniformScale, traversalMetric, errorScale))
         {
-          lodLevelMax = lodLevel;
-          break;
+          findMin     = false;
+          lodLevelMin = lodLevel;
+        }
+        
+        // When using blas sharing for this geometry, we also need to find
+        // the lodLevelMax value. This way we know from which lod level onwards
+        // an instance's blas can be used rotational invariant.
+        if (geometryUsesBlasSharing && !findMin)
+        {
+          // This time we use the smallest possible sphere for each lod level.
+          // 
+          // The smallest possible sphere was pre-computed for the geometry for each lod level.
+          // We took the smallest radius, and the smallest `maxQuadraticError` found in any group,
+          // and the sphere is put at the furthest possible distance from the camera,
+          // while still within the maximum sphere.
+          // These conditions ensure that nothing with a smaller `error over distance`
+          // behavior can exist.
+          
+          vec3 oSpherePos = TraversalMetric_getSphere(traversalMetric);
+          vec3 oViewDir   = normalize(oSpherePos - oViewPos);
+          
+          oSpherePos.xyz += oViewDir * (traversalMetric.boundingSphereRadius - geometry.lodLevels.d[lodLevel].minBoundingSphereRadius);
+          
+          traversalMetric.boundingSphereX = oSpherePos.x;
+          traversalMetric.boundingSphereY = oSpherePos.y;
+          traversalMetric.boundingSphereZ = oSpherePos.z;
+          traversalMetric.boundingSphereRadius = geometry.lodLevels.d[lodLevel].minBoundingSphereRadius;
+          traversalMetric.maxQuadricError      = geometry.lodLevels.d[lodLevel].minMaxQuadricError;
+        
+          // Example: 
+          //
+          //  lod level                   | 0 | 1 | 2 | 3 | 4
+          //  testForTraversal(minSphere) | - | - | - | x | x
+          //
+          // If even the smallest possible group in lod level 3 is coarse enough, it
+          // means there cannot be a group that would first transition in lod level 4
+          //
+          // Therefore lod level 3 is guaranteed to be the last active lod level.
+          
+          if (testForTraversal(mat4x3(transform), uniformScale, traversalMetric, errorScale))
+          {
+            lodLevelMax = lodLevel;
+            break;
+          }
         }
       }
-    }
-    
-    if (visibilityState == 0 && build.sharingPushCulled != 0)
-    {
-      // For invisible instances we might want to artificially push out
-      // the minimum lod level that this instance will think it requires.
-      // That way we increase the instance's likelihood to share another blas.
       
-      lodLevelMin = min(lodLevelMin + 1, lodLevelMax);
-    }
-    
-    // If the minimum lod level used is actually the maximum lod level available
-    // for this geometry, it means the instance only uses the lowest detail
-    // cluster group / pre-built blas.
-    bool lowestDetailOnly = lodLevelMin == geometryLodLevelMax;
-    
-    if (TRAVERSAL_ALLOW_LOW_DETAIL_BLAS && lowestDetailOnly)
-    {
+      if (visibilityState == 0 && build.sharingPushCulled != 0)
+      {
+        // For invisible instances we might want to artificially push out
+        // the minimum lod level that this instance will think it requires.
+        // That way we increase the instance's likelihood to share another blas.
+        
+        lodLevelMin = min(lodLevelMin + 1, lodLevelMax);
+      }
+      
+      // If the minimum lod level used is actually the maximum lod level available
+      // for this geometry, it means the instance only uses the lowest detail
+      // cluster group / pre-built blas.
+      bool lowestDetailOnly = lodLevelMin == geometryLodLevelMax;
+      
+      if (TRAVERSAL_ALLOW_LOW_DETAIL_BLAS && lowestDetailOnly)
+      {
 
-    }
-    else if (geometryUsesBlasSharing)
-    {
-      // fill geometry histogram
-      atomicAdd(build.geometryHistograms.d[geometryID].lodLevelMinHistogram[lodLevelMin], 1);
-      atomicAdd(build.geometryHistograms.d[geometryID].lodLevelMaxHistogram[lodLevelMax], 1);
-      
-      // we want to find the instance with the highest lod min level (meaning it likely has less detail)
-      // for each lod max level
-      
-      // pack lod min in upper 5 most significant bits, and instanceID in lower 27
-      // this should give us a "stable" result on a static camera
-      uint packedLodInstance = (lodLevelMin << 27) | instanceID & 0x7FFFFFF;
-      atomicMax(build.geometryHistograms.d[geometryID].lodLevelMaxPackedInstance[lodLevelMax], packedLodInstance);
-      
-      // The `build.geometryBuildInfos` is read in the
-      // `geometry_blas_sharing.comp.glsl` kernel
+      }
+      else if (geometryUsesBlasSharing)
+      {
+        // fill geometry histogram
+        atomicAdd(build.geometryHistograms.d[geometryID].lodLevelMinHistogram[lodLevelMin], 1);
+        atomicAdd(build.geometryHistograms.d[geometryID].lodLevelMaxHistogram[lodLevelMax], 1);
+        
+        // we want to find the instance with the highest lod min level (meaning it likely has less detail)
+        // for each lod max level
+        
+        // pack lod min in upper 5 most significant bits, and instanceID in lower 27
+        // this should give us a "stable" result on a static camera
+        uint packedLodInstance = (lodLevelMin << 27) | instanceID & 0x7FFFFFF;
+        atomicMax(build.geometryHistograms.d[geometryID].lodLevelMaxPackedInstance[lodLevelMax], packedLodInstance);
+        
+        // The `build.geometryBuildInfos` is read in the
+        // `geometry_blas_sharing.comp.glsl` kernel
+      }
     }
     
     // used during `traversal_run.comp.glsl` to allow lower detail for "invisible" instances
@@ -298,6 +304,18 @@ void main()
     // ensure that the tlas instances are always initialized to the pre-built low detail blas and
     // renderable in some way.
     // May be overwritten at a later time in `instance_assign_blas.comp.glsl`
-    build.tlasInstances.d[instanceID].blasReference               = geometry.lowDetailBlasAddress;
+    
+    // We might want to remove the instance completely if not visible, or just use the low detail blas
+  #if USE_CULLING && USE_FORCED_INVISIBLE_CULLING && FORCE_INVISIBLE_CULLED_REMOVES_INSTANCE
+    if(!isVisible && build.frameIndex != 0){
+      // first frame must always have a valid BLAS due to TLAS BUILD, other frames are TLAS UPDATE
+      build.tlasInstances.d[instanceID].blasReference             = 0;
+    }
+    else
+  #endif
+    {
+      build.tlasInstances.d[instanceID].blasReference             = geometry.lowDetailBlasAddress;
+    }
+
   }
 }

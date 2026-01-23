@@ -94,6 +94,7 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"culling"}, &m_rendererConfig.useCulling);
   m_info.parameterRegistry->add({"primitiveculling"}, &m_rendererConfig.usePrimitiveCulling);
   m_info.parameterRegistry->add({"twopassculling"}, &m_rendererConfig.useTwoPassCulling);
+  m_info.parameterRegistry->add({"forcedinvisculling"}, &m_rendererConfig.useForcedInvisibleCulling);
   m_info.parameterRegistry->add({"dlss"}, &m_rendererConfig.useDlss);
   m_info.parameterRegistry->add({"dlssquality"}, (int*)&m_rendererConfig.dlssQuality);
   m_info.parameterRegistry->add({"blassharing"}, &m_rendererConfig.useBlasSharing);
@@ -601,6 +602,31 @@ void LodClusters::doProcessingOnly()
   m_scene->init(m_sceneFilePath, m_sceneConfig, m_sceneLoaderConfig, false);
 }
 
+void LodClusters::parameterSequenceCallback(const nvutils::ParameterSequencer::State& state)
+{
+  std::string message;
+  message += fmt::format("MemoryReport {} \"{}\" = {{ \n", state.index, state.description);
+  if(m_renderer)
+  {
+    Renderer::ResourceUsageInfo resourceActual   = m_renderer->getResourceUsage(false);
+    Renderer::ResourceUsageInfo resourceReserved = m_renderer->getResourceUsage(true);
+    message += fmt::format("Memory; Actual; Reserved;\n");
+    message += fmt::format("Geometry; {}; {};\n", resourceActual.geometryMemBytes, resourceReserved.geometryMemBytes);
+    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+    {
+      message += fmt::format("CLAS; {}; {};\n", resourceActual.rtClasMemBytes, resourceReserved.rtClasMemBytes);
+      message += fmt::format("BLAS; {}; {};\n", resourceActual.rtBlasMemBytes, resourceReserved.rtBlasMemBytes);
+      message += fmt::format("TLAS; {}; {};\n", resourceActual.rtTlasMemBytes, resourceReserved.rtTlasMemBytes);
+    }
+
+    message += fmt::format("Operations; {}; {};\n", resourceActual.operationsMemBytes, resourceReserved.operationsMemBytes);
+    message += fmt::format("Total; {}; {};\n", resourceActual.getTotalSum(), resourceReserved.getTotalSum());
+  }
+  message += fmt::format("}}\n");
+
+  nvutils::Logger::getInstance().log(nvutils::Logger::eSTATS, "%s", message.c_str());
+}
+
 const LodClusters::ClusterInfo LodClusters::s_clusterInfos[NUM_CLUSTER_CONFIGS] = {
     {64, 64, CLUSTER_64T_64V},     {64, 128, CLUSTER_64T_128V},   {64, 192, CLUSTER_64T_192V},
     {96, 96, CLUSTER_96T_96V},     {128, 128, CLUSTER_128T_128V}, {128, 256, CLUSTER_128T_256V},
@@ -771,7 +797,8 @@ void LodClusters::handleChanges()
        || rendererCfgChanged(m_rendererConfig.useSeparateGroups) || rendererCfgChanged(m_rendererConfig.useBlasMerging)
        || rendererCfgChanged(m_rendererConfig.useBlasCaching) || rendererCfgChanged(m_rendererConfig.useEXTmeshShader)
        || rendererCfgChanged(m_rendererConfig.useComputeRaster) || rendererCfgChanged(m_rendererConfig.usePrimitiveCulling)
-       || rendererCfgChanged(m_rendererConfig.useTwoPassCulling) || rendererCfgChanged(m_rendererConfig.useDepthOnly))
+       || rendererCfgChanged(m_rendererConfig.useTwoPassCulling) || rendererCfgChanged(m_rendererConfig.useDepthOnly)
+       || rendererCfgChanged(m_rendererConfig.useForcedInvisibleCulling))
     {
       if(rendererCfgChanged(m_rendererConfig.useBlasCaching))
       {

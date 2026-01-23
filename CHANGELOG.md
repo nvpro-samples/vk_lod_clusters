@@ -1,4 +1,10 @@
 # Changelog for vk_lod_clusters
+* 2026-1-23:
+  * Added scripted benchmark mode: `--scriptfile <filename>` leveraging `nvutils::ParameterSequencer`. Pass a text file with command-line arguments. Each sequence starts with a line like `SEQUENCE "sequence name"` followed by command-line arguments that define the settings used.
+* 2026-1-12:
+  * Added "Force Invisible Culling" option to "Traversal -> Other" for ray tracing when culling is enabled. This will remove instances and clusters that aren't primary visible.
+  It allows to get the same scene complexity as rasterization in both streaming and rendering complexity.  
+  Note that it does create artifacts in secondary rays due to missing geometry, and BLAS sharing/merging may also cause missing geometry (technically only BLAS caching is valid).
 * 2026-1-8:
   * Updated SSAO implementation, taken from [NVIDIA-RTX/Donut](https://github.com/NVIDIA-RTX/Donut)
   * Use "reverse z" to improve depth precision in rasterization.

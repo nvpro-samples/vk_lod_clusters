@@ -583,6 +583,8 @@ void LodClusters::onUIRender()
         }
         else
         {
+          PE::Checkbox("Force Invisible Culling", (bool*)&m_rendererConfig.useForcedInvisibleCulling,
+                       "Even ray tracing will cull based on primary visibility alone. Warning BLAS Sharing techniques may cause artifacts.");
           ImGui::EndDisabled();
         }
         PE::treePop();

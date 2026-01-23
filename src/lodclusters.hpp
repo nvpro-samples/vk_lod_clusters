@@ -23,6 +23,7 @@
 #include <nvapp/application.hpp>
 #include <nvutils/camera_manipulator.hpp>
 #include <nvutils/parameter_parser.hpp>
+#include <nvutils/parameter_sequencer.hpp>
 #include <nvvk/context.hpp>
 #include <nvvk/profiler_vk.hpp>
 #include <nvgui/enum_registry.hpp>
@@ -135,6 +136,8 @@ public:
 
   bool isProcessingOnly() const { return !m_sceneFilePath.empty() && m_sceneLoaderConfig.processingOnly; }
   void doProcessingOnly();
+
+  void parameterSequenceCallback(const nvutils::ParameterSequencer::State& state);
 
 private:
   VkExtent2D                 m_windowSize;

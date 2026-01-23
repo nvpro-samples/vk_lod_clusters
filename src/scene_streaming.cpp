@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -350,11 +350,6 @@ void SceneStreaming::cmdBeginFrame(VkCommandBuffer         cmd,
   //   likewise a new request requires an empty slot, hence requests must be handled before
   //
   // This function is called by the renderer.
-
-  if(m_frameIndex == 3)
-  {
-    bool b = true;
-  }
 
   auto     timerSection = profiler.cmdFrameSection(cmd, "Stream Begin");
   VkDevice device       = m_resources->m_device;
@@ -1447,6 +1442,18 @@ void SceneStreaming::cmdEndFrame(VkCommandBuffer cmd, QueueState& cmdQueueState,
   m_requestsTaskQueue.push(m_shaderData.request.taskIndex, cmdQueueState.getCurrentState());
 
   m_frameIndex++;
+
+  // for benchmarking. useful to see how many frames it takes to load data until peak is reached
+  size_t geoSize = getGeometrySize(false);
+  if(geoSize > m_peakGeometrySize)
+  {
+    m_peakGeometrySize = geoSize;
+    m_peakFrameIndex   = m_frameIndex;
+  }
+  else if(m_frameIndex == m_peakFrameIndex + 2)
+  {
+    LOGI("streaming: geometry peak frame %d\n", m_peakFrameIndex);
+  }
 }
 
 void SceneStreaming::getStats(StreamingStats& stats) const
@@ -1509,11 +1516,12 @@ size_t SceneStreaming::getGeometrySize(bool reserved) const
 
 bool SceneStreaming::updateClasRequired(bool state)
 {
+  bool result = true;
   if(state != m_requiresClas)
   {
     if(state)
     {
-      return initClas();
+      result = initClas();
     }
     else
     {
@@ -1521,7 +1529,9 @@ bool SceneStreaming::updateClasRequired(bool state)
     }
   }
 
-  return true;
+  LOGI("streaming: renderer begin frame %d\n", m_frameIndex);
+
+  return result;
 }
 
 void SceneStreaming::deinit()
@@ -1565,7 +1575,9 @@ void SceneStreaming::reset()
 
   vkDeviceWaitIdle(res.m_device);
 
-  m_debugFrameLimit = s_defaultDebugFrameLimit;
+  m_debugFrameLimit  = s_defaultDebugFrameLimit;
+  m_peakFrameIndex   = ~0;
+  m_peakGeometrySize = 0;
 
   m_requestsTaskQueue = {};
   m_storageTaskQueue  = {};

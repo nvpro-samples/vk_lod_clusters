@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -40,6 +40,7 @@
 #include <nvapp/elem_camera.hpp>
 #include <nvapp/elem_default_menu.hpp>
 #include <nvapp/elem_default_title.hpp>
+#include <nvapp/elem_sequencer.hpp>
 #include <nvutils/parameter_parser.hpp>
 
 #include "lodclusters.hpp"
@@ -107,8 +108,13 @@ int main(int argc, char** argv)
   nvutils::ProfilerManager                    profilerManager;
   std::shared_ptr<nvutils::CameraManipulator> cameraManipulator = std::make_shared<nvutils::CameraManipulator>();
 
-  nvutils::ParameterRegistry parameterRegistry;
-  nvutils::ParameterParser   parameterParser;
+  nvutils::ParameterRegistry            parameterRegistry;
+  nvutils::ParameterParser              parameterParser;
+  nvutils::ParameterSequencer::InitInfo sequencerInfo{// sequencer always requires a parser and registry
+                                                      .parameterParser   = &parameterParser,
+                                                      .parameterRegistry = &parameterRegistry,
+                                                      // sequencer uses the profiler for benchmarking
+                                                      .profilerManager = &profilerManager};
 
   nvvk::ValidationSettings::LayerPresets validationPreset = nvvk::ValidationSettings::LayerPresets::eStandard;
 
@@ -124,8 +130,19 @@ int main(int argc, char** argv)
   sampleInfo.parameterParser                 = &parameterParser;
   std::shared_ptr<LodClusters> sampleElement = std::make_shared<LodClusters>(sampleInfo);
 
+  // add a few more parameters to registry and parser to handle sequencer settings
+  sequencerInfo.registerScriptParameters(parameterRegistry, parameterParser);
+
+  // extends reporting output with memory consumption information
+  sequencerInfo.postCallbacks.emplace_back(
+      [&](const nvutils::ParameterSequencer::State& state) { sampleElement->parameterSequenceCallback(state); });
+
   parameterParser.add(parameterRegistry);
   parameterParser.parse(argc, argv);
+  parameterParser.setVerbose(true);
+
+  // this element requires sequencerInfo that is potentially updated by parameterParser
+  auto elemSequencer = std::make_shared<nvapp::ElementSequencer>(sequencerInfo);
 
   // can skip vulkan
   if(sampleElement->isProcessingOnly())
@@ -248,6 +265,7 @@ int main(int argc, char** argv)
   auto profilerUiSettings          = std::make_shared<nvapp::ElementProfiler::ViewSettings>();
   profilerUiSettings->table.levels = 1u;
 
+  app.addElement(elemSequencer);
   app.addElement(std::make_shared<nvapp::ElementDefaultWindowTitle>());
   app.addElement(sampleElement);
   app.addElement(logger);

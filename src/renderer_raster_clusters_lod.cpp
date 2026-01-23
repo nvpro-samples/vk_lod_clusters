@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -126,6 +126,7 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
   options.AddMacroDefinition("USE_SW_RASTER", config.useComputeRaster ? "1" : "0");
   options.AddMacroDefinition("USE_TWO_SIDED", rscene.scene->m_hasTwoSided && !config.forceTwoSided ? "1" : "0");
   options.AddMacroDefinition("USE_FORCED_TWO_SIDED", config.forceTwoSided ? "1" : "0");
+  options.AddMacroDefinition("USE_FORCED_INVISIBLE_CULLING", "0");
 
   res.compileShader(m_shaders.graphicsMesh, VK_SHADER_STAGE_MESH_BIT_NV, "render_raster_clusters.mesh.glsl", &options);
   res.compileShader(m_shaders.graphicsFragment, VK_SHADER_STAGE_FRAGMENT_BIT, "render_raster.frag.glsl", &options);
@@ -384,6 +385,7 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
       clusterLodErrorOverDistance(frame.lodPixelError * pixelScale, frame.frameConstants.fov,
                                   frame.frameConstants.viewportf.y);
 
+  m_sceneBuildShaderio.frameIndex        = m_frameIndex;
   m_sceneBuildShaderio.swRasterThreshold = frame.swRasterThreshold;
 
   vkCmdUpdateBuffer(cmd, res.m_commonBuffers.frameConstants.buffer, 0, sizeof(shaderio::FrameConstants) * 2,
@@ -616,6 +618,8 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
   m_resourceReservedUsage.geometryMemBytes = rscene.getGeometrySize(true);
   m_resourceActualUsage                    = m_resourceReservedUsage;
   m_resourceActualUsage.geometryMemBytes   = rscene.getGeometrySize(false);
+
+  m_frameIndex++;
 }
 
 void RendererRasterClustersLod::updatedFrameBuffer(Resources& res, RenderScene& rscene)

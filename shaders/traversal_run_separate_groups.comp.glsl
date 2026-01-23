@@ -1,6 +1,6 @@
 
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -132,7 +132,7 @@ layout(local_size_x=TRAVERSAL_GROUPS_WORKGROUP) in;
 ////////////////////////////////////////////
 
 
-#if USE_CULLING && TARGETS_RASTERIZATION
+#if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
 
 #if USE_SW_RASTER
 bool intersectSize(vec4 clipMin, vec4 clipMax, float threshold, float scale)
@@ -214,7 +214,7 @@ void main()
 
   // retrieve traversal & culling related information from the child node or cluster
   TraversalMetric traversalMetric;
-#if USE_CULLING && TARGETS_RASTERIZATION
+#if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
   BBox bbox;
 #endif
 
@@ -223,8 +223,10 @@ void main()
   float errorScale   = 1.0;
 #if USE_CULLING && TARGETS_RAY_TRACING
   uint visibilityState = build.instanceVisibility.d[instanceID];
+  #if USE_CULLING && !USE_FORCED_INVISIBLE_CULLING
   // instance is not primary visible, apply different error scale
   if ((visibilityState & INSTANCE_VISIBLE_BIT) == 0) errorScale = build.culledErrorScale;
+  #endif
 #endif
   mat4x3 traversalMatrix = mat4x3(build.traversalViewMatrix * toMat4(worldMatrix));
 
@@ -250,7 +252,7 @@ void main()
     bool isValid = true;
 
     {
-    #if USE_CULLING && TARGETS_RASTERIZATION
+    #if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
       bbox        = Group_getClusterBBox(groupRef, clusterIndex);
     #endif
       
@@ -305,7 +307,7 @@ void main()
     }
 
     // perform traversal & culling logic  
-  #if USE_CULLING && TARGETS_RASTERIZATION
+  #if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
     bool renderClusterSW = false;
     isValid            = isValid && queryWasVisible(worldMatrix, bbox, renderClusterSW);
   #endif

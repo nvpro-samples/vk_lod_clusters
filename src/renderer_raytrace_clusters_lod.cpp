@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -118,7 +118,6 @@ private:
 
   VkClusterAccelerationStructureMoveObjectsInputNV m_blasMoveInput{};
 
-  bool                                        m_tlasDoBuild = true;
   nvvk::Buffer                                m_tlasInstancesBuffer;
   VkAccelerationStructureGeometryKHR          m_tlasGeometry{};
   VkAccelerationStructureBuildGeometryInfoKHR m_tlasBuildInfo{};
@@ -169,6 +168,7 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("USE_SW_RASTER", "0");
   options.AddMacroDefinition("USE_TWO_SIDED", rscene.scene->m_hasTwoSided && !config.forceTwoSided ? "1" : "0");
   options.AddMacroDefinition("USE_FORCED_TWO_SIDED", config.forceTwoSided ? "1" : "0");
+  options.AddMacroDefinition("USE_FORCED_INVISIBLE_CULLING", config.useForcedInvisibleCulling ? "1" : "0");
 
   shaderc::CompileOptions optionsAO = options;
   options.AddMacroDefinition("RAYTRACING_PAYLOAD_INDEX", "0");
@@ -327,8 +327,9 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     m_sceneBuildShaderio.renderClusterInfos =
         mem.append(sizeof(shaderio::ClusterInfo) * m_sceneBuildShaderio.maxRenderClusters, 8);
 
-    m_sceneBuildShaderio.instanceVisibility = mem.append(sizeof(uint8_t) * m_renderInstances.size(), 4);
-    m_sceneBuildShaderio.blasBuildInfos     = mem.append(sizeof(shaderio::BlasBuildInfo) * m_maxBlasBuilds, 16);
+    m_sceneBuildShaderio.instanceVisibility =
+        mem.append(sizeof(uint8_t) * nvutils::align_up(m_renderInstances.size(), TRAVERSAL_INIT_WORKGROUP), 4);
+    m_sceneBuildShaderio.blasBuildInfos = mem.append(sizeof(shaderio::BlasBuildInfo) * m_maxBlasBuilds, 16);
     m_sceneBuildShaderio.instanceBuildInfos = mem.append(sizeof(shaderio::InstanceBuildInfo) * m_renderInstances.size(), 16);
 
     if(config.useBlasSharing)
@@ -593,6 +594,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
       clusterLodErrorOverDistance(frame.lodPixelError * pixelScale, frame.frameConstants.fov,
                                   frame.frameConstants.viewportf.y);
 
+  m_sceneBuildShaderio.frameIndex            = m_frameIndex;
   m_sceneBuildShaderio.culledErrorScale      = std::max(1.0f, frame.culledErrorScale);
   m_sceneBuildShaderio.sharingPushCulled     = frame.sharingPushCulled;
   m_sceneBuildShaderio.sharingTolerantLevels = frame.sharingTolerantLevels;
@@ -952,8 +954,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
   {
     auto timerSection = profiler.cmdFrameSection(cmd, "Tlas Build");
 
-    updateRayTracingTlas(cmd, res, !m_tlasDoBuild);
-    m_tlasDoBuild = false;
+    updateRayTracingTlas(cmd, res, m_frameIndex != 0);
 
     memBarrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_SHADER_WRITE_BIT;
     memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR
@@ -1019,6 +1020,8 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     res.getReadbackData(readback);
     m_resourceActualUsage.rtBlasMemBytes = readback.blasActualSizes + rscene.getBlasSize(false);
   }
+
+  m_frameIndex++;
 }
 
 void RendererRayTraceClustersLod::deinit(Resources& res)

@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2025-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -139,19 +139,27 @@ void main()
   uint mergedInstanceID = build.geometryBuildInfos.d[geometryID].mergedInstanceID;
 #endif
   
+#if USE_BLAS_MERGING || (USE_CULLING && USE_FORCED_INVISIBLE_CULLING)
+  uint visibilityState = build.instanceVisibility.d[instanceID];
+#endif
+  
   // When we need to build a BLAS for this instance, we need to add it's root node
   // to the traversal queue. Building the BLAS however isn't always required,
   // which the following logic shows.
   
   bool traverseRootNode = false;
-  if (isValid)
+  if (isValid
+#if USE_CULLING && USE_FORCED_INVISIBLE_CULLING
+    && ((visibilityState & INSTANCE_VISIBLE_BIT) != 0)
+#endif
+  )
   {  
   #if USE_BLAS_MERGING  
     // note an instance can be both shareInstance and mergedInstance at the same time
     // not ideal, but currently possible.
     if (mergedInstanceID == instanceID) {
       traverseRootNode = true;
-      build.instanceVisibility.d[instanceID] = uint8_t(build.instanceVisibility.d[instanceID] | INSTANCE_USES_MERGED_BIT);
+      build.instanceVisibility.d[instanceID] = uint8_t(visibilityState | INSTANCE_USES_MERGED_BIT);
     }
   #endif
     

@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -192,7 +192,7 @@ uint setupTask(inout TraversalInfo traversalInfo, uint readIndex, uint pass)
   return subCount + 1;
 }
 
-#if USE_CULLING && TARGETS_RASTERIZATION
+#if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
 
 bool queryWasVisible(mat4x3 instanceTransform, BBox bbox, bool isNode)
 {
@@ -286,7 +286,7 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
 
   // retrieve traversal & culling related information from the child node or cluster
   TraversalMetric traversalMetric;
-#if USE_CULLING && TARGETS_RASTERIZATION
+#if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
   BBox bbox;
 #endif
 
@@ -296,7 +296,7 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
     uint childNodeIndex = PACKED_GET(traversalInfo.packedNode, Node_packed_nodeChildOffset) + childIndex;
     Node childNode      = geometry.nodes.d[childNodeIndex];
     traversalMetric     = childNode.traversalMetric;
-  #if USE_CULLING && TARGETS_RASTERIZATION
+  #if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
     bbox                = geometry.nodeBboxes.d[childNodeIndex];
   #endif
     // prepare to enqueue this child node later, if metric evaluates properly
@@ -326,7 +326,7 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
     Group group = groupRef.d;
   #endif
 
-  #if USE_CULLING && TARGETS_RASTERIZATION
+  #if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
     bbox        = Group_getClusterBBox(groupRef, clusterIndex);
   #endif
     
@@ -386,14 +386,15 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   mat4x3 worldMatrix = instances[instanceID].worldMatrix;
   float uniformScale = computeUniformScale(worldMatrix);
   float errorScale   = 1.0;
-#if USE_CULLING && TARGETS_RASTERIZATION
+#if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
   isValid            = isValid && queryWasVisible(worldMatrix, bbox, isNode);
-#elif (USE_CULLING || USE_BLAS_MERGING) && TARGETS_RAY_TRACING
+#endif
+#if (USE_CULLING || USE_BLAS_MERGING) && TARGETS_RAY_TRACING
   uint visibilityState = build.instanceVisibility.d[instanceID];
-  #if USE_CULLING
+  #if USE_CULLING && !USE_FORCED_INVISIBLE_CULLING
     // instance is not primary visible, apply different error scale
     if ((visibilityState & INSTANCE_VISIBLE_BIT) == 0) errorScale = build.culledErrorScale;
-  #endif  
+  #endif
 #endif
   bool traverse      = testForTraversal(mat4x3(build.traversalViewMatrix * toMat4(worldMatrix)), uniformScale, traversalMetric, errorScale);
   bool traverseNode  = isValid && isNode && (traverse);                    // nodes test if we can descend

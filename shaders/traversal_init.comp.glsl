@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -139,7 +139,7 @@ void main()
   uint visibilityState = isVisible ? INSTANCE_VISIBLE_BIT : 0;
   
   bool isRenderable = isValid
-  #if USE_CULLING && TARGETS_RASTERIZATION
+  #if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
     && isVisible
   #endif
     ;
@@ -235,7 +235,18 @@ void main()
     build.instanceVisibility.d[instanceID]                        = uint8_t(visibilityState);  
     build.instanceBuildInfos.d[instanceID].clusterReferencesCount = 0;
     build.instanceBuildInfos.d[instanceID].blasBuildIndex         = blasBuildIndex;
-    build.tlasInstances.d[instanceID].blasReference               = geometry.lowDetailBlasAddress;
+    
+    // We might want to remove the instance completely if not visible, or just use the low detail blas
+  #if USE_CULLING && USE_FORCED_INVISIBLE_CULLING && FORCE_INVISIBLE_CULLED_REMOVES_INSTANCE
+    if(!isVisible && build.frameIndex != 0){
+      // first frame must always have a valid BLAS due to TLAS BUILD, other frames are TLAS UPDATE
+      build.tlasInstances.d[instanceID].blasReference             = 0;
+    }
+    else
+  #endif
+    {
+      build.tlasInstances.d[instanceID].blasReference             = geometry.lowDetailBlasAddress;
+    }
   }
 #elif USE_TWO_PASS_CULLING && TARGETS_RASTERIZATION
   if (build.pass == 0 && isValid) {

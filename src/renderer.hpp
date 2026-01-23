@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -62,22 +62,23 @@ public:
 
 struct RendererConfig
 {
-  bool flipWinding           = false;
-  bool forceTwoSided         = false;
-  bool useSorting            = false;
-  bool useRenderStats        = false;
-  bool useCulling            = true;
-  bool useTwoPassCulling     = false;
-  bool useBlasSharing        = true;
-  bool useBlasMerging        = true;
-  bool useBlasCaching        = false;
-  bool useShading            = true;
-  bool useDebugVisualization = true;
-  bool useSeparateGroups     = true;
-  bool useEXTmeshShader      = false;
-  bool useComputeRaster      = false;
-  bool usePrimitiveCulling   = false;
-  bool useDepthOnly          = false;
+  bool flipWinding               = false;
+  bool forceTwoSided             = false;
+  bool useForcedInvisibleCulling = false;
+  bool useSorting                = false;
+  bool useRenderStats            = false;
+  bool useCulling                = true;
+  bool useTwoPassCulling         = false;
+  bool useBlasSharing            = true;
+  bool useBlasMerging            = true;
+  bool useBlasCaching            = false;
+  bool useShading                = true;
+  bool useDebugVisualization     = true;
+  bool useSeparateGroups         = true;
+  bool useEXTmeshShader          = false;
+  bool useComputeRaster          = false;
+  bool usePrimitiveCulling       = false;
+  bool useDepthOnly              = false;
 
   bool useDlss = false;
 #if USE_DLSS
@@ -178,6 +179,7 @@ protected:
   uint32_t       m_maxBlasBuilds           = 0;
   uint32_t       m_meshShaderWorkgroupSize = 0;
   uint32_t       m_meshShaderBoxes         = 0;
+  uint32_t       m_frameIndex              = 0;
 
   BasicShaders   m_basicShaders;
   BasicPipelines m_basicPipelines;

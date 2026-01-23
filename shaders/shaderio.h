@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -101,6 +101,17 @@
 
 /////////////////////////////////////////
 
+// not exposed in UI, but can be modified and tested via
+// shader reload ("R" key)
+
+// for ray tracing only:
+// if USE_FORCED_INVISIBLE_CULLING is active and this setting is active as well, then instances
+// are removed from the TLAS if invisible. Otherwise they use the low detail BLAS.
+// Both options yield different sorts of artifacts, but removing yields better performance.
+#define FORCE_INVISIBLE_CULLED_REMOVES_INSTANCE 1
+
+/////////////////////////////////////////
+
 #ifdef __cplusplus
 namespace shaderio {
 using namespace glm;
@@ -141,6 +152,10 @@ using namespace glm;
 
 #ifndef USE_CULLING
 #define USE_CULLING 1
+#endif
+
+#ifndef USE_FORCED_INVISIBLE_CULLING
+#define USE_FORCED_INVISIBLE_CULLING 1
 #endif
 
 #ifndef USE_TWO_PASS_CULLING
@@ -199,7 +214,7 @@ struct RayPayload
 #if !USE_DEPTH_ONLY
   // Ray gen writes the direction through the pixel at x+1 for ray differentials.
   // Closest hit returns the shaded color there.
-  vec3  color;
+  vec3 color;
 #endif
   float hitT;
 #if DEBUG_VISUALIZATION && ALLOW_SHADING
