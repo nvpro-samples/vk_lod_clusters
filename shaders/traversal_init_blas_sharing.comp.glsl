@@ -22,7 +22,7 @@
   Shader Description
   ==================
   
-  Only for ray tracing and USE_BLAS_SHARING
+  Only used for TARGETS_RAY_TRACING && USE_BLAS_SHARING
   
   This compute shader initializes the traversal queue with the 
   root nodes of the lod hierarchy of rendered instances.

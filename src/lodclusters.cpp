@@ -41,12 +41,14 @@ LodClusters::LodClusters(const Info& info)
 
   m_profilerTimeline = m_info.profilerManager->createTimeline(createInfo);
 
-  m_info.parameterRegistry->add({"scene"}, {".gltf", ".glb", ".cfg"}, &m_sceneFilePath);
+  m_info.parameterRegistry->add({"scene"}, {".gltf", ".glb", ".cfg"}, &m_sceneFilePathDropNew);
   m_info.parameterRegistry->add({"renderer"}, (int*)&m_tweak.renderer);
   m_info.parameterRegistry->add({"verbose"}, &g_verbose, true);
   m_info.parameterRegistry->add({"resetstats"}, &m_tweak.autoResetTimers);
   m_info.parameterRegistry->add({"supersample"}, &m_tweak.supersample);
   m_info.parameterRegistry->add({"debugui"}, &m_showDebugUI);
+  m_info.parameterRegistry->add({"sequencescreenshot", "save screenshot at end of each sequence. 0 disabled (default), 1 full window, 2 rendered viewport"},
+                                (int*)&m_sequenceScreenshotMode, true);
 
   m_info.parameterRegistry->add({"dumpspirv", "dumps compiled spirv into working directory"}, &m_resources.m_dumpSpirv);
   m_info.parameterRegistry->add({"camerastring"}, &m_cameraString);
@@ -135,7 +137,7 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"compressed"}, &m_sceneConfig.useCompressedData);
   m_info.parameterRegistry->add({"compressedpositionbits"}, &m_sceneConfig.compressionPosDropBits);
   m_info.parameterRegistry->add({"compressedtexcoordbits"}, &m_sceneConfig.compressionTexDropBits);
-
+  m_info.parameterRegistry->add({"cachesuffix", "default is .nvsngeo"}, &m_sceneCacheSuffix);
 
   {
     // HACK as zorah.cfg ships with some deprecated settings
@@ -169,7 +171,7 @@ LodClusters::LodClusters(const Info& info)
   m_sceneLoaderConfig.progressPct = &m_sceneProgress;
 }
 
-void LodClusters::initScene(const std::filesystem::path& filePath, bool configChange)
+void LodClusters::initScene(const std::filesystem::path& filePath, const std::string& cacheSuffix, bool configChange)
 {
   deinitScene();
 
@@ -190,7 +192,7 @@ void LodClusters::initScene(const std::filesystem::path& filePath, bool configCh
 
     std::thread([=, this]() {
       auto scene = std::make_unique<Scene>();
-      if(scene->init(filePath, m_sceneConfig, m_sceneLoaderConfig, configChange) != Scene::SCENE_RESULT_SUCCESS)
+      if(scene->init(filePath, m_sceneConfig, m_sceneLoaderConfig, cacheSuffix, configChange) != Scene::SCENE_RESULT_SUCCESS)
       {
         scene = nullptr;
         LOGW("Loading scene failed\n");
@@ -476,7 +478,7 @@ void LodClusters::onAttach(nvapp::Application* app)
   }
 
   // Search for default scene if none was provided on the command line
-  if(m_sceneFilePath.empty())
+  if(m_sceneFilePathDropNew.empty())
   {
     const std::filesystem::path              exeDirectoryPath   = nvutils::getExecutablePath().parent_path();
     const std::vector<std::filesystem::path> defaultSearchPaths = {
@@ -486,7 +488,7 @@ void LodClusters::onAttach(nvapp::Application* app)
         std::filesystem::absolute(exeDirectoryPath / "resources"),
     };
 
-    m_sceneFilePathDefault = m_sceneFilePath = nvutils::findFile("bunny_v2/bunny.gltf", defaultSearchPaths);
+    m_sceneFilePathDefault = m_sceneFilePathDropNew = nvutils::findFile("bunny_v2/bunny.gltf", defaultSearchPaths);
 
     // enforce unique geometries in the sample scene
     m_sceneGridConfig.uniqueGeometriesForCopies = true;
@@ -515,7 +517,10 @@ void LodClusters::onAttach(nvapp::Application* app)
     m_streamingConfig.maxGeometryMegaBytes = 1 * 1024;
   }
 
-  onFileDrop(m_sceneFilePath);
+  m_cameraStringCommandLine = m_cameraString;
+
+  std::filesystem::path newFileDrop = m_sceneFilePathDropNew;
+  onFileDrop(newFileDrop);
 
   m_tweakLast          = m_tweak;
   m_sceneConfigLast    = m_sceneConfig;
@@ -551,38 +556,56 @@ void LodClusters::onFileDrop(const std::filesystem::path& filePath)
   if(filePath.empty())
     return;
 
-  if(filePath != m_sceneFilePath && !m_sceneLoadFromConfig)
+  if(!m_sceneLoadFromConfig)
   {
-    // reset grid parameter (in case scene is too large to be replicated)
-    m_sceneGridConfig.numCopies                 = 1;
-    m_sceneGridConfig.uniqueGeometriesForCopies = false;
+    // avoid certain state to affect the new scene
+    if(!m_sceneFilePathDropLast.empty() && filePath != m_sceneFilePathDropLast)
+    {
+      // reset grid parameter (in case scene is too large to be replicated)
+      m_sceneGridConfig.numCopies                 = 1;
+      m_sceneGridConfig.uniqueGeometriesForCopies = false;
+
+      m_cameraSpeed             = 0;
+      m_cameraString            = {};
+      m_cameraStringLast        = {};
+      m_cameraStringCommandLine = {};
+    }
+    m_sceneFilePathDropLast = filePath;
+    m_sceneFilePathDropNew  = filePath;
   }
 
   if(filePath.extension() == ".cfg")
   {
-    LOGI("Loading config: %s\n", nvutils::utf8FromPath(filePath).c_str());
-
-    m_cameraString = {};
-    m_cameraSpeed  = 0;
-
-    std::filesystem::path oldPath = m_sceneFilePath;
-
     std::string filePathString = nvutils::utf8FromPath(filePath);
+
+    LOGI("Loading config: %s\n", filePathString.c_str());
 
     std::vector<const char*> args;
     args.push_back("--configfile");
     args.push_back(filePathString.c_str());
 
+    std::filesystem::path oldFilePath = m_sceneFilePathDropNew;
+
+    // config parsing might change m_sceneFilePathDropNew
+    // and m_cameraString
     m_info.parameterParser->parse(std::span(args), false, {}, {}, true);
 
-    if(m_sceneFilePath != oldPath)
+    if(!m_cameraStringCommandLine.empty())
     {
-      std::filesystem::path newPath = m_sceneFilePath;
-      m_sceneFilePath               = oldPath;
+      // override from command-line
+      m_cameraString = m_cameraStringCommandLine;
+    }
 
-      m_sceneLoadFromConfig = true;
-      onFileDrop(newPath);
-      m_sceneLoadFromConfig = false;
+    if(m_sceneFilePathDropNew != m_sceneFilePathDropLast)
+    {
+      bool oldState = m_sceneLoadFromConfig;
+
+      m_sceneLoadFromConfig             = true;
+      std::filesystem::path cfgFilePath = m_sceneFilePathDropNew;
+      onFileDrop(cfgFilePath);
+
+      m_sceneLoadFromConfig  = oldState;
+      m_sceneFilePathDropNew = oldFilePath;
     }
 
     return;
@@ -591,7 +614,7 @@ void LodClusters::onFileDrop(const std::filesystem::path& filePath)
   LOGI("Loading model: %s\n", nvutils::utf8FromPath(filePath).c_str());
   deinitRenderer();
 
-  initScene(filePath, false);
+  initScene(filePath, m_sceneCacheSuffix, false);
 }
 
 void LodClusters::doProcessingOnly()
@@ -599,7 +622,7 @@ void LodClusters::doProcessingOnly()
   setFromClusterConfig(m_sceneConfig, m_tweak.clusterConfig);
   assert(m_app == nullptr);
   m_scene = std::make_unique<Scene>();
-  m_scene->init(m_sceneFilePath, m_sceneConfig, m_sceneLoaderConfig, false);
+  m_scene->init(m_sceneFilePathDropNew, m_sceneConfig, m_sceneLoaderConfig, m_sceneCacheSuffix, false);
 }
 
 void LodClusters::parameterSequenceCallback(const nvutils::ParameterSequencer::State& state)
@@ -621,10 +644,40 @@ void LodClusters::parameterSequenceCallback(const nvutils::ParameterSequencer::S
 
     message += fmt::format("Operations; {}; {};\n", resourceActual.operationsMemBytes, resourceReserved.operationsMemBytes);
     message += fmt::format("Total; {}; {};\n", resourceActual.getTotalSum(), resourceReserved.getTotalSum());
+    if(m_renderScene->useStreaming)
+    {
+      StreamingStats stats;
+      m_renderScene->sceneStreaming.getStats(stats);
+      message += fmt::format("Resident; Actual; Reserved;\n");
+      message += fmt::format("Groups; {}; {};\n", stats.residentGroups, stats.maxGroups);
+      message += fmt::format("Clusters; {}; {};\n", stats.residentClusters, stats.maxClusters);
+    }
+
+    shaderio::Readback readback;
+    m_resources.getReadbackData(readback);
+    message += fmt::format("Traversal; Actual; Reserved;\n");
+    message += fmt::format("Traversal Tasks; {}; {};\n", readback.numTraversalTasks, m_renderer->getMaxTraversalTasks());
+    message += fmt::format("Traversal Clusters; {}; {};\n", readback.numRenderClusters, m_renderer->getMaxRenderClusters());
+    message += fmt::format("BLAS builds; {}; {};\n", readback.numBlasBuilds, m_renderer->getMaxBlasBuilds());
   }
   message += fmt::format("}}\n");
 
   nvutils::Logger::getInstance().log(nvutils::Logger::eSTATS, "%s", message.c_str());
+
+  if(m_sequenceScreenshotMode != SCREENSHOT_OFF)
+  {
+    std::string filename = fmt::format("screenshot_{}_{}.jpg", state.index, state.description);
+    if(m_sequenceScreenshotMode == SCREENSHOT_WINDOW)
+    {
+      m_app->saveScreenShot(std::filesystem::path(filename), 100);
+    }
+    else if(m_sequenceScreenshotMode == SCREENSHOT_VIEWPORT)
+    {
+      m_app->saveImageToFile(m_resources.m_frameBuffer.useResolved ? m_resources.m_frameBuffer.imgColorResolved.image :
+                                                                     m_resources.m_frameBuffer.imgColor.image,
+                             m_resources.m_frameBuffer.windowSize, filename, 100, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
+  }
 }
 
 const LodClusters::ClusterInfo LodClusters::s_clusterInfos[NUM_CLUSTER_CONFIGS] = {
@@ -691,6 +744,12 @@ void LodClusters::handleChanges()
   if(m_sceneLoading)
     return;
 
+  if(m_sceneFilePathDropLast != m_sceneFilePathDropNew)
+  {
+    std::filesystem::path newFilePath = m_sceneFilePathDropNew;
+    onFileDrop(newFilePath);
+  }
+
   if(!m_resources.m_supportsMeshShaderNV)
   {
     m_rendererConfig.useEXTmeshShader = true;
@@ -749,7 +808,12 @@ void LodClusters::handleChanges()
     sceneChanged = true;
 
     deinitRenderer();
-    initScene(m_sceneFilePath, true);
+    initScene(m_sceneFilePath, m_scene->m_cacheSuffix, true);
+  }
+
+  if(!m_cameraString.empty() && m_cameraString != m_cameraStringLast)
+  {
+    applyCameraString();
   }
 
   bool sceneGridChanged = false;
@@ -772,8 +836,9 @@ void LodClusters::handleChanges()
     }
 
     bool renderSceneChanged = false;
-    if(sceneGridChanged || tweakChanged(m_tweak.useStreaming)
-       || (memcmp(&m_streamingConfig, &m_streamingConfigLast, sizeof(m_streamingConfig))))
+    bool streamingChanged   = tweakChanged(m_tweak.useStreaming)
+                            || (memcmp(&m_streamingConfig, &m_streamingConfigLast, sizeof(m_streamingConfig)));
+    if(sceneGridChanged || streamingChanged)
     {
       if(!sceneChanged || !sceneGridChanged)
       {
@@ -783,6 +848,12 @@ void LodClusters::handleChanges()
       renderSceneChanged = true;
       deinitRenderScene();
       initRenderScene();
+
+      if(streamingChanged)
+      {
+        m_streamClasHistogramMax     = 0;
+        m_streamGeometryHistogramMax = 0;
+      }
     }
 
     if(sceneChanged || shaderChanged || renderSceneChanged || tweakChanged(m_tweak.renderer) || tweakChanged(m_tweak.supersample)
@@ -840,6 +911,17 @@ void LodClusters::handleChanges()
       m_info.profilerManager->resetFrameSections(8);
     }
   }
+}
+
+void LodClusters::applyCameraString()
+{
+  nvutils::CameraManipulator::Camera cam = m_info.cameraManipulator->getCamera();
+  if(cam.setFromString(m_cameraString))
+  {
+    m_info.cameraManipulator->setCamera(cam);
+    nvgui::SetHomeCamera(m_info.cameraManipulator->getCamera());
+  }
+  m_cameraStringLast = m_cameraString;
 }
 
 void LodClusters::onRender(VkCommandBuffer cmd)
@@ -1058,12 +1140,7 @@ void LodClusters::setSceneCamera(const std::filesystem::path& filePath)
 
   if(!m_cameraString.empty())
   {
-    nvutils::CameraManipulator::Camera cam = m_info.cameraManipulator->getCamera();
-    if(cam.setFromString(m_cameraString))
-    {
-      m_info.cameraManipulator->setCamera(cam);
-      nvgui::SetHomeCamera(m_info.cameraManipulator->getCamera());
-    }
+    applyCameraString();
   }
 }
 

@@ -161,9 +161,13 @@ public:
     SCENE_RESULT_ERROR,
   };
 
-  Result init(const std::filesystem::path& filePath, const SceneConfig& config, const SceneLoaderConfig& loaderConfig, bool skipCache);
-  bool saveCache() const;
-  void deinit();
+  Result init(const std::filesystem::path& filePath,
+              const SceneConfig&           config,
+              const SceneLoaderConfig&     loaderConfig,
+              const std::string&           cacheSuffix,
+              bool                         skipCache);
+  bool   saveCache() const;
+  void   deinit();
 
   void updateSceneGrid(const SceneGridConfig& gridConfig);
 
@@ -489,6 +493,7 @@ public:
   SceneConfig       m_config;
   SceneLoaderConfig m_loaderConfig;
   SceneGridConfig   m_gridConfig;
+  std::string       m_cacheSuffix;
 
   shaderio::BBox m_bbox;
   shaderio::BBox m_gridBbox;

@@ -23,7 +23,7 @@
   Shader Description
   ==================
   
-  Only for USE_SEPARATE_GROUPS
+  Only used for USE_SEPARATE_GROUPS
   
   This compute shader implements the traversal of cluster groups
   in the scene. Cluster groups iterate over their children

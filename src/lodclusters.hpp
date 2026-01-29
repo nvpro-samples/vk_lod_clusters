@@ -71,6 +71,13 @@ public:
     GUI_VISUALIZE,
   };
 
+  enum ScreenshotMode
+  {
+    SCREENSHOT_OFF,
+    SCREENSHOT_WINDOW,
+    SCREENSHOT_VIEWPORT
+  };
+
   struct Tweak
   {
     ClusterConfig clusterConfig = CLUSTER_128T_128V;
@@ -134,7 +141,7 @@ public:
   void setSupportsSmBuiltinsNV(bool supported) { m_resources.m_supportsSmBuiltinsNV = supported; }
   bool getShowDebugUI() const { return m_showDebugUI; }
 
-  bool isProcessingOnly() const { return !m_sceneFilePath.empty() && m_sceneLoaderConfig.processingOnly; }
+  bool isProcessingOnly() const { return !m_sceneFilePathDropNew.empty() && m_sceneLoaderConfig.processingOnly; }
   void doProcessingOnly();
 
   void parameterSequenceCallback(const nvutils::ParameterSequencer::State& state);
@@ -164,8 +171,9 @@ private:
 #else
   bool m_showDebugUI = false;
 #endif
-  int    m_frames   = 0;
-  double m_animTime = 0;
+  int            m_frames                 = 0;
+  double         m_animTime               = 0;
+  ScreenshotMode m_sequenceScreenshotMode = SCREENSHOT_OFF;
 
   Tweak m_tweak;
   Tweak m_tweakLast;
@@ -175,6 +183,9 @@ private:
   std::unique_ptr<Scene> m_scene;
   std::filesystem::path  m_sceneFilePath;
   std::filesystem::path  m_sceneFilePathDefault;
+  std::filesystem::path  m_sceneFilePathDropLast;
+  std::filesystem::path  m_sceneFilePathDropNew;
+  std::string            m_sceneCacheSuffix = ".nvsngeo";
   SceneLoaderConfig      m_sceneLoaderConfig;
   SceneConfig            m_sceneConfig;
   SceneConfig            m_sceneConfigLast;
@@ -186,8 +197,9 @@ private:
   std::atomic_uint32_t   m_sceneProgress       = 0;
   bool                   m_sceneLoadFromConfig = false;
 
-
   std::string m_cameraString;
+  std::string m_cameraStringLast;
+  std::string m_cameraStringCommandLine;
   float       m_cameraSpeed = 0;
   //std::filesystem::path  m_cameraFilePath;
 
@@ -210,7 +222,7 @@ private:
 
   uint32_t m_equalFrames = 0;
 
-  void initScene(const std::filesystem::path& filePath, bool configChange);
+  void initScene(const std::filesystem::path& filePath, const std::string& cacheSuffix, bool configChange);
   void setSceneCamera(const std::filesystem::path& filePath);
   void saveCacheFile();
   void deinitScene();
@@ -229,6 +241,7 @@ private:
   void          updatedSceneGrid();
 
   void handleChanges();
+  void applyCameraString();
 
   float decodePickingDepth(const shaderio::Readback& readback);
   bool  isPickingValid(const shaderio::Readback& readback);

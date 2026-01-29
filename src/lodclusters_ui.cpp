@@ -1436,7 +1436,7 @@ void LodClusters::onUIMenu()
 
   if(m_scene && doReloadFile)
   {
-    std::filesystem::path filePath = m_sceneFilePath;
+    std::filesystem::path filePath = m_sceneFilePathDropLast;
     onFileDrop(filePath);
   }
 

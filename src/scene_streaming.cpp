@@ -533,9 +533,31 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
   uint32_t loadCount   = std::min(request.shaderData->maxLoads, request.shaderData->loadCounter);
   uint32_t unloadCount = std::min(request.shaderData->maxUnloads, request.shaderData->unloadCounter);
 
-  assert(request.shaderData->errorUpdate == 0 && request.shaderData->errorAgeFilter == 0 && request.shaderData->errorClasNotFound == 0
-         && request.shaderData->errorClasAlloc == 0 && request.shaderData->errorClasList == 0
-         && request.shaderData->errorClasDealloc == 0 && request.shaderData->errorClasUsedVsAlloc == 0);
+  {
+    const char* errorCause = nullptr;
+
+    if(request.shaderData->errorUpdate != 0)
+      errorCause = "update";
+    else if(request.shaderData->errorAgeFilter != 0)
+      errorCause = "age filter";
+    else if(request.shaderData->errorClasNotFound != 0)
+      errorCause = "clas not found";
+    else if(request.shaderData->errorClasAlloc != 0)
+      errorCause = "clas alloc";
+    else if(request.shaderData->errorClasDealloc != 0)
+      errorCause = "clas dealloc";
+    else if(request.shaderData->errorClasList != 0)
+      errorCause = "clas list";
+    else if(request.shaderData->errorClasUsedVsAlloc != 0)
+      errorCause = "clas used vs. alloc";
+
+    if(errorCause)
+    {
+      assert(0 && "streaming fatal error");
+      LOGE("streaming: fatal error - %s\n", errorCause);
+      exit(-1);
+    }
+  }
 
   if(m_requiresClas)
   {

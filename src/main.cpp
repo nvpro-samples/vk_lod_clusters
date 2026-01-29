@@ -138,8 +138,8 @@ int main(int argc, char** argv)
       [&](const nvutils::ParameterSequencer::State& state) { sampleElement->parameterSequenceCallback(state); });
 
   parameterParser.add(parameterRegistry);
-  parameterParser.parse(argc, argv);
   parameterParser.setVerbose(true);
+  parameterParser.parse(argc, argv);
 
   // this element requires sequencerInfo that is potentially updated by parameterParser
   auto elemSequencer = std::make_shared<nvapp::ElementSequencer>(sequencerInfo);
@@ -209,6 +209,8 @@ int main(int argc, char** argv)
       NVVK_CHECK(nvvk::Context::printInstanceLayers());
       NVVK_CHECK(nvvk::Context::printInstanceExtensions(vkContext.contextInfo.instanceExtensions));
       NVVK_CHECK(nvvk::Context::printDeviceExtensions(vkContext.getPhysicalDevice(), vkContext.contextInfo.deviceExtensions));
+    }
+    {
       NVVK_CHECK(nvvk::Context::printGpus(vkContext.getInstance(), vkContext.getPhysicalDevice()));
       LOGI("_________________________________________________\n");
     }

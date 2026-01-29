@@ -181,7 +181,11 @@ void Scene::fillGroupRuntimeData(const GroupInfo& srcGroupInfo,
   }
 }
 
-Scene::Result Scene::init(const std::filesystem::path& filePath, const SceneConfig& config, const SceneLoaderConfig& loaderConfig, bool skipCache)
+Scene::Result Scene::init(const std::filesystem::path& filePath,
+                          const SceneConfig&           config,
+                          const SceneLoaderConfig&     loaderConfig,
+                          const std::string&           cacheSuffix,
+                          bool                         skipCache)
 {
   *this = {};
 
@@ -192,10 +196,11 @@ Scene::Result Scene::init(const std::filesystem::path& filePath, const SceneConf
   m_cacheFilePath        = filePath;
   m_cachePartialFilePath = filePath;
   m_cacheFileSize        = 0;
+  m_cacheSuffix          = cacheSuffix;
 
   std::string oldExtension = filePath.extension().string();
-  m_cacheFilePath.replace_extension(oldExtension + ".nvsngeo");
-  m_cachePartialFilePath.replace_extension(oldExtension + ".nvsngeo_partial");
+  m_cacheFilePath.replace_extension(oldExtension + cacheSuffix);
+  m_cachePartialFilePath.replace_extension(oldExtension + cacheSuffix + "_partial");
 
   if(!skipCache && !m_loaderConfig.processingOnly && m_loaderConfig.autoLoadCache)
   {
