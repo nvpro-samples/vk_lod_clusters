@@ -666,12 +666,18 @@ void LodClusters::parameterSequenceCallback(const nvutils::ParameterSequencer::S
 
   if(m_sequenceScreenshotMode != SCREENSHOT_OFF)
   {
+    ScreenshotMode screenshotMode = m_sequenceScreenshotMode;
+    if(m_app->isHeadless())
+    {
+      screenshotMode = SCREENSHOT_VIEWPORT;
+    }
+
     std::string filename = fmt::format("screenshot_{}_{}.jpg", state.index, state.description);
-    if(m_sequenceScreenshotMode == SCREENSHOT_WINDOW)
+    if(screenshotMode == SCREENSHOT_WINDOW)
     {
       m_app->saveScreenShot(std::filesystem::path(filename), 100);
     }
-    else if(m_sequenceScreenshotMode == SCREENSHOT_VIEWPORT)
+    else if(screenshotMode == SCREENSHOT_VIEWPORT)
     {
       m_app->saveImageToFile(m_resources.m_frameBuffer.useResolved ? m_resources.m_frameBuffer.imgColorResolved.image :
                                                                      m_resources.m_frameBuffer.imgColor.image,

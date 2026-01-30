@@ -21,6 +21,7 @@
 #include <nvvk/sbt_generator.hpp>
 #include <nvutils/parallel_work.hpp>
 #include <nvutils/alignment.hpp>
+#include <nvutils/logger.hpp>
 #include <fmt/format.h>
 
 #include "renderer.hpp"
@@ -277,6 +278,7 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     if(rscene.useStreaming)
     {
       scratchSize = rscene.sceneStreaming.getRequiredClasScratchSize();
+      LOGI("raytracer: CLAS scratchsize %d KiB\n", uint32_t((scratchSize + 1023) / 1024));
     }
 
     if(!initRayTracingBlas(res, rscene, config, scratchSize))
@@ -1088,6 +1090,7 @@ bool RendererRayTraceClustersLod::initRayTracingBlas(Resources& res, RenderScene
   VkAccelerationStructureBuildSizesInfoKHR sizesInfo = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
   vkGetClusterAccelerationStructureBuildSizesNV(res.m_device, &inputs, &sizesInfo);
   scratchSize = std::max(scratchSize, sizesInfo.buildScratchSize);
+  LOGI("raytracer: BLAS build scratchsize %d KiB\n", uint32_t((sizesInfo.buildScratchSize + 1023) / 1024));
 
   m_blasDataSize = sizesInfo.accelerationStructureSize;
 
@@ -1109,6 +1112,7 @@ bool RendererRayTraceClustersLod::initRayTracingBlas(Resources& res, RenderScene
     VkAccelerationStructureBuildSizesInfoKHR sizesInfo = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
     vkGetClusterAccelerationStructureBuildSizesNV(res.m_device, &inputs, &sizesInfo);
     scratchSize = std::max(scratchSize, sizesInfo.buildScratchSize);
+    LOGI("raytracer: BLAS move scratchsize %d KiB\n", uint32_t((sizesInfo.buildScratchSize + 1023) / 1024));
   }
 
   return true;
@@ -1307,6 +1311,7 @@ void RendererRayTraceClustersLod::initRayTracingTlas(Resources& res, const Rende
   m_resourceReservedUsage.rtTlasMemBytes += createInfo.size;
 
   scratchSize = std::max(scratchSize, sizeInfo.buildScratchSize);
+  LOGI("raytracer: TLAS build scratchsize %d KiB\n", uint32_t((sizeInfo.buildScratchSize + 1023) / 1024));
 }
 
 void RendererRayTraceClustersLod::updateRayTracingTlas(VkCommandBuffer cmd, Resources& res, bool update)

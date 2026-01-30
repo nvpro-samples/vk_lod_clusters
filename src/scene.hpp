@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -344,9 +344,10 @@ public:
       return uint32_t(size_t(input) - size_t(&clusters[clusterIndex]));
     }
 
-    uint32_t* getClusterVertexData(uint32_t clusterIndex)
+    // get pointer relative to cluster header
+    uint32_t* getClusterLocalData(uint32_t clusterIndex, uint32_t localOffset)
     {
-      return (uint32_t*)(size_t(&clusters[clusterIndex]) + clusters[clusterIndex].vertices);
+      return (uint32_t*)(size_t(&clusters[clusterIndex]) + localOffset);
     }
   };
 
@@ -361,7 +362,8 @@ public:
                                    size_t           dstSize);
 
   // used to decompress group on CPU.
-  static void decompressGroup(const GroupInfo& info, const GroupView& groupView, void* dst, size_t dstSize);
+  // typically write-combined memory destination
+  static void decompressGroup(const GroupInfo& info, const GroupView& groupView, void* dstWriteOnly, size_t dstSize);
 
 
   //////////////////////////////////////////////////////////////////////////

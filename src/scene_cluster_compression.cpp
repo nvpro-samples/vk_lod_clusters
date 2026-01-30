@@ -1,6 +1,6 @@
 
 /*
-* Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2025-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -486,35 +486,40 @@ void Scene::compressGroup(TempContext* context, GroupStorage& groupTempStorage, 
 }
 
 
-void Scene::decompressGroup(const GroupInfo& info, const GroupView& groupSrc, void* dst, size_t dstSize)
+void Scene::decompressGroup(const GroupInfo& info, const GroupView& groupSrc, void* dstWriteOnly, size_t dstSize)
 {
+  // assume write-only destination (uncached write-combined memory)
+
   GroupInfo uncompressedInfo       = info;
   uncompressedInfo.sizeBytes       = info.uncompressedSizeBytes;
   uncompressedInfo.vertexDataCount = info.uncompressedVertexDataCount;
 
-  GroupStorage groupDst(dst, uncompressedInfo);
-  memcpy(dst, groupSrc.raw, info.computeUncompressedSectionSize());
+  GroupStorage groupDstWriteOnly(dstWriteOnly, uncompressedInfo);
+  memcpy(dstWriteOnly, groupSrc.raw, info.computeUncompressedSectionSize());
 
   uint32_t indicesOffset = 0;
   for(uint32_t c = 0; c < info.clusterCount; c++)
   {
-    shaderio::Cluster& cluster          = groupDst.clusters[c];
-    uint32_t           vertexCount      = cluster.vertexCountMinusOne + 1;
-    uint32_t           vertexDataOffset = cluster.vertices;
 
-    // get pointers
-    uint32_t* dstData = groupDst.getClusterVertexData(c);
+    shaderio::Cluster&       clusterDstWriteOnly = groupDstWriteOnly.clusters[c];
+    const shaderio::Cluster& clusterSrc          = groupSrc.clusters[c];
+    uint32_t                 triangleCount       = clusterSrc.triangleCountMinusOne + 1;
+    uint32_t                 vertexCount         = clusterSrc.vertexCountMinusOne + 1;
+    uint32_t                 vertexDataOffset    = clusterSrc.vertices;
+
+    // get pointers, start at cluster destination vertex data
+    uint32_t* dstData = groupDstWriteOnly.getClusterLocalData(c, clusterSrc.vertices);
     // `cluster.indices` actually stores the location to the compressed vertex data
     const uint32_t* srcData = (const uint32_t*)groupSrc.getClusterIndices(c);
 
     // correct indices offset
-    cluster.indices = groupDst.getClusterLocalOffset(c, groupDst.indices.data() + indicesOffset);
-    indicesOffset += (cluster.triangleCountMinusOne + 1) * 3;
+    clusterDstWriteOnly.indices = groupDstWriteOnly.getClusterLocalOffset(c, groupDstWriteOnly.indices.data() + indicesOffset);
+    indicesOffset += triangleCount * 3;
 
     uint32_t dstOffset = 0;
 
     // positions
-    if(cluster.attributeBits & shaderio::CLUSTER_ATTRIBUTE_COMPRESSED_VERTEX_POS)
+    if(clusterSrc.attributeBits & shaderio::CLUSTER_ATTRIBUTE_COMPRESSED_VERTEX_POS)
     {
       ptrdiff_t srcSize = ptrdiff_t(groupSrc.vertices.data() + groupSrc.vertices.size()) - ptrdiff_t(srcData);
       assert(srcSize >= 0);
@@ -532,7 +537,7 @@ void Scene::decompressGroup(const GroupInfo& info, const GroupView& groupSrc, vo
     }
 
     // normals
-    if(cluster.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL)
+    if(clusterSrc.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL)
     {
       memcpy(dstData + dstOffset, srcData, sizeof(uint32_t) * vertexCount);
       srcData += vertexCount;
@@ -548,7 +553,7 @@ void Scene::decompressGroup(const GroupInfo& info, const GroupView& groupSrc, vo
                                                               shaderio::CLUSTER_ATTRIBUTE_COMPRESSED_VERTEX_TEX_1;
 
       // texcoords
-      if((cluster.attributeBits & (usedBit | compressedBit)) == (usedBit | compressedBit))
+      if((clusterSrc.attributeBits & (usedBit | compressedBit)) == (usedBit | compressedBit))
       {
         ptrdiff_t srcSize = ptrdiff_t(groupSrc.vertices.data() + groupSrc.vertices.size()) - ptrdiff_t(srcData);
         assert(srcSize >= 0);
@@ -558,7 +563,7 @@ void Scene::decompressGroup(const GroupInfo& info, const GroupView& groupSrc, vo
         srcData += decompressor.readVertices(vertexCount, dstData + dstOffset, 2) / sizeof(uint32_t);
         dstOffset += 2 * vertexCount;
       }
-      else if(cluster.attributeBits & usedBit)
+      else if(clusterSrc.attributeBits & usedBit)
       {
         // align
         dstOffset = (dstOffset + 1) & ~1;
@@ -571,7 +576,7 @@ void Scene::decompressGroup(const GroupInfo& info, const GroupView& groupSrc, vo
     }
 
 
-    assert(size_t(dstData + dstOffset) <= size_t(dst) + dstSize);
+    assert(size_t(dstData + dstOffset) <= size_t(dstWriteOnly) + dstSize);
   }
 }
 

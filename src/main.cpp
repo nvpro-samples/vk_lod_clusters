@@ -122,6 +122,8 @@ int main(int argc, char** argv)
   parameterRegistry.add({"validationpreset"}, (int*)&validationPreset);
   parameterRegistry.add({"vsync"}, &appInfo.vSync);
   parameterRegistry.add({"device", "force a vulkan device via index into the device list"}, &vkSetup.forceGPU);
+  parameterRegistry.add({"headless"}, &appInfo.headless, true);
+  parameterRegistry.add({"headlessframes"}, &appInfo.headlessFrameCount);
 
   LodClusters::Info sampleInfo;
   sampleInfo.cameraManipulator               = cameraManipulator;

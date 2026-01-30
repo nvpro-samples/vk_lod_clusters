@@ -1,4 +1,10 @@
 # Changelog for vk_lod_clusters
+* 2026-1-30:
+  * Performance fix in `Scene::decompressGroup` accidental reads on write-combined memory (thanks Arseny Kapoulkine). This impacted streaming performance when using compressed data quite a lot. In future we intend to decompress on GPU.
+* 2026-1-29:
+  * Added `--headless` and `--headlessframes <int frame count>` options to run benchmarks without window creation.
+  * Added `--sequencescreenshot <mode: 0 default off, 1 window, 2 viewport>` to store a screenshot with each completed scripted sequence.
+  * Added `--cachesuffix <string default ".nvsngeo">`
 * 2026-1-23:
   * Added scripted benchmark mode: `--sequencefile <filename>` leveraging `nvutils::ParameterSequencer`. Pass a text file with command-line arguments. Each sequence starts with a line like `SEQUENCE "sequence name"` followed by command-line arguments that define the settings used.
 * 2026-1-12:
