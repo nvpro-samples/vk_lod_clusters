@@ -397,10 +397,10 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
   if(m_config.useComputeRaster)
   {
     VkClearColorValue clearValue;
-    clearValue.uint32[0] = ~0u;
-    clearValue.uint32[1] = ~0u;
-    clearValue.uint32[2] = ~0u;
-    clearValue.uint32[3] = ~0u;
+    clearValue.uint32[0] = 0u;
+    clearValue.uint32[1] = 0u;
+    clearValue.uint32[2] = 0u;
+    clearValue.uint32[3] = 0u;
 
     VkImageSubresourceRange subResource = {};
     subResource.aspectMask              = VK_IMAGE_ASPECT_COLOR_BIT;

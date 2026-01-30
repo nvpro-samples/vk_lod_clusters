@@ -1,6 +1,7 @@
 # Changelog for vk_lod_clusters
 * 2026-1-30:
   * Performance fix in `Scene::decompressGroup` accidental reads on write-combined memory (thanks Arseny Kapoulkine). This impacted streaming performance when using compressed data quite a lot. In future we intend to decompress on GPU.
+  * Bugfix regression with `Allow SW-Raster`, forgot changes for "reverse Z".
 * 2026-1-29:
   * Added `--headless` and `--headlessframes <int frame count>` options to run benchmarks without window creation.
   * Added `--sequencescreenshot <mode: 0 default off, 1 window, 2 viewport>` to store a screenshot with each completed scripted sequence.
@@ -13,7 +14,7 @@
   Note that it does create artifacts in secondary rays due to missing geometry, and BLAS sharing/merging may also cause missing geometry (technically only BLAS caching is valid).
 * 2026-1-8:
   * Updated SSAO implementation, taken from [NVIDIA-RTX/Donut](https://github.com/NVIDIA-RTX/Donut)
-  * Use "reverse z" to improve depth precision in rasterization.
+  * Use "reverse Z" to improve depth precision in rasterization.
 * 2025-12-15:
   WARNING: Needs updated nvpro_core2
   * Added `Two Pass Culling` to Traversal options, to do proper temporal coherent occlusion culling for rasterization.

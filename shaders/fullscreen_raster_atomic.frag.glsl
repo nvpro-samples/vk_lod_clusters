@@ -50,6 +50,6 @@ void main()
 {
   ivec2 coord  = ivec2(gl_FragCoord.xy);
   uvec2 loaded = unpackUint2x32(imageLoad(imgRasterAtomic, coord).x);
-  gl_FragDepth = loaded.y == uint(~0) ? 1.0 : uintBitsToFloat(loaded.y);
-  out_Color    = loaded.y == uint(~0) ? vec4(0,0,0,1) : unpackUnorm4x8(loaded.x);
+  gl_FragDepth = loaded.y == uint(0) ? 0.0 : uintBitsToFloat(loaded.y);
+  out_Color    = loaded.y == uint(0) ? vec4(0,0,0,1) : unpackUnorm4x8(loaded.x);
 }
