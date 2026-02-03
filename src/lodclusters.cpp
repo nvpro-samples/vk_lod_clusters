@@ -171,7 +171,7 @@ LodClusters::LodClusters(const Info& info)
   m_sceneLoaderConfig.progressPct = &m_sceneProgress;
 }
 
-void LodClusters::initScene(const std::filesystem::path& filePath, const std::string& cacheSuffix, bool configChange)
+void LodClusters::initScene(std::filesystem::path filePath, std::string cacheSuffix, bool configChange)
 {
   deinitScene();
 
@@ -954,7 +954,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     // for motion always use last
     frameConstants.viewProjMatrixPrev = frameConstants.viewProjMatrix;
 
-    if(m_frames && !m_frameConfig.freezeCulling)
+    if(m_frames)
     {
       m_frameConfig.frameConstantsLast = m_frameConfig.frameConstants;
     }
@@ -1051,7 +1051,18 @@ void LodClusters::onRender(VkCommandBuffer cmd)
 
     if(!m_frames)
     {
+      // on first frame replicate last
       m_frameConfig.frameConstantsLast = m_frameConfig.frameConstants;
+    }
+
+    if(!m_frameConfig.freezeLoD)
+    {
+      m_frameConfig.traversalViewMatrix = m_frameConfig.frameConstants.viewMatrix;
+    }
+    if(!m_frameConfig.freezeCulling)
+    {
+      m_frameConfig.cullViewProjMatrix     = m_frameConfig.frameConstants.viewProjMatrix;
+      m_frameConfig.cullViewProjMatrixLast = m_frameConfig.frameConstantsLast.viewProjMatrix;
     }
 
     if(m_frames)

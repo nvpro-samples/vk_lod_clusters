@@ -59,7 +59,6 @@ layout(push_constant) uniform pushData
 layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuffer
 {
   FrameConstants view;
-  FrameConstants viewLast;
 };
 
 layout(scalar, binding = BINDINGS_READBACK_SSBO, set = 0) buffer readbackBuffer

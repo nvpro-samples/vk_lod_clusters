@@ -166,7 +166,7 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
 
   // common resources
   {
-    m_allocator.createBuffer(m_commonBuffers.frameConstants, sizeof(shaderio::FrameConstants) * 2,
+    m_allocator.createBuffer(m_commonBuffers.frameConstants, sizeof(shaderio::FrameConstants),
                              VK_BUFFER_USAGE_2_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
 
     m_allocator.createBuffer(m_commonBuffers.readBack, sizeof(shaderio::Readback),

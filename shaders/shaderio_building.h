@@ -135,6 +135,8 @@ BUFFER_REF_DECLARE_ARRAY(InstanceBuildInfos_inout, InstanceBuildInfo, , 16);
 struct SceneBuilding
 {
   mat4 traversalViewMatrix;
+  mat4 cullViewProjMatrix;
+  mat4 cullViewProjMatrixLast;
 
   // for two pass culling
   uint pass;

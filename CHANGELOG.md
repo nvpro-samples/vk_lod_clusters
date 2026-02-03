@@ -1,4 +1,7 @@
 # Changelog for vk_lod_clusters
+* 2026-2-3:
+  * Bugfix freeze culling with "Two Pass Culling" and manage the matrix assignment outside the renderers.
+  * Bugfix regression when applying cluster changes in ui due to new cachesuffix changes.
 * 2026-1-30:
   * Performance fix in `Scene::decompressGroup` accidental reads on write-combined memory (thanks Arseny Kapoulkine). This impacted streaming performance when using compressed data quite a lot. In future we intend to decompress on GPU.
   * Bugfix regression with `Allow SW-Raster`, forgot changes for "reverse Z".
@@ -9,9 +12,9 @@
 * 2026-1-23:
   * Added scripted benchmark mode: `--sequencefile <filename>` leveraging `nvutils::ParameterSequencer`. Pass a text file with command-line arguments. Each sequence starts with a line like `SEQUENCE "sequence name"` followed by command-line arguments that define the settings used.
 * 2026-1-12:
-  * Added "Force Invisible Culling" option to "Traversal -> Other" for ray tracing when culling is enabled. This will remove instances and clusters that aren't primary visible.
+  * Added `Force Invisible Culling` option to "Traversal -> Other" for ray tracing when culling is enabled. This will remove instances and clusters that aren't primary visible.
   It allows to get the same scene complexity as rasterization in both streaming and rendering complexity.  
-  Note that it does create artifacts in secondary rays due to missing geometry, and BLAS sharing/merging may also cause missing geometry (technically only BLAS caching is valid).
+  Note that it does create artifacts in secondary rays due to missing geometry, and BLAS sharing/merging may also cause missing geometry (technically only BLAS caching is valid). Furthermore, it may yield missing geometry under motion, as it lacks a "Two Pass Culling" equivalent.
 * 2026-1-8:
   * Updated SSAO implementation, taken from [NVIDIA-RTX/Donut](https://github.com/NVIDIA-RTX/Donut)
   * Use "reverse Z" to improve depth precision in rasterization.

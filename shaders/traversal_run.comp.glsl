@@ -115,7 +115,6 @@
 layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuffer
 {
   FrameConstants view;
-  FrameConstants viewLast;
 };
 
 layout(scalar, binding = BINDINGS_READBACK_SSBO, set = 0) buffer readbackBuffer
@@ -212,7 +211,7 @@ bool queryWasVisible(mat4x3 instanceTransform, BBox bbox, bool isNode)
   // node's should be tested against best available hiz
   bool useLast = !isNode || build.pass == 0;
 
-  bool inFrustum = intersectFrustum(useLast ? viewLast.viewProjMatrix : view.viewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
+  bool inFrustum = intersectFrustum(useLast ? build.cullViewProjMatrixLast : build.cullViewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
   bool isVisible = inFrustum && 
     (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, useLast ? 0 : 1)));
   
@@ -226,7 +225,7 @@ bool queryWasVisible(mat4x3 instanceTransform, BBox bbox, bool isNode)
     }
     else {
       // test against current hiz to determine rendering
-      inFrustum = intersectFrustum(view.viewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
+      inFrustum = intersectFrustum(build.cullViewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
       isVisible = inFrustum && 
         (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 1)));
     }
@@ -234,7 +233,7 @@ bool queryWasVisible(mat4x3 instanceTransform, BBox bbox, bool isNode)
 #endif
 #else
   // always test against last frame visiblity
-  bool inFrustum = intersectFrustum(viewLast.viewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
+  bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
   bool isVisible = inFrustum && 
     (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 0)));
 #endif

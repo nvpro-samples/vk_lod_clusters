@@ -87,9 +87,11 @@ struct FrameConfig
 
   uint32_t visualize = VISUALIZE_LOD;
 
-  // must be kept next to each other
   shaderio::FrameConstants frameConstants;
   shaderio::FrameConstants frameConstantsLast;
+  glm::mat4                traversalViewMatrix;
+  glm::mat4                cullViewProjMatrix;
+  glm::mat4                cullViewProjMatrixLast;
 };
 
 //////////////////////////////////////////////////////////////////////////

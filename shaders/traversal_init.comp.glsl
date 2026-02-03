@@ -57,7 +57,6 @@
 layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuffer
 {
   FrameConstants view;
-  FrameConstants viewLast;
 };
 
 layout(scalar, binding = BINDINGS_READBACK_SSBO, set = 0) buffer readbackBuffer
@@ -123,7 +122,7 @@ void main()
   bool clipValid;
   
 #if USE_TWO_PASS_CULLING && TARGETS_RASTERIZATION
-  bool inFrustum = intersectFrustum( build.pass == 0 ? viewLast.viewProjMatrix : view.viewProjMatrix, geometry.bbox.lo, geometry.bbox.hi, instance.worldMatrix, clipMin, clipMax, clipValid);
+  bool inFrustum = intersectFrustum( build.pass == 0 ? build.cullViewProjMatrixLast : build.cullViewProjMatrix, geometry.bbox.lo, geometry.bbox.hi, instance.worldMatrix, clipMin, clipMax, clipValid);
   bool isVisible = inFrustum && (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, build.pass)));
   
   // if smallish and was already drawn, don't process again
@@ -132,7 +131,7 @@ void main()
   }
   
 #else
-  bool inFrustum = intersectFrustum(viewLast.viewProjMatrix, geometry.bbox.lo, geometry.bbox.hi, instance.worldMatrix, clipMin, clipMax, clipValid);
+  bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, geometry.bbox.lo, geometry.bbox.hi, instance.worldMatrix, clipMin, clipMax, clipValid);
   bool isVisible = inFrustum && (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 0)));
 #endif
   

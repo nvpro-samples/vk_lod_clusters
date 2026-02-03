@@ -375,20 +375,23 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
 {
   VkMemoryBarrier memBarrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
 
-  glm::vec2 renderScale = res.getFramebufferWindow2RenderScale();
-  float     pixelScale  = std::min(renderScale.x, renderScale.y);
+  {
+    glm::vec2 renderScale = res.getFramebufferWindow2RenderScale();
+    float     pixelScale  = std::min(renderScale.x, renderScale.y);
 
-  if(!frame.freezeLoD || m_sceneBuildShaderio.traversalViewMatrix[3][3] == 0)
-    m_sceneBuildShaderio.traversalViewMatrix = frame.frameConstants.viewMatrix;
+    m_sceneBuildShaderio.errorOverDistanceThreshold =
+        clusterLodErrorOverDistance(frame.lodPixelError * pixelScale, frame.frameConstants.fov,
+                                    frame.frameConstants.viewportf.y);
+  }
 
-  m_sceneBuildShaderio.errorOverDistanceThreshold =
-      clusterLodErrorOverDistance(frame.lodPixelError * pixelScale, frame.frameConstants.fov,
-                                  frame.frameConstants.viewportf.y);
+  m_sceneBuildShaderio.traversalViewMatrix    = frame.traversalViewMatrix;
+  m_sceneBuildShaderio.cullViewProjMatrix     = frame.cullViewProjMatrix;
+  m_sceneBuildShaderio.cullViewProjMatrixLast = frame.cullViewProjMatrixLast;
 
   m_sceneBuildShaderio.frameIndex        = m_frameIndex;
   m_sceneBuildShaderio.swRasterThreshold = frame.swRasterThreshold;
 
-  vkCmdUpdateBuffer(cmd, res.m_commonBuffers.frameConstants.buffer, 0, sizeof(shaderio::FrameConstants) * 2,
+  vkCmdUpdateBuffer(cmd, res.m_commonBuffers.frameConstants.buffer, 0, sizeof(shaderio::FrameConstants),
                     (const uint32_t*)&frame.frameConstants);
   vkCmdUpdateBuffer(cmd, m_sceneBuildBuffer.buffer, 0, sizeof(shaderio::SceneBuilding), (const uint32_t*)&m_sceneBuildShaderio);
   vkCmdFillBuffer(cmd, res.m_commonBuffers.readBack.buffer, 0, sizeof(shaderio::Readback), 0);

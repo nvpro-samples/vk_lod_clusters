@@ -65,7 +65,6 @@
 layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuffer
 {
   FrameConstants view;
-  FrameConstants viewLast;
 };
 
 layout(scalar, binding = BINDINGS_READBACK_SSBO, set = 0) buffer readbackBuffer
@@ -119,7 +118,7 @@ void main()
   vec4 clipMax;
   bool clipValid;
   
-  bool inFrustum = intersectFrustum(viewLast.viewProjMatrix, geometry.bbox.lo, geometry.bbox.hi, instance.worldMatrix, clipMin, clipMax, clipValid);
+  bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, geometry.bbox.lo, geometry.bbox.hi, instance.worldMatrix, clipMin, clipMax, clipValid);
   bool isVisible = inFrustum && (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 0)));
   
   uint visibilityState = isVisible ? INSTANCE_VISIBLE_BIT : 0;

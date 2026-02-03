@@ -222,7 +222,9 @@ private:
 
   uint32_t m_equalFrames = 0;
 
-  void initScene(const std::filesystem::path& filePath, const std::string& cacheSuffix, bool configChange);
+  // use by-value copies for flexibility
+  void initScene(std::filesystem::path filePath, std::string cacheSuffix, bool configChange);
+
   void setSceneCamera(const std::filesystem::path& filePath);
   void saveCacheFile();
   void deinitScene();

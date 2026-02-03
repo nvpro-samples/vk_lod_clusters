@@ -72,7 +72,6 @@
 layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuffer
 {
   FrameConstants view;
-  FrameConstants viewLast;
 };
 
 layout(scalar, binding = BINDINGS_READBACK_SSBO, set = 0) buffer readbackBuffer
@@ -137,7 +136,7 @@ layout(local_size_x=TRAVERSAL_GROUPS_WORKGROUP) in;
 #if USE_SW_RASTER
 bool intersectSize(vec4 clipMin, vec4 clipMax, float threshold, float scale)
 {
-  vec2 rect = (clipMax.xy - clipMin.xy) * 0.5 * scale * viewLast.viewportf.xy;
+  vec2 rect = (clipMax.xy - clipMin.xy) * 0.5 * scale * view.viewportf.xy;
   vec2 clipThreshold = vec2(threshold);
   
   return any(greaterThan(rect,clipThreshold));
@@ -156,7 +155,7 @@ bool queryWasVisible(mat4x3 instanceTransform, BBox bbox, inout bool outRenderCl
   bool useOcclusion = true;
   
   // test if visible in last frame  
-  bool inFrustum = intersectFrustum(viewLast.viewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
+  bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
   bool isVisible = inFrustum && 
     (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 0)));
   
@@ -171,7 +170,7 @@ bool queryWasVisible(mat4x3 instanceTransform, BBox bbox, inout bool outRenderCl
     }
     else {
       // test against current
-      inFrustum = intersectFrustum(view.viewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
+      inFrustum = intersectFrustum(build.cullViewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
       isVisible = inFrustum && 
         (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 1)));
     }
