@@ -275,7 +275,9 @@ Scene::Result Scene::init(const std::filesystem::path& filePath,
     m_hiTrianglesCountInstanced += geometry.hiTriangleCount;
     m_hiClustersCountInstanced += geometry.hiClustersCount;
   }
-
+  LOGI("cluster triangles: %d\n", m_config.clusterTriangles);
+  LOGI("cluster vertices: %d\n", m_config.clusterTriangles);
+  LOGI("cluster group: %d\n", m_config.clusterGroupSize);
   LOGI("clusters:  %" PRIu64 "\n", m_totalClustersCount);
   LOGI("triangles: %" PRIu64 "\n", m_totalTrianglesCount);
   LOGI("triangles/cluster: %.2f\n", double(m_totalTrianglesCount) / double(m_totalClustersCount));

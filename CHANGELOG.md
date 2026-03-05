@@ -1,4 +1,10 @@
 # Changelog for vk_lod_clusters
+* 2026-2-22:
+  * Bugfix regression: EXT_mesh_shader and USE_PERPRIMITIVE_OUT usage
+  * Add more statistics for automatic benchmark reports
+* 2026-2-18:
+  * Add screenshot for viewport with `F11 (jpg)` and `F12 (png)`.
+  * Add automatic USE_PERPRIMITIVE_OUT in mesh-shaders to move cluster uniform outputs to either be per-triangle or per-vertex.
 * 2026-2-3:
   * Bugfix freeze culling with "Two Pass Culling" and manage the matrix assignment outside the renderers.
   * Bugfix regression when applying cluster changes in ui due to new cachesuffix changes.

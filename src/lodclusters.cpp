@@ -112,6 +112,7 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"rendertraversalbits"}, &m_rendererConfig.numTraversalTaskBits);
   m_info.parameterRegistry->add({"visualize"}, &m_frameConfig.visualize);
   m_info.parameterRegistry->add({"swraster"}, &m_rendererConfig.useComputeRaster);
+  m_info.parameterRegistry->add({"swrasterthreshold"}, &m_frameConfig.swRasterThreshold);
   m_info.parameterRegistry->add({"renderstats"}, &m_rendererConfig.useRenderStats);
   m_info.parameterRegistry->add({"extmeshshader"}, &m_rendererConfig.useEXTmeshShader);
   m_info.parameterRegistry->add({"forcepreprocessmegabytes"}, (uint32_t*)&m_sceneLoaderConfig.forcePreprocessMiB);
@@ -651,6 +652,7 @@ void LodClusters::parameterSequenceCallback(const nvutils::ParameterSequencer::S
       message += fmt::format("Resident; Actual; Reserved;\n");
       message += fmt::format("Groups; {}; {};\n", stats.residentGroups, stats.maxGroups);
       message += fmt::format("Clusters; {}; {};\n", stats.residentClusters, stats.maxClusters);
+      message += fmt::format("Triangles; {};\n", stats.residentTriangles);
     }
 
     shaderio::Readback readback;
@@ -659,6 +661,22 @@ void LodClusters::parameterSequenceCallback(const nvutils::ParameterSequencer::S
     message += fmt::format("Traversal Tasks; {}; {};\n", readback.numTraversalTasks, m_renderer->getMaxTraversalTasks());
     message += fmt::format("Traversal Clusters; {}; {};\n", readback.numRenderClusters, m_renderer->getMaxRenderClusters());
     message += fmt::format("BLAS builds; {}; {};\n", readback.numBlasBuilds, m_renderer->getMaxBlasBuilds());
+
+    if(m_rendererConfig.useRenderStats)
+    {
+      message += fmt::format("Enqueued; Actual;\n");
+      message += fmt::format("Enqueued Tasks; {};\n", readback.numTraversedTasks);
+      message += fmt::format("Enqueued Clusters; {};\n", readback.numRenderedClusters);
+      if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD)
+      {
+        message += fmt::format("Enqueued Triangles; {};\n", readback.numRenderedTriangles);
+        if(m_rendererConfig.useCulling && m_rendererConfig.usePrimitiveCulling)
+        {
+          message += fmt::format("Rastered Triangles; {};\n", readback.numRasteredTriangles);
+          message += fmt::format("Rastered TrianglesSW; {};\n", readback.numRasteredTrianglesSW);
+        }
+      }
+    }
   }
   message += fmt::format("}}\n");
 
@@ -1058,6 +1076,8 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     if(!m_frameConfig.freezeLoD)
     {
       m_frameConfig.traversalViewMatrix = m_frameConfig.frameConstants.viewMatrix;
+      m_frameConfig.traversalFov        = m_frameConfig.frameConstants.fov;
+      m_frameConfig.traversalViewHeight = m_frameConfig.frameConstants.viewportf.y;
     }
     if(!m_frameConfig.freezeCulling)
     {

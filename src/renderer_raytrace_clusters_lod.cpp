@@ -309,7 +309,8 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
 
   {
     res.createBuffer(m_sceneBuildBuffer, sizeof(shaderio::SceneBuilding),
-                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT
+                         | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
     NVVK_DBG_NAME(m_sceneBuildBuffer.buffer);
     m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sceneBuildBuffer.bufferSize, "operations", "build shaderio");
 
@@ -591,8 +592,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     float     pixelScale  = std::min(renderScale.x, renderScale.y);
 
     m_sceneBuildShaderio.errorOverDistanceThreshold =
-        clusterLodErrorOverDistance(frame.lodPixelError * pixelScale, frame.frameConstants.fov,
-                                    frame.frameConstants.viewportf.y);
+        clusterLodErrorOverDistance(frame.lodPixelError * pixelScale, frame.traversalFov, frame.traversalViewHeight);
   }
 
   m_sceneBuildShaderio.traversalViewMatrix    = frame.traversalViewMatrix;

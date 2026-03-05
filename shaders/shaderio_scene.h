@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -53,6 +53,12 @@ enum ClusterAttributeBits
 
 #ifndef CLUSTER_TRIANGLE_COUNT
 #define CLUSTER_TRIANGLE_COUNT 32
+#endif
+
+// if we have less triangles than vertices per cluster, store
+// cluster-uniform outputs perprimitive
+#ifndef USE_PERPRIMITIVE_OUT
+#define USE_PERPRIMITIVE_OUT ((CLUSTER_TRIANGLE_COUNT <= CLUSTER_VERTEX_COUNT) && 1)
 #endif
 
 #endif

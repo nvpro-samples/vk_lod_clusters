@@ -45,6 +45,11 @@
 #if USE_SW_RASTER
 #extension GL_EXT_shader_image_int64 : enable
 #endif
+#if USE_EXT_MESH_SHADER
+#extension GL_EXT_mesh_shader : require
+#else
+#extension GL_NV_mesh_shader : require
+#endif
 
 #include "shaderio.h"
 
@@ -101,15 +106,47 @@ layout(set = 0, binding = BINDINGS_RASTER_ATOMIC, r64ui) uniform u64image2D imgR
 
 ///////////////////////////////////////////////////
 
-layout(location = 0) in Interpolants
-{
-  flat uint clusterID;
-  flat uint instanceID;
-#if ALLOW_SHADING
-  vec3 wPos;
+#if USE_PERPRIMITIVE_OUT
+
+  // Used if we have less triangles than vertices per cluster.
+  // Stores cluster-uniform outputs as perprimitive output.
+
+  layout(location = 0)
+  #if USE_EXT_MESH_SHADER
+  perprimitiveEXT
+  #else
+  perprimitiveNV
+  #endif
+  in PrimitiveAttributes
+  {
+    uint clusterID;
+    uint instanceID;
+  }
+  INPRIM;
+
+  #if ALLOW_SHADING
+  layout(location = 2) in Interpolants
+  {
+    vec3      wPos;
+  }
+  IN;
+  #endif
+
+#else
+
+  // Otherwise rely on non-interpolated vertex outputs.
+
+  layout(location = 0) in Interpolants
+  {
+    flat uint clusterID;
+    flat uint instanceID;
+  #if ALLOW_SHADING
+    vec3 wPos;
+  #endif
+  }
+  IN;
+
 #endif
-}
-IN;
 
 #if ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS)
 layout(location = 3) pervertexEXT in Interpolants2
@@ -136,13 +173,21 @@ void main()
   vec4 wTangent  = vec4(1);
   vec3 wNormal   = vec3(1);
   vec2 oTexCoord = vec2(1);
+  
+#if USE_PERPRIMITIVE_OUT
+  uint instanceID = INPRIM.instanceID;
+  uint clusterID  = INPRIM.clusterID;
+#else
+  uint instanceID = IN.instanceID;
+  uint clusterID  = IN.clusterID;
+#endif
 
-  RenderInstance instance = instances[IN.instanceID];
+  RenderInstance instance = instances[instanceID];
 #if USE_STREAMING
-  Cluster_in clusterRef = Cluster_in(streaming.resident.clusters.d[IN.clusterID]);
+  Cluster_in clusterRef = Cluster_in(streaming.resident.clusters.d[clusterID]);
 #else
   Geometry   geometry   = geometries[instance.geometryID];
-  Cluster_in clusterRef = Cluster_in(geometry.preloadedClusters.d[IN.clusterID]);
+  Cluster_in clusterRef = Cluster_in(geometry.preloadedClusters.d[clusterID]);
 #endif
 
 #if ALLOW_SHADING
@@ -220,14 +265,14 @@ void main()
 #endif
 #endif
 
-  uint visData = IN.clusterID;
+  uint visData = clusterID;
   
 #if ALLOW_SHADING
   if(view.visualize == VISUALIZE_LOD || view.visualize == VISUALIZE_GROUP)
   {
     if(view.visualize == VISUALIZE_LOD)
     {
-      visData = floatBitsToUint(float(clusterRef.d.lodLevel) * instances[IN.instanceID].maxLodLevelRcp);
+      visData = floatBitsToUint(float(clusterRef.d.lodLevel) * instances[instanceID].maxLodLevelRcp);
     }
     else
     {
@@ -237,7 +282,7 @@ void main()
   }
   else if(view.visualize == VISUALIZE_TRIANGLE)
   {
-    visData = IN.clusterID * 256 + uint(gl_PrimitiveID);
+    visData = clusterID * 256 + uint(gl_PrimitiveID);
   }
 
   out_Color.w = 1.f;
@@ -245,11 +290,11 @@ void main()
     const float overHeadLight = 1.0f;
     const float ambientLight  = 0.7f;
 
-    out_Color = shading(IN.instanceID, IN.wPos, wNormal, wTangent, oTexCoord, visData, overHeadLight, ambientLight);
+    out_Color = shading(instanceID, IN.wPos, wNormal, wTangent, oTexCoord, visData, overHeadLight, ambientLight);
   #if DEBUG_VISUALIZATION
     if(view.doWireframe != 0)
     {
-      out_Color.xyz = addWireframe(out_Color.xyz, gl_BaryCoordEXT, true, fwidthFine(gl_BaryCoordEXT), view.wireColor);
+      out_Color.xyz = addWireframe(out_Color.xyz, gl_BaryCoordEXT, true, fwidthFine(gl_BaryCoordEXT));
     }
   #endif
   }
@@ -266,9 +311,9 @@ void main()
   uvec2 pixelCoord = uvec2(gl_FragCoord.xy);
   if(pixelCoord == view.mousePosition)
   {
-    uint32_t packedClusterTriangleId = (IN.clusterID << 8) | (gl_PrimitiveID & 0xFF);
+    uint32_t packedClusterTriangleId = (clusterID << 8) | (gl_PrimitiveID & 0xFF);
     atomicMax(readback.clusterTriangleId, packPickingValue(packedClusterTriangleId, gl_FragCoord.z));
-    atomicMax(readback.instanceId, packPickingValue(IN.instanceID, gl_FragCoord.z));
+    atomicMax(readback.instanceId, packPickingValue(instanceID, gl_FragCoord.z));
   }
 #endif
   

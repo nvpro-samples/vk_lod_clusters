@@ -624,7 +624,8 @@ void processAllSubTasks(inout TraversalInfo traversalInfo, bool threadRunnable, 
     s_tasks[subgroupOffset + taskOffset].taskID = gl_SubgroupInvocationID;
   }
   
-  memoryBarrierShared();
+  //memoryBarrierShared();
+  memoryBarrier(gl_ScopeSubgroup, gl_StorageSemanticsShared, gl_SemanticsAcquireRelease);
   
   uint sumEnqueues = 0;
   

@@ -31,6 +31,7 @@
 #include <nvgui/property_editor.hpp>
 #include <nvgui/window.hpp>
 #include <nvgui/file_dialog.hpp>
+#include <fmt/chrono.h>
 
 #include "lodclusters.hpp"
 
@@ -259,7 +260,7 @@ void LodClusters::onUIRender()
   {
     if(nvgui::isWindowHovered(viewport))
     {
-      if(ImGui::IsKeyDown(ImGuiKey_R))
+      if(ImGui::IsKeyPressed(ImGuiKey_R, false))
       {
         m_reloadShaders = true;
       }
@@ -270,6 +271,20 @@ void LodClusters::onUIRender()
       if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Right) || ImGui::IsKeyPressed(ImGuiKey_M))
       {
         requestMirrorBox = true;
+      }
+
+      bool screenShotJpg = ImGui::IsKeyPressed(ImGuiKey_F11, false);
+      bool screenShotPng = ImGui::IsKeyPressed(ImGuiKey_F12, false);
+      if(screenShotJpg || screenShotPng)
+      {
+        auto        now      = std::chrono::system_clock::now();
+        std::string filename = fmt::format("screenshot_{:%Y_%m_%d_%H_%M_%S}.{}", now, screenShotJpg ? "jpg" : "png");
+
+        VkExtent2D extent = {m_resources.m_frameBuffer.imgColor.extent.width, m_resources.m_frameBuffer.imgColor.extent.height};
+
+        m_app->saveImageToFile(m_resources.m_frameBuffer.imgColor.image, extent, filename, screenShotJpg ? 90 : 100,
+                               m_resources.m_frameBuffer.useResolved ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL :
+                                                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
       }
     }
   }
@@ -933,6 +948,14 @@ void LodClusters::onUIRender()
         ImGui::TextColored(pctClusters > 99 ? warn_color : text_color, "%s", formatMetric(stats.residentClusters).c_str());
         ImGui::TableNextColumn();
         ImGui::TextColored(pctClusters > 99 ? warn_color : text_color, "%d %%", pctClusters);
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+
+        ImGui::Text("Resident Triangles");
+        ImGui::TableNextColumn();
+        ImGui::TextColored(text_color, "%s", formatMetric(stats.residentTriangles).c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextColored(text_color, "%d %%", pctClusters);
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
 

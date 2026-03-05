@@ -158,7 +158,10 @@ int main(int argc, char** argv)
   {
     validationSettings.setPreset(validationPreset);
     validationSettings.duplicate_message_limit = 3;
-    validationSettings.message_id_filter = {"VUID-RuntimeSpirv-storageInputOutput16-06334", "VUID-VkShaderModuleCreateInfo-pCode-08740"};
+    // some false positives
+    validationSettings.message_id_filter = {"VUID-RuntimeSpirv-storageInputOutput16-06334", "VUID-VkShaderModuleCreateInfo-pCode-08740",
+                                            "VUID-vkCmdBuildClusterAccelerationStructureIndirectNV-pCommandInfos-12307",
+                                            "VUID-vkCmdBuildClusterAccelerationStructureIndirectNV-dstImplicitData-12303"};
 
     vkSetup.instanceCreateInfoExt = validationSettings.buildPNextChain();
   }

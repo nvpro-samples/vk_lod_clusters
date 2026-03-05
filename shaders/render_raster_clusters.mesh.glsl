@@ -106,15 +106,47 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
 
 #if !USE_DEPTH_ONLY
 
-layout(location = 0) out Interpolants
-{
-  flat uint clusterID;
-  flat uint instanceID;
-#if ALLOW_SHADING
-  vec3      wPos;
+#if USE_PERPRIMITIVE_OUT
+
+  // Used if we have less triangles than vertices per cluster.
+  // Stores cluster-uniform outputs as perprimitive output.
+
+  layout(location = 0)
+  #if USE_EXT_MESH_SHADER
+  perprimitiveEXT
+  #else
+  perprimitiveNV
+  #endif
+  out PrimitiveAttributes
+  {
+    uint clusterID;
+    uint instanceID;
+  }
+  OUTPRIM[];
+
+  #if ALLOW_SHADING
+  layout(location = 2) out Interpolants
+  {
+    vec3      wPos;
+  }
+  OUT[];
+  #endif
+
+#else
+
+  // Otherwise rely on non-interpolated vertex outputs.
+
+  layout(location = 0) out Interpolants
+  {
+    flat uint clusterID;
+    flat uint instanceID;
+  #if ALLOW_SHADING
+    vec3      wPos;
+  #endif
+  }
+  OUT[];
+
 #endif
-}
-OUT[];
 
 
 #if ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS)
@@ -236,11 +268,17 @@ void main()
     #if ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS)
       OUTBARY[vert].vertexID              = vert;
     #endif
+    #if !USE_PERPRIMITIVE_OUT
       OUT[vert].clusterID                 = clusterID;
       OUT[vert].instanceID                = instanceID;
     #endif
+    #endif
     }
   }
+
+#if USE_PRIMITIVE_CULLING
+  barrier();
+#endif
   
   uint triOutCount = 0;
 
@@ -298,6 +336,10 @@ void main()
       #if !USE_DEPTH_ONLY
       gl_MeshPrimitivesNV[triOut].gl_PrimitiveID = int(tri);
       #endif
+    #endif
+    #if USE_PERPRIMITIVE_OUT
+      OUTPRIM[triOut].instanceID = instanceID;
+      OUTPRIM[triOut].clusterID  = clusterID;
     #endif
     }
   }

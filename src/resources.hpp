@@ -89,6 +89,8 @@ struct FrameConfig
 
   shaderio::FrameConstants frameConstants;
   shaderio::FrameConstants frameConstantsLast;
+  float                    traversalFov;
+  float                    traversalViewHeight;
   glm::mat4                traversalViewMatrix;
   glm::mat4                cullViewProjMatrix;
   glm::mat4                cullViewProjMatrixLast;

@@ -297,7 +297,7 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
     assert(lastClustersCount <= 0xFFFFFFFF);
     assert(m_resident.canAllocateGroup(uint32_t(lastClustersCount)));
 
-    StreamingResident::Group* rgroup = m_resident.addGroup(geometryGroup, lastClustersCount);
+    StreamingResident::Group* rgroup = m_resident.addGroup(geometryGroup, lastClustersCount, groupInfo.triangleCount);
     rgroup->deviceAddress            = persistentGeometry.lowDetailGroupsData.address;
     rgroup->lodLevel                 = groupInfo.lodLevel;
 
@@ -767,7 +767,7 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
       }
     }
 
-    StreamingResident::Group* residentGroup = m_resident.addGroup(geometryGroup, clusterCount);
+    StreamingResident::Group* residentGroup = m_resident.addGroup(geometryGroup, clusterCount, groupInfo.triangleCount);
     residentGroup->storageHandle            = storageHandle;
     residentGroup->deviceAddress            = deviceAddress;
     residentGroup->lodLevel                 = groupInfo.lodLevel;

@@ -192,6 +192,10 @@ vec4 shading(uint instanceID, vec3 wPos, vec3 wNormal, vec4 wTangent, vec2 oTexC
 
   color.xyz = overheadLighting + flashlightLighting + ambientLighting;
   color.w   = 1.0;
+  
+#if 0
+  color.xyz = materialAlbedo;
+#endif
 
   
   return color;
@@ -231,9 +235,10 @@ float stipple(in float stippleRepeats, in float stippleLength, in float edgePos)
 }
 
 
-vec3 addWireframe(vec3 color, vec3 barycentrics, bool frontFacing, vec3 barycentricsDerivatives, vec3 wireColor)
+vec3 addWireframe(vec3 color, vec3 barycentrics, bool frontFacing, vec3 barycentricsDerivatives)
 {
-  float oThickness    = view.wireThickness * 0.5;
+  vec3 wireColor      = view.wireColor;
+  float oThickness    = view.wireThickness * 0.25;
   float thickness     = oThickness * 0.5;  // Thickness for both side of the edge, must be divided by 2
   float smoothing     = oThickness * view.wireSmoothing;  // Could be thickness
   bool  enableStipple = (view.wireStipple == 1);
@@ -246,6 +251,8 @@ vec3 addWireframe(vec3 color, vec3 barycentrics, bool frontFacing, vec3 barycent
     enableStipple = true;  // Forcing backface to always stipple the line
     wireColor     = view.wireBackfaceColor;
   }
+  
+  wireColor = clamp(color,vec3(0), vec3(1)) * 0.5;
 
 
   // fwidth ? return the sum of the absolute value of derivatives in x and y
@@ -263,7 +270,7 @@ vec3 addWireframe(vec3 color, vec3 barycentrics, bool frontFacing, vec3 barycent
   }
 
   // Final color
-  return mix(color, wireColor, lineWidth);
+  return mix(color, wireColor, clamp(lineWidth,0,1));
 }
 
 #if SUPPORTS_RT == 1

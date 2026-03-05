@@ -99,8 +99,7 @@ void main()
     s_DepthAndSSAO[offsetUV.y + 0][offsetUV.x + 4] = vec2(depths.z, occlusions.z);
     s_DepthAndSSAO[offsetUV.y + 0][offsetUV.x + 0] = vec2(depths.w, occlusions.w);
   }
-  
-  memoryBarrierShared();
+
   barrier();
 
   float totalWeight = 0;

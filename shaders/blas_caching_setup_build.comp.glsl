@@ -141,7 +141,6 @@ void main()
     s_buildIndex    = buildOffset;
   }
   
-  memoryBarrierShared();
   barrier();
   
   uint buildIndex = s_buildIndex;

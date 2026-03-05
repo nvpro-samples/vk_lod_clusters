@@ -380,8 +380,7 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
     float     pixelScale  = std::min(renderScale.x, renderScale.y);
 
     m_sceneBuildShaderio.errorOverDistanceThreshold =
-        clusterLodErrorOverDistance(frame.lodPixelError * pixelScale, frame.frameConstants.fov,
-                                    frame.frameConstants.viewportf.y);
+        clusterLodErrorOverDistance(frame.lodPixelError * pixelScale, frame.traversalFov, frame.traversalViewHeight);
   }
 
   m_sceneBuildShaderio.traversalViewMatrix    = frame.traversalViewMatrix;

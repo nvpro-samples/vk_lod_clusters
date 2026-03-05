@@ -286,7 +286,7 @@ void main()
 
     vec3 derivative = max(derivativeX, derivativeY);
 
-    rayHit.color.xyz = addWireframe(shaded.xyz, baryWeight, true, derivative, view.wireColor);
+    rayHit.color.xyz = addWireframe(shaded.xyz, baryWeight, true, derivative);
   }
   else
 #endif

@@ -103,7 +103,7 @@ layout(set = 0, binding = BINDINGS_RASTER_ATOMIC, r64ui) uniform u64image2D imgR
 ////////////////////////////////////////////
 
 #if CLUSTER_TRIANGLE_COUNT > 64
-#define COMPUTE_WORKGROUP_SIZE 64
+#define COMPUTE_WORKGROUP_SIZE CLUSTER_TRIANGLE_COUNT
 #else
 #define COMPUTE_WORKGROUP_SIZE CLUSTER_TRIANGLE_COUNT
 #endif
@@ -125,26 +125,6 @@ float edgeFunction(vec2 a, vec2 b, vec2 c, float winding)
 {
   float edge = ((c.x - a.x) * (b.y - a.y) - (c.y - a.y) * (b.x - a.x));
   return edge * winding;
-}
-
-void rasterTriangle(vec2 pixel, uint packedColor, uvec3 indices, RasterVertex a, RasterVertex b, RasterVertex c, float triArea, float winding)
-{
-  float baryA = edgeFunction(b.xy, c.xy, pixel, winding);
-  float baryB = edgeFunction(c.xy, a.xy, pixel, winding);
-  float baryC = edgeFunction(a.xy, b.xy, pixel, winding);
-
-  if (baryA >= 0 && baryB >= 0 && baryC >= 0){
-    baryA /= triArea;
-    baryB /= triArea;
-    baryC /= triArea;
-    
-    float depth = a.z * baryA + 
-                  b.z * baryB + 
-                  c.z * baryC;
-
-    uint64_t u64 = packUint2x32(uvec2(packedColor, floatBitsToUint(depth)));
-    imageAtomicMax(imgRasterAtomic, ivec2(pixel.xy), u64);
-  }
 }
 
 ////////////////////////////////////////////
@@ -201,12 +181,16 @@ void main()
     }
   }
   
-  memoryBarrierShared();
   barrier();
   
   uint numRasteredTriangles = 0;
   
+#if COMPUTE_WORKGROUP_SIZE < CLUSTER_TRIANGLE_COUNT
   for(uint tri = gl_LocalInvocationID.x; tri <= triMax; tri += COMPUTE_WORKGROUP_SIZE )
+#else
+  uint tri = gl_LocalInvocationID.x;
+  if (tri <= triMax)
+#endif
   {
     uint triLoad  = tri;
     uvec3 indices = uvec3(localIndices.d[triLoad * 3 + 0],
@@ -242,31 +226,49 @@ void main()
       winding = -winding;
     }
   #endif
-    
     if (visible) 
-    {
-      //uint triangleCountMinusOne = triMax;
-      uint triangleCountMinusOne = CLUSTER_TRIANGLE_COUNT-1;
-      float relative   = (float(tri) / float(triangleCountMinusOne)) * 0.25 + 0.75;
-      
+    {      
     #if USE_DEPTH_ONLY
       uint packedColor = packUnorm4x8(vec4(0,0,0,1));
     #else
+      uint triangleCountMinusOne = CLUSTER_TRIANGLE_COUNT-1;
+      float relative   = (float(tri) / float(triangleCountMinusOne)) * 0.25 + 0.75;
       vec4 color       = vec4(colorizeID(clusterID) * relative, 1.0);
       uint packedColor = packUnorm4x8(color);
-    #endif
-    
-      uvec2 pixelDim  = uvec2(pixelMax - pixelMin);
+    #endif 
+      float invTriArea = 1.0f / triArea;
 
-      for (uint p = 0; p < pixelDim.x * pixelDim.y; p++)
+      pixelMin += vec2(0.5);
+      vec2 pixel = pixelMin;
+
+      while(true)
       {
-        uint px = p % pixelDim.x;
-        uint py = p / pixelDim.x;
+        float baryA = edgeFunction(b.xy, c.xy, pixel, winding);
+        float baryB = edgeFunction(c.xy, a.xy, pixel, winding);
+        float baryC = edgeFunction(a.xy, b.xy, pixel, winding);
 
-        vec2 pixel = pixelMin + vec2(0.5) + vec2(px,py);
+        if (baryA >= 0 && baryB >= 0 && baryC >= 0)
+        {
+          baryA *= invTriArea;
+          baryB *= invTriArea;
+          baryC *= invTriArea;
           
-        rasterTriangle(pixel, packedColor, indices, a, b, c, triArea, winding);
+          float depth = a.z * baryA + 
+                        b.z * baryB + 
+                        c.z * baryC;
+
+          uint64_t u64 = packUint2x32(uvec2(packedColor, floatBitsToUint(depth)));
+          imageAtomicMax(imgRasterAtomic, ivec2(pixel.xy), u64);
+        }
+        
+        pixel.x++;
+        if (pixel.x > pixelMax.x){ 
+          pixel.x = pixelMin.x;
+          pixel.y++;
+          if (pixel.y > pixelMax.y) break;
+        }
       }
+      
 #if USE_RENDER_STATS
       numRasteredTriangles += subgroupBallotBitCount(subgroupBallot(true));
 #endif

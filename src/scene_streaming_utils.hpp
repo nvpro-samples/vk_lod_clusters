@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -65,13 +65,15 @@ struct StreamingConfig
 
 struct StreamingStats
 {
-  uint32_t residentGroups   = 0;
-  uint32_t residentClusters = 0;
-  uint32_t maxGroups        = 0;
-  uint32_t maxClusters      = 0;
+  uint32_t residentGroups    = 0;
+  uint32_t residentClusters  = 0;
+  uint32_t residentTriangles = 0;
+  uint32_t maxGroups         = 0;
+  uint32_t maxClusters       = 0;
 
   uint32_t persistentGroups    = 0;
   uint32_t persistentClusters  = 0;
+  uint32_t persistentTriangles = 0;
   uint64_t persistentDataBytes = 0;
   uint64_t persistentClasBytes = 0;
 
@@ -195,10 +197,11 @@ public:
   {
     GeometryGroup             geometryGroup;
     uint32_t                  activeIndex;
-    uint32_t                  groupResidentID;
+    uint32_t                  groupResidentID : 24;
+    uint32_t                  lodLevel : 8;
     uint32_t                  clusterResidentID;
     uint16_t                  clusterCount;
-    uint16_t                  lodLevel;
+    uint16_t                  triangleCount;
     uint64_t                  deviceAddress;
     nvvk::BufferSubAllocation storageHandle;
   };
@@ -231,7 +234,7 @@ public:
 
   // first handle adding & removing
   bool                      canAllocateGroup(uint32_t numClusters) const;
-  StreamingResident::Group* addGroup(GeometryGroup geometryGroup, uint32_t clusterCount);
+  StreamingResident::Group* addGroup(GeometryGroup geometryGroup, uint32_t clusterCount, uint32_t triangleCount);
   void                      removeGroup(uint32_t groupResidentID);
 
   // then run this update, it will be based on all residency modifications up until this point
@@ -283,10 +286,12 @@ private:
 
   uint32_t m_lowDetailGroupsCount;
   uint32_t m_lowDetailClustersCount;
+  uint32_t m_lowDetailTrianglesCount;
   uint32_t m_lowDetailMaxGroupClusters;
 
   uint32_t m_activeGroupsCount;
   uint32_t m_activeClustersCount;
+  uint32_t m_activeTrianglesCount;
 
   nvvk::Buffer m_residentBuffer;
   uint64_t     m_residentGroupsOffset;

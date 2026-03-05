@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -133,8 +133,9 @@ void StreamingResident::init(Resources& res, const StreamingConfig& config, uint
   m_lowDetailGroupsCount   = 0;
   m_lowDetailClustersCount = 0;
 
-  m_activeGroupsCount   = 0;
-  m_activeClustersCount = 0;
+  m_activeGroupsCount    = 0;
+  m_activeClustersCount  = 0;
+  m_activeTrianglesCount = 0;
 
   m_groupIndicesUpdateRange    = {};
   m_groups                     = {};
@@ -248,10 +249,12 @@ size_t StreamingResident::getClasOperationsSize() const
 
 void StreamingResident::getStats(StreamingStats& stats) const
 {
-  stats.residentGroups     = m_activeGroupsCount;
-  stats.residentClusters   = m_activeClustersCount;
-  stats.persistentGroups   = m_lowDetailGroupsCount;
-  stats.persistentClusters = m_lowDetailClustersCount;
+  stats.residentGroups      = m_activeGroupsCount;
+  stats.residentClusters    = m_activeClustersCount;
+  stats.residentTriangles   = m_activeTrianglesCount;
+  stats.persistentGroups    = m_lowDetailGroupsCount;
+  stats.persistentClusters  = m_lowDetailClustersCount;
+  stats.persistentTriangles = m_lowDetailTrianglesCount;
 }
 
 void StreamingResident::deinitClas(Resources& res)
@@ -279,8 +282,9 @@ void StreamingResident::reset(shaderio::StreamingResident& shaderData)
     m_clusterAllocator.destroyRangeID(group.clusterResidentID, group.clusterCount);
   }
 
-  m_activeGroupsCount   = m_lowDetailGroupsCount;
-  m_activeClustersCount = m_lowDetailClustersCount;
+  m_activeGroupsCount    = m_lowDetailGroupsCount;
+  m_activeClustersCount  = m_lowDetailClustersCount;
+  m_activeTrianglesCount = m_lowDetailTrianglesCount;
 
   m_groupIndicesUpdateRange = {};
 
@@ -299,6 +303,7 @@ void StreamingResident::uploadInitialState(Resources::BatchedUploader& uploader,
 
   m_lowDetailGroupsCount      = m_activeGroupsCount;
   m_lowDetailClustersCount    = m_activeClustersCount;
+  m_lowDetailTrianglesCount   = m_activeTrianglesCount;
   m_lowDetailMaxGroupClusters = 0;
 
   // for debugging (see STREAMING_DEBUG_ADDRESSES) set this to m_maxGroups, otherwise m_loGroupsCount
@@ -432,7 +437,7 @@ const StreamingResident::Group* StreamingResident::findGroup(GeometryGroup geome
   }
 }
 
-StreamingResident::Group* StreamingResident::addGroup(GeometryGroup geometryGroup, uint32_t clusterCount)
+StreamingResident::Group* StreamingResident::addGroup(GeometryGroup geometryGroup, uint32_t clusterCount, uint32_t triangleCount)
 {
   bool     valid = false;
   uint32_t groupResidentID;
@@ -452,6 +457,7 @@ StreamingResident::Group* StreamingResident::addGroup(GeometryGroup geometryGrou
   group.groupResidentID   = groupResidentID;
   group.clusterResidentID = clusterResidentID;
   group.clusterCount      = clusterCount;
+  group.triangleCount     = triangleCount;
   group.deviceAddress     = STREAMING_INVALID_ADDRESS_START;
 
   m_activeGroupIndices[group.activeIndex] = groupResidentID;
@@ -461,6 +467,7 @@ StreamingResident::Group* StreamingResident::addGroup(GeometryGroup geometryGrou
   // m_groupIndicesUpdateRange.update(group.activeIndex);
 
   m_activeClustersCount += clusterCount;
+  m_activeTrianglesCount += triangleCount;
 
   return &m_groups[groupResidentID];
 }
@@ -490,6 +497,7 @@ void StreamingResident::removeGroup(uint32_t groupResidentID)
   }
 
   m_activeClustersCount -= group.clusterCount;
+  m_activeTrianglesCount -= group.triangleCount;
 
   m_groupAllocator.destroyID(groupResidentID);
   m_clusterAllocator.destroyRangeID(group.clusterResidentID, group.clusterCount);

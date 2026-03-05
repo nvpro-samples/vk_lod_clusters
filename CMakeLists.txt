@@ -52,6 +52,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 # Adding DLSS if selected
 option(USE_DLSS "Use DLSS-RR for denoising" ON)
 if(USE_DLSS)
+  set(DLSS_VERSION "310.5.3")
   find_package(NGX REQUIRED)
   target_link_libraries(${PROJECT_NAME} PRIVATE ngx)
   target_compile_definitions(${PROJECT_NAME} PRIVATE USE_DLSS)
