@@ -225,7 +225,7 @@ This is a glTF export of the highly detailed raw geometry from the [NVIDIA RTX K
 
 ![screenshot showing a highly detailed classical building with intricate ornaments](/docs/zorah_scene.jpg)
 
-- [zorah_main_public.v2.gltf.7z](http://developer.download.nvidia.com/ProGraphics/nvpro-samples/zorah_main_public.v2.gltf.7z)
+- [zorah_main_public.v2.gltf.7z](https://developer.download.nvidia.com/ProGraphics/nvpro-samples/zorah_main_public.v2.gltf.7z)
   - 1.63 G Triangles, with instancing 18.9 G Triangles
   - Cannot be pre-loaded must be streamed
   - **7.22 GB 7z** - 2026/3/10, unpacks to **9.32 GB on disk**
@@ -256,11 +256,11 @@ Known Issues:
 ![screenshot showing two separate renderings of statues for humans or animals arranged on a grid](/docs/otherscenes.jpg)
 
 These scenes are based on models from [https://threedscans.com/](https://threedscans.com/):
-- [threedscans_animals](http://developer.download.nvidia.com/ProGraphics/nvpro-samples/threedscans_animals.zip)
+- [threedscans_animals](https://developer.download.nvidia.com/ProGraphics/nvpro-samples/threedscans_animals.zip)
   - 7.9 M Triangles
   - ~ 1.4 GB preloaded memory
   - 128 MB zip 2025/7/11 (original was 290 MB zip, slow to load)
-- [threedscans_statues](http://developer.download.nvidia.com/ProGraphics/nvpro-samples/threedscans_statues.zip)
+- [threedscans_statues](https://developer.download.nvidia.com/ProGraphics/nvpro-samples/threedscans_statues.zip)
   - 6.9 M Triangles
   - ~ 1.3 GB preloaded memory
   - 116 MB zip 2025/7/11 (original was 280 MB zip, slow to load)
