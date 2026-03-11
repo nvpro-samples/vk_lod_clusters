@@ -123,6 +123,10 @@ struct SceneLoaderConfig
 
   // optional thread-safe progress bar updates
   std::atomic_uint32_t* progressPct = nullptr;
+
+  std::string skipNodeNames;
+  std::string skipMaterialNames;
+  std::string skipMeshNames;
 };
 
 // To artificially instance the full scene on a grid multiple times.
@@ -141,6 +145,7 @@ struct SceneGridConfig
   float     maxScale                  = 1.0f;
 };
 
+struct Filters;
 
 // The scene is organized with two separate accessors on the geometry data:
 // - "views" are read-only and used at runtime. They may point to memory mapped files.
@@ -793,7 +798,8 @@ private:
   void addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
                                 const struct cgltf_data*   data,
                                 const struct cgltf_node*   node,
-                                const glm::mat4            parentObjToWorldTransform = glm::mat4(1));
+                                const glm::mat4            parentObjToWorldTransform,
+                                struct Filters*            filters = nullptr);
 
   // to handle glTF EXT_meshopt_compression
   bool loadCompressedViewsGLTF(ProcessingInfo&                                processingInfo,

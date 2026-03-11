@@ -139,6 +139,12 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"compressedpositionbits"}, &m_sceneConfig.compressionPosDropBits);
   m_info.parameterRegistry->add({"compressedtexcoordbits"}, &m_sceneConfig.compressionTexDropBits);
   m_info.parameterRegistry->add({"cachesuffix", "default is .nvsngeo"}, &m_sceneCacheSuffix);
+  m_info.parameterRegistry->add({"skipnodes", "c++ regular expression string to skip adding instances whose name matches"},
+                                &m_sceneLoaderConfig.skipNodeNames);
+  m_info.parameterRegistry->add({"skipmeshes", "c++ regular expression string to skip adding instances whose mesh name matches"},
+                                &m_sceneLoaderConfig.skipMeshNames);
+  m_info.parameterRegistry->add({"skipmaterials", "c++ regular expression string to skip adding instances whose first mesh material name matches"},
+                                &m_sceneLoaderConfig.skipMaterialNames);
 
   {
     // HACK as zorah.cfg ships with some deprecated settings

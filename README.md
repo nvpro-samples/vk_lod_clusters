@@ -171,6 +171,7 @@ You can use the commandline to change some defaults:
 * The number of threads used in the persistent kernel is based on a crude heuristic for now and was not evaluated to be the optimal amount.
 * The bounding box visualizations don't show for ray tracing when DLSS is active, and they will only show clusters that are part of BLAS builds in the current frame. Prefer using rasterization to see them.
 * `doubleSided` materials are a lot slower with `EXT_mesh_shader` than with `NV_mesh_shader` on NVIDIA hardware. Primitive culling is still exclusive to NV_mesh_shader, given there is no reasonable portable and fast way for EXT_mesh_shader.
+
 ## Future Improvements
 
 Next:
@@ -185,7 +186,7 @@ Other:
 
 Requires at least Vulkan SDK 1.4.309.0
 
-The new `VK_NV_cluster_acceleration_structure` extension requires new drivers, earliest release version is `572.16` from 1/30/2025.
+The `VK_NV_cluster_acceleration_structure` extension is available since driver version `572.16` from 1/30/2025.
 The sample should run on older drivers with just rasterization available.
 
 Point cmake to the `vk_lod_clusters` directory and for example set the output directory to `/build`.
@@ -224,36 +225,31 @@ This is a glTF export of the highly detailed raw geometry from the [NVIDIA RTX K
 
 ![screenshot showing a highly detailed classical building with intricate ornaments](/docs/zorah_scene.jpg)
 
-- [zorah_main_public.gltf.7z](http://developer.download.nvidia.com/ProGraphics/nvpro-samples/zorah_main_public.gltf.7z)
-  - 1.64 G Triangles, with instancing 18.9 G Triangles
+- [zorah_main_public.v2.gltf.7z](http://developer.download.nvidia.com/ProGraphics/nvpro-samples/zorah_main_public.v2.gltf.7z)
+  - 1.63 G Triangles, with instancing 18.9 G Triangles
   - Cannot be pre-loaded must be streamed
-  - **12.8 GB 7z** - 2025/9/9, unpacks to **36.1 GB on disk**
-  - The render cache file will require 62 GB next to the gltf file, it can be downloaded (see next link)
-- [zorah_main_public.gltf.nvsngeo.7z](https://developer.download.nvidia.com/ProGraphics/nvpro-samples/zorah_main_public.gltf.nvsngeo.7z)
-  - **19.5 GB 7z** - 2025/11/10, unpacks to **26.0 GB on disk**
+  - **7.22 GB 7z** - 2026/3/10, unpacks to **9.32 GB on disk**
+  - The render cache file will require 26 GB next to the gltf file, it can be downloaded (see next link)
+- [zorah_main_public.v2.gltf.nvsngeo.7z](https://developer.download.nvidia.com/ProGraphics/nvpro-samples/zorah_main_public.v2.gltf.nvsngeo.7z)
+  - **19.2 GB 7z** - 2026/3/10, unpacks to **25.5 GB on disk**
   - Ensure that the `zorah_main_public.gltf.nvsngeo` is in the same directory as `zorah_main_public.gltf`.
   - If you want to avoid this big download and do the pre-processing for the cluster lod manually, use the following command-line:
-    - `vk_lod_cluster.exe "zorah_main_public.gltf" --clusterconfig 4 --processingonly 1 --processingthreadpct 0.5 --processingpartial 1 --compressed 1`
-    - This will use 50% of the local PC's supported concurrency to process the model and allow to abort and resume the processing. On a 16-core Ryzen 9 a value of `0.5` will yield 16 threads, requires 29 GB RAM (brief peak of 44 GB) and takes around 6 minutes. We recommend lower thread percentages on machines with less RAM.
+    - `vk_lod_cluster.exe "zorah_main_public.v2.gltf" --clusterconfig 4 --processingonly 1 --processingthreadpct 0.5 --processingpartial 1 --compressed 1`
+    - This will use 50% of the local PC's supported concurrency to process the model and allow to abort and resume the processing. On a 16-core Ryzen 9 a value of `0.5` will yield 16 threads, requires 29 GB RAM (brief peak of 44 GB) and takes around 6-10 minutes. We recommend lower thread percentages on machines with less RAM.
   - **NOTE:** Older versions of this file were larger, this sample has changed the file format of its file cache. When loading an old version, the processing will be triggered automatically and the old cache file is overwritten. It can take a bit until the new file versions have been propagated to servers worldwide.
 
 Make sure to use an NVME or SSD drive for storing these files. We recommend GPUs with at least 8 GB VRAM.
 
 > [!IMPORTANT]
-> Open or Drag & Drop the `zorah_main_public.cfg` file within the vk_lod_clusters application and _NOT_ the glTF directly.
-> Make sure the processed `zorah_main_public.gltf.nvsngeo` was either downloaded or generated as described above.
+> Open or Drag & Drop the `zorah_main_public.v2.cfg` or `zorah_main_public.v2.no_mountains.cfg` file within the vk_lod_clusters application and _NOT_ the `.glTF` directly.
 
 Known Issues:
-* Some versions of the Vulkan Validation Layer may trigger complaints about non-optional variables being zero. When in fact they are optional and allowed to be zero. This will be fixed in future versions.
-* Compared to the original demo the vegetation had to be removed to make the sharing of the glTF possible (the asset itself is licensed under MIT License).
+* Compared to the original demo some of the vegetation had to be removed to make the sharing of the glTF possible (the asset itself is licensed under MIT License).
 * Some objects float a bit strangely in the air and lack animation, this is expected for this scene and sample.
 * The vegetation will appear to fade out a bit quickly, especially the grass. This is a known limitation for mesh-based simplifcation on
   sparse geometry like this. We do not use any techniques that preserve volume during decimation.
 * Trees can appear a bit blurry with DLSS and very noisy without it. We will try to improve future versions of DLSS denoising this scenario.
-* The ray tracing performance does suffer from the background mountains overlapping with the primary buildings. One can remove them by modifying the materials in the gltf file (this will not invalidate the scene cache file): 
-  * Look for materials whose names contains `MI_Mountains_Background`
-  * Add `"alphaMode": "BLEND",` to the material, it will cause the instances to be removed from rendering.
-  * In the config file increase both `--hbaoradius` and `--aoradius` to `0.002`, as the value is relative to the overall scene size, which is now smaller.
+* The ray tracing performance does suffer from the background mountains overlapping with the primary buildings. Use `zorah_main_public.v2.no_mountains.cfg`.
 
 ### Threedscans Statues
 

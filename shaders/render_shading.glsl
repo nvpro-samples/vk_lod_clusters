@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -238,7 +238,7 @@ float stipple(in float stippleRepeats, in float stippleLength, in float edgePos)
 vec3 addWireframe(vec3 color, vec3 barycentrics, bool frontFacing, vec3 barycentricsDerivatives)
 {
   vec3 wireColor      = view.wireColor;
-  float oThickness    = view.wireThickness * 0.25;
+  float oThickness    = view.wireThickness * 0.20;
   float thickness     = oThickness * 0.5;  // Thickness for both side of the edge, must be divided by 2
   float smoothing     = oThickness * view.wireSmoothing;  // Could be thickness
   bool  enableStipple = (view.wireStipple == 1);
@@ -252,7 +252,7 @@ vec3 addWireframe(vec3 color, vec3 barycentrics, bool frontFacing, vec3 barycent
     wireColor     = view.wireBackfaceColor;
   }
   
-  wireColor = clamp(color,vec3(0), vec3(1)) * 0.5;
+  wireColor = clamp(color,vec3(0), vec3(1)) * 0.6;
 
 
   // fwidth ? return the sum of the absolute value of derivatives in x and y

@@ -1,4 +1,8 @@
 # Changelog for vk_lod_clusters
+* 2026-3-10:
+  * Add command-line options to filter instances by name, material name, or mesh name using `c++ std::regex` strings. `--skipnodes`, `--skipmaterials` , `--skipmeshes`. This does not affect the geometry processed nor the cache file.
+  * Updated Zorah scene files (minor internal changes, mostly smaller gltf size due to EXT_meshopt_compression use).
+  * Lowered default number of clusters and tasks to `1 << 20`.
 * 2026-2-22:
   * Bugfix regression: EXT_mesh_shader and USE_PERPRIMITIVE_OUT usage
   * Add more statistics for automatic benchmark reports

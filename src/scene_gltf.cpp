@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,13 +13,14 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
 #include <float.h>
 #include <unordered_map>
 #include <string>
+#include <regex>
 
 #include <fmt/format.h>
 #include <glm/gtc/type_ptr.hpp>
@@ -214,8 +215,15 @@ inline glm::vec4 quantizeFloat(const glm::vec4& vec, uint32_t dropBits)
 }
 }  // namespace
 
-
 namespace lodclusters {
+
+struct Filters
+{
+  std::regex meshNames;
+  std::regex materialNames;
+  std::regex nodeNames;
+};
+
 Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path& filePath)
 {
   std::string fileName = nvutils::utf8FromPath(filePath);
@@ -386,10 +394,7 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
 
   beginProcessingOnly(geometryToMesh.size());
 
-  if(!m_cacheFileView.isValid())
-  {
-    processingInfo.setupCompressedGltf(gltf->buffer_views_count);
-  }
+  processingInfo.setupCompressedGltf(gltf->buffer_views_count);
 
   // when we are resuming in processingOnly mode, we might have completed several geometries already,
   // which is passed to influence the decision about the parallelism mode.
@@ -447,12 +452,32 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
     return m_cacheFileView.isValid() ? SCENE_RESULT_CACHE_INVALID : SCENE_RESULT_ERROR;
   }
 
+  lodclusters::Filters  filters;
+  lodclusters::Filters* usedFilters = nullptr;
+
+  if(!m_loaderConfig.skipMaterialNames.empty())
+  {
+    usedFilters           = &filters;
+    filters.materialNames = std::regex(m_loaderConfig.skipMaterialNames);
+  }
+  if(!m_loaderConfig.skipMeshNames.empty())
+  {
+    usedFilters       = &filters;
+    filters.meshNames = std::regex(m_loaderConfig.skipMeshNames);
+  }
+  if(!m_loaderConfig.skipNodeNames.empty())
+  {
+    usedFilters       = &filters;
+    filters.nodeNames = std::regex(m_loaderConfig.skipNodeNames);
+  }
+
+
   if(gltf->scenes_count > 0)
   {
     const cgltf_scene scene = (gltf->scene != nullptr) ? (*(gltf->scene)) : (gltf->scenes[0]);
     for(size_t nodeIdx = 0; nodeIdx < scene.nodes_count; nodeIdx++)
     {
-      addInstancesFromNodeGLTF(meshToGeometry, gltf.get(), scene.nodes[nodeIdx]);
+      addInstancesFromNodeGLTF(meshToGeometry, gltf.get(), scene.nodes[nodeIdx], glm::mat4(1), usedFilters);
     }
   }
   else
@@ -461,7 +486,7 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
     {
       if(gltf->nodes[nodeIdx].parent == nullptr)
       {
-        addInstancesFromNodeGLTF(meshToGeometry, gltf.get(), &(gltf->nodes[nodeIdx]));
+        addInstancesFromNodeGLTF(meshToGeometry, gltf.get(), &(gltf->nodes[nodeIdx]), glm::mat4(1), usedFilters);
       }
     }
   }
@@ -488,13 +513,13 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
   return SCENE_RESULT_SUCCESS;
 }
 
-
 // Traverses the glTF node and any of its children, adding a MeshInstance to
 // the meshSet for each referenced glTF primitive.
 void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
                                      const struct cgltf_data*   data,
                                      const struct cgltf_node*   node,
-                                     const glm::mat4            parentObjToWorldTransform)
+                                     const glm::mat4            parentObjToWorldTransform,
+                                     struct Filters*            filters)
 {
   if(node == nullptr)
     return;
@@ -515,8 +540,17 @@ void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
     const cgltf_material*        material    = node->mesh->primitives[0].material;
     bool                         addInstance = true;
 
+    if(filters && node->mesh->name && std::regex_match(node->mesh->name, filters->meshNames))
+      addInstance = false;
+
+    if(filters && node->name && std::regex_match(node->name, filters->nodeNames))
+      addInstance = false;
+
     if(material)
     {
+      if(filters && material->name && std::regex_match(material->name, filters->materialNames))
+        addInstance = false;
+
       instance.materialID = uint32_t(material - data->materials);
       if(material->unlit || material->has_pbr_metallic_roughness)
       {
@@ -564,7 +598,7 @@ void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
   const size_t numChildren = node->children_count;
   for(size_t childIdx = 0; childIdx < numChildren; childIdx++)
   {
-    addInstancesFromNodeGLTF(meshToGeometry, data, node->children[childIdx], nodeObjToWorldTransform);
+    addInstancesFromNodeGLTF(meshToGeometry, data, node->children[childIdx], nodeObjToWorldTransform, filters);
   }
 }
 
