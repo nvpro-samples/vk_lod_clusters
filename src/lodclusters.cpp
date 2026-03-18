@@ -444,6 +444,7 @@ void LodClusters::onAttach(nvapp::Application* app)
 
     m_ui.enumAdd(GUI_SUPERSAMPLE, 1, "none");
     m_ui.enumAdd(GUI_SUPERSAMPLE, 2, "4x");
+    m_ui.enumAdd(GUI_SUPERSAMPLE, 540, "540p");
     m_ui.enumAdd(GUI_SUPERSAMPLE, 720, "720p");
     m_ui.enumAdd(GUI_SUPERSAMPLE, 1080, "1080p");
     m_ui.enumAdd(GUI_SUPERSAMPLE, 1440, "1440p");
