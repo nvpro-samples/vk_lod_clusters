@@ -255,7 +255,7 @@ void main()
       bbox        = Group_getClusterBBox(groupRef, clusterIndex);
     #endif
       
-      // The continous lod algorithm optimizes to get the lowest detail we can get away with.
+      // The continuous lod algorithm optimizes to get the lowest detail we can get away with.
       
       // We render a cluster if its own group was traversed because it had an error
       // greater than the threshold (it is "coarse enough"). This is fulfilled when reach

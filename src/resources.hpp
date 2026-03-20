@@ -196,17 +196,28 @@ public:
 
   struct FrameBuffer
   {
+    static constexpr int MAX_SUPERSAMPLE = 4;
+
     VkExtent2D renderSize{};
     VkExtent2D targetSize{};
     VkExtent2D windowSize{};
+    VkExtent2D targetSizeLast{};
+
+    glm::vec2 renderScale;
 
     // typically super resolution with respect to the window size
     // 0: off - use window resolution
     // 1: off - use window resolution
     // 2: 2x resolution along width and height
-    // 720:  fix render resolution to 1280 x 720, aspect from window
-    // 1080: fix render resolution to 1920 x 1080, aspect from window
-    // 1440: fix render resolution to 2560 x 1440, aspect from window
+    // 3: 3x resolution along width and height
+    // 4: 4x resolution along width and height
+    // 540:  fix render resolution to  960 x  540
+    // 720:  fix render resolution to 1280 x  720
+    // 1080: fix render resolution to 1920 x 1080
+    // 1440: fix render resolution to 2560 x 1440
+    // 1024: fix render resolution to square
+    // 2048: fix render resolution to square
+    // 4096: fix render resolution to square
     int supersample = 0;
 
     bool  useResolved = false;
@@ -249,6 +260,7 @@ public:
   void updateFramebufferDlss(VkCommandBuffer cmd);
   void setFramebufferDlss(bool enabled, NVSDK_NGX_PerfQuality_Value dlssQuality);
 #endif
+  void deinitFramebufferWindowSizeDependent();
   void deinitFramebufferRenderSizeDependent();
   void deinitFramebuffer();
 

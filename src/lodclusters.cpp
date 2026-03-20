@@ -1095,6 +1095,8 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     if(m_frames)
     {
       shaderio::FrameConstants frameCurrent = m_frameConfig.frameConstants;
+      frameCurrent.frame                    = m_frameConfig.frameConstantsLast.frame;
+      frameCurrent.jitter                   = m_frameConfig.frameConstantsLast.jitter;
 
       if(memcmp(&frameCurrent, &m_frameConfig.frameConstantsLast, sizeof(shaderio::FrameConstants)))
         m_equalFrames = 0;

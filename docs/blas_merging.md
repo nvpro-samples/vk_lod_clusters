@@ -1,4 +1,4 @@
-# BLAS Merging for ray tracing cluster-based continous level of detail
+# BLAS Merging for ray tracing cluster-based continuous level of detail
 
 This technique builds upon and enhances ["BLAS Sharing"](blas_sharing.md) (Bottom Level Acceleration Structure).
 

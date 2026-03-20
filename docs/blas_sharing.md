@@ -1,10 +1,10 @@
-# BLAS Sharing for ray tracing cluster-based continous level of detail
+# BLAS Sharing for ray tracing cluster-based continuous level of detail
 
 > [!NOTE]
 > Please have a look at the documentation of [nv_cluster_lod_builder](https://github.com/nvpro-samples/nv_cluster_lod_builder/blob/main/README.md) on how the cluster-based LoD system works, specifically the interaction between clusters, cluster groups and determining which clusters to render during LoD traversal.
 
 We are presenting a few techniques that reduce the number of BLAS (Bottom Level Acceleration Structure) to build for
-cluster-based continous level of detail (LoD). They are all based
+cluster-based continuous level of detail (LoD). They are all based
 around sharing a reduced set of BLAS among the instances.
 
 ![image illustrating the BLAS techniques](blas_techniques.png)
@@ -23,7 +23,7 @@ We recommend to combine BLAS merging with either BLAS caching or BLAS sharing to
 
 **BLAS Sharing** enables the re-use of a BLAS from a higher detailed instance
 for other instance's that can safely use it. It allows to reduce the number of BLAS builds
-in a continous level of detail (LoD) technique. As ray tracing is less susceptible
+in a continuous level of detail (LoD) technique. As ray tracing is less susceptible
 to performance issues from meshes with high triangle density, it is an option
 that a rasterizer would not take.
 
@@ -41,7 +41,7 @@ This is done by first classifying instances by their LoD level range, for which 
 
 ## LoD Traversal
 
-When rendering with continous LoD techniques,
+When rendering with continuous LoD techniques,
 view-dependent versions of a geometry are created with the intent
 to have more detail towards the camera viewpoint.
 
@@ -57,7 +57,7 @@ Note that the group error does not reflect the current cluster error. The rules
 above effectively cause clusters to be renderer that are "fine enough" to be below 
 the error threshold.
 
-As a result, continous LoD techniques show less transition effects
+As a result, continuous LoD techniques show less transition effects
 (LoD popping). Furthermore, rasterization performance benefits from avoiding high 
 degrees of sub-pixel triangles.
 

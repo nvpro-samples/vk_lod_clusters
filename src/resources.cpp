@@ -263,55 +263,77 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
 
   if(m_frameBuffer.imgColor.image != 0)
   {
-    deinitFramebuffer();
+    NVVK_CHECK(vkDeviceWaitIdle(m_device));
+
+    deinitFramebufferWindowSizeDependent();
 
     wasResize = true;
   }
 
   bool oldResolved = m_frameBuffer.supersample > 1;
 
+  VkExtent2D referenceSize = windowSize;
+
   switch(supersample)
   {
     case 540:
+      m_frameBuffer.renderScale       = glm::vec2(1.0f);
       m_frameBuffer.targetSize.width  = 960;
       m_frameBuffer.targetSize.height = 540;
+      referenceSize                   = m_frameBuffer.targetSize;
       break;
     case 720:
+      m_frameBuffer.renderScale       = glm::vec2(1.0f);
       m_frameBuffer.targetSize.width  = 1280;
       m_frameBuffer.targetSize.height = 720;
+      referenceSize                   = m_frameBuffer.targetSize;
       break;
     case 1080:
+      m_frameBuffer.renderScale       = glm::vec2(1.0f);
       m_frameBuffer.targetSize.width  = 1920;
       m_frameBuffer.targetSize.height = 1080;
       break;
     case 1440:
+      m_frameBuffer.renderScale       = glm::vec2(1.0f);
       m_frameBuffer.targetSize.width  = 2560;
       m_frameBuffer.targetSize.height = 1440;
+      referenceSize                   = m_frameBuffer.targetSize;
       break;
     case 2160:
+      m_frameBuffer.renderScale       = glm::vec2(1.0f);
       m_frameBuffer.targetSize.width  = 3840;
       m_frameBuffer.targetSize.height = 2160;
+      referenceSize                   = m_frameBuffer.targetSize;
       break;
     case 1024:
+      m_frameBuffer.renderScale       = glm::vec2(1.0f);
       m_frameBuffer.targetSize.width  = 1024;
       m_frameBuffer.targetSize.height = 1024;
+      referenceSize                   = m_frameBuffer.targetSize;
       break;
     case 2048:
+      m_frameBuffer.renderScale       = glm::vec2(1.0f);
       m_frameBuffer.targetSize.width  = 2048;
       m_frameBuffer.targetSize.height = 2048;
+      referenceSize                   = m_frameBuffer.targetSize;
       break;
     case 4096:
+      m_frameBuffer.renderScale       = glm::vec2(1.0f);
       m_frameBuffer.targetSize.width  = 4096;
       m_frameBuffer.targetSize.height = 4096;
+      referenceSize                   = m_frameBuffer.targetSize;
       break;
     default:
-      m_frameBuffer.targetSize.width  = windowSize.width * std::min(supersample, 4);
-      m_frameBuffer.targetSize.height = windowSize.height * std::min(supersample, 4);
+      supersample                     = std::min(supersample, FrameBuffer::MAX_SUPERSAMPLE);
+      m_frameBuffer.targetSize.width  = windowSize.width * supersample;
+      m_frameBuffer.targetSize.height = windowSize.height * supersample;
+      m_frameBuffer.renderScale       = glm::vec2(m_frameBuffer.renderSize.width, m_frameBuffer.renderSize.height)
+                                  / glm::vec2(m_frameBuffer.windowSize.width, m_frameBuffer.windowSize.height);
       break;
   }
 
-  m_frameBuffer.pixelScale = std::max(float(m_frameBuffer.targetSize.width) / float(windowSize.width),
-                                      float(m_frameBuffer.targetSize.height) / float(windowSize.height));
+  m_frameBuffer.pixelScale = std::max(float(m_frameBuffer.targetSize.width) / float(referenceSize.width),
+                                      float(m_frameBuffer.targetSize.height) / float(referenceSize.height));
   m_basicGraphicsState.rasterizationState.lineWidth = m_frameBuffer.pixelScale;
 
   // may be lowered due to DLSS
@@ -399,8 +421,13 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
   }
 
 
-  // initial resource transitions
+  // initial resource transitions and target size dependent resources
+
+  if(m_frameBuffer.targetSize.width != m_frameBuffer.targetSizeLast.width
+     || m_frameBuffer.targetSize.height != m_frameBuffer.targetSizeLast.height)
   {
+    deinitFramebufferRenderSizeDependent();
+
     VkCommandBuffer cmd = createTempCmdBuffer();
 
 #if USE_DLSS
@@ -413,6 +440,8 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
     updateFramebufferRenderSizeDependent(cmd);
 
     tempSyncSubmit(cmd);
+
+    m_frameBuffer.targetSizeLast = m_frameBuffer.targetSize;
   }
 
 
@@ -688,6 +717,12 @@ void Resources::setFramebufferDlss(bool enabled, NVSDK_NGX_PerfQuality_Value dls
 }
 #endif
 
+void Resources::deinitFramebufferWindowSizeDependent()
+{
+  m_allocator.destroyImage(m_frameBuffer.imgColor);
+  m_allocator.destroyImage(m_frameBuffer.imgColorResolved);
+}
+
 void Resources::deinitFramebufferRenderSizeDependent()
 {
   m_allocator.destroyImage(m_frameBuffer.imgDepthStencil);
@@ -708,22 +743,13 @@ void Resources::deinitFramebuffer()
 {
   NVVK_CHECK(vkDeviceWaitIdle(m_device));
 
-  m_allocator.destroyImage(m_frameBuffer.imgColor);
-  m_allocator.destroyImage(m_frameBuffer.imgColorResolved);
-
+  deinitFramebufferWindowSizeDependent();
   deinitFramebufferRenderSizeDependent();
 }
 
 glm::vec2 Resources::getFramebufferWindow2RenderScale() const
 {
-  if(m_frameBuffer.supersample >= 720)
-  {
-    // for fixed resolutions
-    return glm::vec2(1, 1);
-  }
-
-  return glm::vec2(m_frameBuffer.renderSize.width, m_frameBuffer.renderSize.height)
-         / glm::vec2(m_frameBuffer.windowSize.width, m_frameBuffer.windowSize.height);
+  return m_frameBuffer.renderScale;
 }
 
 void Resources::getReadbackData(shaderio::Readback& readback)

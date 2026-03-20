@@ -23,7 +23,7 @@ the model and generate the required cluster and LoD data. The LoD system is orga
 
 ## Continuous level of detail using clusters
 
-For some basic description what data structures the continous LoD system uses and how it works please look [here](docs/lod_generation.md).
+For some basic description what data structures the continuous LoD system uses and how it works please look [here](docs/lod_generation.md).
 
 In principle the rendering loop is similar for rasterization and ray tracing.
 The traversal of the LoD hierarchy and the interaction with the streaming system are the same.
