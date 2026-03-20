@@ -260,7 +260,6 @@ public:
   void updateFramebufferDlss(VkCommandBuffer cmd);
   void setFramebufferDlss(bool enabled, NVSDK_NGX_PerfQuality_Value dlssQuality);
 #endif
-  void deinitFramebufferWindowSizeDependent();
   void deinitFramebufferRenderSizeDependent();
   void deinitFramebuffer();
 

@@ -259,15 +259,11 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
 {
   m_fboChangeID++;
 
-  bool wasResize = false;
-
   if(m_frameBuffer.imgColor.image != 0)
   {
     NVVK_CHECK(vkDeviceWaitIdle(m_device));
 
-    deinitFramebufferWindowSizeDependent();
-
-    wasResize = true;
+    m_allocator.destroyImage(m_frameBuffer.imgColorResolved);
   }
 
   bool oldResolved = m_frameBuffer.supersample > 1;
@@ -342,12 +338,17 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
 
   m_frameBuffer.supersample = supersample;
 
-  LOGI("framebuffer: %d x %d (target)\n", m_frameBuffer.targetSize.width, m_frameBuffer.targetSize.height);
+  bool targetChanged = m_frameBuffer.targetSize.width != m_frameBuffer.targetSizeLast.width
+                       || m_frameBuffer.targetSize.height != m_frameBuffer.targetSizeLast.height;
+
 
   m_frameBuffer.useResolved = supersample > 1;
 
   VkSampleCountFlagBits samplesUsed = VK_SAMPLE_COUNT_1_BIT;
+  if(targetChanged)
   {
+    m_allocator.destroyImage(m_frameBuffer.imgColor);
+
     // color
     VkImageCreateInfo cbImageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     cbImageInfo.imageType         = VK_IMAGE_TYPE_2D;
@@ -423,8 +424,7 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
 
   // initial resource transitions and target size dependent resources
 
-  if(m_frameBuffer.targetSize.width != m_frameBuffer.targetSizeLast.width
-     || m_frameBuffer.targetSize.height != m_frameBuffer.targetSizeLast.height)
+  if(targetChanged)
   {
     deinitFramebufferRenderSizeDependent();
 
@@ -437,6 +437,7 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
     }
 #endif
 
+
     updateFramebufferRenderSizeDependent(cmd);
 
     tempSyncSubmit(cmd);
@@ -444,6 +445,9 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
     m_frameBuffer.targetSizeLast = m_frameBuffer.targetSize;
   }
 
+  LOGI("framebuffer: %4d x %4d (window)\n", m_frameBuffer.windowSize.width, m_frameBuffer.windowSize.height);
+  LOGI("             %4d x %4d (target)\n", m_frameBuffer.targetSize.width, m_frameBuffer.targetSize.height);
+  LOGI("             %4d x %4d (render)\n", m_frameBuffer.renderSize.width, m_frameBuffer.renderSize.height);
 
   {
     VkPipelineRenderingCreateInfo pipelineRenderingInfo = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
@@ -717,12 +721,6 @@ void Resources::setFramebufferDlss(bool enabled, NVSDK_NGX_PerfQuality_Value dls
 }
 #endif
 
-void Resources::deinitFramebufferWindowSizeDependent()
-{
-  m_allocator.destroyImage(m_frameBuffer.imgColor);
-  m_allocator.destroyImage(m_frameBuffer.imgColorResolved);
-}
-
 void Resources::deinitFramebufferRenderSizeDependent()
 {
   m_allocator.destroyImage(m_frameBuffer.imgDepthStencil);
@@ -743,7 +741,9 @@ void Resources::deinitFramebuffer()
 {
   NVVK_CHECK(vkDeviceWaitIdle(m_device));
 
-  deinitFramebufferWindowSizeDependent();
+  m_allocator.destroyImage(m_frameBuffer.imgColor);
+  m_allocator.destroyImage(m_frameBuffer.imgColorResolved);
+
   deinitFramebufferRenderSizeDependent();
 }
 
