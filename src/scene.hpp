@@ -124,9 +124,14 @@ struct SceneLoaderConfig
   // optional thread-safe progress bar updates
   std::atomic_uint32_t* progressPct = nullptr;
 
+  // regular expression strings to discard instances by property name
   std::string skipNodeNames;
   std::string skipMaterialNames;
   std::string skipMeshNames;
+
+  // discard instances whose materials have these properties
+  bool skipAlphaMasked  = false;
+  bool skipAlphaBlended = true;
 };
 
 // To artificially instance the full scene on a grid multiple times.
@@ -482,11 +487,11 @@ public:
   {
     static const uint32_t version = 1;
 
-    std::array<uint32_t, 256 + 1>                         clusterTriangles = {};
-    std::array<uint32_t, 256 + 1>                         clusterVertices  = {};
-    std::array<uint32_t, SHADERIO_MAX_GROUP_CLUSTERS + 1> groupClusters    = {};
-    std::array<uint32_t, SHADERIO_MAX_NODE_CHILDREN + 1>  nodeChildren     = {};
-    std::array<uint32_t, SHADERIO_MAX_LOD_LEVELS + 1>     lodLevels        = {};
+    std::array<uint32_t, SHADERIO_MAX_CLUSTER_TRIANGLES + 1> clusterTriangles = {};
+    std::array<uint32_t, SHADERIO_MAX_CLUSTER_VERTICES + 1>  clusterVertices  = {};
+    std::array<uint32_t, SHADERIO_MAX_GROUP_CLUSTERS + 1>    groupClusters    = {};
+    std::array<uint32_t, SHADERIO_MAX_NODE_CHILDREN + 1>     nodeChildren     = {};
+    std::array<uint32_t, SHADERIO_MAX_LOD_LEVELS + 1>        lodLevels        = {};
 
     uint32_t clusterTrianglesMax = {};
     uint32_t clusterVerticesMax  = {};
@@ -505,8 +510,10 @@ public:
   shaderio::BBox m_bbox;
   shaderio::BBox m_gridBbox;
 
-  std::vector<Instance> m_instances;
-  std::vector<Camera>   m_cameras;
+  std::vector<Instance>    m_instances;
+  std::vector<Camera>      m_cameras;
+  std::vector<std::string> m_geometryNames;
+  std::vector<std::string> m_materialNames;
 
   bool m_isBig       = false;
   bool m_hasTwoSided = false;

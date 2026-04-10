@@ -145,6 +145,8 @@ LodClusters::LodClusters(const Info& info)
                                 &m_sceneLoaderConfig.skipMeshNames);
   m_info.parameterRegistry->add({"skipmaterials", "c++ regular expression string to skip adding instances whose first mesh material name matches"},
                                 &m_sceneLoaderConfig.skipMaterialNames);
+  m_info.parameterRegistry->add({"skipalphablended"}, &m_sceneLoaderConfig.skipAlphaBlended);
+  m_info.parameterRegistry->add({"skipalphamasked"}, &m_sceneLoaderConfig.skipAlphaMasked);
 
   {
     // HACK as zorah.cfg ships with some deprecated settings

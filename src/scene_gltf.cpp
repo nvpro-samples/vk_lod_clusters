@@ -63,6 +63,9 @@ struct FileMappingList
     nvutils::FileReadMapping mapping;
     int64_t                  refCount = 1;
   };
+  // in special occasions we might only want to load a subset of the buffers
+  std::unordered_set<std::string> m_subsetNames;
+
   std::unordered_map<std::string, Entry>       m_nameToMapping;
   std::unordered_map<const void*, std::string> m_dataToName;
 #ifndef NDEBUG
@@ -76,6 +79,13 @@ struct FileMappingList
 #endif
 
     std::string pathStr(path);
+
+    if(!m_subsetNames.empty() && m_subsetNames.find(pathStr) == m_subsetNames.end())
+    {
+      *data = nullptr;
+      *size = 0;
+      return true;
+    }
 
     auto it = m_nameToMapping.find(pathStr);
     if(it != m_nameToMapping.end())
@@ -224,6 +234,36 @@ struct Filters
   std::regex nodeNames;
 };
 
+
+// derived from cgltf_combine_paths to get identical behavior
+static void combine_paths(std::vector<char>& path, const char* base, const char* uri)
+{
+  path.clear();
+
+  if(!base)
+    base = "";
+
+  if(!uri)
+    uri = "";
+
+  const char* s0    = strrchr(base, '/');
+  const char* s1    = strrchr(base, '\\');
+  const char* slash = s0 ? (s1 && s1 > s0 ? s1 : s0) : s1;
+
+  if(slash)
+  {
+    size_t prefix = static_cast<size_t>(slash - base + 1);
+    path.insert(path.end(), base, base + prefix);
+    path.insert(path.end(), uri, uri + strlen(uri));
+    path.push_back('\0');
+  }
+  else
+  {
+    path.insert(path.end(), uri, uri + strlen(uri));
+    path.push_back('\0');
+  }
+}
+
 Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path& filePath)
 {
   std::string fileName = nvutils::utf8FromPath(filePath);
@@ -271,8 +311,58 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
     return SCENE_RESULT_ERROR;
   }
 
+  bool hasGpuInstancing = false;
+  for(size_t i = 0; i < gltf->extensions_used_count; i++)
+  {
+    const char* gltfExtension = gltf->extensions_used[i];
+    if(strcmp(gltfExtension, "EXT_mesh_gpu_instancing") == 0)
+    {
+      hasGpuInstancing = true;
+    }
+  }
+
+  // find all buffer uris used by accessors of EXT_mesh_gpu_instancing
+  // when file caching is used, require / open only this subset
+  if(hasGpuInstancing)
+  {
+    bool needToInsert = m_cacheFileView.isValid();
+
+    std::unordered_set<const cgltf_buffer*> instancingBuffers;
+    for(size_t nodeIdx = 0; nodeIdx < gltf->nodes_count; nodeIdx++)
+    {
+      const cgltf_node& gltfNode = gltf->nodes[nodeIdx];
+      if(gltfNode.mesh && gltfNode.has_mesh_gpu_instancing)
+      {
+        for(size_t attribIdx = 0; attribIdx < gltfNode.mesh_gpu_instancing.attributes_count; attribIdx++)
+        {
+          const cgltf_attribute& gltfAttrib = gltfNode.mesh_gpu_instancing.attributes[attribIdx];
+          const cgltf_accessor*  accessor   = gltfAttrib.data;
+          if(accessor->buffer_view->has_meshopt_compression)
+          {
+            LOGE("loadGLTF: meshopt_compression applied to bufferviews used by EXT_mesh_gpu_instancing is not supported\n");
+            return SCENE_RESULT_ERROR;
+          }
+          if(needToInsert)
+          {
+            instancingBuffers.insert(accessor->buffer_view->buffer);
+          }
+        }
+      }
+    }
+
+    for(const cgltf_buffer* buffer : instancingBuffers)
+    {
+      // combine path of gltf file with uri using  cgltf_decode_uri
+      std::vector<char> path;
+      combine_paths(path, fileName.c_str(), buffer->uri);
+      cgltf_decode_uri(path.data());
+      mappings.m_subsetNames.insert(path.data());
+    }
+  }
+
   // if we are loading from a cache file, we don't need any of the raw buffers
-  if(!m_cacheFileView.isValid())
+  // unless gpuInstancing is used and required buffers
+  if(!m_cacheFileView.isValid() || hasGpuInstancing)
   {
     // For now, also tell cgltf to go ahead and load all buffers.
     cgltfResult = cgltf_load_buffers(&options, gltf.get(), fileName.c_str());
@@ -283,6 +373,18 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
           "valid? (cgltf result: %d)\n",
           cgltfResult);
       return SCENE_RESULT_ERROR;
+    }
+  }
+
+  {
+    m_materialNames.resize(gltf->materials_count);
+    for(size_t materialIndex = 0; materialIndex < gltf->materials_count; materialIndex++)
+    {
+      const cgltf_material& gltfMaterial = gltf->materials[materialIndex];
+      if(gltfMaterial.name)
+      {
+        m_materialNames[materialIndex] = std::move(std::string(gltfMaterial.name));
+      }
     }
   }
 
@@ -305,7 +407,7 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
 
     for(size_t meshIndex = 0; meshIndex < gltf->meshes_count; meshIndex++)
     {
-      const cgltf_mesh gltfMesh = gltf->meshes[meshIndex];
+      const cgltf_mesh& gltfMesh = gltf->meshes[meshIndex];
 
       size_t      meshMemoryEstimate = 0;
       size_t      meshTriangleCount  = 0;
@@ -391,6 +493,7 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
 
   m_geometryStorages.resize(geometryToMesh.size());
   m_geometryViews.resize(geometryToMesh.size());
+  m_geometryNames.resize(geometryToMesh.size());
 
   beginProcessingOnly(geometryToMesh.size());
 
@@ -567,7 +670,12 @@ void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
         instance.color.w = material->pbr_specular_glossiness.diffuse_factor[3];
       }
 
-      if(material->alpha_mode == cgltf_alpha_mode_blend)
+      if(m_loaderConfig.skipAlphaBlended && material->alpha_mode == cgltf_alpha_mode_blend)
+      {
+        addInstance = false;
+      }
+
+      if(m_loaderConfig.skipAlphaMasked && material->alpha_mode == cgltf_alpha_mode_mask)
       {
         addInstance = false;
       }
@@ -580,17 +688,81 @@ void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
 
     if(addInstance)
     {
-      instance.geometryID = uint32_t(meshToGeometry[meshIndex]);
-      instance.matrix     = nodeObjToWorldTransform;
-
-      m_geometryViews[instance.geometryID].instanceReferenceCount++;
-
       if(instance.twoSided)
       {
         m_hasTwoSided = true;
       }
 
-      m_instances.push_back(instance);
+      instance.geometryID = uint32_t(meshToGeometry[meshIndex]);
+
+      if(node->has_mesh_gpu_instancing)
+      {
+        const cgltf_accessor* instanceA = nullptr;
+        const cgltf_accessor* instanceT = nullptr;
+        const cgltf_accessor* instanceR = nullptr;
+        const cgltf_accessor* instanceS = nullptr;
+
+        for(size_t attribIdx = 0; attribIdx < node->mesh_gpu_instancing.attributes_count; attribIdx++)
+        {
+          const cgltf_attribute& gltfAttrib = node->mesh_gpu_instancing.attributes[attribIdx];
+          const cgltf_accessor*  accessor   = gltfAttrib.data;
+
+          if(strcmp(gltfAttrib.name, "TRANSLATION") == 0)
+          {
+            instanceT = accessor;
+            instanceA = accessor;
+          }
+          else if(strcmp(gltfAttrib.name, "ROTATION") == 0)
+          {
+            instanceR = accessor;
+            instanceA = accessor;
+          }
+          else if(strcmp(gltfAttrib.name, "SCALE") == 0)
+          {
+            instanceS = accessor;
+            instanceA = accessor;
+          }
+        }
+
+        size_t instanceCount = instanceA ? instanceA->count : 0;
+        m_geometryViews[instance.geometryID].instanceReferenceCount += uint32_t(instanceCount);
+
+        for(size_t i = 0; i < instanceCount; i++)
+        {
+          glm::vec3 translation = glm::vec3(0.0f, 0.0f, 0.0f);
+          glm::quat rotation    = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+          glm::vec3 scale       = glm::vec3(1.0f, 1.0f, 1.0f);
+
+          if(instanceT)
+          {
+            cgltf_accessor_read_float(instanceT, i, glm::value_ptr(translation), 3);
+          }
+
+          if(instanceR)
+          {
+            float tmp[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+            cgltf_accessor_read_float(instanceR, i, tmp, 4);
+            rotation = glm::quat(tmp[3], tmp[0], tmp[1], tmp[2]);  // GLTF uses (x,y,z,w); glm::quat(w,x,y,z)
+          }
+
+          if(instanceS)
+          {
+            cgltf_accessor_read_float(instanceS, i, glm::value_ptr(scale), 3);
+          }
+
+          instance.matrix = nodeObjToWorldTransform
+                            * (glm::translate(glm::mat4(1.0f), translation)
+                               * (glm::mat4_cast(rotation) * glm::scale(glm::mat4(1.0f), scale)));
+
+          m_instances.push_back(instance);
+        }
+      }
+      else
+      {
+        m_geometryViews[instance.geometryID].instanceReferenceCount++;
+        instance.matrix = nodeObjToWorldTransform;
+        m_instances.push_back(instance);
+      }
     }
   }
 
@@ -783,6 +955,11 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
   const cgltf_mesh& gltfMesh = gltf->meshes[meshIndex];
   GeometryStorage&  geometry = m_geometryStorages[geometryIndex];
   geometry.bbox              = {{FLT_MAX, FLT_MAX, FLT_MAX}, {-FLT_MAX, -FLT_MAX, -FLT_MAX}, 0, 0};
+
+  if(gltfMesh.name)
+  {
+    m_geometryNames[geometryIndex] = std::move(std::string(gltfMesh.name));
+  }
 
   // count triangle and vertices pass
   uint32_t triangleCount = 0;

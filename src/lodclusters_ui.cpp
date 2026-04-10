@@ -292,22 +292,30 @@ void LodClusters::onUIRender()
   shaderio::Readback readback;
   m_resources.getReadbackData(readback);
 
-  bool pickingValid = isPickingValid(readback);
+  bool      pickingValid = isPickingValid(readback);
+  glm::vec3 hitPos       = {};
+  bool      hitPosValid  = false;
+  if(pickingValid)
+  {
+    float d = decodePickingDepth(readback);
+    if(d < 1.0f)
+    {
+      glm::uvec2 mousePos = {m_frameConfig.frameConstants.mousePosition.x, m_frameConfig.frameConstants.mousePosition.y};
+
+      const glm::mat4 view = m_info.cameraManipulator->getViewMatrix();
+      const glm::mat4 proj = m_frameConfig.frameConstants.projMatrix;
+
+      glm::vec4 win_norm = {0, 0, m_frameConfig.frameConstants.viewport.x, m_frameConfig.frameConstants.viewport.y};
+      hitPosValid        = true;
+      hitPos             = glm::unProjectZO({mousePos.x, mousePos.y, d}, view, proj, win_norm);
+    }
+  }
+
   // camera control, recenter
   if((requestCameraRecenter || requestMirrorBox) && pickingValid)
   {
-    glm::uvec2 mousePos = {m_frameConfig.frameConstants.mousePosition.x, m_frameConfig.frameConstants.mousePosition.y};
-
-    const glm::mat4 view = m_info.cameraManipulator->getViewMatrix();
-    const glm::mat4 proj = m_frameConfig.frameConstants.projMatrix;
-
-    float d = decodePickingDepth(readback);
-
-    if(d < 1.0F)  // Ignore infinite
+    if(hitPosValid)
     {
-      glm::vec4 win_norm     = {0, 0, m_frameConfig.frameConstants.viewport.x, m_frameConfig.frameConstants.viewport.y};
-      const glm::vec3 hitPos = glm::unProjectZO({mousePos.x, mousePos.y, d}, view, proj, win_norm);
-
       glm::vec3 eye, center, up;
       m_info.cameraManipulator->getLookat(eye, center, up);
 
@@ -704,11 +712,12 @@ void LodClusters::onUIRender()
 
       if(PE::treeNode("Other settings"))
       {
-        PE::InputIntClamped("LoD group size", (int*)&m_sceneConfigEdit.clusterGroupSize, 8, 128, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
+        PE::InputIntClamped("LoD group size", (int*)&m_sceneConfigEdit.clusterGroupSize, 8, SHADERIO_MAX_GROUP_CLUSTERS,
+                            1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
                             "number of clusters that make a lod group. Their triangles are decimated together and they share a common error property");
-        PE::InputIntClamped("Preferred node width", (int*)&m_sceneConfigEdit.preferredNodeWidth, 4, 32, 1, 1,
-                            ImGuiInputTextFlags_EnterReturnsTrue,
-                            "number of children a lod node should have (max is always 32). Currently _not_ implemented for nv_cluster_lod_builder.");
+        PE::InputIntClamped("Preferred node width", (int*)&m_sceneConfigEdit.preferredNodeWidth, 4,
+                            SHADERIO_MAX_NODE_CHILDREN, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
+                            "number of children a lod node should have (max is always 32).");
         PE::Checkbox("Prefer ray tracing (RT)", &m_sceneConfigEdit.meshoptPreferRayTracing,
                      "Configures meshoptimizer's lod cluster builder to prefer ray tracing over rasterization.");
         PE::InputFloat("RT fill weight", &m_sceneConfigEdit.meshoptFillWeight, 0, 0, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue,
@@ -1269,6 +1278,36 @@ void LodClusters::onUIRender()
                      "When event is used, determine mirror box size based on `distance * factor`");
       PE::end();
     }
+
+    if(ImGui::CollapsingHeader("Hit Info", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
+    {
+      uint32_t    instanceID   = -1;
+      uint32_t    geometryID   = -1;
+      uint32_t    materialID   = -1;
+      uint32_t    clusterID    = -1;
+      uint32_t    triangleID   = -1;
+      const char* materialName = nullptr;
+      const char* geometryName = nullptr;
+
+      if(m_scene && pickingValid)
+      {
+        instanceID   = readback.instanceId;
+        geometryID   = m_scene->m_instances[readback.instanceId].geometryID;
+        materialID   = m_scene->m_instances[readback.instanceId].materialID;
+        clusterID    = readback.clusterTriangleId >> 8;
+        triangleID   = readback.clusterTriangleId & 0xFF;
+        materialName = m_scene->m_materialNames[materialID].c_str();
+        geometryName = m_scene->m_geometryNames[geometryID].c_str();
+      }
+
+      ImGui::Text("Instance ID:  %d", instanceID);
+      ImGui::Text("Geometry ID:  %d - %s", geometryID, geometryName ? geometryName : "");
+      ImGui::Text("Material ID:  %d - %s", materialID, materialName ? materialName : "");
+      ImGui::Text("Cluster  ID:  %d", clusterID);
+      ImGui::Text("Triangle ID:  %d", triangleID);
+      ImGui::Text("Position:  [%f, %f, %f]", hitPos.x, hitPos.y, hitPos.z);
+    }
+
 
     if(ImGui::CollapsingHeader("Advanced", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {

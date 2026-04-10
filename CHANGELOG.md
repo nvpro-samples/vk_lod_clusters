@@ -1,4 +1,9 @@
 # Changelog for vk_lod_clusters
+* 2026-4-10:
+  * Added "EXT_mesh_gpu_instancing" support. Ideally the transform data is stored in a separate buffer file.
+    The buffer views used by it must not be compressed by KHR/EXT_meshopt_compression.
+* 2026-4-8:
+  * Added "Hit Info" under "Misc Settings" to show details of hit point the mouse is currently hovering over.
 * 2026-3-10:
   * Add command-line options to filter instances by name, material name, or mesh name using `c++ std::regex` strings. `--skipnodes`, `--skipmaterials` , `--skipmeshes`. This does not affect the geometry processed nor the cache file.
   * Updated Zorah scene files (minor internal changes, mostly smaller gltf size due to EXT_meshopt_compression use).

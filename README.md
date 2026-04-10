@@ -79,6 +79,10 @@ In the UI you can influence the size of clusters and the LoD grouping of them in
 >
 > Be aware, there are currently only few compatibility checks for these cache files, therefore we recommend deleting if changes were made to the original input mesh.
 
+The model loader can make use of these glTF 2.0 Extensions:
+- [EXT_meshopt_compression](https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Vendor/EXT_meshopt_compression/README.md)
+- [EXT_mesh_gpu_instancing](https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Vendor/EXT_mesh_gpu_instancing/README.md) (With the restriction that buffers referenced by its accessors must **not** be compressed)
+
 ### Runtime Rendering Operations
 
 ![image illustrating the rendering operations](docs/lod_rendering.png)
