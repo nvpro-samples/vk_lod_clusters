@@ -348,7 +348,7 @@ void Scene::compressGroup(TempContext* context, GroupStorage& groupTempStorage, 
     uint32_t           vertexCount = cluster.vertexCountMinusOne + 1;
 
     // will hijack indices offset for data offset storage
-    cluster.indices = vertexDataOffset;
+    cluster.triangles = vertexDataOffset;
 
     {
       compression::ArithmeticCompressor<uint32_t, 3> compressor;
@@ -497,7 +497,7 @@ void Scene::decompressGroup(const GroupInfo& info, const GroupView& groupSrc, vo
   GroupStorage groupDstWriteOnly(dstWriteOnly, uncompressedInfo);
   memcpy(dstWriteOnly, groupSrc.raw, info.computeUncompressedSectionSize());
 
-  uint32_t indicesOffset = 0;
+  uint32_t trianglesDataOffset = 0;
   for(uint32_t c = 0; c < info.clusterCount; c++)
   {
 
@@ -513,8 +513,9 @@ void Scene::decompressGroup(const GroupInfo& info, const GroupView& groupSrc, vo
     const uint32_t* srcData = (const uint32_t*)groupSrc.getClusterIndices(c);
 
     // correct indices offset
-    clusterDstWriteOnly.indices = groupDstWriteOnly.getClusterLocalOffset(c, groupDstWriteOnly.indices.data() + indicesOffset);
-    indicesOffset += triangleCount * 3;
+    clusterDstWriteOnly.triangles =
+        groupDstWriteOnly.getClusterLocalOffset(c, groupDstWriteOnly.triangles.data() + trianglesDataOffset);
+    trianglesDataOffset += triangleCount * (clusterSrc.localMaterialID == SHADERIO_PER_TRIANGLE_MATERIALS ? 4 : 3);
 
     uint32_t dstOffset = 0;
 

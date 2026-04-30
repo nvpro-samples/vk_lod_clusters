@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -56,6 +56,11 @@ layout(scalar,binding=BINDINGS_READBACK_SSBO,set=0) buffer readbackBuffer
 layout(scalar, binding = BINDINGS_RENDERINSTANCES_SSBO, set = 0) buffer renderInstancesBuffer
 {
   RenderInstance instances[];
+};
+
+layout(scalar, binding = BINDINGS_RENDERMATERIALS_SSBO, set = 0) buffer renderMaterialsBuffer
+{
+  RenderMaterial materials[];
 };
 
 layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffer
@@ -104,7 +109,7 @@ void main()
 #else
   uint workGroupID = gl_WorkGroupID.x;
 #endif
-  uint baseID   = workGroupID * MESHSHADER_BBOX_COUNT;  
+  uint baseID   = workGroupID * MESHSHADER_BBOX_COUNT;
   uint numBoxes = min(push.numRenderInstances, baseID + MESHSHADER_BBOX_COUNT) - baseID;
   
 #if USE_EXT_MESH_SHADER

@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -136,9 +136,14 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
     // lowest detail group must have just a single cluster
     shaderio::LodLevel lastLodLevel = sceneGeometry.lodLevels.back();
     assert(lastLodLevel.groupCount == 1 && lastLodLevel.clusterCount == 1);
+    const Scene::GroupInfo& lastGroupInfo = sceneGeometry.groupInfos[lastLodLevel.groupOffset];
+    const Scene::GroupView  lastGroupView(sceneGeometry.groupData, lastGroupInfo);
+    const shaderio::BBox&   lowDetailBBox       = lastGroupView.clusterBboxes[0];
+    const float             lowDetailBBoxExtent = std::max(glm::length(lowDetailBBox.hi - lowDetailBBox.lo), 1e-6f);
 
     shaderGeometry.lowDetailClusterID = lastLodLevel.clusterOffset;
-    shaderGeometry.lowDetailTriangles = sceneGeometry.groupInfos[lastLodLevel.groupOffset].triangleCount;
+    shaderGeometry.lowDetailTriangles = lastGroupInfo.triangleCount;
+    shaderGeometry.bbox.longestEdge   = lowDetailBBox.longestEdge / lowDetailBBoxExtent;
 
     // basic uploads
 
@@ -241,10 +246,18 @@ bool ScenePreloaded::initClas()
 
   VkClusterAccelerationStructureTriangleClusterInputNV clusterTriangleInput = {
       VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_TRIANGLE_CLUSTER_INPUT_NV};
-  clusterTriangleInput.maxClusterTriangleCount       = m_scene->m_maxClusterTriangles;
-  clusterTriangleInput.maxClusterVertexCount         = m_scene->m_maxClusterVertices;
-  clusterTriangleInput.maxClusterUniqueGeometryCount = 1;
-  clusterTriangleInput.maxGeometryIndexValue         = 0;
+  clusterTriangleInput.maxClusterTriangleCount = m_scene->m_maxClusterTriangles;
+  clusterTriangleInput.maxClusterVertexCount   = m_scene->m_maxClusterVertices;
+  if(m_scene->m_hasAlphaMask)
+  {
+    clusterTriangleInput.maxClusterUniqueGeometryCount = 2;
+    clusterTriangleInput.maxGeometryIndexValue         = 1;
+  }
+  else
+  {
+    clusterTriangleInput.maxClusterUniqueGeometryCount = 1;
+    clusterTriangleInput.maxGeometryIndexValue         = 0;
+  }
   clusterTriangleInput.minPositionTruncateBitCount =
       std::max(m_config.clasPositionTruncateBits,
                m_scene->m_config.useCompressedData ? uint32_t(m_scene->m_config.compressionPosDropBits) : 0);
@@ -307,6 +320,12 @@ bool ScenePreloaded::initClas()
                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY,
                          VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
 
+  nvvk::BufferTyped<uint32_t> clasGeometryIndicesHost;
+  res->createBufferTyped(clasGeometryIndicesHost, m_scene->m_maxPerGeometryClusters * m_scene->m_maxClusterTriangles,
+                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
+                         VMA_MEMORY_USAGE_CPU_ONLY,
+                         VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
+
   VkCommandBuffer cmd;
   VkClusterAccelerationStructureCommandsInfoNV cmdInfo = {VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV};
 
@@ -316,7 +335,9 @@ bool ScenePreloaded::initClas()
     shaderio::Geometry&        shaderGeometry  = m_shaderGeometries[g];
     const Scene::GeometryView& sceneGeometry   = m_scene->getActiveGeometry(g);
 
-    VkClusterAccelerationStructureBuildTriangleClusterInfoNV* buildInfos = clasBuildInfosHost.data();
+    VkClusterAccelerationStructureBuildTriangleClusterInfoNV* buildInfos      = clasBuildInfosHost.data();
+    uint32_t*                                                 geometryIndices = clasGeometryIndicesHost.data();
+    size_t                                                    geometryOffset  = 0;
 
     size_t   groupOffset   = 0;
     uint32_t clusterOffset = 0;
@@ -326,7 +347,7 @@ bool ScenePreloaded::initClas()
       Scene::GroupView       groupView(sceneGeometry.groupData, groupInfo);
       uint64_t               groupVA = preloadGeometry.groupData.address + groupOffset;
 
-      size_t indexOffset = size_t(groupView.indices.data()) - size_t(groupView.raw);
+      size_t indexOffset = size_t(groupView.triangles.data()) - size_t(groupView.raw);
 
       for(uint32_t c = 0; c < groupInfo.clusterCount; c++)
       {
@@ -336,26 +357,71 @@ bool ScenePreloaded::initClas()
 
         uint64_t clusterVA = groupVA + sizeof(shaderio::Group) + sizeof(shaderio::Cluster) * c;
 
-        buildInfo.baseGeometryIndexAndGeometryFlags.geometryFlags = VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT_NV;
         buildInfo.clusterID         = clusterOffset;
         buildInfo.triangleCount     = groupCluster.triangleCountMinusOne + 1;
         buildInfo.indexType         = VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_8BIT_NV;
         buildInfo.indexBufferStride = 1;
+        buildInfo.baseGeometryIndexAndGeometryFlags.geometryIndex = 0;
+        buildInfo.baseGeometryIndexAndGeometryFlags.reserved      = 0;
+        buildInfo.baseGeometryIndexAndGeometryFlags.geometryFlags = 0;
+
+        const bool requiresMixedGeometryBuffer = (groupCluster.stateBits & shaderio::CLUSTER_STATE_ALPHAMASKED_MIXED) != 0
+                                                 || (groupCluster.stateBits & shaderio::CLUSTER_STATE_TWOSIDED_MIXED) != 0;
 
         if(groupInfo.uncompressedSizeBytes)
         {
           buildInfo.indexBuffer = groupVA + indexOffset;
-          indexOffset += buildInfo.triangleCount * 3;
+          indexOffset += buildInfo.triangleCount * (groupCluster.localMaterialID == SHADERIO_PER_TRIANGLE_MATERIALS ? 4 : 3);
         }
         else
         {
-          buildInfo.indexBuffer = clusterVA + groupCluster.indices;
+          buildInfo.indexBuffer = clusterVA + groupCluster.triangles;
         }
 
         buildInfo.vertexCount              = groupCluster.vertexCountMinusOne + 1;
         buildInfo.vertexBufferStride       = uint16_t(sizeof(glm::vec3));
         buildInfo.vertexBuffer             = clusterVA + groupCluster.vertices;
         buildInfo.positionTruncateBitCount = clusterTriangleInput.minPositionTruncateBitCount;
+
+        if(requiresMixedGeometryBuffer)
+        {
+          assert((geometryOffset + buildInfo.triangleCount)
+                 <= (size_t(m_scene->m_maxPerGeometryClusters) * size_t(m_scene->m_maxClusterTriangles)));
+
+          buildInfo.baseGeometryIndexAndGeometryFlags.geometryFlags = 0;
+          buildInfo.geometryIndexAndFlagsBuffer = clasGeometryIndicesHost.address + geometryOffset * sizeof(uint32_t);
+          buildInfo.geometryIndexAndFlagsBufferStride = uint16_t(sizeof(uint32_t));
+
+          const uint8_t* clusterMaterialIndices = groupView.getClusterIndices(c) + 3 * buildInfo.triangleCount;
+          if(groupCluster.localMaterialID == SHADERIO_PER_TRIANGLE_MATERIALS)
+          {
+            for(uint32_t t = 0; t < buildInfo.triangleCount; t++)
+            {
+              const uint8_t triMaterial = clusterMaterialIndices[t];
+              uint32_t      geometryIdx = (triMaterial & SHADERIO_CLUSTER_TRIANGLE_ALPHAMASKED) ? 1u : 0u;
+              uint32_t      flags       = 0;
+              if((triMaterial & SHADERIO_CLUSTER_TRIANGLE_ALPHAMASKED) == 0)
+              {
+                flags |= (uint32_t(VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT_NV) << 29);
+              }
+              if((triMaterial & SHADERIO_CLUSTER_TRIANGLE_TWOSIDED) != 0)
+              {
+                flags |= (uint32_t(VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_CULL_DISABLE_BIT_NV) << 29);
+              }
+              geometryIndices[geometryOffset + t] = geometryIdx | flags;
+            }
+          }
+          geometryOffset += buildInfo.triangleCount;
+        }
+        else
+        {
+          if((groupCluster.stateBits & shaderio::CLUSTER_STATE_ALPHAMASKED) != 0)
+            buildInfo.baseGeometryIndexAndGeometryFlags.geometryIndex = 1;
+          else
+            buildInfo.baseGeometryIndexAndGeometryFlags.geometryFlags = VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT_NV;
+          if((groupCluster.stateBits & shaderio::CLUSTER_STATE_TWOSIDED) != 0)
+            buildInfo.baseGeometryIndexAndGeometryFlags.geometryFlags |= VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_CULL_DISABLE_BIT_NV;
+        }
 
         clusterOffset++;
       }
@@ -526,6 +592,7 @@ bool ScenePreloaded::initClas()
   res->m_allocator.destroyBuffer(buildAddressesHost);
   res->m_allocator.destroyBuffer(clasBuildInfosHost);
   res->m_allocator.destroyBuffer(blasBuildInfosHost);
+  res->m_allocator.destroyBuffer(clasGeometryIndicesHost);
 
   return true;
 }

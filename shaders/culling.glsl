@@ -33,6 +33,16 @@ bool intersectSize(vec4 clipMin, vec4 clipMax, float threshold)
   return any(greaterThan(rect,clipThreshold));
 }
 
+#if USE_SW_RASTER
+bool intersectSize(vec4 clipMin, vec4 clipMax, float threshold, float scale)
+{
+  vec2 rect = (clipMax.xy - clipMin.xy) * 0.5 * scale * view.viewportf.xy;
+  vec2 clipThreshold = vec2(threshold);
+  
+  return any(greaterThan(rect,clipThreshold));
+}
+#endif
+
 vec4 getClip(vec4 hPos, out bool valid) {
   valid = !(-c_epsilon < hPos.w && hPos.w < c_epsilon);
   return vec4(hPos.xyz / abs(hPos.w), hPos.w);
@@ -59,6 +69,13 @@ vec4 getBoxCorner(vec3 bboxMin, vec3 bboxMax, int n)
 
 bool intersectFrustum(mat4 viewProjMatrix, vec3 bboxMin, vec3 bboxMax, mat4x3 worldTM, out vec4 oClipmin, out vec4 oClipmax, out bool oClipvalid)
 {
+  //vec3 bboxDim = (bboxMax - bboxMin) * 0.5;
+  //vec3 bboxCtr = (bboxMax + bboxMin) * 0.5;
+  //float len = length(bboxDim);
+  //bboxDim = max(bboxDim, vec3(len * 0.1));
+  //bboxMax = bboxCtr + bboxDim;
+  //bboxMin = bboxCtr - bboxDim;
+
   mat4 worldViewProjTM = viewProjMatrix * toMat4(worldTM);
   bool valid;
   // clipspace bbox

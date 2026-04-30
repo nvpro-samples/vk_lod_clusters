@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -180,5 +180,18 @@ void main()
     streamingRW.request.clasAllocatedUsedSize   = streaming.clasAllocator.stats.d.allocatedSize;
     streamingRW.request.clasAllocatedWastedSize = streaming.clasAllocator.stats.d.wastedSize;
   #endif
+  }
+  else if (push.setup == STREAM_SETUP_UPDATE_GEOMETRY_INDICES)
+  {
+    uint perWorkGroup = GEOMETRY_INDICES_TASKS_PER_WORKGROUP;
+    uint workGroupCount = (streaming.update.newClasGeometryIndicesTaskCounter + perWorkGroup-1) / perWorkGroup;
+  #if USE_16BIT_DISPATCH
+    uvec3 grid = fit16bitLaunchGrid(workGroupCount);
+  #else
+    uvec3 grid = uvec3(workGroupCount, 1, 1);
+  #endif
+    streamingRW.update.dispatchClasGeometryIndices.gridX = grid.x;
+    streamingRW.update.dispatchClasGeometryIndices.gridY = grid.y;
+    streamingRW.update.dispatchClasGeometryIndices.gridZ = grid.z;
   }
 }

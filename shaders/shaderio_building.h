@@ -139,7 +139,7 @@ struct SceneBuilding
   mat4 cullViewProjMatrixLast;
 
   // for two pass culling
-  uint pass;
+  uint cullPass;
   uint frameIndex;
 
   uint numGeometries;
@@ -157,17 +157,26 @@ struct SceneBuilding
 
   uint renderClusterCounter;
   uint renderClusterCounterSW;
+  uint renderClusterCounterAlpha;
+  uint renderClusterCounterAlphaSW;
 
-  int  traversalTaskCounter;
-  uint traversalInfoReadCounter;
-  uint traversalInfoWriteCounter;
-  // only used for USE_SEPARATE_GROUPS
-  uint traversalGroupCounter;
+  uint traversalNodeReadCounter;
+  uint traversalNodeWriteCounter;
+  uint traversalGroupWriteCounter;
+
+  // persistent traversal kernel
+  int traversalTaskCounter;
+
+  // multi-pass traversal kernel
+  uint traversalPass;
+  uint traversalNodeStart;
+  uint traversalNodeEnd;
+  uint traversalGroupStart;
+  uint traversalGroupEnd;
 
   // result of traversal init & scratch for traversal run
   // array size is [maxTraversalInfos]
   BUFFER_REF(uint64s_coh_volatile) traversalNodeInfos;
-  // only used for USE_SEPARATE_GROUPS
   // array size is [maxTraversalInfos]
   BUFFER_REF(uint64s_coh_volatile) traversalGroupInfos;
 
@@ -175,7 +184,10 @@ struct SceneBuilding
   // array size is [maxRenderClusters]
   BUFFER_REF(ClusterInfos_inout) renderClusterInfos;
 
-  // only used for USE_SEPARATE_GROUPS
+  // only for rasterization so we have two lists
+  BUFFER_REF(ClusterInfos_inout) renderClusterInfosAlpha;
+
+  DispatchIndirectCommand indirectDispatchNodes;
   DispatchIndirectCommand indirectDispatchGroups;
 
   // rasterization related
@@ -183,22 +195,30 @@ struct SceneBuilding
 
   // hw rasterization via nv
   DrawMeshTasksIndirectCommandNV indirectDrawClustersNV;
+  DrawMeshTasksIndirectCommandNV indirectDrawClustersAlphaNV;
   DrawMeshTasksIndirectCommandNV indirectDrawClusterBoxesNV;
+  DrawMeshTasksIndirectCommandNV indirectDrawClusterBoxesAlphaNV;
 
   // hw rasterization via ext
   DrawMeshTasksIndirectCommandEXT indirectDrawClustersEXT;
+  DrawMeshTasksIndirectCommandEXT indirectDrawClustersAlphaEXT;
   DrawMeshTasksIndirectCommandEXT indirectDrawClusterBoxesEXT;
+  DrawMeshTasksIndirectCommandEXT indirectDrawClusterBoxesAlphaEXT;
   uint                            numRenderedClusters;
+  uint                            numRenderedClustersAlpha;
 
   // sw rasterization
-  DispatchIndirectCommand indirectDrawClustersSW;
+  DispatchIndirectCommand indirectDispatchClustersSW;
+  DispatchIndirectCommand indirectDispatchClustersAlphaSW;
   uint                    numRenderedClustersSW;
+  uint                    numRenderedClustersAlphaSW;
 
   // clusters classified for sw-rasterization.
   // We simply have two lists, we could use a single list
   // and append front or back to conserve memory, however
   // for simplicity two are used.
   BUFFER_REF(ClusterInfos_inout) renderClusterInfosSW;
+  BUFFER_REF(ClusterInfos_inout) renderClusterInfosAlphaSW;
 
   // ray tracing related
   //////////////////////////////////////////////////

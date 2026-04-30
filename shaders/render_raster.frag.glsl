@@ -31,6 +31,7 @@
 #version 460
 
 #extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_nonuniform_qualifier : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int32 : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
@@ -39,7 +40,7 @@
 #extension GL_EXT_buffer_reference2 : enable
 #extension GL_EXT_scalar_block_layout : enable
 #extension GL_EXT_shader_atomic_int64 : enable
-#if ALLOW_SHADING && (DEBUG_VISUALIZATION || ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS)
+#if (!USE_DEPTH_ONLY && ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS)) || (HAS_ALPHA_TEST && ALLOW_VERTEX_TEXCOORDS)
 #extension GL_EXT_fragment_shader_barycentric : enable
 #endif
 #if USE_SW_RASTER
@@ -74,6 +75,11 @@ layout(scalar, binding = BINDINGS_RENDERINSTANCES_SSBO, set = 0) buffer renderIn
   RenderInstance instances[];
 };
 
+layout(scalar, binding = BINDINGS_RENDERMATERIALS_SSBO, set = 0) buffer renderMaterialsBuffer
+{
+  RenderMaterial materials[];
+};
+
 layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffer
 {
   Geometry geometries[];
@@ -99,9 +105,14 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
 layout(set = 0, binding = BINDINGS_RASTER_ATOMIC, r64ui) uniform u64image2D imgRasterAtomic;
 #endif
 
+#if HAS_ALPHA_TEST
+layout(set = 1, binding = 0) uniform sampler2D bindlessTextures[];
+#endif
+
 ///////////////////////////////////////////////////
 
 #include "attribute_encoding.h"
+#include "texturing.glsl"
 #include "render_shading.glsl"
 
 ///////////////////////////////////////////////////
@@ -148,7 +159,7 @@ layout(set = 0, binding = BINDINGS_RASTER_ATOMIC, r64ui) uniform u64image2D imgR
 
 #endif
 
-#if ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS)
+#if (!USE_DEPTH_ONLY && ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS)) || (HAS_ALPHA_TEST && ALLOW_VERTEX_TEXCOORDS)
 layout(location = 3) pervertexEXT in Interpolants2
 {
   uint vertexID;
@@ -163,8 +174,9 @@ layout(location = 0, index = 0) out vec4 out_Color;
 #else
 vec4 out_Color;
 #endif
+#if !HAS_ALPHA_TEST
 layout(early_fragment_tests) in;
-
+#endif
 ///////////////////////////////////////////////////
 
 
@@ -190,84 +202,104 @@ void main()
   Cluster_in clusterRef = Cluster_in(geometry.preloadedClusters.d[clusterID]);
 #endif
 
-#if ALLOW_SHADING
-#if ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS
+#if (!USE_DEPTH_ONLY && ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS)) || (HAS_ALPHA_TEST && ALLOW_VERTEX_TEXCOORDS)
   Cluster    cluster    = clusterRef.d;
-  uint32s_in oNormals   = Cluster_getVertexNormals(clusterRef);
-  vec2s_in   oTexCoords = Cluster_getVertexTexCoords(clusterRef);
+  #if ALLOW_VERTEX_NORMALS && ALLOW_SHADING
+    uint32s_in oNormals   = Cluster_getVertexNormals(clusterRef);
+  #endif
+  #if ALLOW_VERTEX_TEXCOORDS
+    vec2s_in   oTexCoords = Cluster_getVertexTexCoords(clusterRef);
+  #endif
 
   uvec3 triangleIndices = uvec3(INBARY[0].vertexID, INBARY[1].vertexID, INBARY[2].vertexID);
 #endif
 
-#if ALLOW_VERTEX_NORMALS
-  if(view.facetShading != 0 || (cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_NORMAL) == 0)
-#endif
-  {
-    wNormal = -cross(dFdx(IN.wPos), dFdy(IN.wPos));
-    wNormal = normalize(wNormal);
-  }
-#if ALLOW_VERTEX_NORMALS
-  else
-  {
-    vec3 baryWeight   = gl_BaryCoordEXT;
-    mat3 worldMatrixI = mat3(instance.worldMatrixI);
-
-    uvec3 triNormalsPacked =
-        uvec3(oNormals.d[triangleIndices.x], oNormals.d[triangleIndices.y], oNormals.d[triangleIndices.z]);
-    vec3 triNormals[3];
-
-    triNormals[0] = normal_unpack(triNormalsPacked.x);
-    triNormals[1] = normal_unpack(triNormalsPacked.y);
-    triNormals[2] = normal_unpack(triNormalsPacked.z);
-
-    vec3 oNormal = baryWeight.x * triNormals[0] + baryWeight.y * triNormals[1] + baryWeight.z * triNormals[2];
-
-    wNormal = normalize(vec3(oNormal * worldMatrixI));
-    
-#if USE_FORCED_TWO_SIDED
-    if (!gl_FrontFacing){
-      wNormal = -wNormal;
-    }
-#elif USE_TWO_SIDED
-  if (instance.twoSided != 0) {
-    // more complicated, need to test if winding was changed
-    uint8s_in localIndices = uint8s_in(Cluster_getTriangleIndices(clusterRef));
-    uint triangleIndicesRef = localIndices.d[gl_PrimitiveID * 3 + 0];
-    
-    if (triangleIndicesRef != triangleIndices.x) {
-      wNormal = -wNormal;
-    }
-  }
-#endif
-
-#if ALLOW_VERTEX_TANGENTS
-    if((cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_TANGENT) != 0)
+#if ALLOW_SHADING
+  #if ALLOW_VERTEX_NORMALS
+    if(view.facetShading != 0 || (cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_NORMAL) == 0)
+  #endif
     {
-      vec4 tangent0 = tangent_unpack(triNormals[0], triNormalsPacked.x >> ATTRENC_NORMAL_BITS);
-      wTangent.w    = tangent0.w;
-
-      vec3 oTangent = baryWeight.x * tangent0.xyz
-                      + baryWeight.y * tangent_unpack(triNormals[1], triNormalsPacked.y >> ATTRENC_NORMAL_BITS).xyz
-                      + baryWeight.z * tangent_unpack(triNormals[2], triNormalsPacked.z >> ATTRENC_NORMAL_BITS).xyz;
-
-      wTangent.xyz = oTangent * worldMatrixI;
+      wNormal = -cross(dFdx(IN.wPos), dFdy(IN.wPos));
+      wNormal = normalize(wNormal);
     }
+  #if ALLOW_VERTEX_NORMALS
+    else
+    {
+      vec3 baryWeight   = gl_BaryCoordEXT;
+      mat3 worldMatrixI = mat3(instance.worldMatrixI);
+
+      uvec3 triNormalsPacked =
+          uvec3(oNormals.d[triangleIndices.x], oNormals.d[triangleIndices.y], oNormals.d[triangleIndices.z]);
+      vec3 triNormals[3];
+
+      triNormals[0] = normal_unpack(triNormalsPacked.x);
+      triNormals[1] = normal_unpack(triNormalsPacked.y);
+      triNormals[2] = normal_unpack(triNormalsPacked.z);
+
+      vec3 oNormal = baryWeight.x * triNormals[0] + baryWeight.y * triNormals[1] + baryWeight.z * triNormals[2];
+
+      wNormal = normalize(vec3(oNormal * worldMatrixI));
+      
+  #if USE_FORCED_TWO_SIDED
+      if (!gl_FrontFacing){
+        wNormal = -wNormal;
+      }
+  #elif USE_TWO_SIDED
+    if (instance.twoSided != 0) {
+      // more complicated, need to test if winding was changed
+      uint8s_in localIndices = uint8s_in(Cluster_getTriangleIndices(clusterRef));
+      uint triangleIndicesRef = localIndices.d[gl_PrimitiveID * 3 + 0];
+      
+      if (triangleIndicesRef != triangleIndices.x) {
+        wNormal = -wNormal;
+      }
+    }
+  #endif
+
+  #if ALLOW_VERTEX_TANGENTS
+      if((cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_TANGENT) != 0)
+      {
+        vec4 tangent0 = tangent_unpack(triNormals[0], triNormalsPacked.x >> ATTRENC_NORMAL_BITS);
+        wTangent.w    = tangent0.w;
+
+        vec3 oTangent = baryWeight.x * tangent0.xyz
+                        + baryWeight.y * tangent_unpack(triNormals[1], triNormalsPacked.y >> ATTRENC_NORMAL_BITS).xyz
+                        + baryWeight.z * tangent_unpack(triNormals[2], triNormalsPacked.z >> ATTRENC_NORMAL_BITS).xyz;
+
+        wTangent.xyz = oTangent * worldMatrixI;
+      }
+  #endif
+    }
+  #endif
 #endif
-  }
-#endif
-#if ALLOW_VERTEX_TEXCOORD_0
-  if((cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_TEX_0) != 0)
-  {
-    oTexCoord = gl_BaryCoordEXT.x * oTexCoords.d[triangleIndices.x]
-              + gl_BaryCoordEXT.y * oTexCoords.d[triangleIndices.y]
-              + gl_BaryCoordEXT.z * oTexCoords.d[triangleIndices.z];
-  }
-#endif
+
+#if ALLOW_SHADING || HAS_ALPHA_TEST
+  #if ALLOW_VERTEX_TEXCOORD_0
+    #if !HAS_ALPHA_TEST
+    if((cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_TEX_0) != 0)
+    #endif
+    {
+      oTexCoord = gl_BaryCoordEXT.x * oTexCoords.d[triangleIndices.x]
+                + gl_BaryCoordEXT.y * oTexCoords.d[triangleIndices.y]
+                + gl_BaryCoordEXT.z * oTexCoords.d[triangleIndices.z];
+    #if HAS_ALPHA_TEST
+      uint texIndex = resolveAlphaMaskTextureIndex(instance, clusterRef, gl_PrimitiveID);
+
+      if(texIndex != 0xFFFF && texture(bindlessTextures[nonuniformEXT(texIndex)], oTexCoord).a < 0.333)
+      {
+        discard;
+        return;
+      }
+    #endif
+    }
+  #endif
 #endif
 
   uint visData = clusterID;
+  uint materialID = instance.materialID;
   
 #if ALLOW_SHADING
+  materialID = resolveMaterialID(instance, clusterRef, gl_PrimitiveID);
   if(view.visualize == VISUALIZE_LOD || view.visualize == VISUALIZE_GROUP)
   {
     if(view.visualize == VISUALIZE_LOD)
@@ -283,6 +315,10 @@ void main()
   else if(view.visualize == VISUALIZE_TRIANGLE)
   {
     visData = clusterID * 256 + uint(gl_PrimitiveID);
+  }
+  else if(view.visualize == VISUALIZE_MATERIAL)
+  {
+    visData = materialID ^ 0x14325231;
   }
 
   out_Color.w = 1.f;
@@ -314,6 +350,7 @@ void main()
     uint32_t packedClusterTriangleId = (clusterID << 8) | (gl_PrimitiveID & 0xFF);
     atomicMax(readback.clusterTriangleId, packPickingValue(packedClusterTriangleId, gl_FragCoord.z));
     atomicMax(readback.instanceId, packPickingValue(instanceID, gl_FragCoord.z));
+    atomicMax(readback.materialId, packPickingValue(materialID, gl_FragCoord.z));
   }
 #endif
   

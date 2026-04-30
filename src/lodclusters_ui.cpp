@@ -142,7 +142,9 @@ struct UsagePercentages
 
   void setupPercentages(shaderio::Readback& readback, uint64_t maxRenderClusters, uint64_t maxTraversalTasks, uint64_t maxBlasBuilds)
   {
-    pctClusters = getUsagePct(std::max(readback.numRenderClusters, readback.numRenderClustersSW), maxRenderClusters);
+    pctClusters = getUsagePct(std::max(std::max(readback.numRenderClusters, readback.numRenderClustersSW),
+                                       std::max(readback.numRenderClustersAlpha, readback.numRenderClustersAlphaSW)),
+                              maxRenderClusters);
     pctTasks    = getUsagePct(readback.numTraversalTasks, maxTraversalTasks);
     pctBlas     = getUsagePct(readback.numBlasBuilds, maxBlasBuilds);
   }
@@ -560,9 +562,9 @@ void LodClusters::onUIRender()
         {
           ImGui::BeginDisabled(!m_rendererConfig.useBlasSharing);
           PE::Checkbox("Blas Caching", &m_rendererConfig.useBlasCaching,
-                       "builds a cached blas depending on highest fully resident lod level.");
+                       "(only when streaming) builds a cached blas depending on highest fully resident lod level.");
           PE::Checkbox("Blas Merging", &m_rendererConfig.useBlasMerging,
-                       "builds a merged blas for closer instances. Guarantees only 2 dynamic blas per geometry.");
+                       "(only when streaming) builds a merged blas for closer instances. Guarantees only 2 dynamic blas per geometry.");
           PE::Checkbox("Push culled lod", &m_frameConfig.sharingPushCulled, "culled instances artificially pushed by one lod level");
           PE::InputIntClamped("Shared tail levels", (int*)&m_frameConfig.sharingEnabledLevels, 0, 32, 1, 1,
                               ImGuiInputTextFlags_EnterReturnsTrue,
@@ -579,8 +581,7 @@ void LodClusters::onUIRender()
       }
       if(PE::treeNode("Other settings"))
       {
-        PE::Checkbox("Separate Groups Kernel", &m_rendererConfig.useSeparateGroups,
-                     "optimization that splits traversal into two separate kernels");
+        PE::Checkbox("Persistent Traversal Kernel", &m_rendererConfig.usePersistentTraversal);
         PE::Checkbox("Instance Sorting", &m_rendererConfig.useSorting);
         PE::Checkbox("Enqueued Statistics", &m_rendererConfig.useRenderStats,
                      "Adds additional atomic counters for statistics, impacts performance");
@@ -597,7 +598,7 @@ void LodClusters::onUIRender()
           PE::Checkbox("Use Primitive Culling", (bool*)&m_rendererConfig.usePrimitiveCulling, "Use primitive culling in NV mesh shader");
           ImGui::EndDisabled();
           ImGui::BeginDisabled(!((m_frameConfig.visualize == VISUALIZE_VIS_BUFFER || m_frameConfig.visualize == VISUALIZE_DEPTH_ONLY)
-                                 && m_rendererConfig.useCulling && m_rendererConfig.useSeparateGroups));
+                                 && m_rendererConfig.useCulling));
           PE::Checkbox("Allow SW-Raster", (bool*)&m_rendererConfig.useComputeRaster,
                        "Allows use of compute-shader based rasterization (if visualize == visibility buffer / depth only)");
           PE::InputFloat("SW-Raster threshold", &m_frameConfig.swRasterThreshold, 1.0f, 1.0f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue,
@@ -616,74 +617,152 @@ void LodClusters::onUIRender()
 
       ImGui::Separator();
 
-      if(m_rendererConfig.useRenderStats && ImGui::BeginTable("##Render stats", 3, ImGuiTableFlags_RowBg))
+      if(m_rendererConfig.useRenderStats)
       {
-        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 140.0f * ImGui::GetWindowDpiScale());
-        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::Text("Enqueued Tasks");
-        ImGui::TableNextColumn();
-        ImGui::Text("%s", formatMetric(readback.numTraversedTasks).c_str());
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::Text("Enqueued Clusters");
-        ImGui::TableNextColumn();
-        ImGui::Text("%s", formatMetric(readback.numRenderedClusters).c_str());
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::Text("Enqueued Triangles");
-        ImGui::TableNextColumn();
-        ImGui::Text("%s", formatMetric(readback.numRenderedTriangles).c_str());
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::Text("Enqueued Tri/Cluster");
-        ImGui::TableNextColumn();
-        if(readback.numRenderedClusters > 0)
-        {
-          ImGui::Text("%.1f", float(readback.numRenderedTriangles) / float(readback.numRenderedClusters));
-        }
-        else
-        {
-          ImGui::Text("N/A");
-        }
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::Text("Rastered Triangles");
-        ImGui::TableNextColumn();
-        ImGui::Text("%s", formatMetric(readback.numRasteredTriangles).c_str());
+        const bool hasAlphaMask = m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD && m_scene && m_scene->m_hasAlphaMask;
+        const bool hasSW = m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD && m_rendererConfig.useComputeRaster;
 
-        if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD && m_rendererConfig.useComputeRaster)
+        struct RenderStatTrack
         {
-          ImGui::TableNextRow();
-          ImGui::TableNextColumn();
-          ImGui::Text("Enqueued Clusters SW");
-          ImGui::TableNextColumn();
-          ImGui::Text("%s", formatMetric(readback.numRenderedClustersSW).c_str());
-          ImGui::TableNextRow();
-          ImGui::TableNextColumn();
-          ImGui::Text("Enqueued Triangles SW");
-          ImGui::TableNextColumn();
-          ImGui::Text("%s", formatMetric(readback.numRenderedTrianglesSW).c_str());
-          ImGui::TableNextRow();
-          ImGui::TableNextColumn();
-          ImGui::Text("Enqueued Tri/Cluster SW");
-          ImGui::TableNextColumn();
-          if(readback.numRenderedClustersSW > 0)
-          {
-            ImGui::Text("%.1f", float(readback.numRenderedTrianglesSW) / float(readback.numRenderedClustersSW));
-          }
-          else
-          {
-            ImGui::Text("N/A");
-          }
-          ImGui::TableNextRow();
-          ImGui::TableNextColumn();
-          ImGui::Text("Rastered Triangles SW");
-          ImGui::TableNextColumn();
-          ImGui::Text("%s", formatMetric(readback.numRasteredTrianglesSW).c_str());
+          const char* header;
+          uint32_t    clusters;
+          uint64_t    tris;
+          uint64_t    raster;
+        };
+        RenderStatTrack tracks[4];
+        int             trackCount = 0;
+        tracks[trackCount++] = {"Default", readback.numRenderedClusters, readback.numRenderedTriangles, readback.numRasteredTriangles};
+        if(hasAlphaMask)
+        {
+          tracks[trackCount++] = {"Alpha", readback.numRenderedClustersAlpha, readback.numRenderedTrianglesAlpha,
+                                  readback.numRasteredTrianglesAlpha};
         }
-        ImGui::EndTable();
+        if(hasSW)
+        {
+          tracks[trackCount++] = {"SW", readback.numRenderedClustersSW, readback.numRenderedTrianglesSW, readback.numRasteredTrianglesSW};
+        }
+        if(hasAlphaMask && hasSW)
+        {
+          tracks[trackCount++] = {"Alpha SW", readback.numRenderedClustersAlphaSW, readback.numRenderedTrianglesAlphaSW,
+                                  readback.numRasteredTrianglesAlphaSW};
+        }
+
+        if(ImGui::BeginTable("##Render stats", 1 + trackCount, ImGuiTableFlags_RowBg))
+        {
+          ImGui::TableSetupColumn("Metric", ImGuiTableColumnFlags_WidthFixed, 80.0f * ImGui::GetWindowDpiScale());
+          for(int i = 0; i < trackCount; i++)
+          {
+            ImGui::TableSetupColumn(tracks[i].header, ImGuiTableColumnFlags_WidthStretch);
+          }
+          ImGui::TableHeadersRow();
+
+          static const char* kNoTrack = "\xe2\x80\x94";
+
+          uint64_t sumClusters = 0;
+          uint64_t sumTris     = 0;
+          uint64_t sumRaster   = 0;
+          for(int i = 0; i < trackCount; i++)
+          {
+            sumClusters += uint64_t(tracks[i].clusters);
+            sumTris += tracks[i].tris;
+            sumRaster += tracks[i].raster;
+          }
+
+          const auto startMetricRow = [](const char* label) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(label);
+          };
+          const auto startPctRow = []() {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextDisabled("");
+          };
+          const auto nextCellText = [](const char* s) {
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(s);
+          };
+          const auto nextCellFmtMetric = [](size_t v) {
+            ImGui::TableNextColumn();
+            const std::string t = formatMetric(v);
+            ImGui::TextUnformatted(t.c_str());
+          };
+          const auto nextCellPct = [](uint64_t sum, uint64_t numer, const char* emptyCell) {
+            ImGui::TableNextColumn();
+            if(sum == 0)
+            {
+              ImGui::TextUnformatted(emptyCell);
+            }
+            else
+            {
+              ImGui::Text("%.0f %%", 100.0 * double(numer) / double(sum));
+            }
+          };
+
+          startMetricRow("Tasks");
+          for(int i = 0; i < trackCount; i++)
+          {
+            if(i == 0)
+            {
+              nextCellFmtMetric(size_t(readback.numTraversedTasks));
+            }
+            else
+            {
+              nextCellText(kNoTrack);
+            }
+          }
+
+          startMetricRow("Clusters");
+          for(int i = 0; i < trackCount; i++)
+          {
+            nextCellFmtMetric(size_t(tracks[i].clusters));
+          }
+          startPctRow();
+          for(int i = 0; i < trackCount; i++)
+          {
+            nextCellPct(sumClusters, uint64_t(tracks[i].clusters), kNoTrack);
+          }
+
+          startMetricRow("Tri / Cluster");
+          for(int i = 0; i < trackCount; i++)
+          {
+            ImGui::TableNextColumn();
+            const uint32_t c = tracks[i].clusters;
+            const uint64_t t = tracks[i].tris;
+            if(c > 0)
+            {
+              ImGui::Text("%.1f", double(t) / double(c));
+            }
+            else
+            {
+              ImGui::TextUnformatted("N/A");
+            }
+          }
+
+          startMetricRow("Triangles");
+          for(int i = 0; i < trackCount; i++)
+          {
+            nextCellFmtMetric(size_t(tracks[i].tris));
+          }
+          startPctRow();
+          for(int i = 0; i < trackCount; i++)
+          {
+            nextCellPct(sumTris, tracks[i].tris, kNoTrack);
+          }
+
+          startMetricRow("Rastered Tri");
+          for(int i = 0; i < trackCount; i++)
+          {
+            nextCellFmtMetric(size_t(tracks[i].raster));
+          }
+          startPctRow();
+          for(int i = 0; i < trackCount; i++)
+          {
+            nextCellPct(sumRaster, tracks[i].raster, kNoTrack);
+          }
+
+          ImGui::EndTable();
+        }
       }
     }
 
@@ -724,7 +803,7 @@ void LodClusters::onUIRender()
                        "If ray tracing is preferred, influences weight between SAH optimized (towards zero), or filling clusters (higher value).");
         PE::InputFloat("RA split factor", &m_sceneConfigEdit.meshoptSplitFactor, 0, 0, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue,
                        "If raster is preferred, influences the maximum size of a cluster prior splitting it up.");
-
+        PE::Checkbox("Mesh Multi-Materials", &m_sceneConfigEdit.enableMultiMaterials, "Allows a mesh to have multiple materials.");
         PE::entry("Enabled Attributes", [&] {
           for(uint32_t i = 0; i < 4; i++)
           {
@@ -778,6 +857,8 @@ void LodClusters::onUIRender()
         PE::InputFloat("Tangent weight", &m_sceneConfigEdit.simplifyTangentWeight, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
                        "How much to weight this attribute for the error metric. 0 Disables");
         PE::InputFloat("BiTangent Sign weight", &m_sceneConfigEdit.simplifyTangentSignWeight, 0, 0, "%.3f",
+                       ImGuiInputTextFlags_EnterReturnsTrue, "How much to weight this attribute for the error metric. 0 Disables");
+        PE::InputFloat("Material weight", &m_sceneConfigEdit.simplifyMaterialWeight, 0, 0, "%.3f",
                        ImGuiInputTextFlags_EnterReturnsTrue, "How much to weight this attribute for the error metric. 0 Disables");
         m_sceneConfigEdit.lodErrorMergePrevious = std::max(1.0f, m_sceneConfigEdit.lodErrorMergePrevious);
         m_sceneConfigEdit.lodErrorMergeAdditive = std::max(0.0f, m_sceneConfigEdit.lodErrorMergeAdditive);
@@ -1281,38 +1362,50 @@ void LodClusters::onUIRender()
 
     if(ImGui::CollapsingHeader("Hit Info", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {
-      uint32_t    instanceID   = -1;
-      uint32_t    geometryID   = -1;
-      uint32_t    materialID   = -1;
-      uint32_t    clusterID    = -1;
-      uint32_t    triangleID   = -1;
-      const char* materialName = nullptr;
-      const char* geometryName = nullptr;
+      uint32_t    instanceID          = -1;
+      uint32_t    geometryID          = -1;
+      uint32_t    materialID          = -1;
+      uint32_t    clusterID           = -1;
+      uint32_t    triangleID          = -1;
+      const char* materialName        = nullptr;
+      const char* geometryName        = nullptr;
+      bool        materialAlphaMasked = false;
+      bool        materialTwoSided    = false;
 
       if(m_scene && pickingValid)
       {
-        instanceID   = readback.instanceId;
-        geometryID   = m_scene->m_instances[readback.instanceId].geometryID;
-        materialID   = m_scene->m_instances[readback.instanceId].materialID;
+        instanceID = readback.instanceId;
+        geometryID = m_scene->m_instances[readback.instanceId].geometryID;
+
+        if(m_renderer)
+        {
+          materialID          = m_renderer->getOriginalMaterialID(readback.materialId);
+          materialName        = m_scene->m_materialNames[materialID].c_str();
+          materialAlphaMasked = m_scene->m_materials[materialID].alphaMasked;
+          materialTwoSided    = m_scene->m_materials[materialID].twoSided;
+        }
+
         clusterID    = readback.clusterTriangleId >> 8;
         triangleID   = readback.clusterTriangleId & 0xFF;
-        materialName = m_scene->m_materialNames[materialID].c_str();
         geometryName = m_scene->m_geometryNames[geometryID].c_str();
       }
 
       ImGui::Text("Instance ID:  %d", instanceID);
-      ImGui::Text("Geometry ID:  %d - %s", geometryID, geometryName ? geometryName : "");
-      ImGui::Text("Material ID:  %d - %s", materialID, materialName ? materialName : "");
+      ImGui::Text("Geometry ID:  %d \"%s\"", geometryID, geometryName ? geometryName : "");
+      ImGui::Text("Material ID:  %d \"%s\"%s %s", materialID, materialName ? materialName : "",
+                  materialAlphaMasked ? " alpha-masked" : "", materialTwoSided ? " two-sided" : "");
       ImGui::Text("Cluster  ID:  %d", clusterID);
       ImGui::Text("Triangle ID:  %d", triangleID);
       ImGui::Text("Position:  [%f, %f, %f]", hitPos.x, hitPos.y, hitPos.z);
     }
 
-
     if(ImGui::CollapsingHeader("Advanced", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {
       PE::begin("misc", ImGuiTableFlags_Resizable);
-      PE::InputIntClamped("Persistent traversal threads", (int*)&m_frameConfig.traversalPersistentThreads, 32,
+      PE::Checkbox("Anisotropic Texture Gradient", &m_rendererConfig.useAnisotropicGradient);
+      PE::SliderFloat("Texture Gradient Scale", &m_frameConfig.frameConstants.texGradScale, 0.0f, 1.0f, "%.3f", 0,
+                      "Influence texture gradient in ray tracing and compute rasterization");
+      PE::InputIntClamped("Persistent Traversal Threads", (int*)&m_frameConfig.traversalPersistentThreads, 32,
                           256 * 1024, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue);
       PE::InputInt("Colorize xor", (int*)&m_frameConfig.frameConstants.colorXor);
       PE::Checkbox("Auto reset timer", &m_tweak.autoResetTimers);

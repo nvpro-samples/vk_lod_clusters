@@ -76,6 +76,11 @@ layout(scalar, binding = BINDINGS_RENDERINSTANCES_SSBO, set = 0) buffer renderIn
   RenderInstance instances[];
 };
 
+layout(scalar, binding = BINDINGS_RENDERMATERIALS_SSBO, set = 0) buffer renderMaterialsBuffer
+{
+  RenderMaterial materials[];
+};
+
 layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffer
 {
   Geometry geometries[];
@@ -147,9 +152,9 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
   OUT[];
 
 #endif
+#endif
 
-
-#if ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS)
+#if (!USE_DEPTH_ONLY && ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS)) || (HAS_ALPHA_TEST && ALLOW_VERTEX_TEXCOORDS)
 // maybe remove, could load triangle indices in fragment shader as well
 layout(location = 3) out Interpolants2
 {
@@ -158,7 +163,7 @@ layout(location = 3) out Interpolants2
 OUTBARY[];
 #endif
 
-#endif
+
 
 ////////////////////////////////////////////
 
@@ -179,6 +184,7 @@ const uint MESHLET_TRIANGLE_ITERATIONS = ((CLUSTER_TRIANGLE_COUNT + MESHSHADER_W
 #define CULLING_NO_HIZ
 #include "culling.glsl"
 #endif
+#include "texturing.glsl"
 
 #if USE_EXT_MESH_SHADER && USE_TWO_SIDED
 shared vec4 s_vertices[CLUSTER_VERTEX_COUNT];
@@ -192,11 +198,22 @@ void main()
 #if USE_EXT_MESH_SHADER
   // EXT mesh shader's launch grid can overshoot actual work
   uint workGroupID  = getWorkGroupIndexLinearized(gl_WorkGroupID);
-  bool isValid      = workGroupID < build.numRenderedClusters;
-  ClusterInfo cinfo = build.renderClusterInfos.d[min(workGroupID, build.numRenderedClusters-1)];
+#if HAS_ALPHA_TEST
+  uint numRenderedClustersAlpha = build.numRenderedClustersAlpha;
+#else
+  uint numRenderedClusters = build.numRenderedClusters;
+#endif
+  bool isValid      = workGroupID < numRenderedClusters;
+  uint loadID       = min(workGroupID, numRenderedClusters-1);
 #else
   uint workGroupID  = gl_WorkGroupID.x;
-  ClusterInfo cinfo = build.renderClusterInfos.d[workGroupID];
+  uint loadID       = workGroupID;
+#endif
+
+#if HAS_ALPHA_TEST
+  ClusterInfo cinfo = build.renderClusterInfosAlpha.d[loadID];
+#else
+  ClusterInfo cinfo = build.renderClusterInfos.d[loadID];
 #endif
 
   uint instanceID = cinfo.instanceID;
@@ -230,9 +247,17 @@ void main()
 
 #if USE_RENDER_STATS
   if (gl_LocalInvocationID.x == 0) {
+  #if HAS_ALPHA_TEST
+    atomicAdd(readback.numRenderedTrianglesAlpha, uint(triMax + 1));
+  #else
     atomicAdd(readback.numRenderedTriangles, uint(triMax + 1));
+  #endif
   #if !USE_PRIMITIVE_CULLING
-    atomicAdd(readback.numRasteredTriangles, uint(triMax + 1));
+    #if HAS_ALPHA_TEST
+      atomicAdd(readback.numRasteredTrianglesAlpha, uint(triMax + 1));
+    #else
+      atomicAdd(readback.numRasteredTriangles, uint(triMax + 1));
+    #endif
   #endif
   }
 #endif
@@ -265,13 +290,14 @@ void main()
     #if ALLOW_SHADING
       OUT[vert].wPos                      = wPos.xyz;
     #endif
-    #if ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS)
-      OUTBARY[vert].vertexID              = vert;
-    #endif
     #if !USE_PERPRIMITIVE_OUT
       OUT[vert].clusterID                 = clusterID;
       OUT[vert].instanceID                = instanceID;
     #endif
+    #endif
+
+    #if (!USE_DEPTH_ONLY && ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS)) || (HAS_ALPHA_TEST && ALLOW_VERTEX_TEXCOORDS)
+      OUTBARY[vert].vertexID              = vert;
     #endif
     }
   }
@@ -291,15 +317,18 @@ void main()
                           localIndices.d[triLoad * 3 + 1],
                           localIndices.d[triLoad * 3 + 2]);
 #if !USE_FORCED_TWO_SIDED
+  #if USE_TWO_SIDED
+    bool effectiveTwoSided = resolveTriangleTwoSided(instance, clusterRef, triLoad);
+  #endif
     if (instance.flipWinding != 0
 #if USE_TWO_SIDED && !USE_EXT_MESH_SHADER
-      || (instance.twoSided != 0 && !isFrontFacingHW(gl_MeshVerticesNV[indices.x].gl_Position,
-                                                     gl_MeshVerticesNV[indices.y].gl_Position,
-                                                     gl_MeshVerticesNV[indices.z].gl_Position))
+      || (effectiveTwoSided && !isFrontFacingHW(gl_MeshVerticesNV[indices.x].gl_Position,
+                                                gl_MeshVerticesNV[indices.y].gl_Position,
+                                                gl_MeshVerticesNV[indices.z].gl_Position))
 #elif USE_TWO_SIDED && USE_EXT_MESH_SHADER
-      || (instance.twoSided != 0 && !isFrontFacingHW(s_vertices[indices.x],
-                                                     s_vertices[indices.y],
-                                                     s_vertices[indices.z]))
+      || (effectiveTwoSided && !isFrontFacingHW(s_vertices[indices.x],
+                                                s_vertices[indices.y],
+                                                s_vertices[indices.z]))
 #endif
     )
     {
@@ -349,7 +378,11 @@ void main()
   }
 #if USE_RENDER_STATS
   if (gl_LocalInvocationID.x == 0) {
+  #if HAS_ALPHA_TEST
+    atomicAdd(readback.numRasteredTrianglesAlpha, triOutCount);
+  #else
     atomicAdd(readback.numRasteredTriangles, triOutCount);
+  #endif
   }
 #endif
 #endif

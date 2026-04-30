@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -34,10 +34,15 @@ namespace lodclusters {
 
 //////////////////////////////////////////////////////////////////////////
 
-bool RenderScene::init(Resources* res, const Scene* scene_, const StreamingConfig& streamingConfig_, bool useStreaming_)
+bool RenderScene::init(Resources* res, const Scene* scene_, const StreamingConfig& streamingConfig_, bool useStreaming_, const SceneTexturesConfig& texturesConfig)
 {
   scene        = scene_;
   useStreaming = useStreaming_;
+
+  if(!sceneTextures.init(res, *scene_, texturesConfig))
+  {
+    return false;
+  }
 
   if(useStreaming)
   {
@@ -56,6 +61,7 @@ void RenderScene::deinit()
 {
   scenePreloaded.deinit();
   sceneStreaming.deinit();
+  sceneTextures.deinit();
 }
 
 void RenderScene::streamingReset()
@@ -185,28 +191,134 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
 
   m_renderInstances.resize(scene.m_instances.size());
 
+  std::vector<uint32_t> sceneMaterialMapping(scene.m_materials.size(), ~0);
+  std::vector<uint32_t> geometryMaterialOffsets(scene.m_originalGeometryCount, 0);
+  std::vector<uint8_t>  geometryOpaqueStatus(scene.m_originalGeometryCount, 0);
+
+  uint32_t numMaterials = 0;
+  m_renderMaterials.resize(scene.m_materials.size() + scene.m_geometryMultiMaterialCount);
+
+  {
+    // for every geometry that has multiple local materials, create a render material for each local material
+    for(size_t g = 0; g < scene.m_originalGeometryCount; g++)
+    {
+      const Scene::GeometryView& geometry         = scene.getActiveGeometry(g);
+      size_t                     alphaMaskedCount = 0;
+      if(geometry.localMaterialIDs.size() > 1)
+      {
+        uint32_t renderMaterialID = numMaterials;
+
+        geometryMaterialOffsets[g] = renderMaterialID;
+        numMaterials += uint32_t(geometry.localMaterialIDs.size());
+
+        for(size_t m = 0; m < geometry.localMaterialIDs.size(); m++)
+        {
+          const Scene::Material&    sceneMaterial  = scene.m_materials[geometry.localMaterialIDs[m]];
+          shaderio::RenderMaterial& renderMaterial = m_renderMaterials[renderMaterialID + m];
+          renderMaterial                           = {};
+          renderMaterial.originalID                = uint32_t(geometry.localMaterialIDs[m]);
+          renderMaterial.twoSided                  = sceneMaterial.twoSided ? uint8_t(1) : uint8_t(0);
+          renderMaterial.alphaMaskTexture = sceneMaterial.alphaMasked && sceneMaterial.alphaMaskImageID != ~0U ?
+                                                uint16_t(sceneMaterial.alphaMaskImageID) :
+                                                uint16_t(0xFFFF);
+          if(sceneMaterial.alphaMasked && sceneMaterial.alphaMaskImageID != ~0U)
+          {
+            alphaMaskedCount++;
+          }
+        }
+      }
+      else
+      {
+        uint32_t               sceneMaterialID = geometry.localMaterialIDs[0];
+        const Scene::Material& sceneMaterial   = scene.m_materials[sceneMaterialID];
+        if(sceneMaterial.alphaMasked && sceneMaterial.alphaMaskImageID != ~0U)
+        {
+          alphaMaskedCount++;
+        }
+
+        if(sceneMaterialMapping[sceneMaterialID] == ~0)
+        {
+          uint32_t renderMaterialID = numMaterials;
+
+          sceneMaterialMapping[sceneMaterialID] = renderMaterialID;
+          numMaterials += 1;
+
+          shaderio::RenderMaterial& renderMaterial = m_renderMaterials[renderMaterialID];
+          renderMaterial                           = {};
+          renderMaterial.originalID                = sceneMaterialID;
+          renderMaterial.twoSided                  = sceneMaterial.twoSided ? uint8_t(1) : uint8_t(0);
+          renderMaterial.alphaMaskTexture = sceneMaterial.alphaMasked && sceneMaterial.alphaMaskImageID != ~0U ?
+                                                uint16_t(sceneMaterial.alphaMaskImageID) :
+                                                uint16_t(0xFFFF);
+        }
+      }
+
+      uint8_t opaqueStatus;
+      if(alphaMaskedCount == 0)
+        opaqueStatus = SHADERIO_OPAQUE_STATUS_OPAQUE;
+      else if(alphaMaskedCount == geometry.localMaterialIDs.size())
+        opaqueStatus = SHADERIO_OPAQUE_STATUS_ALPHAMASKED;
+      else
+        opaqueStatus = SHADERIO_OPAQUE_STATUS_MIXED;
+
+      geometryOpaqueStatus[g] = opaqueStatus;
+    }
+
+    if(numMaterials == 0)
+    {
+      numMaterials         = 1;
+      m_renderMaterials[0] = {};
+    }
+  }
+
   for(size_t i = 0; i < m_renderInstances.size(); i++)
   {
     shaderio::RenderInstance&  renderInstance = m_renderInstances[i];
     const Scene::Instance&     sceneInstance  = scene.m_instances[i];
     const Scene::GeometryView& geometry       = scene.getActiveGeometry(sceneInstance.geometryID);
+    const Scene::Material&     material       = scene.m_materials[sceneInstance.materialID];
 
-    renderInstance                = {};
-    renderInstance.worldMatrix    = glm::mat4x3(sceneInstance.matrix);
-    renderInstance.worldMatrixI   = glm::mat4x3(glm::inverse(sceneInstance.matrix));
-    renderInstance.geometryID     = sceneInstance.geometryID;
-    renderInstance.materialID     = uint16_t(sceneInstance.materialID);
+    renderInstance              = {};
+    renderInstance.worldMatrix  = glm::mat4x3(sceneInstance.matrix);
+    renderInstance.worldMatrixI = glm::mat4x3(glm::inverse(sceneInstance.matrix));
+    renderInstance.geometryID   = sceneInstance.geometryID;
+
+    if(geometry.localMaterialIDs.size() > 1)
+    {
+      renderInstance.materialID       = uint16_t(geometryMaterialOffsets[sceneInstance.geometryID]);
+      renderInstance.multiMaterial    = 1;
+      renderInstance.twoSided         = 0;
+      renderInstance.alphaMaskTexture = 0xFFFF;
+      // geometryID may reference duplicated geometry; map back to original
+      renderInstance.opaqueStatus = geometryOpaqueStatus[sceneInstance.geometryID % scene.m_originalGeometryCount];
+    }
+    else
+    {
+      renderInstance.materialID    = uint16_t(sceneMaterialMapping[sceneInstance.materialID]);
+      renderInstance.multiMaterial = 0;
+      renderInstance.twoSided      = material.twoSided ? 1 : 0;
+      renderInstance.alphaMaskTexture = material.alphaMasked && material.alphaMaskImageID != ~0 ? material.alphaMaskImageID : 0xFFFF;
+      renderInstance.opaqueStatus =
+          renderInstance.alphaMaskTexture == 0xFFFF ? SHADERIO_OPAQUE_STATUS_OPAQUE : SHADERIO_OPAQUE_STATUS_ALPHAMASKED;
+    }
+
     renderInstance.maxLodLevelRcp = geometry.lodLevelsCount > 1 ? 1.0f / float(geometry.lodLevelsCount - 1) : 0.0f;
     renderInstance.packedColor    = glm::packUnorm4x8(sceneInstance.color);
-    renderInstance.twoSided       = sceneInstance.twoSided ? 1 : 0;
+
+    renderInstance.lowDetailClusterStateBits = geometry.lowDetailClusterStateBits;
+
     renderInstance.flipWinding =
-        (!sceneInstance.twoSided && ((glm::determinant(sceneInstance.matrix) <= 0) != config.flipWinding)) ? 1 : 0;
+        (!renderInstance.twoSided && ((glm::determinant(sceneInstance.matrix) <= 0) != config.flipWinding)) ? 1 : 0;
   }
 
   res.createBuffer(m_renderInstanceBuffer, sizeof(shaderio::RenderInstance) * m_renderInstances.size(),
                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
   NVVK_DBG_NAME(m_renderInstanceBuffer.buffer);
   res.simpleUploadBuffer(m_renderInstanceBuffer, m_renderInstances.data());
+
+  res.createBuffer(m_renderMaterialBuffer, sizeof(shaderio::RenderMaterial) * numMaterials, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+  NVVK_DBG_NAME(m_renderMaterialBuffer.buffer);
+  res.simpleUploadBuffer(m_renderMaterialBuffer, m_renderMaterials.data());
 
   if(config.useSorting)
   {
@@ -226,6 +338,7 @@ void Renderer::deinitBasics(Resources& res)
 
   m_basicDset.deinit();
 
+  res.m_allocator.destroyBuffer(m_renderMaterialBuffer);
   res.m_allocator.destroyBuffer(m_renderInstanceBuffer);
   res.m_allocator.destroyBuffer(m_sortingAuxBuffer);
 }
@@ -242,6 +355,7 @@ void Renderer::updateBasicDescriptors(Resources& res, RenderScene& rscene, const
   writeSets.append(m_basicDset.makeWrite(BINDINGS_RASTER_ATOMIC), res.m_frameBuffer.imgRasterAtomic.descriptor);
   writeSets.append(m_basicDset.makeWrite(BINDINGS_GEOMETRIES_SSBO), rscene.getShaderGeometriesBuffer());
   writeSets.append(m_basicDset.makeWrite(BINDINGS_RENDERINSTANCES_SSBO), m_renderInstanceBuffer);
+  writeSets.append(m_basicDset.makeWrite(BINDINGS_RENDERMATERIALS_SSBO), m_renderMaterialBuffer);
   if(sceneBuildBuffer)
   {
     writeSets.append(m_basicDset.makeWrite(BINDINGS_SCENEBUILDING_UBO), *sceneBuildBuffer);
@@ -268,6 +382,7 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene, const Ren
   bindings.addBinding(BINDINGS_RASTER_ATOMIC, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_basicShaderFlags);
   bindings.addBinding(BINDINGS_GEOMETRIES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
   bindings.addBinding(BINDINGS_RENDERINSTANCES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
+  bindings.addBinding(BINDINGS_RENDERMATERIALS_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
   bindings.addBinding(BINDINGS_SCENEBUILDING_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_basicShaderFlags);
   if(rscene.useStreaming)
   {
@@ -359,20 +474,26 @@ void Renderer::renderInstanceBboxes(VkCommandBuffer cmd)
   }
 }
 
-void Renderer::renderClusterBboxes(VkCommandBuffer cmd, nvvk::Buffer sceneBuildBuffer)
+void Renderer::renderClusterBboxes(VkCommandBuffer cmd, nvvk::Buffer sceneBuildBuffer, bool alpha)
 {
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelineLayout, 0, 1, m_basicDset.getSetPtr(), 0, nullptr);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelines.renderClusterBboxes);
+  uint32_t pushConstant = alpha ? 1 : 0;
+  vkCmdPushConstants(cmd, m_basicPipelineLayout, m_basicShaderFlags, 0, sizeof(uint32_t), &pushConstant);
 
   if(m_config.useEXTmeshShader)
   {
     vkCmdDrawMeshTasksIndirectEXT(cmd, sceneBuildBuffer.buffer,
-                                  offsetof(shaderio::SceneBuilding, indirectDrawClusterBoxesEXT), 1, 0);
+                                  alpha ? offsetof(shaderio::SceneBuilding, indirectDrawClusterBoxesAlphaEXT) :
+                                          offsetof(shaderio::SceneBuilding, indirectDrawClusterBoxesEXT),
+                                  1, 0);
   }
   else
   {
     vkCmdDrawMeshTasksIndirectNV(cmd, sceneBuildBuffer.buffer,
-                                 offsetof(shaderio::SceneBuilding, indirectDrawClusterBoxesNV), 1, 0);
+                                 alpha ? offsetof(shaderio::SceneBuilding, indirectDrawClusterBoxesAlphaNV) :
+                                         offsetof(shaderio::SceneBuilding, indirectDrawClusterBoxesNV),
+                                 1, 0);
   }
 }
 

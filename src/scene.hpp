@@ -41,7 +41,7 @@ namespace lodclusters {
 // Controls the scene's data generation during loading and processing.
 struct SceneConfig
 {
-  static const uint32_t version = 2;
+  static const uint32_t version = 3;
 
   // cluster and cluster group settings
   uint32_t clusterVertices    = 128;
@@ -55,6 +55,11 @@ struct SceneConfig
   // store groups in a compressed way
   // uncompress at runtime
   bool useCompressedData = false;
+
+  // allow materials
+  bool enableMultiMaterials = true;
+
+  bool _reserved = false;
 
   // due to the simple shading, only enable normals for now
   uint32_t enabledAttributes = shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL;
@@ -80,6 +85,7 @@ struct SceneConfig
   float simplifyTangentWeight     = 0.01f;
   float simplifyTangentSignWeight = 0.5f;
   float simplifyTexCoordWeight    = 0;
+  float simplifyMaterialWeight    = 0.5f;
 
   // used when compression is enabled
   uint32_t compressionPosDropBits = 7;
@@ -198,17 +204,42 @@ public:
   };
 
   // To optimize streaming all cluster groups are stored in a contiguous blob of memory.
-  //
   struct GroupInfo
   {
+    static constexpr size_t MAX_VERTEX_DATA_COUNT =
+        // pos + nrm/tan + 2 * tex
+        SHADERIO_MAX_GROUP_CLUSTERS * SHADERIO_MAX_CLUSTER_VERTICES * (3 + 1 + 2 * 2) +
+        // + clusters for tex alignment
+        SHADERIO_MAX_GROUP_CLUSTERS;
+    static constexpr size_t MAX_TRIANGLE_DATA_COUNT = SHADERIO_MAX_GROUP_CLUSTERS * SHADERIO_MAX_CLUSTER_TRIANGLES * 4;
+
+    static constexpr size_t MAX_SIZE =
+        nvutils::align_up(sizeof(shaderio::Group) +
+                              // clusters
+                              (sizeof(shaderio::Cluster) + sizeof(shaderio::BBox) + sizeof(uint32_t)) * SHADERIO_MAX_GROUP_CLUSTERS +
+                              // vertex
+                              sizeof(float) * MAX_VERTEX_DATA_COUNT +
+                              // triangle
+                              sizeof(uint8_t) * MAX_TRIANGLE_DATA_COUNT,
+                          16);
+
     uint64_t offsetBytes : 42;
+
+    // MAX_SIZE
     uint64_t sizeBytes : 22;
+
+    // SHADERIO_MAX_GROUP_CLUSTERS * SHADERIO_MAX_CLUSTER_VERTICES
     uint16_t vertexCount;
+    // SHADERIO_MAX_GROUP_CLUSTERS * SHADERIO_MAX_CLUSTER_TRIANGLES
     uint16_t triangleCount;
-    uint8_t  lodLevel;
-    uint8_t  clusterCount;
-    uint8_t  attributeBits;
-    uint8_t  reserved1 = 0;
+    // SHADERIO_MAX_LOD_LEVELS
+    uint32_t lodLevel : 6;
+    // MAX_TRIANGLE_DATA_COUNT
+    uint32_t triangleDataCount : 18;
+    // SHADERIO_MAX_GROUP_CLUSTERS
+    uint32_t clusterCount : 8;
+
+    // MAX_VERTEX_DATA_COUNT
     uint64_t vertexDataCount : 21;
     // these must be 0 if group is stored 'uncompressed'
     // otherwise they provide the size information of the uncompressed state.
@@ -219,47 +250,15 @@ public:
     uint32_t getDeviceSize() const { return uint32_t(uncompressedSizeBytes ? uncompressedSizeBytes : sizeBytes); }
 
     // safe upper bound
-    uint32_t estimateVertexDataCount() const
-    {
-      uint32_t dataCount = vertexCount * 3;
-      if(attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL)
-      {
-        dataCount += vertexCount * 1;
-      }
-      if(attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0)
-      {
-        dataCount += vertexCount * 2;
-        dataCount += clusterCount;  // potential padding
-      }
-      if(attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1)
-      {
-        dataCount += vertexCount * 2;
-        dataCount += clusterCount;  // potential padding
-      }
-      return dataCount;
-    }
+    uint32_t estimateVertexDataCount(uint32_t attributeBits) const;
+    uint32_t estimateTriangleDataCount(bool hasTriangleMaterials) const;
 
-    size_t computeSize() const
-    {
-      size_t threadGroupSize = sizeof(shaderio::Group);
-      threadGroupSize        = nvutils::align_up(threadGroupSize, 16) + sizeof(shaderio::Cluster) * clusterCount;
-      threadGroupSize        = nvutils::align_up(threadGroupSize, 4) + sizeof(uint32_t) * clusterCount;
-      threadGroupSize        = nvutils::align_up(threadGroupSize, 16) + sizeof(shaderio::BBox) * clusterCount;
-      threadGroupSize        = threadGroupSize + sizeof(uint8_t) * triangleCount * 3;
-      threadGroupSize        = nvutils::align_up(threadGroupSize, 8) + sizeof(float) * vertexDataCount;
-      return nvutils::align_up(threadGroupSize, 16);
-    }
+    // compute size based on relevant properties
+    size_t computeSize() const;
 
-    size_t computeUncompressedSectionSize() const
-    {
-      size_t threadGroupSize = sizeof(shaderio::Group);
-      threadGroupSize        = nvutils::align_up(threadGroupSize, 16) + sizeof(shaderio::Cluster) * clusterCount;
-      threadGroupSize        = nvutils::align_up(threadGroupSize, 4) + sizeof(uint32_t) * clusterCount;
-      threadGroupSize        = nvutils::align_up(threadGroupSize, 16) + sizeof(shaderio::BBox) * clusterCount;
-      threadGroupSize        = threadGroupSize + sizeof(uint8_t) * triangleCount * 3;
-      threadGroupSize        = nvutils::align_up(threadGroupSize, 8);
-      return threadGroupSize;
-    }
+    // compute size of the uncompressed section in a compressed group
+    // based on relevant properties
+    size_t computeUncompressedSectionSize() const;
   };
 
   // read-only accessor of cluster groups used at runtime
@@ -271,7 +270,7 @@ public:
     std::span<const shaderio::Cluster> clusters;
     std::span<const uint32_t>          clusterGeneratingGroups;
     std::span<const shaderio::BBox>    clusterBboxes;
-    std::span<const uint8_t>           indices;
+    std::span<const uint8_t>           triangles;
     std::span<const float>             vertices;
 
     GroupView() {};
@@ -293,16 +292,16 @@ public:
           std::span((const shaderio::BBox*)nvutils::align_up(size_t(clusterGeneratingGroups.data() + info.clusterCount), 16),
                     info.clusterCount);
 
-      indices = std::span((const uint8_t*)size_t(clusterBboxes.data() + info.clusterCount), info.triangleCount * 3);
+      triangles = std::span((const uint8_t*)size_t(clusterBboxes.data() + info.clusterCount), info.triangleDataCount);
 
-      vertices = std::span((const float*)nvutils::align_up(size_t(indices.data() + info.triangleCount * 3), 8), info.vertexDataCount);
+      vertices = std::span((const float*)nvutils::align_up(size_t(triangles.data() + info.triangleDataCount), 8), info.vertexDataCount);
       assert((size_t(vertices.data() + info.vertexDataCount) - startAddress) <= size_t(info.sizeBytes));
     }
 
     const uint8_t* getClusterIndices(size_t clusterIndex) const
     {
       // offsets relative to cluster header
-      return (const uint8_t*)(size_t(&clusters[clusterIndex]) + clusters[clusterIndex].indices);
+      return (const uint8_t*)(size_t(&clusters[clusterIndex]) + clusters[clusterIndex].triangles);
     }
     const glm::vec3* getClusterVertices(size_t clusterIndex) const
     {
@@ -312,6 +311,7 @@ public:
   };
 
   // read-write accessor used for processing a cluster group.
+  // also used during compression.
   // same structure as above
   struct GroupStorage
   {
@@ -321,7 +321,7 @@ public:
     std::span<shaderio::Cluster> clusters;
     std::span<uint32_t>          clusterGeneratingGroups;
     std::span<shaderio::BBox>    clusterBboxes;
-    std::span<uint8_t>           indices;
+    std::span<uint8_t>           triangles;
     std::span<float>             vertices;
 
     GroupStorage() {};
@@ -340,8 +340,8 @@ public:
       clusterBboxes =
           std::span((shaderio::BBox*)nvutils::align_up(size_t(clusterGeneratingGroups.data() + info.clusterCount), 16),
                     info.clusterCount);
-      indices = std::span((uint8_t*)size_t(clusterBboxes.data() + info.clusterCount), info.triangleCount * 3);
-      vertices = std::span((float*)nvutils::align_up(size_t(indices.data() + info.triangleCount * 3), 8), info.vertexDataCount);
+      triangles = std::span((uint8_t*)size_t(clusterBboxes.data() + info.clusterCount), info.triangleDataCount);
+      vertices = std::span((float*)nvutils::align_up(size_t(triangles.data() + info.triangleDataCount), 8), info.vertexDataCount);
       assert((size_t(vertices.data() + info.vertexDataCount) - startAddress) <= size_t(info.sizeBytes));
     }
 
@@ -412,6 +412,9 @@ public:
     GeometryLodInput lodInfo;
 
     uint32_t instanceReferenceCount{};
+
+    // Lowest-detail cluster `shaderio::Cluster::stateBits` after LOD build (single last-LOD cluster).
+    uint8_t lowDetailClusterStateBits{};
   };
 
   // read-only accessor for the geometry data.
@@ -428,7 +431,7 @@ public:
     std::span<const shaderio::Node>     lodNodes;
     std::span<const shaderio::BBox>     lodNodeBboxes;
 
-    // if we have
+    // if we have multiple material IDs
     std::span<const uint32_t> localMaterialIDs;
 
     inline uint64_t getCachedSize() const
@@ -479,6 +482,15 @@ public:
     float     fovy;
   };
 
+  struct Material
+  {
+    glm::vec4 color{0, 0, 0, 1};
+    bool      twoSided         = false;
+    bool      alphaMasked      = false;
+    float     alphaCutOff      = 0.5f;
+    uint32_t  alphaMaskImageID = ~0U;
+  };
+
   //////////////////////////////////////////////////////////////////////////
 
   // statistics
@@ -512,28 +524,43 @@ public:
 
   std::vector<Instance>    m_instances;
   std::vector<Camera>      m_cameras;
+  std::vector<Material>    m_materials;
   std::vector<std::string> m_geometryNames;
   std::vector<std::string> m_materialNames;
+  std::vector<std::string> m_imageFileNames;
 
-  bool m_isBig       = false;
-  bool m_hasTwoSided = false;
+  bool m_isBig        = false;
+  bool m_hasTwoSided  = false;
+  bool m_hasAlphaMask = false;
 
-  uint32_t m_maxClusterTriangles       = 0;
-  uint32_t m_maxClusterVertices        = 0;
-  uint32_t m_maxPerGeometryClusters    = 0;
-  uint32_t m_maxPerGeometryTriangles   = 0;
-  uint32_t m_maxPerGeometryVertices    = 0;
-  uint32_t m_maxLodLevelsCount         = 0;
-  uint32_t m_hiPerGeometryClusters     = 0;
-  uint32_t m_hiPerGeometryTriangles    = 0;
-  uint32_t m_hiPerGeometryVertices     = 0;
+  uint32_t m_geometryMultiMaterialCount = 0;
+
+  // maxima across lod levels
+  uint32_t m_maxPerGeometryClusters  = 0;
+  uint32_t m_maxPerGeometryTriangles = 0;
+  uint32_t m_maxPerGeometryVertices  = 0;
+
+  uint32_t m_maxClusterTriangles = 0;
+  uint32_t m_maxClusterVertices  = 0;
+  uint32_t m_maxLodLevelsCount   = 0;
+  uint32_t m_maxNodeTreeDepth    = 0;
+
+  // maxima in lod 0
+  uint32_t m_hiPerGeometryClusters  = 0;
+  uint32_t m_hiPerGeometryTriangles = 0;
+  uint32_t m_hiPerGeometryVertices  = 0;
+  uint32_t m_hiPerGeometryGroups    = 0;
+
+  // sum in lod 0
   uint64_t m_hiClustersCount           = 0;
   uint64_t m_hiTrianglesCount          = 0;
   uint64_t m_hiClustersCountInstanced  = 0;
   uint64_t m_hiTrianglesCountInstanced = 0;
-  uint64_t m_totalClustersCount        = 0;
-  uint64_t m_totalTrianglesCount       = 0;
-  uint64_t m_totalVerticesCount        = 0;
+
+  // sum across all lod levels
+  uint64_t m_totalClustersCount  = 0;
+  uint64_t m_totalTrianglesCount = 0;
+  uint64_t m_totalVerticesCount  = 0;
 
   Histograms m_histograms;
 
@@ -561,11 +588,12 @@ private:
     std::vector<float>      vertexAttributes;
     std::vector<glm::uvec3> triangles;
 
-    uint32_t attributesWithWeights  = 0u;
-    uint32_t attributeNormalOffset  = ~0u;
-    uint32_t attributeTex0offset    = ~0u;
-    uint32_t attributeTex1offset    = ~0u;
-    uint32_t attributeTangentOffset = ~0u;
+    uint32_t attributesWithWeights   = 0u;
+    uint32_t attributeNormalOffset   = ~0u;
+    uint32_t attributeTex0offset     = ~0u;
+    uint32_t attributeTex1offset     = ~0u;
+    uint32_t attributeTangentOffset  = ~0u;
+    uint32_t attributeMaterialOffset = ~0u;
 
     // persistent used in view
     std::vector<uint8_t>   groupData;
@@ -620,7 +648,7 @@ private:
     struct Header
     {
       uint64_t magic               = 0x006f65676e73766eULL;  // nvsngeo
-      uint32_t geoVersion          = 7;
+      uint32_t geoVersion          = 9;
       uint32_t geoStructSize       = uint32_t(sizeof(GeometryView));
       uint32_t configVersion       = SceneConfig::version;
       uint32_t configStructSize    = uint32_t(sizeof(SceneConfig));
@@ -636,6 +664,8 @@ private:
       // 5
       // 6 reduced shaderio::Group/Cluster structs using relative offsets
       // 7 compression
+      // 8 triangle data
+      // 9 GeometryBase.lowDetailClusterStateBits
     };
 
     Header header;
@@ -763,10 +793,12 @@ private:
     {
       std::atomic_uint64_t groups                = 0;
       std::atomic_uint64_t clusters              = 0;
+      std::atomic_uint64_t multiMaterialClusters = 0;
       std::atomic_uint64_t vertices              = 0;
       std::atomic_uint64_t groupUniqueVertices   = 0;
       std::atomic_uint64_t groupHeaderBytes      = 0;
       std::atomic_uint64_t triangleIndexBytes    = 0;
+      std::atomic_uint64_t triangleDataBytes     = 0;
       std::atomic_uint64_t vertexPosBytes        = 0;
       std::atomic_uint64_t vertexTexCoordBytes   = 0;
       std::atomic_uint64_t vertexNrmBytes        = 0;
@@ -871,6 +903,12 @@ private:
     uint32_t        indexCount      = 0;
     uint32_t        generatingGroup = 0;
   };
+
+  void applyMaterialStateBits(uint32_t& stateBits, const GeometryStorage& geometry, uint32_t localMaterialID, bool isFirst);
+  void applyMaterialStateBits(uint32_t& stateBits, uint32_t clusterBits, bool isFirst);
+  void applyMaterialTriangleBits(uint8_t& triangleBits, const GeometryStorage& geometry, uint32_t localMaterialID);
+
+  static uint8_t getMaterialLocalIndex(const GeometryStorage& geometry, uint32_t index, uint32_t attributeStride);
 
   uint32_t storeGroup(TempContext*       context,
                       uint32_t           threadIndex,

@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -127,20 +127,23 @@ void Scene::ProcessingInfo::logEnd()
   if(stats.groups)
   {
     LOGI("Group Data Stats\n");
-    LOGI("Groups:               %12" PRIu64 "\n", (uint64_t)stats.groups);
-    LOGI("Clusters:             %12" PRIu64 "\n", (uint64_t)stats.clusters);
-    LOGI("Vertices:             %12" PRIu64 "\n", (uint64_t)stats.vertices);
-    LOGI("Group Unique Verts:   %12" PRIu64 "\n", (uint64_t)stats.groupUniqueVertices);
-    LOGI("Group Header Bytes:   %12" PRIu64 "\n", (uint64_t)stats.groupHeaderBytes);
-    LOGI("Cluster Header Bytes: %12" PRIu64 "\n", (uint64_t)stats.clusterHeaderBytes);
-    LOGI("Cluster BBox Bytes:   %12" PRIu64 "\n", (uint64_t)stats.clusterBboxBytes);
-    LOGI("Cluster GGrp Bytes:   %12" PRIu64 "\n", (uint64_t)stats.clusterGenBytes);
-    LOGI("Triangle Index Bytes: %12" PRIu64 "\n", (uint64_t)stats.triangleIndexBytes);
-    LOGI("Vertex All Bytes:     %12" PRIu64 "\n", (uint64_t)(stats.vertexPosBytes + stats.vertexNrmBytes + stats.vertexTexCoordBytes));
-    LOGI("Vertex Pos Bytes:     %12" PRIu64 "\n", (uint64_t)stats.vertexPosBytes);
-    LOGI("Vertex TexCrd Bytes:  %12" PRIu64 "\n", (uint64_t)stats.vertexTexCoordBytes);
-    LOGI("Vertex N&T Bytes:     %12" PRIu64 "\n", (uint64_t)stats.vertexNrmBytes);
-    LOGI("Vertex Comp Bytes:    %12" PRIu64 "\n", (uint64_t)stats.vertexCompressedBytes);
+    LOGI("Groups:                  %12" PRIu64 "\n", (uint64_t)stats.groups);
+    LOGI("Clusters:                %12" PRIu64 "\n", (uint64_t)stats.clusters);
+    LOGI("Multi-Material Clusters: %12" PRIu64 "\n", (uint64_t)stats.multiMaterialClusters);
+    LOGI("Vertices:                %12" PRIu64 "\n", (uint64_t)stats.vertices);
+    LOGI("Group Unique Verts:      %12" PRIu64 "\n", (uint64_t)stats.groupUniqueVertices);
+    LOGI("Group Header Bytes:      %12" PRIu64 "\n", (uint64_t)stats.groupHeaderBytes);
+    LOGI("Cluster Header Bytes:    %12" PRIu64 "\n", (uint64_t)stats.clusterHeaderBytes);
+    LOGI("Cluster BBox Bytes:      %12" PRIu64 "\n", (uint64_t)stats.clusterBboxBytes);
+    LOGI("Cluster GGrp Bytes:      %12" PRIu64 "\n", (uint64_t)stats.clusterGenBytes);
+    LOGI("Triangle Index Bytes:    %12" PRIu64 "\n", (uint64_t)stats.triangleIndexBytes);
+    LOGI("Triangle Data Bytes:     %12" PRIu64 "\n", (uint64_t)stats.triangleDataBytes);
+    LOGI("Vertex All Bytes:        %12" PRIu64 "\n",
+         (uint64_t)(stats.vertexPosBytes + stats.vertexNrmBytes + stats.vertexTexCoordBytes));
+    LOGI("Vertex Pos Bytes:        %12" PRIu64 "\n", (uint64_t)stats.vertexPosBytes);
+    LOGI("Vertex TexCrd Bytes:     %12" PRIu64 "\n", (uint64_t)stats.vertexTexCoordBytes);
+    LOGI("Vertex N&T Bytes:        %12" PRIu64 "\n", (uint64_t)stats.vertexNrmBytes);
+    LOGI("Vertex Comp Bytes:       %12" PRIu64 "\n", (uint64_t)stats.vertexCompressedBytes);
     LOGI("\n");
   }
 }
@@ -237,7 +240,6 @@ Scene::Result Scene::init(const std::filesystem::path& filePath,
 
   if(m_loadedFromCache)
   {
-    m_cacheFileView.getSceneConfig(m_config);
     m_cacheFileView.getHistograms(m_histograms);
   }
 
@@ -253,9 +255,11 @@ Scene::Result Scene::init(const std::filesystem::path& filePath,
 
   for(auto& geometry : m_geometryViews)
   {
-    m_hiPerGeometryTriangles  = std::max(m_hiPerGeometryTriangles, geometry.hiTriangleCount);
-    m_hiPerGeometryVertices   = std::max(m_hiPerGeometryVertices, geometry.hiVerticesCount);
-    m_hiPerGeometryClusters   = std::max(m_hiPerGeometryClusters, geometry.hiClustersCount);
+    m_hiPerGeometryTriangles = std::max(m_hiPerGeometryTriangles, geometry.hiTriangleCount);
+    m_hiPerGeometryVertices  = std::max(m_hiPerGeometryVertices, geometry.hiVerticesCount);
+    m_hiPerGeometryClusters  = std::max(m_hiPerGeometryClusters, geometry.hiClustersCount);
+    m_hiPerGeometryGroups = std::max(m_hiPerGeometryGroups, geometry.lodLevels.empty() ? 0 : geometry.lodLevels[0].groupCount);
+
     m_maxPerGeometryTriangles = std::max(m_maxPerGeometryTriangles, geometry.totalTriangleCount);
     m_maxPerGeometryVertices  = std::max(m_maxPerGeometryVertices, geometry.totalVerticesCount);
     m_maxPerGeometryClusters  = std::max(m_maxPerGeometryClusters, geometry.totalClustersCount);
@@ -268,6 +272,11 @@ Scene::Result Scene::init(const std::filesystem::path& filePath,
     m_totalClustersCount += geometry.totalClustersCount;
     m_totalTrianglesCount += geometry.totalTriangleCount;
     m_totalVerticesCount += geometry.totalVerticesCount;
+
+    if(geometry.localMaterialIDs.size() > 1)
+    {
+      m_geometryMultiMaterialCount += uint32_t(geometry.localMaterialIDs.size());
+    }
   }
   for(size_t i = 0; i < m_instances.size(); i++)
   {
@@ -275,6 +284,26 @@ Scene::Result Scene::init(const std::filesystem::path& filePath,
     m_hiTrianglesCountInstanced += geometry.hiTriangleCount;
     m_hiClustersCountInstanced += geometry.hiClustersCount;
   }
+
+  {
+    // estimate depth of lod tree based on highest detail group count
+    uint32_t hiGroups   = m_hiPerGeometryGroups;
+    uint32_t hiNodes    = (hiGroups + m_config.preferredNodeWidth - 1) / m_config.preferredNodeWidth;
+    uint32_t rootPasses = 0;
+
+    m_maxNodeTreeDepth = 1;
+    while(hiNodes)
+    {
+      hiNodes = (hiNodes + m_config.preferredNodeWidth - 1) / m_config.preferredNodeWidth;
+      m_maxNodeTreeDepth++;
+      if(hiNodes == 1)
+        break;
+    }
+    // lod tree to root
+    m_maxNodeTreeDepth++;
+  }
+
+
   LOGI("cluster triangles: %d\n", m_config.clusterTriangles);
   LOGI("cluster vertices: %d\n", m_config.clusterTriangles);
   LOGI("cluster group: %d\n", m_config.clusterGroupSize);
@@ -734,5 +763,58 @@ void Scene::computeHistogramMaxs()
   {
     m_histograms.lodLevelsMax = std::max(m_histograms.lodLevelsMax, m_histograms.lodLevels[i]);
   }
+}
+
+//////////////////////////////////////////////////////////////////////////
+
+uint32_t Scene::GroupInfo::estimateVertexDataCount(uint32_t attributeBits) const
+{
+  uint32_t dataCount = vertexCount * 3;
+  if(attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL)
+  {
+    dataCount += vertexCount * 1;
+  }
+  if(attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0)
+  {
+    dataCount += vertexCount * 2;
+    dataCount += clusterCount;  // potential padding
+  }
+  if(attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1)
+  {
+    dataCount += vertexCount * 2;
+  }
+  return dataCount;
+}
+
+uint32_t Scene::GroupInfo::estimateTriangleDataCount(bool hasTriangleMaterials) const
+{
+  uint32_t dataCount = triangleCount * 3;
+  if(hasTriangleMaterials)
+  {
+    dataCount += triangleCount * 1;
+  }
+  return dataCount;
+}
+
+size_t Scene::GroupInfo::computeSize() const
+{
+  size_t threadGroupSize = sizeof(shaderio::Group);
+  threadGroupSize        = nvutils::align_up(threadGroupSize, 16) + sizeof(shaderio::Cluster) * clusterCount;
+  threadGroupSize        = nvutils::align_up(threadGroupSize, 4) + sizeof(uint32_t) * clusterCount;
+  threadGroupSize        = nvutils::align_up(threadGroupSize, 16) + sizeof(shaderio::BBox) * clusterCount;
+  threadGroupSize        = threadGroupSize + sizeof(uint8_t) * triangleDataCount;
+  threadGroupSize        = nvutils::align_up(threadGroupSize, 8) + sizeof(float) * vertexDataCount;
+  return nvutils::align_up(threadGroupSize, 16);
+}
+
+size_t Scene::GroupInfo::computeUncompressedSectionSize() const
+{
+  size_t threadGroupSize = sizeof(shaderio::Group);
+  threadGroupSize        = nvutils::align_up(threadGroupSize, 16) + sizeof(shaderio::Cluster) * clusterCount;
+  threadGroupSize        = nvutils::align_up(threadGroupSize, 4) + sizeof(uint32_t) * clusterCount;
+  threadGroupSize        = nvutils::align_up(threadGroupSize, 16) + sizeof(shaderio::BBox) * clusterCount;
+  threadGroupSize        = threadGroupSize + sizeof(uint8_t) * triangleDataCount;
+  threadGroupSize        = nvutils::align_up(threadGroupSize, 8);
+  return threadGroupSize;
 }
 }  // namespace lodclusters

@@ -23,8 +23,6 @@
   Shader Description
   ==================
   
-  Only used for USE_SEPARATE_GROUPS
-  
   This compute shader implements the traversal of cluster groups
   in the scene. Cluster groups iterate over their children
   and test the traversal metric of their generating groups
@@ -33,7 +31,7 @@
   
   `traversal_run.comp.glsl` is run before and outputs
     - `build.traversalGroupInfos` all traversed cluster groups that fulfill the metric.
-    - `build.traversalGroupCounter` number of the groups (may exceed recorded maximum).
+    - `build.traversalGroupWriteCounter` number of the groups (may exceed recorded maximum).
     - `build.indirectDispatchGroups.gridX` the dimensions of this kernel's dispatch based on above
   
   The cluster groups fill the list of to be rendered
@@ -82,6 +80,11 @@ layout(scalar, binding = BINDINGS_READBACK_SSBO, set = 0) buffer readbackBuffer
 layout(scalar, binding = BINDINGS_RENDERINSTANCES_SSBO, set = 0) buffer renderInstancesBuffer
 {
   RenderInstance instances[];
+};
+
+layout(scalar, binding = BINDINGS_RENDERMATERIALS_SSBO, set = 0) buffer renderMaterialsBuffer
+{
+  RenderMaterial materials[];
 };
 
 layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffer
@@ -133,16 +136,6 @@ layout(local_size_x=TRAVERSAL_GROUPS_WORKGROUP) in;
 
 #if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
 
-#if USE_SW_RASTER
-bool intersectSize(vec4 clipMin, vec4 clipMax, float threshold, float scale)
-{
-  vec2 rect = (clipMax.xy - clipMin.xy) * 0.5 * scale * view.viewportf.xy;
-  vec2 clipThreshold = vec2(threshold);
-  
-  return any(greaterThan(rect,clipThreshold));
-}
-#endif
-
 bool queryWasVisible(mat4x3 instanceTransform, BBox bbox, inout bool outRenderClusterSW)
 {
   vec3 bboxMin = bbox.lo;
@@ -152,7 +145,11 @@ bool queryWasVisible(mat4x3 instanceTransform, BBox bbox, inout bool outRenderCl
   vec4 clipMax;
   bool clipValid;
   
+#if USE_CLUSTER_OCCLUSION_CULLING
   bool useOcclusion = true;
+#else
+  bool useOcclusion = false;
+#endif
   
   // test if visible in last frame  
   bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
@@ -160,7 +157,7 @@ bool queryWasVisible(mat4x3 instanceTransform, BBox bbox, inout bool outRenderCl
     (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 0)));
   
 #if USE_TWO_PASS_CULLING
-  if (build.pass == 1) 
+  if (build.cullPass == 1) 
   {
     // in second pass also test against current visibility
     
@@ -197,8 +194,13 @@ bool queryWasVisible(mat4x3 instanceTransform, BBox bbox, inout bool outRenderCl
 
 void main()
 {
-  uint threadReadIndex = getGlobalInvocationIndex(gl_GlobalInvocationID);  
-  if (threadReadIndex >= min(build.traversalGroupCounter, build.maxTraversalInfos)) return;
+#if USE_PERSISTENT_TRAVERSAL_KERNEL
+  uint threadReadIndex = getGlobalInvocationIndex(gl_GlobalInvocationID);
+  if (threadReadIndex >= min(build.traversalGroupWriteCounter, build.maxTraversalInfos)) return;
+#else
+  uint threadReadIndex = getGlobalInvocationIndex(gl_GlobalInvocationID) + build.traversalGroupStart;
+  if (threadReadIndex >= build.traversalGroupEnd) return;
+#endif
   
   // load group and test its clusters
   
@@ -305,58 +307,68 @@ void main()
       traversalInfo.packedNode = group.clusterResidentID + clusterIndex;
     }
 
+
+    bool useAlpha = false;
+    bool useSW = false;
+
+  #if TARGETS_RASTERIZATION && HAS_ALPHA_TEST
+    useAlpha = instances[instanceID].opaqueStatus == SHADERIO_OPAQUE_STATUS_ALPHAMASKED;
+    if (instances[instanceID].opaqueStatus == SHADERIO_OPAQUE_STATUS_MIXED)
+    {
+      // check group state bit first if all clusters are alphamasked
+      uint groupState = group.stateBits;
+      bool alphaMasked = (groupState & CLUSTER_STATE_ALPHAMASKED) != 0;
+      bool alphaMaskedMixed = (groupState & CLUSTER_STATE_ALPHAMASKED_MIXED) != 0;
+
+      if (alphaMasked && !alphaMaskedMixed)
+      {
+        useAlpha = true;
+      }
+      else if (alphaMasked && alphaMaskedMixed)
+      {
+        // check cluster state bits if not all clusters are alphamasked
+        uint clusterState = Group_getClusterState(groupRef, clusterIndex);
+        if ((clusterState & CLUSTER_STATE_ALPHAMASKED) != 0)
+        {
+          useAlpha = true;
+        }
+      }
+    }
+  #endif
+
     // perform traversal & culling logic  
   #if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
-    bool renderClusterSW = false;
-    isValid            = isValid && queryWasVisible(worldMatrix, bbox, renderClusterSW);
+    isValid            = isValid && queryWasVisible(worldMatrix, bbox, useSW);
   #endif
     bool traverse      = testForTraversal(traversalMatrix, uniformScale, traversalMetric, errorScale);
-    bool renderCluster = isValid && (!traverse || forceCluster);  // clusters use negated test or are forced
-    
+    bool renderClusterAny = isValid && (!traverse || forceCluster);  // clusters use negated test or are forced
+
     // nodes will enqueue their children again (producer)
     // groups will write out the clusters for rendering
     
     // we use subgroup intrinsics to avoid doing per-thread
     // atomics to get the storage offsets
-    
-  #if TARGETS_RASTERIZATION && USE_SW_RASTER    
-    if (renderCluster && renderClusterSW){
-      renderCluster = false;
-    }
-    else {
-      renderClusterSW = false;
-    }
-    
-    uvec4 voteClustersSW  = subgroupBallot(renderClusterSW);
-    uint countClustersSW  = subgroupBallotBitCount(voteClustersSW);
-    uint offsetClustersSW = 0;
-  #endif
-    
-    uvec4 voteClusters  = subgroupBallot(renderCluster);
-    uint countClusters  = subgroupBallotBitCount(voteClusters);
+
+  #if TARGETS_RASTERIZATION
+    rasterBinning(traversalInfo.packedNode, instanceID, useAlpha, useSW, renderClusterAny);
+  #else
+    // Ray tracing: single renderClusterInfos queue (no alpha / SW raster lists).
+    bool renderCluster = renderClusterAny;
+
+    uvec4 voteClusters = subgroupBallot(renderCluster);
+    uint countClusters = subgroupBallotBitCount(voteClusters);
+
     uint offsetClusters = 0;
-    
     if (subgroupElect())
     {
       offsetClusters = atomicAdd(buildRW.renderClusterCounter, countClusters);
-    #if TARGETS_RASTERIZATION && USE_SW_RASTER
-      offsetClustersSW = atomicAdd(buildRW.renderClusterCounterSW, countClustersSW);
-    #endif
     }
 
     offsetClusters = subgroupBroadcastFirst(offsetClusters);
     offsetClusters += subgroupBallotExclusiveBitCount(voteClusters);
-    
-    renderCluster = renderCluster && offsetClusters < build.maxRenderClusters;
-    
-  #if TARGETS_RASTERIZATION && USE_SW_RASTER
-    offsetClustersSW = subgroupBroadcastFirst(offsetClustersSW);
-    offsetClustersSW += subgroupBallotExclusiveBitCount(voteClustersSW);
-    
-    renderClusterSW = renderClusterSW && offsetClustersSW < build.maxRenderClusters;
-  #endif
 
-  #if TARGETS_RAY_TRACING
+    renderCluster = renderCluster && offsetClusters < build.maxRenderClusters;
+
     if (renderCluster)
     {
       // For ray tracing count how many clusters we later add to each instance/blas.
@@ -367,33 +379,12 @@ void main()
       // the render list we write below is filled in an unsorted manner with clusters
       // from different instances. We later use the `blas_insert_clusters.comp.glsl` kernel to build
       // the list for each blas.
-    }
-  #endif
-    
-  #if TARGETS_RASTERIZATION && USE_SW_RASTER
-    // a single thread represents a cluster that can only be either sw or hw
-    if (renderCluster || renderClusterSW)
-  #else
-    if (renderCluster)
-  #endif
-    {  
+
       // given TraversalInfo and ClusterInfo were chosen to alias in memory and be a single u64
       // we do just have to adjust the output addresses.
-      
-    #if TARGETS_RASTERIZATION && USE_SW_RASTER
-      uint writeIndex          = renderCluster ? offsetClusters : offsetClustersSW;
-      uint64s_coh writePointer = uint64s_coh(uint64_t(renderCluster ? build.renderClusterInfos : build.renderClusterInfosSW));
-    #else
-      uint writeIndex          = offsetClusters;
-      uint64s_coh writePointer = uint64s_coh(uint64_t(build.renderClusterInfos));
-    #endif
-      
-    #if USE_ATOMIC_LOAD_STORE
-      atomicStore(writePointer.d[writeIndex], packTraversalInfo(traversalInfo), gl_ScopeDevice, gl_StorageSemanticsBuffer, gl_SemanticsRelease);
-    #else
-      writePointer.d[writeIndex] = packTraversalInfo(traversalInfo);
-    #endif
-      memoryBarrierBuffer();
+      uint writeIndex       = offsetClusters;
+      uint64s_inout(build.renderClusterInfos).d[writeIndex] = packTraversalInfo(traversalInfo);
     }
+  #endif
   }
 }

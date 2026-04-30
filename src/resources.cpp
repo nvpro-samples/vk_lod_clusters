@@ -135,7 +135,10 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
   m_uploader.init(&m_allocator);
 
   m_samplerPool.init(device);
-  m_samplerPool.acquireSampler(m_samplerLinear);
+  m_samplerPool.acquireSampler(m_samplerBiLinear);
+
+  VkSamplerCreateInfo samplerCreateInfo = DEFAULT_VkSamplerCreateInfo;
+  m_samplerPool.acquireSampler(m_samplerTriLinear, samplerCreateInfo);
 
   // temp command pool
   {
@@ -249,7 +252,8 @@ void Resources::deinit()
   m_queueStates.primary.deinit();
   m_queueStates.transfer.deinit();
 
-  m_samplerPool.releaseSampler(m_samplerLinear);
+  m_samplerPool.releaseSampler(m_samplerBiLinear);
+  m_samplerPool.releaseSampler(m_samplerTriLinear);
   m_samplerPool.deinit();
   m_uploader.deinit();
   m_allocator.deinit();

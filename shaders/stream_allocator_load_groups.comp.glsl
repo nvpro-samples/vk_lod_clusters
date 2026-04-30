@@ -385,17 +385,6 @@ void main()
       streaming.update.moveClasSrcAddresses.d[newBuildOffset + c] = clasAddress;
       // to the allocated persistent address
       streaming.update.moveClasDstAddresses.d[newBuildOffset + c] = clasNewAddress;
-
-    #if STREAMING_DEBUG_MANUAL_MOVE
-      // these moves are normally done with a `VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_MOVE_OBJECTS_NV`,
-      // but for debbuging can be done here.
-      // look for `STREAMING_DEBUG_MANUAL_MOVE` in `SceneStreaming::cmdPostTraversal`
-      uint64s_in inPointer = uint64s_in(clasAddress);
-      uint64s_inout outPointer = uint64s_inout(clasNewAddress);
-      for (uint d = 0; d < clasSize / 8; d++){
-        outPointer.d[d] = inPointer.d[d];
-      }
-    #endif
       
       groupBaseAddress += uint64_t(clasSize);
     }

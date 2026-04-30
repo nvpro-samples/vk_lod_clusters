@@ -1,4 +1,14 @@
 # Changelog for vk_lod_clusters
+* 2026-4-29:
+  
+  **WARNING** Old cache files are not compatible anymore. First time loading such scenes will trigger processing and overwrite / delete them.
+
+  * Added support for alpha-masked textured materials. So far those are the only textures loaded and there is no streaming for them. The textures must be provided as `dds` or `ktx2`. Only `TEXCOORD0` is used for these textures and it must be enabled via `--attributes <bitflag>`, by default only vertex normals are enabled.
+  * Added support for handling multiple materials in a mesh. Note this has to be enabled specifically via `--multimaterials 1` as it alters the geometry processing. This allows per-triangle alpha-masking as well as two-sided handling.
+  * Bugfix: the SW-Raster path did always put the lowest detail clusters into the hw-rasterization queue, now it bins appropriately.
+* 2026-4-20:
+  * Always use the separate groups kernel (USE_SEPARATE_GROUPS == 1) and removed the alternative, which was slower and hurt readability of the traversal kernel (now just `traversal_run_groups.comp.glsl`).
+  * Added multi-pass traversal, persistent kernel is still the default on NVIDIA, however it has off-spec behavior.
 * 2026-4-10:
   * Added "EXT_mesh_gpu_instancing" support. Ideally the transform data is stored in a separate buffer file.
     The buffer views used by it must not be compressed by KHR/EXT_meshopt_compression.
@@ -72,7 +82,7 @@
   * Add note about tangent space encoding
 * 2025-11-10:
 
-  **WARNING** Old cache files are not be compatible anymore. First time loading such scenes will trigger processing and overwrite / delete them.
+  **WARNING** Old cache files are not compatible anymore. First time loading such scenes will trigger processing and overwrite / delete them.
 
   * Removed `nv_cluster_lod_library` usage and dependency, `meshoptimizer`'s cluster lod builder is now the only implementation and enabled the removal of some abstractions.
   * Added [documentation](docs/lod_generation.md) about cluster lod generation, that originated from the nv library.
@@ -85,7 +95,7 @@
 
 * 2025-10-30:
 
-  **WARNING** Old cache files are not be compatible anymore. First time loading such scenes will trigger processing and overwrite / delete them.
+  **WARNING** Old cache files are not compatible anymore. First time loading such scenes will trigger processing and overwrite / delete them.
 
   * Major refactoring of the scene cache file. It now stores the runtime data so that it can be easily streamed in
     using a single binary blob for the whole group. The `shaderio::Cluster` and `shaderio::Group` data structures
@@ -152,7 +162,7 @@
   * Filter out instances whose material uses BLENDED transparency.
   * Double-Click/SPACE also changes walk speed (percentage of distance to hit point).
 * 2025-7-30:
-  * Added "Separate Groups Kernel" optimization to "Traversal" (default true). See `USE_SEPARATE_GROUPS` in [shaders/traversal_run.comp.glsl](shaders/traversal_run.comp.glsl) as well as the new kernel [shaders/traversal_run_separate_groups.comp.glsl](shaders/traversal_run_separate_groups.comp.glsl).
+  * Added "Separate Groups Kernel" optimization to "Traversal" (default true). See `USE_SEPARATE_GROUPS` in [shaders/traversal_run.comp.glsl](shaders/traversal_run.comp.glsl) as well as the new kernel [shaders/traversal_run_groups.comp.glsl](shaders/traversal_run_groups.comp.glsl).
   * Tweaked heuristic for persistent kernel threads once more.
 * 2025-7-24:
   * Major feature update.

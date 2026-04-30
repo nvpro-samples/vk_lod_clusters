@@ -63,13 +63,13 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"gridunique"}, &m_sceneGridConfig.uniqueGeometriesForCopies);
   m_info.parameterRegistry->add({"clusterconfig"}, (int*)&m_tweak.clusterConfig);
   m_info.parameterRegistry->add({"clustergroupsize"}, &m_sceneConfig.clusterGroupSize);
-
+  m_info.parameterRegistry->add({"simplifymaterialweight"}, &m_sceneConfig.simplifyMaterialWeight);
   m_info.parameterRegistry->add({"simplifyuvweight"}, &m_sceneConfig.simplifyTexCoordWeight);
   m_info.parameterRegistry->add({"simplifynormalweight"}, &m_sceneConfig.simplifyNormalWeight);
   m_info.parameterRegistry->add({"simplifytangentweight"}, &m_sceneConfig.simplifyTangentWeight);
   m_info.parameterRegistry->add({"simplifytangentsignweight"}, &m_sceneConfig.simplifyTangentSignWeight);
   m_info.parameterRegistry->add({"attributes"}, &m_sceneConfig.enabledAttributes);
-
+  m_info.parameterRegistry->add({"multimaterials"}, &m_sceneConfig.enableMultiMaterials);
   m_info.parameterRegistry->add({"loderrormergeprevious"}, &m_sceneConfig.lodErrorMergePrevious);
   m_info.parameterRegistry->add({"loderrormergeadditive"}, &m_sceneConfig.lodErrorMergeAdditive);
   m_info.parameterRegistry->add({"loderroredgelimit"}, &m_sceneConfig.lodErrorEdgeLimit);
@@ -102,7 +102,6 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"blassharing"}, &m_rendererConfig.useBlasSharing);
   m_info.parameterRegistry->add({"blasmerging"}, &m_rendererConfig.useBlasMerging);
   m_info.parameterRegistry->add({"blascaching"}, &m_rendererConfig.useBlasCaching);
-  m_info.parameterRegistry->add({"separategroups"}, &m_rendererConfig.useSeparateGroups);
   m_info.parameterRegistry->add({"sharingpushculled"}, &m_frameConfig.sharingPushCulled);
   m_info.parameterRegistry->add({"sharingenabledlevels"}, &m_frameConfig.sharingEnabledLevels);
   m_info.parameterRegistry->add({"sharingtolerantlevels"}, &m_frameConfig.sharingTolerantLevels);
@@ -147,7 +146,9 @@ LodClusters::LodClusters(const Info& info)
                                 &m_sceneLoaderConfig.skipMaterialNames);
   m_info.parameterRegistry->add({"skipalphablended"}, &m_sceneLoaderConfig.skipAlphaBlended);
   m_info.parameterRegistry->add({"skipalphamasked"}, &m_sceneLoaderConfig.skipAlphaMasked);
-
+  m_info.parameterRegistry->add({"persistenttraversal"}, &m_rendererConfig.usePersistentTraversal);
+  m_info.parameterRegistry->add({"anisotropicgradient"}, &m_rendererConfig.useAnisotropicGradient);
+  m_info.parameterRegistry->add({"texturegradientscale"}, &m_frameConfig.frameConstants.texGradScale);
   {
     // HACK as zorah.cfg ships with some deprecated settings
     static bool dummy;
@@ -171,6 +172,7 @@ LodClusters::LodClusters(const Info& info)
   m_frameConfig.frameConstants.visualize               = VISUALIZE_LOD;
   m_frameConfig.frameConstants.facetShading            = 1;
   m_frameConfig.frameConstants.wMirrorBox              = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+  m_frameConfig.frameConstants.texGradScale            = 1.0f;
 
   m_frameConfig.frameConstants.lightMixer = 0.5f;
   m_frameConfig.frameConstants.skyParams  = {};
@@ -242,7 +244,7 @@ void LodClusters::initRenderScene()
 
   m_renderScene = std::make_unique<RenderScene>();
 
-  bool success = m_renderScene->init(&m_resources, m_scene.get(), m_streamingConfig, m_tweak.useStreaming);
+  bool success = m_renderScene->init(&m_resources, m_scene.get(), m_streamingConfig, m_tweak.useStreaming, m_texturesConfig);
 
   // if preload fails, try streaming
   if(!m_tweak.useStreaming && !success)
@@ -251,7 +253,7 @@ void LodClusters::initRenderScene()
     m_tweak.useStreaming     = true;
     m_tweakLast.useStreaming = true;
 
-    if(!m_renderScene->init(&m_resources, m_scene.get(), m_streamingConfig, true))
+    if(!m_renderScene->init(&m_resources, m_scene.get(), m_streamingConfig, true, m_texturesConfig))
     {
       LOGW("Init renderscene failed\n");
       deinitRenderScene();
@@ -415,6 +417,10 @@ void LodClusters::onAttach(nvapp::Application* app)
     else
       m_frameConfig.traversalPersistentThreads = smProperties.shaderSMCount * smProperties.shaderWarpsPerSM * 8;
   }
+  else
+  {
+    m_rendererConfig.usePersistentTraversal = false;
+  }
 
   {
     m_ui.enumAdd(GUI_RENDERER, RENDERER_RASTER_CLUSTERS_LOD, "Rasterization");
@@ -471,6 +477,8 @@ void LodClusters::onAttach(nvapp::Application* app)
 
   m_profilerGpuTimer.init(m_profilerTimeline, app->getDevice(), app->getPhysicalDevice(), app->getQueue(0).familyIndex, true);
   m_resources.init(app->getDevice(), app->getPhysicalDevice(), app->getInstance(), app->getQueue(0), app->getQueue(1));
+
+  m_texturesConfig.immutableSampler = m_resources.m_samplerTriLinear;
 
   {
     NVVK_CHECK(m_resources.m_samplerPool.acquireSampler(m_imguiSampler));
@@ -812,8 +820,7 @@ void LodClusters::handleChanges()
   m_rendererConfig.useDepthOnly = m_frameConfig.visualize == VISUALIZE_DEPTH_ONLY;
 
 
-  if(m_rendererConfig.useComputeRaster
-     && (!m_rendererConfig.useSeparateGroups || !m_rendererConfig.useCulling || m_rendererConfig.useShading))
+  if(m_rendererConfig.useComputeRaster && (!m_rendererConfig.useCulling || m_rendererConfig.useShading))
   {
     m_rendererConfig.useComputeRaster = false;
   }
@@ -898,11 +905,11 @@ void LodClusters::handleChanges()
        || rendererCfgChanged(m_rendererConfig.useSorting) || rendererCfgChanged(m_rendererConfig.numRenderClusterBits)
        || rendererCfgChanged(m_rendererConfig.numTraversalTaskBits) || rendererCfgChanged(m_rendererConfig.useShading)
        || rendererCfgChanged(m_rendererConfig.useBlasSharing) || rendererCfgChanged(m_rendererConfig.useRenderStats)
-       || rendererCfgChanged(m_rendererConfig.useSeparateGroups) || rendererCfgChanged(m_rendererConfig.useBlasMerging)
-       || rendererCfgChanged(m_rendererConfig.useBlasCaching) || rendererCfgChanged(m_rendererConfig.useEXTmeshShader)
-       || rendererCfgChanged(m_rendererConfig.useComputeRaster) || rendererCfgChanged(m_rendererConfig.usePrimitiveCulling)
-       || rendererCfgChanged(m_rendererConfig.useTwoPassCulling) || rendererCfgChanged(m_rendererConfig.useDepthOnly)
-       || rendererCfgChanged(m_rendererConfig.useForcedInvisibleCulling))
+       || rendererCfgChanged(m_rendererConfig.useBlasMerging) || rendererCfgChanged(m_rendererConfig.useBlasCaching)
+       || rendererCfgChanged(m_rendererConfig.useEXTmeshShader) || rendererCfgChanged(m_rendererConfig.useComputeRaster)
+       || rendererCfgChanged(m_rendererConfig.usePrimitiveCulling) || rendererCfgChanged(m_rendererConfig.useTwoPassCulling)
+       || rendererCfgChanged(m_rendererConfig.useDepthOnly) || rendererCfgChanged(m_rendererConfig.useForcedInvisibleCulling)
+       || rendererCfgChanged(m_rendererConfig.usePersistentTraversal) || rendererCfgChanged(m_rendererConfig.useAnisotropicGradient))
     {
       if(rendererCfgChanged(m_rendererConfig.useBlasCaching))
       {
@@ -1027,6 +1034,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     frameConstants.viewMatrixI     = viewI;
     frameConstants.projMatrix      = projection;
     frameConstants.projMatrixI     = glm::inverse(projection);
+    frameConstants.pixelAngle = 2.0f * glm::abs(frameConstants.projMatrixI[1][1]) / glm::max(frameConstants.viewportf.y, 1.0f);
 
     glm::mat4 viewNoTrans         = view;
     viewNoTrans[3]                = {0.0f, 0.0f, 0.0f, 1.0f};

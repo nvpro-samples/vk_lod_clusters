@@ -69,7 +69,8 @@ vec3 colorizeID(uint clusterID)
 
 vec3 visualizeColor(uint visData, uint instanceID)
 {
-  if(view.visualize == VISUALIZE_CLUSTER || view.visualize == VISUALIZE_GROUP || view.visualize == VISUALIZE_TRIANGLE)
+  if(view.visualize == VISUALIZE_CLUSTER || view.visualize == VISUALIZE_GROUP ||
+     view.visualize == VISUALIZE_TRIANGLE || view.visualize == VISUALIZE_MATERIAL)
   {
     return colorizeID(visData).xyz;
   }
@@ -77,10 +78,6 @@ vec3 visualizeColor(uint visData, uint instanceID)
   {
     return vec3(lodMix(uintBitsToFloat(visData))) * 0.7 + 0.2;
     //return vec3(pow(lodMix(uintBitsToFloat(visData)),vec3(8.0))) * 0.8 + 0.1;
-  }
-  else if (view.visualize == VISUALIZE_MATERIAL)
-  {
-    return pow(unpackUnorm4x8(instances[instanceID].packedColor).xyz * 0.95 + 0.05, vec3(1.0/2.2));
   }
 #if TARGETS_RAY_TRACING
   else if (view.visualize == VISUALIZE_BLAS || view.visualize == VISUALIZE_BLAS_CACHED) {
@@ -371,8 +368,12 @@ float ambientOcclusion(vec3 wPos, vec3 wNormal, uint32_t sampleCount, float radi
     wDirection       = wDirection.x * x + wDirection.y * y + wDirection.z * z;
     rayHitAO         = 1.f;
     uint mask        = 0xFF;
-    traceRayEXT(asScene, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
-                mask /*0xFF*/, 0, 0, 1, offsetRay(wPos, wDirection, wNormal), 1e-4f, wDirection, radius, 1);
+    uint  flags      = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT;
+    #if !HAS_ALPHA_TEST
+      flags |= gl_RayFlagsOpaqueEXT;
+    #endif
+    traceRayEXT(asScene, flags,
+                mask /*0xFF*/, 0, 1, 1, offsetRay(wPos, wDirection, wNormal), 1e-4f, wDirection, radius, 1);
     if(rayHitAO > 0.f)
     {
       occlusion++;
@@ -388,10 +389,13 @@ float traceShadowRay(vec3 wPos, vec3 wNormal, vec3 wDirection)
 {
   rayHitAO         = 1.f;
   uint  mask       = 0xFF;
-  uint  flags      = gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT;
+  uint  flags      = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT;
+  #if !HAS_ALPHA_TEST
+    flags |= gl_RayFlagsOpaqueEXT;
+  #endif
   float minT       = 0.001f;
   float maxT       = 10000000.0f;
-  traceRayEXT(asScene, flags, mask, 0, 0, 1, offsetRay(wPos, wDirection, wNormal), minT, wDirection, maxT, 1);
+  traceRayEXT(asScene, flags, mask, 0, 1, 1, offsetRay(wPos, wDirection, wNormal), minT, wDirection, maxT, 1);
 
   return (rayHitAO > 0.f) ? 0.0F : 1.0f;
 }

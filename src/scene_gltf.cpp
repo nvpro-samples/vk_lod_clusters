@@ -236,31 +236,26 @@ struct Filters
 
 
 // derived from cgltf_combine_paths to get identical behavior
-static void combine_paths(std::vector<char>& path, const char* base, const char* uri)
+static void combine_paths(std::string& path, const std::string& base, const char* uri)
 {
   path.clear();
 
-  if(!base)
-    base = "";
+  std::string uriString(uri);
+  uriString.resize(cgltf_decode_uri(uriString.data()));
 
-  if(!uri)
-    uri = "";
-
-  const char* s0    = strrchr(base, '/');
-  const char* s1    = strrchr(base, '\\');
+  const char* s0    = strrchr(base.c_str(), '/');
+  const char* s1    = strrchr(base.c_str(), '\\');
   const char* slash = s0 ? (s1 && s1 > s0 ? s1 : s0) : s1;
 
   if(slash)
   {
-    size_t prefix = static_cast<size_t>(slash - base + 1);
-    path.insert(path.end(), base, base + prefix);
-    path.insert(path.end(), uri, uri + strlen(uri));
-    path.push_back('\0');
+    size_t prefix = static_cast<size_t>(slash - base.c_str() + 1);
+    path.append(base, 0, prefix);
+    path.append(uriString);
   }
   else
   {
-    path.insert(path.end(), uri, uri + strlen(uri));
-    path.push_back('\0');
+    path.assign(uriString);
   }
 }
 
@@ -353,9 +348,8 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
     for(const cgltf_buffer* buffer : instancingBuffers)
     {
       // combine path of gltf file with uri using  cgltf_decode_uri
-      std::vector<char> path;
-      combine_paths(path, fileName.c_str(), buffer->uri);
-      cgltf_decode_uri(path.data());
+      std::string path;
+      combine_paths(path, fileName, buffer->uri);
       mappings.m_subsetNames.insert(path.data());
     }
   }
@@ -377,13 +371,62 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
   }
 
   {
+    std::unordered_map<std::string, uint32_t> uniqueImagesMap;
+
+    m_materials.resize(gltf->materials_count);
     m_materialNames.resize(gltf->materials_count);
-    for(size_t materialIndex = 0; materialIndex < gltf->materials_count; materialIndex++)
+    for(size_t m = 0; m < gltf->materials_count; m++)
     {
-      const cgltf_material& gltfMaterial = gltf->materials[materialIndex];
+      Material&             material     = m_materials[m];
+      const cgltf_material& gltfMaterial = gltf->materials[m];
+      const cgltf_image*    gltfImage    = nullptr;
+
       if(gltfMaterial.name)
       {
-        m_materialNames[materialIndex] = std::move(std::string(gltfMaterial.name));
+        m_materialNames[m] = std::move(std::string(gltfMaterial.name));
+      }
+
+      material.alphaCutOff = gltfMaterial.alpha_cutoff;
+      material.alphaMasked = gltfMaterial.alpha_mode == cgltf_alpha_mode_mask;
+      material.twoSided    = gltfMaterial.double_sided;
+
+      if(gltfMaterial.has_pbr_metallic_roughness)
+      {
+        material.color                   = glm::make_vec4(gltfMaterial.pbr_metallic_roughness.base_color_factor);
+        const cgltf_texture* gltfTexture = gltfMaterial.pbr_metallic_roughness.base_color_texture.texture;
+        gltfImage                        = gltfTexture ? gltfTexture->image : nullptr;
+      }
+      else if(gltfMaterial.has_pbr_specular_glossiness)
+      {
+        material.color                   = glm::make_vec4(gltfMaterial.pbr_specular_glossiness.diffuse_factor);
+        const cgltf_texture* gltfTexture = gltfMaterial.pbr_specular_glossiness.diffuse_texture.texture;
+        gltfImage                        = gltfTexture ? gltfTexture->image : nullptr;
+      }
+
+      if(gltfImage)
+      {
+        std::string imageFileName;
+        combine_paths(imageFileName, fileName, gltfImage->uri);
+
+        auto it = uniqueImagesMap.find(imageFileName);
+        if(it == uniqueImagesMap.end())
+        {
+          // Not found, so add it to m_imageFileNames and map
+          uint32_t imageIndex = static_cast<uint32_t>(m_imageFileNames.size());
+          m_imageFileNames.push_back(imageFileName);
+          uniqueImagesMap[imageFileName] = imageIndex;
+          material.alphaMaskImageID      = imageIndex;
+        }
+        else
+        {
+          material.alphaMaskImageID = it->second;
+        }
+      }
+
+      // disable if there is no texture
+      if(material.alphaMasked && !gltfImage)
+      {
+        material.alphaMasked = false;
       }
     }
   }
@@ -639,9 +682,10 @@ void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
   if(node->mesh != nullptr)
   {
     lodclusters::Scene::Instance instance{};
-    const ptrdiff_t              meshIndex   = (node->mesh) - data->meshes;
-    const cgltf_material*        material    = node->mesh->primitives[0].material;
-    bool                         addInstance = true;
+    const ptrdiff_t              meshIndex = (node->mesh) - data->meshes;
+
+    const cgltf_material* material    = node->mesh->primitives[0].material;
+    bool                  addInstance = true;
 
     if(filters && node->mesh->name && std::regex_match(node->mesh->name, filters->meshNames))
       addInstance = false;
@@ -649,48 +693,55 @@ void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
     if(filters && node->name && std::regex_match(node->name, filters->nodeNames))
       addInstance = false;
 
-    if(material)
+    bool hasAlphaMasked = false;
+    bool hasTwoSided    = false;
+
+    if(addInstance)
     {
-      if(filters && material->name && std::regex_match(material->name, filters->materialNames))
-        addInstance = false;
-
-      instance.materialID = uint32_t(material - data->materials);
-      if(material->unlit || material->has_pbr_metallic_roughness)
+      // iterate all primitive materials
+      for(size_t primitiveIdx = 0; primitiveIdx < node->mesh->primitives_count; primitiveIdx++)
       {
-        instance.color.x = material->pbr_metallic_roughness.base_color_factor[0];
-        instance.color.y = material->pbr_metallic_roughness.base_color_factor[1];
-        instance.color.z = material->pbr_metallic_roughness.base_color_factor[2];
-        instance.color.w = material->pbr_metallic_roughness.base_color_factor[3];
-      }
-      else if(material->has_pbr_specular_glossiness)
-      {
-        instance.color.x = material->pbr_specular_glossiness.diffuse_factor[0];
-        instance.color.y = material->pbr_specular_glossiness.diffuse_factor[1];
-        instance.color.z = material->pbr_specular_glossiness.diffuse_factor[2];
-        instance.color.w = material->pbr_specular_glossiness.diffuse_factor[3];
-      }
-
-      if(m_loaderConfig.skipAlphaBlended && material->alpha_mode == cgltf_alpha_mode_blend)
-      {
-        addInstance = false;
-      }
-
-      if(m_loaderConfig.skipAlphaMasked && material->alpha_mode == cgltf_alpha_mode_mask)
-      {
-        addInstance = false;
-      }
-
-      if(material->double_sided)
-      {
-        instance.twoSided = true;
+        const cgltf_primitive* primitive = &node->mesh->primitives[primitiveIdx];
+        const cgltf_material*  material  = primitive->material;
+        if(material)
+        {
+          if(filters && material->name && std::regex_match(material->name, filters->materialNames))
+          {
+            addInstance = false;
+          }
+          instance.materialID = uint32_t(material - data->materials);
+          instance.color      = m_materials[instance.materialID].color;
+          if(material->alpha_mode == cgltf_alpha_mode_mask && m_hasVertexTexCoord0
+             && material->pbr_metallic_roughness.base_color_texture.texture)
+          {
+            hasAlphaMasked = true;
+          }
+          if(material->double_sided)
+          {
+            hasTwoSided = true;
+          }
+          if(m_loaderConfig.skipAlphaBlended && material->alpha_mode == cgltf_alpha_mode_blend)
+          {
+            addInstance = false;
+          }
+          if(m_loaderConfig.skipAlphaMasked && material->alpha_mode == cgltf_alpha_mode_mask)
+          {
+            addInstance = false;
+          }
+        }
       }
     }
 
     if(addInstance)
     {
-      if(instance.twoSided)
+      if(hasTwoSided)
       {
         m_hasTwoSided = true;
+      }
+
+      if(hasAlphaMasked)
+      {
+        m_hasAlphaMask = true;
       }
 
       instance.geometryID = uint32_t(meshToGeometry[meshIndex]);
@@ -961,6 +1012,10 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
     m_geometryNames[geometryIndex] = std::move(std::string(gltfMesh.name));
   }
 
+  const uint32_t defaultMaterialIndex = 0;
+
+  std::unordered_map<uint32_t, uint32_t> localMaterialMap;
+
   // count triangle and vertices pass
   uint32_t triangleCount = 0;
   uint32_t verticesCount = 0;
@@ -977,6 +1032,17 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
     if(gltfPrim->attributes_count == 0)
     {
       continue;
+    }
+
+    // add local materials
+    uint32_t materialIndex = gltfPrim->material ? uint32_t(gltfPrim->material - gltf->materials) : defaultMaterialIndex;
+    if(primIdx == 0 || m_config.enableMultiMaterials)
+    {
+      auto it = localMaterialMap.try_emplace(materialIndex, uint32_t(geometry.localMaterialIDs.size()));
+      if(it.second)
+      {
+        geometry.localMaterialIDs.push_back(materialIndex);
+      }
     }
 
     for(size_t attribIdx = 0; attribIdx < gltfPrim->attributes_count; attribIdx++)
@@ -1055,10 +1121,13 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
       geometry.attributeBits &= ~shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1;
     }
 
+    bool hasMultiMaterial = geometry.localMaterialIDs.size() > 1;
+
     size_t attributeStride = (geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL ? 3 : 0)
                              + (geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT ? 4 : 0)
                              + (geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0 ? 2 : 0)
-                             + (geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1 ? 2 : 0);
+                             + (geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1 ? 2 : 0)
+                             + (hasMultiMaterial ? 1 : 0);
     uint32_t attributeStart = 0;
     uint32_t attributeEnd   = uint32_t(attributeStride);
 
@@ -1117,6 +1186,20 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
       {
         geometry.attributeTangentOffset = attributeEnd - 4;
         attributeEnd -= 4;
+      }
+    }
+
+    if(hasMultiMaterial)
+    {
+      if(m_config.simplifyMaterialWeight > 0)
+      {
+        geometry.attributeMaterialOffset = attributeStart;
+        attributeStart += 1;
+      }
+      else
+      {
+        geometry.attributeMaterialOffset = attributeEnd - 1;
+        attributeEnd -= 1;
       }
     }
 
@@ -1207,6 +1290,21 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
           readAttributesGLTF<glm::vec2, true, false>(accessor, writeAttributes, attributeStride, cgltf_type_vec2,
                                                      m_config.useCompressedData ? m_config.compressionTexDropBits : 0);
           numVertices = (uint32_t)accessor->count;
+        }
+      }
+
+      if(hasMultiMaterial)
+      {
+        // inject material index as per-vertex attribute
+        uint32_t materialIndex = gltfPrim->material ? uint32_t(gltfPrim->material - gltf->materials) : defaultMaterialIndex;
+        uint32_t localIndex = localMaterialMap.find(materialIndex)->second;
+
+        float* writeAttributes = geometry.vertexAttributes.data() + (offsetVertices * attributeStride);
+        writeAttributes += geometry.attributeMaterialOffset;
+
+        for(uint32_t i = 0; i < numVertices; i++)
+        {
+          writeAttributes[i * attributeStride] = float(localIndex);
         }
       }
 

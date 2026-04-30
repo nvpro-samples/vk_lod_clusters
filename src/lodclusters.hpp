@@ -209,6 +209,8 @@ private:
   StreamingConfig m_streamingConfig;
   StreamingConfig m_streamingConfigLast;
 
+  SceneTexturesConfig m_texturesConfig;
+
   std::unique_ptr<Renderer> m_renderer;
   uint64_t                  m_rendererFboChangeID{};
   RendererConfig            m_rendererConfig;

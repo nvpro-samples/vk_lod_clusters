@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -55,9 +55,6 @@ using namespace glm;
 
 // disables cluster move operations and blas/tlas builds as as well as actual ray tracing
 #define STREAMING_DEBUG_WITHOUT_RT 0
-
-// avoid move operation do a slow in-shader move of clas data, set to 1 only properly works with persistent allocator
-#define STREAMING_DEBUG_MANUAL_MOVE 0
 
 // Must be 32 to se we have easier processing of the bit arrays.
 // the minimum allocation will use 32 bits, which can only straddle across two u32 values
@@ -125,7 +122,8 @@ struct ClasBuildInfo
   //   uint32_t reserved : 5;
   //   uint32_t geometryFlags : 3;
   // };
-  // VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT_NV << 29
+#define ClasGeometryFlag_CULL_DISABLE_BIT_NV (1 << 29)
+#define ClasGeometryFlag_NO_DUPLICATE_ANY_HIT_BIT_NV (2 << 29)
 #define ClasGeometryFlag_OPAQUE_BIT_NV (4 << 29)
   uint32_t baseGeometryIndexAndFlags;
 
@@ -195,7 +193,13 @@ struct StreamingUpdate
   BUFFER_REF(uint64s_inout) newClasAddresses;
   uint32_t newClasCount;
 
-  // gometry state handling
+  uint32_t newClasGeometryIndicesTaskCounter;
+  BUFFER_REF(uint32s_inout) newClasGeometryIndices;
+
+  DispatchIndirectCommand dispatchClasGeometryIndices;
+
+
+  // geometry state handling
   BUFFER_REF(StreamingGeometryPatchs_in) geometryPatches;
 
   // compaction

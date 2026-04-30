@@ -430,6 +430,17 @@ public:
       return m_cmd;
     }
 
+    void checkedFlush(size_t sz)
+    {
+      if(sz)
+      {
+        if(m_resources.m_uploader.checkAppendedSize(m_maxBatchSize, sz))
+        {
+          flush();
+        }
+      }
+    }
+
     template <typename T>
     T* uploadBuffer(const nvvk::Buffer& dst, size_t offset, size_t sz, const T* src, FlushState flushState = FlushState::ALLOW_FLUSH)
     {
@@ -510,11 +521,12 @@ public:
   nvvk::QueueInfo  m_queueTransfer   = {};
   VkCommandPool    m_tempCommandPool = {};
 
-  nvvk::ResourceAllocator m_allocator     = {};
-  nvvk::SamplerPool       m_samplerPool   = {};
-  VkSampler               m_samplerLinear = {};
-  nvvkglsl::GlslCompiler  m_glslCompiler  = {};
-  nvvk::StagingUploader   m_uploader      = {};
+  nvvk::ResourceAllocator m_allocator        = {};
+  nvvk::SamplerPool       m_samplerPool      = {};
+  VkSampler               m_samplerBiLinear  = {};
+  VkSampler               m_samplerTriLinear = {};
+  nvvkglsl::GlslCompiler  m_glslCompiler     = {};
+  nvvk::StagingUploader   m_uploader         = {};
 
   FrameBuffer m_frameBuffer;
   struct CommonBuffers

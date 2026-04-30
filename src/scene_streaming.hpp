@@ -329,6 +329,7 @@ private:
     shaderc::SpvCompilationResult computeAgeFilterGroups;
     shaderc::SpvCompilationResult computeUpdateSceneRaster;
     shaderc::SpvCompilationResult computeUpdateSceneRay;
+    shaderc::SpvCompilationResult computeUpdateClasGeometryIndices;
     shaderc::SpvCompilationResult computeSetup;
 
     // if usePersistentClasAllocator
@@ -344,17 +345,18 @@ private:
 
   struct Pipelines
   {
+    VkPipeline computeAgeFilterGroups           = nullptr;
+    VkPipeline computeUpdateSceneRaster         = nullptr;
+    VkPipeline computeUpdateSceneRay            = nullptr;
+    VkPipeline computeUpdateClasGeometryIndices = nullptr;
+    VkPipeline computeSetup                     = nullptr;
+
+    // if usePersistentClasAllocator
     VkPipeline computeAllocatorBuildFreeGaps  = nullptr;
     VkPipeline computeAllocatorFreeGapsInsert = nullptr;
     VkPipeline computeAllocatorSetupInsertion = nullptr;
     VkPipeline computeAllocatorUnloadGroups   = nullptr;
     VkPipeline computeAllocatorLoadGroups     = nullptr;
-
-    // if usePersistentClasAllocator
-    VkPipeline computeAgeFilterGroups   = nullptr;
-    VkPipeline computeUpdateSceneRaster = nullptr;
-    VkPipeline computeUpdateSceneRay    = nullptr;
-    VkPipeline computeSetup             = nullptr;
     // else
     VkPipeline computeCompactionClasOld = nullptr;
     VkPipeline computeCompactionClasNew = nullptr;

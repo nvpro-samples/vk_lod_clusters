@@ -309,8 +309,12 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
     Scene::fillGroupRuntimeData(groupInfo, groupView, geometryGroup.groupID, rgroup->groupResidentID,
                                 rgroup->clusterResidentID, loGroupData, persistentGeometry.lowDetailGroupsData.bufferSize);
 
+    const shaderio::BBox& lowDetailBBox       = groupView.clusterBboxes[0];
+    const float           lowDetailBBoxExtent = std::max(glm::length(lowDetailBBox.hi - lowDetailBBox.lo), 1e-6f);
+
     shaderGeometry.lowDetailClusterID = rgroup->clusterResidentID;
     shaderGeometry.lowDetailTriangles = groupInfo.triangleCount;
+    shaderGeometry.bbox.longestEdge   = lowDetailBBox.longestEdge / lowDetailBBoxExtent;
   }
 
   // this will set all addresses to invalid, except lowest detail geometry group, which is persistently loaded.
@@ -1131,6 +1135,29 @@ void SceneStreaming::cmdPreTraversal(VkCommandBuffer cmd, VkDeviceAddress clasSc
   if(!m_requiresClas)
     return;
 
+  if(m_scene->m_hasAlphaMask)
+  {
+    memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                         &memBarrier, 0, nullptr, 0, nullptr);
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeSetup);
+    uint32_t streamSetup = STREAM_SETUP_UPDATE_GEOMETRY_INDICES;
+    vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(streamSetup), &streamSetup);
+    vkCmdDispatch(cmd, 1, 1, 1);
+
+    memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 1, &memBarrier,
+                         0, nullptr, 0, nullptr);
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeUpdateClasGeometryIndices);
+    vkCmdDispatchIndirect(cmd, m_shaderBuffer.buffer,
+                          offsetof(shaderio::SceneStreaming, update) + offsetof(shaderio::StreamingUpdate, dispatchClasGeometryIndices));
+  }
+
   // wait for previous update & transfer to complete
 
   memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -1430,7 +1457,7 @@ void SceneStreaming::cmdPostTraversal(VkCommandBuffer cmd, VkDeviceAddress clasS
     assert(cmdInfo.scratchData % m_clasScratchAlignment == 0);
 
     // do condition here to always trigger timers, keeps ui stable
-    if(m_shaderData.update.newClasCount && !(STREAMING_DEBUG_WITHOUT_RT || STREAMING_DEBUG_MANUAL_MOVE))
+    if(m_shaderData.update.newClasCount && !(STREAMING_DEBUG_WITHOUT_RT))
     {
       vkCmdBuildClusterAccelerationStructureIndirectNV(cmd, &cmdInfo);
     }
@@ -1635,6 +1662,9 @@ bool SceneStreaming::initShadersAndPipelines()
   shaderc::CompileOptions options = res.makeCompilerOptions();
   options.AddMacroDefinition("SUBGROUP_SIZE", fmt::format("{}", res.m_physicalDeviceInfo.properties11.subgroupSize));
   options.AddMacroDefinition("USE_16BIT_DISPATCH", fmt::format("{}", res.m_use16bitDispatch ? 1 : 0));
+  options.AddMacroDefinition("CLUSTER_VERTEX_COUNT", fmt::format("{}", m_scene->m_maxClusterVertices));
+  options.AddMacroDefinition("CLUSTER_TRIANGLE_COUNT", fmt::format("{}", m_scene->m_maxClusterTriangles));
+  options.AddMacroDefinition("HAS_ALPHA_TEST", m_scene->m_hasAlphaMask ? "1" : "0");
 
   shaderc::CompileOptions optionsRaster = options;
   optionsRaster.AddMacroDefinition("TARGETS_RASTERIZATION", "1");
@@ -1645,7 +1675,8 @@ bool SceneStreaming::initShadersAndPipelines()
   res.compileShader(m_shaders.computeSetup, VK_SHADER_STAGE_COMPUTE_BIT, "stream_setup.comp.glsl", &options);
   res.compileShader(m_shaders.computeUpdateSceneRaster, VK_SHADER_STAGE_COMPUTE_BIT, "stream_update_scene.comp.glsl", &optionsRaster);
   res.compileShader(m_shaders.computeUpdateSceneRay, VK_SHADER_STAGE_COMPUTE_BIT, "stream_update_scene.comp.glsl", &optionsRay);
-
+  res.compileShader(m_shaders.computeUpdateClasGeometryIndices, VK_SHADER_STAGE_COMPUTE_BIT,
+                    "stream_update_clas_geometry_indices.comp.glsl", &options);
   // we load all shaders regardless of use for now
 
   if(m_config.usePersistentClasAllocator)
@@ -1694,6 +1725,9 @@ bool SceneStreaming::initShadersAndPipelines()
 
     shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeUpdateSceneRay);
     vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeUpdateSceneRay);
+
+    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeUpdateClasGeometryIndices);
+    vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeUpdateClasGeometryIndices);
 
     if(m_config.usePersistentClasAllocator)
     {
@@ -1778,10 +1812,20 @@ bool SceneStreaming::initClas()
   m_clasOperationsSize += logMemoryUsage(m_updates.getClasOperationsSize(), "operations", "stream clas updates");
 
   m_clasTriangleInput = {VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_TRIANGLE_CLUSTER_INPUT_NV};
-  m_clasTriangleInput.maxClusterTriangleCount       = m_scene->m_maxClusterTriangles;
-  m_clasTriangleInput.maxClusterVertexCount         = m_scene->m_maxClusterVertices;
-  m_clasTriangleInput.maxClusterUniqueGeometryCount = 1;
-  m_clasTriangleInput.maxGeometryIndexValue         = 0;
+  m_clasTriangleInput.maxClusterTriangleCount = m_scene->m_maxClusterTriangles;
+  m_clasTriangleInput.maxClusterVertexCount   = m_scene->m_maxClusterVertices;
+
+  if(m_scene->m_hasAlphaMask)
+  {
+    m_clasTriangleInput.maxClusterUniqueGeometryCount = 2;
+    m_clasTriangleInput.maxGeometryIndexValue         = 1;
+  }
+  else
+  {
+    m_clasTriangleInput.maxClusterUniqueGeometryCount = 1;
+    m_clasTriangleInput.maxGeometryIndexValue         = 0;
+  }
+
   m_clasTriangleInput.minPositionTruncateBitCount =
       std::max(m_config.clasPositionTruncateBits,
                m_scene->m_config.useCompressedData ? uint32_t(m_scene->m_config.compressionPosDropBits) : 0);
@@ -1936,10 +1980,17 @@ bool SceneStreaming::initClas()
                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY,
                           VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
 
+    nvvk::BufferTyped<uint32_t> clasGeometryIndicesHost;
+    res.createBufferTyped(clasGeometryIndicesHost, loClustersCount * m_scene->m_maxClusterTriangles,
+                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
+                          VMA_MEMORY_USAGE_CPU_ONLY, VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
 
-    uint32_t                                                      clusterOffset  = 0;
-    VkClusterAccelerationStructureBuildTriangleClusterInfoNV*     clasBuildInfos = clasBuildInfosHost.data();
-    VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV* blasBuildInfos = blasBuildInfosHost.data();
+
+    uint32_t                                                      clusterOffset   = 0;
+    VkClusterAccelerationStructureBuildTriangleClusterInfoNV*     clasBuildInfos  = clasBuildInfosHost.data();
+    VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV* blasBuildInfos  = blasBuildInfosHost.data();
+    uint32_t*                                                     geometryIndices = clasGeometryIndicesHost.data();
+    size_t                                                        geometryOffset  = 0;
 
     // prepare build of clusters
     for(uint32_t g = 0; g < loGroupsCount; g++)
@@ -1950,7 +2001,7 @@ bool SceneStreaming::initClas()
       Scene::GroupView           sceneGroupView(sceneGeometry.groupData, sceneGroupInfo);
 
       uint64_t groupVA     = residentGroup.deviceAddress;
-      size_t   indexOffset = size_t(sceneGroupView.indices.data()) - size_t(sceneGroupView.raw);
+      size_t   indexOffset = size_t(sceneGroupView.triangles.data()) - size_t(sceneGroupView.raw);
 
       blasBuildInfos[g].clusterReferencesCount  = residentGroup.clusterCount;
       blasBuildInfos[g].clusterReferencesStride = sizeof(uint64_t);
@@ -1967,25 +2018,70 @@ bool SceneStreaming::initClas()
 
         uint64_t clusterVA = groupVA + sizeof(shaderio::Group) + sizeof(shaderio::Cluster) * c;
 
-        buildInfo.baseGeometryIndexAndGeometryFlags.geometryFlags = VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT_NV;
         buildInfo.clusterID         = residentGroup.clusterResidentID + c;
         buildInfo.triangleCount     = sceneCluster.triangleCountMinusOne + 1;
         buildInfo.indexType         = VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_8BIT_NV;
         buildInfo.indexBufferStride = 1;
+        buildInfo.baseGeometryIndexAndGeometryFlags.geometryIndex = 0;
+        buildInfo.baseGeometryIndexAndGeometryFlags.reserved      = 0;
+        buildInfo.baseGeometryIndexAndGeometryFlags.geometryFlags = 0;
+
+        const bool requiresMixedGeometryBuffer = (sceneCluster.stateBits & shaderio::CLUSTER_STATE_ALPHAMASKED_MIXED) != 0
+                                                 || (sceneCluster.stateBits & shaderio::CLUSTER_STATE_TWOSIDED_MIXED) != 0;
+
         if(sceneGroupInfo.uncompressedSizeBytes)
         {
           buildInfo.indexBuffer = groupVA + indexOffset;
-          indexOffset += buildInfo.triangleCount * 3;
+          indexOffset += buildInfo.triangleCount * (sceneCluster.localMaterialID == SHADERIO_PER_TRIANGLE_MATERIALS ? 4 : 3);
         }
         else
         {
-          buildInfo.indexBuffer = clusterVA + sceneCluster.indices;
+          buildInfo.indexBuffer = clusterVA + sceneCluster.triangles;
         }
 
         buildInfo.vertexCount              = sceneCluster.vertexCountMinusOne + 1;
         buildInfo.vertexBufferStride       = uint16_t(sizeof(glm::vec3));
         buildInfo.vertexBuffer             = clusterVA + sceneCluster.vertices;
         buildInfo.positionTruncateBitCount = m_clasTriangleInput.minPositionTruncateBitCount;
+
+        if(requiresMixedGeometryBuffer)
+        {
+          assert((geometryOffset + buildInfo.triangleCount) <= (loClustersCount * m_scene->m_maxClusterTriangles));
+
+          buildInfo.baseGeometryIndexAndGeometryFlags.geometryFlags = 0;
+          buildInfo.geometryIndexAndFlagsBuffer = clasGeometryIndicesHost.address + geometryOffset * sizeof(uint32_t);
+          buildInfo.geometryIndexAndFlagsBufferStride = uint16_t(sizeof(uint32_t));
+
+          const uint8_t* clusterMaterialIndices = sceneGroupView.getClusterIndices(c) + 3 * buildInfo.triangleCount;
+          if(sceneCluster.localMaterialID == SHADERIO_PER_TRIANGLE_MATERIALS)
+          {
+            for(uint32_t t = 0; t < buildInfo.triangleCount; t++)
+            {
+              const uint8_t triMaterial = clusterMaterialIndices[t];
+              uint32_t      geometryIdx = (triMaterial & SHADERIO_CLUSTER_TRIANGLE_ALPHAMASKED) ? 1u : 0u;
+              uint32_t      flags       = 0;
+              if((triMaterial & SHADERIO_CLUSTER_TRIANGLE_ALPHAMASKED) == 0)
+              {
+                flags |= (uint32_t(VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT_NV) << 29);
+              }
+              if((triMaterial & SHADERIO_CLUSTER_TRIANGLE_TWOSIDED) != 0)
+              {
+                flags |= (uint32_t(VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_CULL_DISABLE_BIT_NV) << 29);
+              }
+              geometryIndices[geometryOffset + t] = geometryIdx | flags;
+            }
+          }
+          geometryOffset += buildInfo.triangleCount;
+        }
+        else
+        {
+          if((sceneCluster.stateBits & shaderio::CLUSTER_STATE_ALPHAMASKED) != 0)
+            buildInfo.baseGeometryIndexAndGeometryFlags.geometryIndex = 1;
+          else
+            buildInfo.baseGeometryIndexAndGeometryFlags.geometryFlags = VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT_NV;
+          if((sceneCluster.stateBits & shaderio::CLUSTER_STATE_TWOSIDED) != 0)
+            buildInfo.baseGeometryIndexAndGeometryFlags.geometryFlags |= VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_CULL_DISABLE_BIT_NV;
+        }
 
         clusterOffset++;
       }
@@ -2119,6 +2215,7 @@ bool SceneStreaming::initClas()
     res.m_allocator.destroyBuffer(buildAddressesHost);
     res.m_allocator.destroyBuffer(clasBuildInfosHost);
     res.m_allocator.destroyBuffer(blasBuildInfosHost);
+    res.m_allocator.destroyBuffer(clasGeometryIndicesHost);
   }
 
   return true;

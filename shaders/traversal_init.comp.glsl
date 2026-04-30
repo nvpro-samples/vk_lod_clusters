@@ -69,6 +69,11 @@ layout(scalar, binding = BINDINGS_RENDERINSTANCES_SSBO, set = 0) buffer renderIn
   RenderInstance instances[];
 };
 
+layout(scalar, binding = BINDINGS_RENDERMATERIALS_SSBO, set = 0) buffer renderMaterialsBuffer
+{
+  RenderMaterial materials[];
+};
+
 layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffer
 {
   Geometry geometries[];
@@ -122,11 +127,11 @@ void main()
   bool clipValid;
   
 #if USE_TWO_PASS_CULLING && TARGETS_RASTERIZATION
-  bool inFrustum = intersectFrustum( build.pass == 0 ? build.cullViewProjMatrixLast : build.cullViewProjMatrix, geometry.bbox.lo, geometry.bbox.hi, instance.worldMatrix, clipMin, clipMax, clipValid);
-  bool isVisible = inFrustum && (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, build.pass)));
+  bool inFrustum = intersectFrustum( build.cullPass == 0 ? build.cullViewProjMatrixLast : build.cullViewProjMatrix, geometry.bbox.lo, geometry.bbox.hi, instance.worldMatrix, clipMin, clipMax, clipValid);
+  bool isVisible = inFrustum && (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, build.cullPass)));
   
   // if smallish and was already drawn, don't process again
-  if (build.pass == 1 && isVisible && clipValid && !intersectSize(clipMin, clipMax, 8.0) && ((uint(build.instanceVisibility.d[instanceLoad]) & INSTANCE_VISIBLE_BIT) != 0)) {
+  if (build.cullPass == 1 && isVisible && clipValid && !intersectSize(clipMin, clipMax, 8.0) && ((uint(build.instanceVisibility.d[instanceLoad]) & INSTANCE_VISIBLE_BIT) != 0)) {
     isVisible = false;
   }
   
@@ -180,28 +185,25 @@ void main()
       // implictly through the use of the low detail BLAS.
       
     #elif TARGETS_RASTERIZATION
-      // lowest detail lod is guaranteed to have only one cluster
-      
-      uvec4 voteClusters = subgroupBallot(true); 
-      
-      uint offsetClusters = 0;
-      if (subgroupElect())
+      // lowest detail lod is guaranteed to have only one cluster.
+      bool useAlpha = false;
+      bool useSW = false;
+
+    #if HAS_ALPHA_TEST
+      useAlpha = (uint(instance.lowDetailClusterStateBits) & CLUSTER_STATE_ALPHAMASKED) != 0;
+    #endif
+
+    #if USE_SW_RASTER
+      float relativeSize = geometry.bbox.longestEdge;
+      if (isVisible && clipValid && clipMin.z > 0 && clipMax.z < 1 && !intersectSize(clipMin, clipMax, build.swRasterThreshold, relativeSize))
       {
-        offsetClusters = atomicAdd(buildRW.renderClusterCounter, int(subgroupBallotBitCount(voteClusters)));
-      }
-  
-      offsetClusters = subgroupBroadcastFirst(offsetClusters);  
-      offsetClusters += subgroupBallotExclusiveBitCount(voteClusters);
-      
-      if (offsetClusters < build.maxRenderClusters)
-      {
-        ClusterInfo clusterInfo;
-        clusterInfo.instanceID = instanceID;
-        clusterInfo.clusterID  = geometry.lowDetailClusterID;
-        build.renderClusterInfos.d[offsetClusters] = clusterInfo;
+        useSW = true;
       }
     #endif
-      
+
+      rasterBinning(geometry.lowDetailClusterID, instanceID, useAlpha, useSW, true);
+    #endif
+
       // we can skip adding the node for traversal
       traverseRootNode = false;
     }
@@ -212,7 +214,7 @@ void main()
   uint offsetNodes = 0;
   if (subgroupElect())
   {
-    offsetNodes = atomicAdd(buildRW.traversalTaskCounter, int(subgroupBallotBitCount(voteNodes)));
+    offsetNodes = atomicAdd(buildRW.traversalNodeWriteCounter, subgroupBallotBitCount(voteNodes));
   }
   
   offsetNodes = subgroupBroadcastFirst(offsetNodes);  
@@ -248,7 +250,7 @@ void main()
     }
   }
 #elif USE_TWO_PASS_CULLING && TARGETS_RASTERIZATION
-  if (build.pass == 0 && isValid) {
+  if (build.cullPass == 0 && isValid) {
     build.instanceVisibility.d[instanceID]                        = uint8_t(visibilityState);
   }
 #endif

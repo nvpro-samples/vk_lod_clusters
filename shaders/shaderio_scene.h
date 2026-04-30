@@ -37,7 +37,24 @@ enum ClusterAttributeBits
   CLUSTER_ATTRIBUTE_COMPRESSED_VERTEX_POS   = 128,
 };
 
+enum ClusterStateBits
+{
+  // cluster requires alpha testing
+  CLUSTER_STATE_ALPHAMASKED = 1,
+  // cluster has some triangles with and some without alpha-testing
+  CLUSTER_STATE_ALPHAMASKED_MIXED = 2,
+  // cluster requires disabling culling due to two-sided geometry
+  CLUSTER_STATE_TWOSIDED = 4,
+  // cluster has some triangles with and some without two-sidedness
+  CLUSTER_STATE_TWOSIDED_MIXED = 8,
+};
+
 #else
+
+#define CLUSTER_STATE_ALPHAMASKED 1
+#define CLUSTER_STATE_ALPHAMASKED_MIXED 2
+#define CLUSTER_STATE_TWOSIDED 4
+#define CLUSTER_STATE_TWOSIDED_MIXED 8
 
 #define CLUSTER_ATTRIBUTE_VERTEX_NORMAL 1
 #define CLUSTER_ATTRIBUTE_VERTEX_TANGENT 2
@@ -63,12 +80,22 @@ enum ClusterAttributeBits
 
 #endif
 
+#define SHADERIO_CLUSTER_TRIANGLE_TWOSIDED (1 << 6)
+#define SHADERIO_CLUSTER_TRIANGLE_ALPHAMASKED (1 << 7)
+
+#define SHADERIO_OPAQUE_STATUS_OPAQUE 1
+#define SHADERIO_OPAQUE_STATUS_ALPHAMASKED 2
+#define SHADERIO_OPAQUE_STATUS_MIXED 3
+
 #define SHADERIO_ORIGINAL_MESH_GROUP 0xffffffffu
 #define SHADERIO_MAX_LOD_LEVELS 32
 #define SHADERIO_MAX_NODE_CHILDREN 32
 #define SHADERIO_MAX_GROUP_CLUSTERS 128
 #define SHADERIO_MAX_CLUSTER_TRIANGLES 256
 #define SHADERIO_MAX_CLUSTER_VERTICES 256
+#define SHADERIO_MAX_LOCAL_MATERIALS (SHADERIO_CLUSTER_TRIANGLE_TWOSIDED - 1)
+#define SHADERIO_LOCAL_MATERIAL_MASK SHADERIO_MAX_LOCAL_MATERIALS
+#define SHADERIO_PER_TRIANGLE_MATERIALS 0xFF
 
 struct BBox
 {
@@ -90,13 +117,14 @@ struct Cluster
   uint8_t lodLevel;
   uint8_t groupChildIndex;
 
-  uint8_t  attributeBits;
-  uint8_t  localMaterialID;  // if 0xFF then a per-triangle index is used
-  uint16_t reserved;
+  uint8_t attributeBits;
+  uint8_t localMaterialID;  // if 0xFF then a per-triangle index is used
+  uint8_t stateBits;
+  uint8_t reserved;
 
   // byte offset relative to cluster
-  uint32_t vertices;  // vec3 positions[vertexCount], followed by optional per-vertex attributes
-  uint32_t indices;   // uint8_t indices[triangleCount * 3], followed by optional per-triangle material index
+  uint32_t vertices;   // vec3 positions[vertexCount], followed by optional per-vertex attributes
+  uint32_t triangles;  // uint8_t triangles[triangleCount * 3], followed by optional per-triangle material index
   // if compressed then indices stores compressed vertices offsets
 };
 BUFFER_REF_DECLARE(Cluster_in, Cluster, , 16);
@@ -120,11 +148,15 @@ vec2s_in Cluster_getVertexTexCoords(Cluster_in cluster)
 }
 uint8s_in Cluster_getTriangleIndices(Cluster_in cluster)
 {
-  return uint8s_in(uint64_t(cluster) + cluster.d.indices);
+  return uint8s_in(uint64_t(cluster) + cluster.d.triangles);
 }
+
+// 8 th bit encodes alphatest on/off
+// 7 th bit twosided
+// lower 6 bits serve as index
 uint8s_in Cluster_getTriangleMaterials(Cluster_in cluster)
 {
-  return uint8s_in(uint64_t(cluster) + (cluster.d.indices + 3 * (cluster.d.triangleCountMinusOne + 1)));
+  return uint8s_in(uint64_t(cluster) + (cluster.d.triangles + 3 * (cluster.d.triangleCountMinusOne + 1)));
 }
 #endif
 
@@ -152,7 +184,8 @@ struct Group
   uint32_t residentID;
   uint32_t clusterResidentID;
 
-  uint16_t lodLevel;
+  uint8_t  lodLevel;
+  uint8_t  stateBits;
   uint16_t clusterCount;  // 128 max
 
   TraversalMetric traversalMetric;
@@ -172,6 +205,11 @@ BBox Group_getClusterBBox(Group_in group, uint clusterIndex)
   return BBoxes_in(uint64_t(group)
                    + uint32_t(Group_size + Cluster_size * group.d.clusterCount + (((4 * group.d.clusterCount) + 15) & ~15)))
       .d[clusterIndex];
+}
+uint Group_getClusterState(Group_in group, uint clusterIndex)
+{
+  Cluster_in clusterRef = Cluster_in(uint64_t(group) + uint32_t(Group_size + Cluster_size * clusterIndex));
+  return uint(clusterRef.d.stateBits);
 }
 Group_in Cluster_getGroup(Cluster_in cluster)
 {
@@ -280,19 +318,36 @@ struct Geometry
 BUFFER_REF_DECLARE(Geometry_in, Geometry, readonly, 16);
 BUFFER_REF_DECLARE(Geometry_inout, Geometry, , 16);
 
+struct RenderMaterial
+{
+  uint16_t alphaMaskTexture;
+  uint8_t  twoSided;
+  uint8_t  _reserved;
+  uint32_t originalID;
+};
+BUFFER_REF_DECLARE_ARRAY(RenderMaterials_in, RenderMaterial, readonly, 4);
+
 struct RenderInstance
 {
   mat4x3 worldMatrix;
   mat4x3 worldMatrixI;
 
   uint32_t geometryID;
+
+  uint8_t flipWinding;
+  uint8_t twoSided;
+  uint8_t multiMaterial;
+  uint8_t opaqueStatus;
+
+  // if multiMaterial is used, this serves as base ID combined with the cluster Local ID
   uint16_t materialID;
-  uint8_t  flipWinding;
-  uint8_t  twoSided;
+  uint16_t alphaMaskTexture;
+
   float    maxLodLevelRcp;
   uint32_t packedColor;
 
-  vec4 _pad;
+  // Copied from scene `GeometryBase::lowDetailClusterStateBits` (lowest-detail cluster state).
+  uint8_t lowDetailClusterStateBits;
 };
 BUFFER_REF_DECLARE_ARRAY(RenderInstances_in, RenderInstance, readonly, 16);
 

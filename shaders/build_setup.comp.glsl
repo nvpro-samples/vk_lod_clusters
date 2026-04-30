@@ -71,6 +71,11 @@ layout(scalar, binding = BINDINGS_RENDERINSTANCES_SSBO, set = 0) buffer renderIn
   RenderInstance instances[];
 };
 
+layout(scalar, binding = BINDINGS_RENDERMATERIALS_SSBO, set = 0) buffer renderMaterialsBuffer
+{
+  RenderMaterial materials[];
+};
+
 layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffer
 {
   Geometry geometries[];
@@ -103,12 +108,15 @@ layout(local_size_x=1) in;
 void setupSecondPass()
 {
   // setup second pass  
-  buildRW.pass = 1;
+  buildRW.cullPass = 1;
   buildRW.traversalTaskCounter = 0;
-  buildRW.traversalGroupCounter = 0;
+  buildRW.traversalGroupWriteCounter = 0;
+  buildRW.traversalNodeReadCounter = 0;
+  buildRW.traversalNodeWriteCounter = 0;
   buildRW.renderClusterCounter = 0;
   buildRW.renderClusterCounterSW = 0;
-  buildRW.traversalInfoReadCounter = 0;
+  buildRW.renderClusterCounterAlpha = 0;
+  buildRW.renderClusterCounterAlphaSW = 0;
 }
 #endif
 
@@ -120,112 +128,173 @@ void main()
   if (push.setup == BUILD_SETUP_TRAVERSAL_RUN)
   {
     // during traversal_init we might overshoot the traversalTaskCounter  
-    int traversalTaskCounter = min(buildRW.traversalTaskCounter, int(build.maxTraversalInfos));
-    buildRW.traversalTaskCounter = traversalTaskCounter;
+    uint nodeCount = min(buildRW.traversalNodeWriteCounter, build.maxTraversalInfos);
     // also set up the initial writeCounter to be equal, so that new jobs are enqueued after it
-    buildRW.traversalInfoWriteCounter = uint(traversalTaskCounter);
+    buildRW.traversalNodeWriteCounter = nodeCount;
+  #if USE_PERSISTENT_TRAVERSAL_KERNEL
+    buildRW.traversalTaskCounter = int(nodeCount);
+  #else
+    buildRW.traversalNodeStart  = 0;
+    buildRW.traversalNodeEnd    = nodeCount;
+    buildRW.traversalGroupStart = 0;
+    buildRW.traversalGroupEnd   = 0;
+
+    //readback.debugA[0] = nodeCount;
+    //readback.debugB[0] = 0;
+    //readback.debugC[0] = 1;
+
+    uint nodeGridCount  = (nodeCount + TRAVERSAL_RUN_WORKGROUP - 1) / TRAVERSAL_RUN_WORKGROUP;
+    #if USE_16BIT_DISPATCH
+      uvec3 nodeGrid = fit16bitLaunchGrid(nodeGridCount);
+      buildRW.indirectDispatchNodes.gridX = nodeGrid.x;
+      buildRW.indirectDispatchNodes.gridY = nodeGrid.y;
+      buildRW.indirectDispatchNodes.gridZ = nodeGrid.z;
+    #else
+      buildRW.indirectDispatchNodes.gridX = nodeGridCount;
+      buildRW.indirectDispatchNodes.gridY = 1;
+      buildRW.indirectDispatchNodes.gridZ = 1;
+    #endif
+
+  #endif
   }
-#if TARGETS_RASTERIZATION && USE_SW_RASTER
+#if !USE_PERSISTENT_TRAVERSAL_KERNEL
+  else if (push.setup == BUILD_SETUP_TRAVERSAL_RUN_PASS_COMBINED || push.setup == BUILD_SETUP_TRAVERSAL_RUN_PASS_NODES_ONLY)
+  {
+    uint pass = buildRW.traversalPass + 1;
+    buildRW.traversalPass = pass;
+
+    // begin at last end, end at current
+    uint nodeStart = min(buildRW.traversalNodeEnd, build.maxTraversalInfos);
+    uint nodeEnd   = min(buildRW.traversalNodeWriteCounter, build.maxTraversalInfos);
+    uint nodeCount = nodeEnd - nodeStart;
+    buildRW.traversalNodeStart = nodeStart;
+    buildRW.traversalNodeEnd   = nodeEnd;
+
+    uint groupStart = min(buildRW.traversalGroupEnd, build.maxTraversalInfos);
+    uint groupEnd   = min(buildRW.traversalGroupWriteCounter, build.maxTraversalInfos);
+    uint groupCount = groupEnd - groupStart;
+    buildRW.traversalGroupStart = groupStart;
+    buildRW.traversalGroupEnd   = groupEnd;
+    if (push.setup == BUILD_SETUP_TRAVERSAL_RUN_PASS_NODES_ONLY)
+    {
+      groupCount = 0;
+      buildRW.traversalGroupStart = 0;
+      buildRW.traversalGroupEnd   = 0;
+    }
+
+    uint nodeGridCount  = (nodeCount + TRAVERSAL_RUN_WORKGROUP - 1) / TRAVERSAL_RUN_WORKGROUP;
+    uint groupGridCount = (groupCount + TRAVERSAL_GROUPS_WORKGROUP - 1) / TRAVERSAL_GROUPS_WORKGROUP;
+
+    //readback.debugA[pass] = nodeCount;
+    //readback.debugB[pass] = groupCount;
+    //readback.debugC[pass] = 1;
+
+  #if USE_16BIT_DISPATCH
+    uvec3 nodeGrid = fit16bitLaunchGrid(nodeGridCount);
+    buildRW.indirectDispatchNodes.gridX = nodeGrid.x;
+    buildRW.indirectDispatchNodes.gridY = nodeGrid.y;
+    buildRW.indirectDispatchNodes.gridZ = nodeGrid.z;
+    uvec3 groupGrid = fit16bitLaunchGrid(groupGridCount);
+    buildRW.indirectDispatchGroups.gridX = groupGrid.x;
+    buildRW.indirectDispatchGroups.gridY = groupGrid.y;
+    buildRW.indirectDispatchGroups.gridZ = groupGrid.z;
+  #else
+    buildRW.indirectDispatchNodes.gridX = nodeGridCount;
+    buildRW.indirectDispatchNodes.gridY = 1;
+    buildRW.indirectDispatchNodes.gridZ = 1;
+    buildRW.indirectDispatchGroups.gridX = groupGridCount;
+    buildRW.indirectDispatchGroups.gridY = 1;
+    buildRW.indirectDispatchGroups.gridZ = 1;
+  #endif
+  }
+#endif
+#if TARGETS_RASTERIZATION
   else if (push.setup == BUILD_SETUP_DRAW)
   {
     // during traversal_run we might overshoot visibleClusterCounter  
-    uint renderClusterCounter   = buildRW.renderClusterCounter;
-    uint renderClusterCounterSW = buildRW.renderClusterCounterSW;
+    uint renderClusterCounter        = buildRW.renderClusterCounter;
+    uint renderClusterCounterSW      = buildRW.renderClusterCounterSW;
+    uint renderClusterCounterAlpha   = buildRW.renderClusterCounterAlpha;
+    uint renderClusterCounterAlphaSW = buildRW.renderClusterCounterAlphaSW;
     
     // set drawindirect for actual rendered clusters
-    uint numRenderedClusters   = min(renderClusterCounter,   build.maxRenderClusters);
-    uint numRenderedClustersSW = min(renderClusterCounterSW, build.maxRenderClusters);
+    uint numRenderedClusters        = min(renderClusterCounter,   build.maxRenderClusters);
+    uint numRenderedClustersSW      = min(renderClusterCounterSW, build.maxRenderClusters);
+    uint numRenderedClustersAlpha   = min(renderClusterCounterAlpha,   build.maxRenderClusters);
+    uint numRenderedClustersAlphaSW = min(renderClusterCounterAlphaSW, build.maxRenderClusters);
     
   #if USE_EXT_MESH_SHADER
-    uvec3 grid = fit16bitLaunchGrid(numRenderedClusters);  
+    uvec3 grid = fit16bitLaunchGrid(numRenderedClusters);
+    buildRW.indirectDrawClustersEXT.gridX = grid.x;
+    buildRW.indirectDrawClustersEXT.gridY = grid.y;
+    buildRW.indirectDrawClustersEXT.gridZ = grid.z;
+
+    grid = fit16bitLaunchGrid(numRenderedClustersAlpha);
     buildRW.indirectDrawClustersEXT.gridX = grid.x;
     buildRW.indirectDrawClustersEXT.gridY = grid.y;
     buildRW.indirectDrawClustersEXT.gridZ = grid.z;
     
-    grid = fit16bitLaunchGrid((numRenderedClusters + MESHSHADER_BBOX_COUNT - 1) / MESHSHADER_BBOX_COUNT);  
+    grid = fit16bitLaunchGrid((numRenderedClusters + MESHSHADER_BBOX_COUNT - 1) / MESHSHADER_BBOX_COUNT);
+    buildRW.indirectDrawClusterBoxesEXT.gridX = grid.x;
+    buildRW.indirectDrawClusterBoxesEXT.gridY = grid.y;
+    buildRW.indirectDrawClusterBoxesEXT.gridZ = grid.z;
+    
+    grid = fit16bitLaunchGrid((numRenderedClustersAlpha + MESHSHADER_BBOX_COUNT - 1) / MESHSHADER_BBOX_COUNT);
     buildRW.indirectDrawClusterBoxesEXT.gridX = grid.x;
     buildRW.indirectDrawClusterBoxesEXT.gridY = grid.y;
     buildRW.indirectDrawClusterBoxesEXT.gridZ = grid.z;
   #else
     buildRW.indirectDrawClustersNV.count = numRenderedClusters;
     buildRW.indirectDrawClustersNV.first = 0;
+
+    buildRW.indirectDrawClustersAlphaNV.count = numRenderedClustersAlpha;
+    buildRW.indirectDrawClustersAlphaNV.first = 0;
     
     buildRW.indirectDrawClusterBoxesNV.count = (numRenderedClusters + MESHSHADER_BBOX_COUNT - 1) / MESHSHADER_BBOX_COUNT;
     buildRW.indirectDrawClusterBoxesNV.first = 0;
+    
+    buildRW.indirectDrawClusterBoxesAlphaNV.count = (numRenderedClustersAlpha + MESHSHADER_BBOX_COUNT - 1) / MESHSHADER_BBOX_COUNT;
+    buildRW.indirectDrawClusterBoxesAlphaNV.first = 0;
   #endif
-    buildRW.numRenderedClusters = numRenderedClusters;
+    buildRW.numRenderedClusters      = numRenderedClusters;
+    buildRW.numRenderedClustersAlpha = numRenderedClustersAlpha;
     
   #if USE_16BIT_DISPATCH
     uvec3 grid = fit16bitLaunchGrid(numRenderedClustersSW);
     buildRW.indirectDrawClustersSW.gridX = grid.x;
     buildRW.indirectDrawClustersSW.gridY = grid.y;
     buildRW.indirectDrawClustersSW.gridZ = grid.z;
+    grid = fit16bitLaunchGrid(numRenderedClustersAlphaSW);
+    buildRW.indirectDispatchClustersAlphaSW.gridX = grid.x;
+    buildRW.indirectDispatchClustersAlphaSW.gridY = grid.y;
+    buildRW.indirectDispatchClustersAlphaSW.gridZ = grid.z;
   #else
-    buildRW.indirectDrawClustersSW.gridX = numRenderedClustersSW;
+    buildRW.indirectDispatchClustersSW.gridX      = numRenderedClustersSW;
+    buildRW.indirectDispatchClustersAlphaSW.gridX = numRenderedClustersAlphaSW;
   #endif
-    buildRW.numRenderedClustersSW = numRenderedClustersSW;
+    buildRW.numRenderedClustersSW      = numRenderedClustersSW;
+    buildRW.numRenderedClustersAlphaSW = numRenderedClustersAlphaSW;
 
     // keep originals for array size warnings
     // use max if there is two passes
     atomicMax(readback.numRenderClusters,   renderClusterCounter);
     atomicMax(readback.numRenderClustersSW, renderClusterCounterSW);
-  #if USE_SEPARATE_GROUPS
-    atomicMax(readback.numTraversalTasks, max(buildRW.traversalInfoWriteCounter, buildRW.traversalGroupCounter));
-  #else
-    atomicMax(readback.numTraversalTasks, buildRW.traversalInfoWriteCounter);
-  #endif
+    atomicMax(readback.numRenderClustersAlpha,   renderClusterCounterAlpha);
+    atomicMax(readback.numRenderClustersAlphaSW, renderClusterCounterAlphaSW);
+    atomicMax(readback.numTraversalTasks, max(buildRW.traversalNodeWriteCounter, buildRW.traversalGroupWriteCounter));
 
   #if USE_RENDER_STATS
     readback.numRenderedClusters   += numRenderedClusters;
     readback.numRenderedClustersSW += numRenderedClustersSW;
-    readback.numTraversedTasks     += buildRW.traversalInfoWriteCounter;
-  #endif
-  
-  #if USE_TWO_PASS_CULLING
-    setupSecondPass();
-  #endif
-  }
-#elif TARGETS_RASTERIZATION
-  else if (push.setup == BUILD_SETUP_DRAW)
-  {
-    // during traversal_run we might overshoot visibleClusterCounter  
-    uint renderClusterCounter = buildRW.renderClusterCounter;
-    
-    // set drawindirect for actual rendered clusters
-    uint numRenderedClusters = min(renderClusterCounter, build.maxRenderClusters);
-    
-  #if USE_EXT_MESH_SHADER
-    uvec3 grid = fit16bitLaunchGrid(numRenderedClusters);  
-    buildRW.indirectDrawClustersEXT.gridX = grid.x;
-    buildRW.indirectDrawClustersEXT.gridY = grid.y;
-    buildRW.indirectDrawClustersEXT.gridZ = grid.z;
-    
-    grid = fit16bitLaunchGrid((numRenderedClusters + MESHSHADER_BBOX_COUNT - 1) / MESHSHADER_BBOX_COUNT);  
-    buildRW.indirectDrawClusterBoxesEXT.gridX = grid.x;
-    buildRW.indirectDrawClusterBoxesEXT.gridY = grid.y;
-    buildRW.indirectDrawClusterBoxesEXT.gridZ = grid.z;
-  #else
-    buildRW.indirectDrawClustersNV.count = numRenderedClusters;
-    buildRW.indirectDrawClustersNV.first = 0;
-    
-    buildRW.indirectDrawClusterBoxesNV.count = (numRenderedClusters + MESHSHADER_BBOX_COUNT - 1) / MESHSHADER_BBOX_COUNT;
-    buildRW.indirectDrawClusterBoxesNV.first = 0;
-  #endif
-    buildRW.numRenderedClusters = numRenderedClusters;
-
-    // keep originals for array size warnings 
-    // use max if there is two passes
-    atomicMax(readback.numRenderClusters, renderClusterCounter);
-  #if USE_SEPARATE_GROUPS
-    atomicMax(readback.numTraversalTasks, max(buildRW.traversalInfoWriteCounter, buildRW.traversalGroupCounter));
-  #else
-    atomicMax(readback.numTraversalTasks, buildRW.traversalInfoWriteCounter);
+    readback.numRenderedClustersAlpha += numRenderedClustersAlpha;
+    readback.numRenderedClustersAlphaSW += numRenderedClustersAlphaSW;
+    readback.numTraversedTasks     += buildRW.traversalNodeWriteCounter;
   #endif
 
-  #if USE_RENDER_STATS
-    readback.numRenderedClusters += numRenderedClusters;
-    readback.numTraversedTasks   += buildRW.traversalInfoWriteCounter;
-  #endif
+    // readback.debugA[0] = numRenderedClusters;
+    // readback.debugA[1] = numRenderedClustersAlpha;
+    // readback.debugA[2] = numRenderedClustersSW;
+    // readback.debugA[3] = numRenderedClustersAlphaSW;
   
   #if USE_TWO_PASS_CULLING
     setupSecondPass();
@@ -255,14 +324,10 @@ void main()
 
     // keep originals for array size warnings 
     readback.numRenderClusters = renderClusterCounter;
-  #if USE_SEPARATE_GROUPS
-    readback.numTraversalTasks = max(buildRW.traversalInfoWriteCounter, buildRW.traversalGroupCounter);
-  #else
-    readback.numTraversalTasks = buildRW.traversalInfoWriteCounter;
-  #endif
+    readback.numTraversalTasks = max(buildRW.traversalNodeWriteCounter, buildRW.traversalGroupWriteCounter);
 
   #if USE_RENDER_STATS
-    readback.numTraversedTasks   = buildRW.traversalInfoWriteCounter;
+    readback.numTraversedTasks   = buildRW.traversalNodeWriteCounter;
     readback.numRenderedClusters = numRenderedClusters;
   #endif
   

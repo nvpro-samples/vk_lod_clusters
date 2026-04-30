@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -170,7 +170,10 @@ void main()
         buildInfo.packed |= PACKED_FLAG(ClasBuildInfo_packed_indexType, 1);
         buildInfo.packed |= PACKED_FLAG(ClasBuildInfo_packed_positionTruncateBitCount, streaming.clasPositionTruncateBits);
         
-        buildInfo.baseGeometryIndexAndFlags = ClasGeometryFlag_OPAQUE_BIT_NV;
+        buildInfo.baseGeometryIndexAndFlags = 0;
+
+        bool useGeometryIndices = (cluster.stateBits & CLUSTER_STATE_ALPHAMASKED_MIXED) != 0 || 
+                                  (cluster.stateBits & CLUSTER_STATE_TWOSIDED_MIXED) != 0;
         
         buildInfo.indexBufferStride                 = uint16_t(1);
         buildInfo.vertexBufferStride                = uint16_t(4 * 3);
@@ -183,7 +186,31 @@ void main()
         buildInfo.geometryIndexAndFlagsBuffer = 0;
         buildInfo.opacityMicromapArray        = 0;
         buildInfo.opacityMicromapIndexBuffer  = 0;
-        
+
+      #if HAS_ALPHA_TEST
+        if (useGeometryIndices)
+        {
+          uint base = atomicAdd(streamingRW.update.newClasGeometryIndicesTaskCounter, 1);
+
+          uint64_t geometryIndicesBuffer = uint64_t(streaming.update.newClasGeometryIndices) + uint64_t(base * CLUSTER_TRIANGLE_COUNT * 4);
+
+          buildInfo.baseGeometryIndexAndFlags           = 0u;
+          buildInfo.geometryIndexAndFlagsBufferStride   = uint16_t(4);
+          buildInfo.geometryIndexAndFlagsBuffer = geometryIndicesBuffer;
+
+          // we hijack the first values of geometry indices array to store a reference to the cluster,
+          // so that the `stream_update_clas_geometry_indices.comp.glsl` kernel can fill the per-triangle
+          // information accordingly.
+          uint64s_inout clusterInfos = uint64s_inout(geometryIndicesBuffer);
+          clusterInfos.d[0] = uint64_t(clusterRef);
+        }
+        else
+      #endif
+        {
+          buildInfo.baseGeometryIndexAndFlags = (cluster.stateBits & CLUSTER_STATE_ALPHAMASKED) != 0 ? 1 : ClasGeometryFlag_OPAQUE_BIT_NV;
+          buildInfo.baseGeometryIndexAndFlags |= (cluster.stateBits & CLUSTER_STATE_TWOSIDED) != 0 ? ClasGeometryFlag_CULL_DISABLE_BIT_NV : 0;
+        }
+
         streaming.update.newClasBuilds.d[newBuildOffset + c]      = buildInfo;
         streaming.update.newClasResidentIDs.d[newBuildOffset + c] = clusterResidentID;
       #endif

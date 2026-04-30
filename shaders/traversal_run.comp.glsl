@@ -25,9 +25,23 @@
   This compute shader handles the scene's lod hiearchy traversal for all
   instances.
 
-  The shader is configured to be run using persistent threads. A fixed amount of 
-  threads implement a producer/consumer queuing mechanism to handle the hierarchical
-  traversal.
+  Two kernels are used for the traversal.
+  The hierarchical node traversal is handled within this kernel, 
+  but the leaves (cluster groups and their clusters)
+  are processed in `traversal_run_groups.comp.glsl`.
+  
+  This reduces divergence and can speed things up overall.
+
+  The shader can be configured to be run using persistent threads, or
+  with a multi-pass setup.
+
+  USE_PERSISTENT_TRAVERSAL_KERNEL == 0
+  Each pass reads the input traversal nodes and appends new ones that are
+  consumed in the next pass.
+
+  USE_PERSISTENT_TRAVERSAL_KERNEL == 1
+  A fixed amount of threads implement a producer/consumer queuing mechanism to
+  handle the hierarchical traversal.
 
   The producer/consumer queue is implemented by the following variables:
   
@@ -35,19 +49,15 @@
     - `build.traversalNodeWriteCounter` is used to produce new items into the array
     - `build.traversalNodeReadCounter` is used to consume from the array
     - `build.traversalTaskCounter` tracks the total number of tasks in-flight.
-      It wil be incremented when new tasks are enqueued, and decremented when they are consumed.
-      When it reaches zero we will have no more work left to process and the kernel can complete.
+      It is only used in the persistent kernel and wil be incremented when new tasks are enqueued,
+      and decremented when they are consumed.  When it reaches zero we will have no more work
+      left to process and the kernel can complete.
 
   The queue is seeded within `traversal_init.comp.glsl` with the root's of visible instances.
-  
-  Furthermore all clusters that are to be rendered are output via:
-    - `build.renderClusterInfos` stores all clusters that are to be rendered as linear array
-    - `build.renderClusterCounter` is used to append the clusters
-
  
   The traversal logic attempts to consume items and then tests if their children
-  need further processing: further node traversal, or enqueuing into the list of rendered
-  clusters.
+  need further processing: further node traversal, or enqueuing into the list of
+  of cluster groups passed to the groups kernel.
   
   `shaderio::Node` is the same as `nvclusterlod::Node`
   
@@ -65,25 +75,14 @@
   produce new traversal work by adding the node's children into `build.traversalNodeInfos`. 
   This provides the upper range of the cut through the lod's directed-acyclic-graph (DAG).
   
-  If the input item was a group, then the its children are clusters and the evaluation
-  of their traversal metric yields the opposite, lower range, of the cut through the DAG.
-  Meaning we are detailed enough.
-  These clusters are appended to `build.renderClusterInfos`.
+  If the input item was a group, then the its enqueued using:
+  - `build.traversalGroupInfos` stores the items that are processed as linear array
+  - `build.traversalGroupWriteCounter` stores the items that are processed as linear array
   
   The combination of both evaluations ensures we don't accidentally create overlapping lod clusters.
   
   Please refer to [A Deep Dive into Nanite Virtualized Geometry, Karis et al. 2021](https://www.advances.realtimerendering.com/s2021/Karis_Nanite_SIGGRAPH_Advances_2021_final.pdf)
   for more details.
-  
-  
-  USE_SEPARATE_GROUPS
-  
-  When active, two kernels are used for the traversal.
-  The hierarchical node traversal is handled within this kernel, 
-  but the leaves (cluster groups and their clusters)
-  are processed in `traversal_run_separate_groups.comp.glsl`.
-  
-  This reduces divergence and can speed things up overall.
 
 */
 
@@ -110,6 +109,8 @@
 
 #include "shaderio.h"
 
+#define DEBUG_TRAVERSAL 0
+
 ////////////////////////////////////////////
 
 layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuffer
@@ -125,6 +126,11 @@ layout(scalar, binding = BINDINGS_READBACK_SSBO, set = 0) buffer readbackBuffer
 layout(scalar, binding = BINDINGS_RENDERINSTANCES_SSBO, set = 0) buffer renderInstancesBuffer
 {
   RenderInstance instances[];
+};
+
+layout(scalar, binding = BINDINGS_RENDERMATERIALS_SSBO, set = 0) buffer renderMaterialsBuffer
+{
+  RenderMaterial materials[];
 };
 
 layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffer
@@ -177,15 +183,7 @@ layout(local_size_x=TRAVERSAL_RUN_WORKGROUP) in;
 // These children are then processed within `processSubTask` a few lines down
 uint setupTask(inout TraversalInfo traversalInfo, uint readIndex, uint pass)
 {
-  uint subCount = 0;
-  
-  bool isNode = PACKED_GET(traversalInfo.packedNode, Node_packed_isGroup) == 0;
-  if (isNode) {
-    subCount = PACKED_GET(traversalInfo.packedNode, Node_packed_nodeChildCountMinusOne);
-  }
-  else {
-    subCount = PACKED_GET(traversalInfo.packedNode, Node_packed_groupClusterCountMinusOne);
-  }
+  uint subCount = PACKED_GET(traversalInfo.packedNode, Node_packed_nodeChildCountMinusOne);
 
   return subCount + 1;
 }
@@ -200,42 +198,27 @@ bool queryWasVisible(mat4x3 instanceTransform, BBox bbox, bool isNode)
   vec4 clipMin;
   vec4 clipMax;
   bool clipValid;
+
+#if USE_NODE_OCCLUSION_CULLING
+  bool useOcclusion = true;
+#else
+  bool useOcclusion = false;
+#endif
   
 #if USE_TWO_PASS_CULLING
 
-#if USE_SEPARATE_GROUPS
-  isNode = true;
-#endif
-
   // clusters are always first tested against last hiz
   // node's should be tested against best available hiz
-  bool useLast = !isNode || build.pass == 0;
+  bool useLast =  build.cullPass == 0;
 
   bool inFrustum = intersectFrustum(useLast ? build.cullViewProjMatrixLast : build.cullViewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
   bool isVisible = inFrustum && 
-    (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, useLast ? 0 : 1)));
-  
-#if !USE_SEPARATE_GROUPS
-  // clusters are tested twice, against current hiz in the second pass
-  if (!isNode && build.pass == 1) 
-  {
-    if (isVisible) {
-      // was rendered in first pass
-      isVisible = false;
-    }
-    else {
-      // test against current hiz to determine rendering
-      inFrustum = intersectFrustum(build.cullViewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
-      isVisible = inFrustum && 
-        (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 1)));
-    }
-  }
-#endif
+    (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, useLast ? 0 : 1)));
 #else
   // always test against last frame visiblity
   bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
   bool isVisible = inFrustum && 
-    (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 0)));
+    (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 0)));
 #endif
   
   return isVisible;
@@ -272,13 +255,6 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   uint instanceID     = traversalInfo.instanceID;
   bool forceCluster   = false;
 
-  // identify type of item: node or group
-  bool isNode  = PACKED_GET(traversalInfo.packedNode, Node_packed_isGroup) == 0;
-#if USE_SEPARATE_GROUPS
-  // in this mode this kernel only processes nodes
-  isNode = true;
-#endif
-
   uint geometryID   = instances[instanceID].geometryID;
   Geometry geometry = geometries[geometryID];
 
@@ -288,10 +264,10 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   BBox bbox;
 #endif
 
-  if (isNode)
   {
     uint childIndex     = taskSubID;
     uint childNodeIndex = PACKED_GET(traversalInfo.packedNode, Node_packed_nodeChildOffset) + childIndex;
+
     Node childNode      = geometry.nodes.d[childNodeIndex];
     traversalMetric     = childNode.traversalMetric;
   #if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
@@ -300,84 +276,6 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
     // prepare to enqueue this child node later, if metric evaluates properly
     traversalInfo.packedNode = childNode.packed;
   }
-#if !USE_SEPARATE_GROUPS
-  else {
-    // a cluster group may be processed as well, in that case
-    // we test the children clusters.
-  
-    uint clusterIndex = taskSubID;
-    uint groupIndex   = PACKED_GET(traversalInfo.packedNode, Node_packed_groupIndex);
-    
-  #if USE_STREAMING
-    // The later `if (traverseNode)` branch ensured that this pointer is valid
-    // and we never traverse to a group that isn't resident.
-    Group_in groupRef = Group_in(geometry.streamingGroupAddresses.d[groupIndex]);
-    Group group = groupRef.d;
-    #if USE_BLAS_MERGING
-      // handled further down see `if (traverseNode)`
-    #else
-      streaming.resident.groups.d[group.residentID].age = uint16_t(0);
-    #endif
-  #else
-    // can directly access the group
-    Group_in groupRef = Group_in(geometry.preloadedGroups.d[groupIndex]);
-    Group group = groupRef.d;
-  #endif
-
-  #if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
-    bbox        = Group_getClusterBBox(groupRef, clusterIndex);
-  #endif
-    
-    // The continuous lod algorithm optimizes to get the lowest detail we can get away with.
-    
-    // We render a cluster if its own group was traversed because it had an error
-    // greater than the threshold (it is "coarse enough"). This is fulfilled when reach
-    // the code here.
-    //
-    // However, multiple cluster groups of previous lod levels (higher detail) may cover this 
-    // same region. Therefore we must ensure that it's really this cluster to be drawn (it is "fine enough").
-    //
-    // This is achieved by looking at the cluster's generating group. The generating group
-    // contained the geometry that this cluster was simplified from and is from the previous,
-    // lower, lod level with a lower error.
-    //
-    // If that group wasn't traversed then we know we must be drawn, because we have the highest
-    // detail required. You will see a bit later down that we use the negated results 
-    // of `testForTraversal` for clusters.
-    //
-    // If this cluster is from the highest detail level, then there is no generating group
-    // as encoded by `SHADERIO_ORIGINAL_MESH_GROUP`.
-    // In streaming, it may also occur that the generating group isn't loaded, that also
-    // means this cluster is the highest detail available.
-    
-    uint32_t clusterGeneratingGroup = Group_getGeneratingGroup(groupRef, clusterIndex);
-  #if USE_STREAMING
-    if (clusterGeneratingGroup != SHADERIO_ORIGINAL_MESH_GROUP
-        && geometry.streamingGroupAddresses.d[clusterGeneratingGroup] < STREAMING_INVALID_ADDRESS_START)
-    {
-      // streaming must check if the other group actually is resident, if not then we always draw this group
-      // as we know no other lod variant was loaded.
-      traversalMetric = Group_in(geometry.streamingGroupAddresses.d[clusterGeneratingGroup]).d.traversalMetric;
-    }
-  #else
-    if (clusterGeneratingGroup != SHADERIO_ORIGINAL_MESH_GROUP)
-    {
-      traversalMetric = Group_in(geometry.preloadedGroups.d[clusterGeneratingGroup]).d.traversalMetric;
-    }
-  #endif
-    else {
-      // the generating group doesn't exist, draw this group
-      
-      // this should always evaluate true
-      traversalMetric = group.traversalMetric;
-      forceCluster    = true;
-    }
-    // prepare to append this cluster for rendering, if metric evaluates properly
-    
-    // TraversalInfo aliases with ClusterInfo, packeNode == clusterID
-    traversalInfo.packedNode = group.clusterResidentID + clusterIndex;
-  }
-#endif
   
   // perform traversal & culling logic
   
@@ -385,7 +283,7 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   float uniformScale = computeUniformScale(worldMatrix);
   float errorScale   = 1.0;
 #if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
-  isValid            = isValid && queryWasVisible(worldMatrix, bbox, isNode);
+  isValid            = isValid && queryWasVisible(worldMatrix, bbox, false);
 #endif
 #if (USE_CULLING || USE_BLAS_MERGING) && TARGETS_RAY_TRACING
   uint visibilityState = build.instanceVisibility.d[instanceID];
@@ -395,27 +293,26 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   #endif
 #endif
   bool traverse      = testForTraversal(mat4x3(build.traversalViewMatrix * toMat4(worldMatrix)), uniformScale, traversalMetric, errorScale);
-  bool traverseNode  = isValid && isNode && (traverse);                    // nodes test if we can descend
-  bool renderCluster = isValid && !isNode && (!traverse || forceCluster);  // clusters use negated test or are forced
-  
-  bool isGroup = false;
+  bool traverseNode  = isValid && (traverse);                    // nodes test if we can descend
 
-#if USE_STREAMING || USE_BLAS_MERGING || USE_SEPARATE_GROUPS
+  bool isGroup = PACKED_GET(traversalInfo.packedNode, Node_packed_isGroup) != 0;
+
+#if USE_STREAMING
   if (traverseNode)
   {
-    // when streaming we might need to bail out here, if the child group isn't resident
-         isGroup    = PACKED_GET(traversalInfo.packedNode, Node_packed_isGroup) != 0;
     uint groupIndex = PACKED_GET(traversalInfo.packedNode, Node_packed_groupIndex);
+
+    // when streaming we might need to bail out here, if the child group isn't resident
+    // or if we are a merged instance
+    #if USE_BLAS_MERGING && TARGETS_RAY_TRACING
+      if (isGroup && ((visibilityState & INSTANCE_USES_MERGED_BIT) != 0))
+      {
+        // no need to actually traverse the group in a merged instance, we are only
+        // here to tag residency for streaming requests
+        traverseNode = false;
+      }
+    #endif
     
-  #if USE_BLAS_MERGING && TARGETS_RAY_TRACING
-    if (isGroup && ((visibilityState & INSTANCE_USES_MERGED_BIT) != 0))
-    {
-      // no need to actually traverse the group
-      traverseNode = false;
-    }
-  #endif
-  
-  #if USE_STREAMING
     // streamingGroupAddresses[groupIndex] encodes two things:
     //
     //   if the address is <  STREAMING_INVALID_ADDRESS_START:
@@ -466,20 +363,12 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
       }
     #endif
     }
-  #endif
   }
 #endif
 
-#if USE_SEPARATE_GROUPS
-  // In this mode we enqueue groups separately from nodes.
-  // we hijack the "cluster enqueue" mechanism for this.
-  //
-  // `renderCluster` now means `traverseGroup`
-  
-  renderCluster = isValid && traverseNode && isGroup;
-  if (renderCluster)
+  bool traverseGroup = isValid && traverseNode && isGroup;
+  if (traverseGroup)
     traverseNode = false;
-#endif
   
   // nodes will enqueue their children again (producer)
   // groups will write out the clusters for rendering
@@ -490,81 +379,62 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   uvec4 voteNodes = subgroupBallot(traverseNode);
   uint countNodes = subgroupBallotBitCount(voteNodes);
   
-  uvec4 voteClusters = subgroupBallot(renderCluster);
-  uint countClusters = subgroupBallotBitCount(voteClusters);
+  uvec4 voteGroups = subgroupBallot(traverseGroup);
+  uint countGroups = subgroupBallotBitCount(voteGroups);
   
-  uint offsetNodes    = 0;
-  uint offsetClusters = 0;
+  uint offsetNodes  = 0;
+  uint offsetGroups = 0;
   
   if (subgroupElect())
   {
+  #if USE_PERSISTENT_TRAVERSAL_KERNEL
     // increase global task counter
     atomicAdd(buildRW.traversalTaskCounter, int(countNodes));
-    // get memory offsets
-    offsetNodes    = atomicAdd(buildRW.traversalInfoWriteCounter, countNodes);
-  #if USE_SEPARATE_GROUPS
-    offsetClusters = atomicAdd(buildRW.traversalGroupCounter, countClusters);
-  #else
-    offsetClusters = atomicAdd(buildRW.renderClusterCounter, countClusters);
   #endif
+    // get memory offsets
+    offsetNodes  = atomicAdd(buildRW.traversalNodeWriteCounter, countNodes);
+    offsetGroups = atomicAdd(buildRW.traversalGroupWriteCounter, countGroups);
   }
   memoryBarrierBuffer();
   
   offsetNodes = subgroupBroadcastFirst(offsetNodes);
   offsetNodes += subgroupBallotExclusiveBitCount(voteNodes);
-  offsetClusters = subgroupBroadcastFirst(offsetClusters);
-  offsetClusters += subgroupBallotExclusiveBitCount(voteClusters);
+  offsetGroups = subgroupBroadcastFirst(offsetGroups);
+  offsetGroups += subgroupBallotExclusiveBitCount(voteGroups);
   
   // verify if we actually have output space left
   
   traverseNode  = traverseNode && offsetNodes < build.maxTraversalInfos;
   
-#if USE_SEPARATE_GROUPS
   // `renderCluster` means `traverseGroup` here
-  renderCluster = renderCluster && offsetClusters < build.maxTraversalInfos;
-#else
-  renderCluster = renderCluster && offsetClusters < build.maxRenderClusters;
-
-  #if TARGETS_RAY_TRACING
-    if (renderCluster)
-    {
-      // For ray tracing count how many clusters we later add to each instance/blas.
-      // this will help us determine the list length for each blas.
-      // The `blas_setup_insertion.comp.glsl` kernel then sub-allocates space for the lists
-      // based on this counter.
-      atomicAdd(build.instanceBuildInfos.d[instanceID].clusterReferencesCount, 1);
-      // the render list we write below is filled in an unsorted manner with clusters
-      // from different instances. We later use the `blas_insert_clusters.comp.glsl` kernel to build
-      // the list for each blas.
-    }
-  #endif
-#endif
+  traverseGroup = traverseGroup && offsetGroups < build.maxTraversalInfos;
   
   // by design a thread cannot be a node and a cluster at same time.
     
-  bool doStore = traverseNode || renderCluster;
+  bool doStore = traverseNode || traverseGroup;
   
   if (doStore)
   {  
     // given TraversalInfo and ClusterInfo were chosen to alias in memory and be a single u64
     // we do just have to adjust the output addresses.
-    
-    uint writeIndex          = traverseNode ? offsetNodes : offsetClusters;
+    uint writeIndex          = traverseNode ? offsetNodes : offsetGroups;
+  #if USE_PERSISTENT_TRAVERSAL_KERNEL
+
     uint64s_coh writePointer = uint64s_coh(traverseNode ? uint64_t(build.traversalNodeInfos) 
-    #if USE_SEPARATE_GROUPS
-    : uint64_t(build.traversalGroupInfos)
-    #else
-    : uint64_t(build.renderClusterInfos)
-    #endif
-    );
+                                                        : uint64_t(build.traversalGroupInfos));
     
   #if USE_ATOMIC_LOAD_STORE
     atomicStore(writePointer.d[writeIndex], packTraversalInfo(traversalInfo), gl_ScopeDevice, gl_StorageSemanticsBuffer, gl_SemanticsRelease);
   #else
     writePointer.d[writeIndex] = packTraversalInfo(traversalInfo);
   #endif
-    
     memoryBarrierBuffer();
+
+  #else
+    uint64s_inout writePointer = uint64s_inout(traverseNode ? uint64_t(build.traversalNodeInfos) 
+                                                            : uint64_t(build.traversalGroupInfos));
+    writePointer.d[writeIndex] = packTraversalInfo(traversalInfo);
+  #endif
   }
 }
 
@@ -657,7 +527,7 @@ void processAllSubTasks(inout TraversalInfo traversalInfo, bool threadRunnable, 
     
     uint taskSubID     = t - subgroupShuffle(startOffset, taskID);
     uint taskSubCount  = subgroupShuffle(threadSubCount, taskID);
-  #if 0
+  #if DEBUG_TRAVERSAL
     // only relevant for debugging
     uint taskReadIndex = subgroupShuffle(threadReadIndex, taskID); 
   #else
@@ -674,9 +544,11 @@ void processAllSubTasks(inout TraversalInfo traversalInfo, bool threadRunnable, 
 
 ////////////////////////////////////////////
 
-void run()
+#if USE_PERSISTENT_TRAVERSAL_KERNEL
+
+void run_persistent()
 {    
-  // This implements a persistent kernel that implements
+  // This is a persistent threads kernel that implements
   // a producer/consumer loop.
   //
   // special thanks to Robert Toth for the core setup.
@@ -693,7 +565,7 @@ void run()
     if (subgroupAll(threadReadIndex == ~0)) {
       // pull new work
       if (subgroupElect()){
-        threadReadIndex = atomicAdd(buildRW.traversalInfoReadCounter, SUBGROUP_SIZE);
+        threadReadIndex = atomicAdd(buildRW.traversalNodeReadCounter, SUBGROUP_SIZE);
       }
       threadReadIndex = subgroupBroadcastFirst(threadReadIndex) + gl_SubgroupInvocationID;
       threadReadIndex = threadReadIndex >= build.maxTraversalInfos ? ~0 : threadReadIndex;
@@ -775,7 +647,7 @@ void run()
     #if USE_TWO_PASS_CULLING && TARGETS_RASTERIZATION
       // when using two passes, we need to reset the used traversalNodeInfos to ~0
       // so that they are "invalid" in the second pass
-      if (build.pass == 0 && threadRunnable) {
+      if (build.cullPass == 0 && threadRunnable) {
         build.traversalNodeInfos.d[threadReadIndex] = uint64_t(packUint2x32(uvec2(~0, ~0)));
       }
     #endif
@@ -796,18 +668,16 @@ void run()
   }
 }
 
-void main()
+void main_persistent()
 {
-  run();
-  
-#if USE_SEPARATE_GROUPS
+  run_persistent();
   
   uint threadID = getGlobalInvocationIndex(gl_GlobalInvocationID);
 
   if (threadID == 0) {
-    // this sets up the grid for `traversal_run_separate_groups.comp.glsl`
+    // this sets up the grid for `traversal_run_groups.comp.glsl`
   
-    uint groupCount = atomicAdd(buildRW.traversalGroupCounter,0);
+    uint groupCount = atomicAdd(buildRW.traversalGroupWriteCounter,0);
     groupCount = min(groupCount,build.maxTraversalInfos);
     uint workGroupCount = (groupCount + TRAVERSAL_GROUPS_WORKGROUP - 1) / TRAVERSAL_GROUPS_WORKGROUP;
   #if USE_16BIT_DISPATCH
@@ -819,5 +689,44 @@ void main()
     buildRW.indirectDispatchGroups.gridX = workGroupCount;
   #endif
   }
+}
+
+#else
+
+void main_multipass()
+{
+  uint threadReadIndex = getGlobalInvocationIndex(gl_GlobalInvocationID) + build.traversalNodeStart;
+  bool threadRunnable  = threadReadIndex < build.traversalNodeEnd;
+  uint pass = build.traversalPass;
+
+  TraversalInfo nodeTraversalInfo;
+  if (threadRunnable)
+  {
+    // non-coherent version as we cleared caches
+    uint64s_inout traversalNodeInfos = uint64s_inout(build.traversalNodeInfos);
+    uint64_t rawValue = traversalNodeInfos.d[threadReadIndex];
+    nodeTraversalInfo = unpackTraversalInfo(rawValue);
+  }
+
+  if (subgroupAny(threadRunnable))
+  {
+      int threadSubCount = 0;
+      if (threadRunnable)
+      {
+        threadSubCount = int(setupTask(nodeTraversalInfo, threadReadIndex, pass));
+      }
+      
+      processAllSubTasks(nodeTraversalInfo, threadRunnable, threadSubCount, threadReadIndex, pass);
+  }
+}
+
+#endif
+
+void main()
+{
+#if USE_PERSISTENT_TRAVERSAL_KERNEL
+  main_persistent();
+#else
+  main_multipass();
 #endif
 }

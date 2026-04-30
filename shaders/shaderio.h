@@ -49,22 +49,25 @@
 #define BINDINGS_READBACK_SSBO 1
 #define BINDINGS_GEOMETRIES_SSBO 2
 #define BINDINGS_RENDERINSTANCES_SSBO 3
-#define BINDINGS_SCENEBUILDING_SSBO 4
-#define BINDINGS_SCENEBUILDING_UBO 5
-#define BINDINGS_HIZ_TEX 6
-#define BINDINGS_STREAMING_UBO 7
-#define BINDINGS_STREAMING_SSBO 8
-#define BINDINGS_TLAS 9
-#define BINDINGS_RAYTRACING_DEPTH 10
-#define BINDINGS_RASTER_ATOMIC 11
+#define BINDINGS_RENDERMATERIALS_SSBO 4
+#define BINDINGS_SCENEBUILDING_SSBO 5
+#define BINDINGS_SCENEBUILDING_UBO 6
+#define BINDINGS_HIZ_TEX 7
+#define BINDINGS_STREAMING_UBO 8
+#define BINDINGS_STREAMING_SSBO 9
+#define BINDINGS_TLAS 10
+#define BINDINGS_RAYTRACING_DEPTH 11
+#define BINDINGS_RASTER_ATOMIC 12
 // DLSS buffers start here as well
-#define BINDINGS_RENDER_TARGET 12
+#define BINDINGS_RENDER_TARGET 13
 
 /////////////////////////////////////////
 
 #define BUILD_SETUP_TRAVERSAL_RUN 1
-#define BUILD_SETUP_DRAW 2
-#define BUILD_SETUP_BLAS_INSERTION 3
+#define BUILD_SETUP_TRAVERSAL_RUN_PASS_COMBINED 2
+#define BUILD_SETUP_TRAVERSAL_RUN_PASS_NODES_ONLY 3
+#define BUILD_SETUP_DRAW 4
+#define BUILD_SETUP_BLAS_INSERTION 5
 
 /////////////////////////////////////////
 
@@ -72,6 +75,7 @@
 #define STREAM_SETUP_COMPACTION_STATUS 1
 #define STREAM_SETUP_ALLOCATOR_FREEINSERT 2
 #define STREAM_SETUP_ALLOCATOR_STATUS 3
+#define STREAM_SETUP_UPDATE_GEOMETRY_INDICES 4
 
 /////////////////////////////////////////
 
@@ -90,6 +94,7 @@
 
 // must be power of 2
 #define STREAM_UPDATE_SCENE_WORKGROUP 64
+#define STREAM_UPDATE_CLAS_GEOMETRY_INDICES_WORKGROUP 64
 #define STREAM_AGEFILTER_GROUPS_WORKGROUP 128
 #define STREAM_COMPACTION_NEW_CLAS_WORKGROUP 128
 #define STREAM_COMPACTION_OLD_CLAS_WORKGROUP 64
@@ -98,6 +103,7 @@
 #define STREAM_ALLOCATOR_BUILD_FREEGAPS_WORKGROUP 64
 #define STREAM_ALLOCATOR_FREEGAPS_INSERT_WORKGROUP 64
 #define STREAM_ALLOCATOR_SETUP_INSERTION_WORKGROUP 64
+
 
 /////////////////////////////////////////
 
@@ -154,6 +160,14 @@ using namespace glm;
 #define USE_CULLING 1
 #endif
 
+#ifndef USE_NODE_OCCLUSION_CULLING
+#define USE_NODE_OCCLUSION_CULLING 1
+#endif
+
+#ifndef USE_CLUSTER_OCCLUSION_CULLING
+#define USE_CLUSTER_OCCLUSION_CULLING 1
+#endif
+
 #ifndef USE_FORCED_INVISIBLE_CULLING
 #define USE_FORCED_INVISIBLE_CULLING 1
 #endif
@@ -191,8 +205,16 @@ using namespace glm;
 #define USE_TWO_SIDED 1
 #endif
 
+#ifndef USE_ANISOTROPIC_GRADIENT
+#define USE_ANISOTROPIC_GRADIENT 1
+#endif
+
 #ifndef USE_FORCED_TWO_SIDED
 #define USE_FORCED_TWO_SIDED 0
+#endif
+
+#ifndef USE_PERSISTENT_TRAVERSAL_KERNEL
+#define USE_PERSISTENT_TRAVERSAL_KERNEL 0
 #endif
 
 #ifndef MAX_VISIBLE_CLUSTERS
@@ -209,18 +231,31 @@ using namespace glm;
 #define USE_DLSS 0
 #endif
 
+#ifndef HAS_ALPHA_TEST
+#define HAS_ALPHA_TEST 1
+#endif
+
+#ifndef CLUSTER_VERTEX_COUNT
+#define CLUSTER_VERTEX_COUNT 128
+#endif
+
+#ifndef CLUSTER_TRIANGLE_COUNT
+#define CLUSTER_TRIANGLE_COUNT 128
+#endif
+
+#define GEOMETRY_INDICES_TASKS_PER_WORKGROUP (STREAM_UPDATE_CLAS_GEOMETRY_INDICES_WORKGROUP / SUBGROUP_SIZE)
+
 struct RayPayload
 {
+#if (HAS_ALPHA_TEST && USE_ANISOTROPIC_GRADIENT) || (DEBUG_VISUALIZATION && ALLOW_SHADING)
+  // Ray directions through neighboring pixels for explicit texture gradients and wireframe differentials.
+  vec3 rayDifferentialX;
+  vec3 rayDifferentialY;
+#endif
 #if !USE_DEPTH_ONLY
-  // Ray gen writes the direction through the pixel at x+1 for ray differentials.
-  // Closest hit returns the shaded color there.
   vec3 color;
 #endif
   float hitT;
-#if DEBUG_VISUALIZATION && ALLOW_SHADING
-  // Ray direction through the pixel at y+1 for ray differentials
-  vec4 differentialY;
-#endif
 #if USE_DLSS && ALLOW_SHADING
   vec4 dlssNormalRoughness;
   vec4 dlssAlbedo;
@@ -301,6 +336,9 @@ struct FrameConstants
   uint  visFilterInstanceID;
   uint  visFilterClusterID;
 
+  float texGradScale;
+  float pixelAngle;
+
   SkySimpleParameters skyParams;
 };
 
@@ -308,15 +346,23 @@ struct Readback
 {
   uint     numRenderClusters;
   uint     numRenderClustersSW;
+  uint     numRenderClustersAlpha;
+  uint     numRenderClustersAlphaSW;
   uint     numTraversalTasks;
   uint     numTraversedTasks;
   uint     numBlasBuilds;
   uint     numRenderedClusters;
   uint     numRenderedClustersSW;
+  uint     numRenderedClustersAlpha;
+  uint     numRenderedClustersAlphaSW;
   uint64_t numRenderedTriangles;
   uint64_t numRenderedTrianglesSW;
+  uint64_t numRenderedTrianglesAlpha;
+  uint64_t numRenderedTrianglesAlphaSW;
   uint64_t numRasteredTriangles;
   uint64_t numRasteredTrianglesSW;
+  uint64_t numRasteredTrianglesAlpha;
+  uint64_t numRasteredTrianglesAlphaSW;
 
   uint64_t blasActualSizes;
 
@@ -326,9 +372,13 @@ struct Readback
 
   uint32_t instanceId;
   uint32_t _packedDepth1;
+
+  uint32_t materialId;
+  uint32_t _packedDepth2;
 #else
   uint64_t clusterTriangleId;
   uint64_t instanceId;
+  uint64_t materialId;
 #endif
 
   uint64_t debugU64;

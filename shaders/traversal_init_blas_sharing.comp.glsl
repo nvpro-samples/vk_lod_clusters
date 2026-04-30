@@ -75,6 +75,11 @@ layout(scalar, binding = BINDINGS_RENDERINSTANCES_SSBO, set = 0) buffer renderIn
   RenderInstance instances[];
 };
 
+layout(scalar, binding = BINDINGS_RENDERMATERIALS_SSBO, set = 0) buffer renderMaterialsBuffer
+{
+  RenderMaterial materials[];
+};
+
 layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffer
 {
   Geometry geometries[];
@@ -210,7 +215,7 @@ void main()
   uint offsetNodes = 0;
   if (subgroupElect())
   {
-    offsetNodes = atomicAdd(buildRW.traversalTaskCounter, int(subgroupBallotBitCount(voteNodes)));
+    offsetNodes = atomicAdd(buildRW.traversalNodeWriteCounter, subgroupBallotBitCount(voteNodes));
   }
   
   offsetNodes =  subgroupBroadcastFirst(offsetNodes);

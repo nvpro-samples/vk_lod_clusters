@@ -100,7 +100,7 @@ Use _"Traversal"_ settings within the UI to influence it.
 Relevant files to traversal in their usage order:
 * [shaders/shaderio_building.h](/shaders/shaderio_building.h): All data structures related to traversal are stored in `SceneBuilding`
 * [shaders/traversal_init.comp.glsl](/shaders/traversal_init.comp.glsl): Seeds the LoD root nodes of instances for traversal into `SceneBuilding::traversalNodeInfos`. Implements a shortcut to directly insert the low detail cluster into `SceneBuilding::renderClusterInfos` if only the furthest LoD would be traversed (also skips BLAS building for ray tracing).
-* [shaders/traversal_run.comp.glsl](/shaders/traversal_run.comp.glsl): Performs the hierarchical LoD traversal using a persistent kernel. Outputs the list of render clusters `SceneBuilding::renderClusterInfos`.
+* [shaders/traversal_run.comp.glsl](/shaders/traversal_run.comp.glsl): Performs the hierarchical LoD traversal. Outputs the list of render clusters `SceneBuilding::renderClusterInfos`.
 * [shaders/build_setup.comp.glsl](/shaders/build_setup.comp.glsl): Simple compute shader that is used to do basic operations in preparation of other kernels. Often clamping results to stay within limits.
 * [shaders/blas_setup_insertion.comp.glsl](/shaders/blas_setup_insertion.comp.glsl): Sets up the per-BLAS range for the cluster references based on how many clusters each BLAS needs (which traversal computed as well). This also determines how many BLAS are built at all.
 * [shaders/blas_clusters_insert.comp.glsl](/shaders/blas_clusters_insert.comp.glsl): Fills the per-BLAS cluster references (`SceneBuilding::blasBuildInfos`) from the render cluster list. The actual BLAS build is triggered in `RendererRayTraceClustersLod::render` (look for "BLAS Build").
@@ -113,7 +113,7 @@ Frustum and occlusion culling can be done to reduce the number of rendered clust
 * [shaders/render_raster_clusters_sw.comp.glsl](/shaders/render_raster_clusters.mesh.glsl): Compute shader to rasterize a cluster. It is only used when the "Allow SW-Raster" traversal option is active.
 * [shaders/render_raster.frag.glsl](/shaders/render_raster.frag.glsl)
 
-In some conditions (visualize == visibility buffer, separate groups on, culling on) one can enable the usage of a basic compute-shader based rasterizer. However it hasn't been tuned yet and in typical usage scenarios is not faster than the mesh-shader because clusters tend to have larger than single pixel triangles. You can look for `USE_SW_RASTER` in the code where it does affect traversal.
+In some conditions (visualize == visibility buffer, culling on) one can enable the usage of a basic compute-shader based rasterizer. However it hasn't been tuned yet and in typical usage scenarios is not faster than the mesh-shader because clusters tend to have larger than single pixel triangles. You can look for `USE_SW_RASTER` in the code where it does affect traversal.
 
 **Ray Tracing:**
 After the BLAS are built, also runs the TLAS build or update and then traces rays.
@@ -174,7 +174,14 @@ You can use the commandline to change some defaults:
 * Few error checks are performed on out of memory situations, which can happen on higher _"render copies"_ values, or the complexity of the loaded scene
 * The number of threads used in the persistent kernel is based on a crude heuristic for now and was not evaluated to be the optimal amount.
 * The bounding box visualizations don't show for ray tracing when DLSS is active, and they will only show clusters that are part of BLAS builds in the current frame. Prefer using rasterization to see them.
-* `doubleSided` materials are a lot slower with `EXT_mesh_shader` than with `NV_mesh_shader` on NVIDIA hardware. Primitive culling is still exclusive to NV_mesh_shader, given there is no reasonable portable and fast way for EXT_mesh_shader.
+* Alpha-masked materials: 
+  - Always uses texture coordinate 0 independent of glTF material's texcoord. 
+  - Does require enabling texture coordinate loading (`--attributes <bitflag containing 4>` or ui).
+  - May need multi-material support for glTF meshes (`--multimaterials 1` or ui). The textures must be provided as `ktx2` or `dds`. There is no texture-streaming yet, they are fully loaded.
+* `doubleSided` materials:
+  - Are a lot slower with `EXT_mesh_shader` than with `NV_mesh_shader` on NVIDIA hardware. Primitive culling is still exclusive to NV_mesh_shader, given there is no reasonable portable and fast way for EXT_mesh_shader.
+  - Are only accurately done for multi-material meshes if alpha-masking is properly enabled.
+
 
 ## Future Improvements
 
@@ -235,7 +242,7 @@ This is a glTF export of the highly detailed raw geometry from the [NVIDIA RTX K
   - **7.22 GB 7z** - 2026/3/10, unpacks to **9.32 GB on disk**
   - The render cache file will require 26 GB next to the gltf file, it can be downloaded (see next link)
 - [zorah_main_public.v2.gltf.nvsngeo.7z](https://developer.download.nvidia.com/ProGraphics/nvpro-samples/zorah_main_public.v2.gltf.nvsngeo.7z)
-  - **19.2 GB 7z** - 2026/3/10, unpacks to **25.5 GB on disk**
+  - **19.2 GB 7z** - 2026/4/29, unpacks to **25.5 GB on disk**
   - Ensure that the `zorah_main_public.gltf.nvsngeo` is in the same directory as `zorah_main_public.gltf`.
   - If you want to avoid this big download and do the pre-processing for the cluster lod manually, use the following command-line:
     - `vk_lod_cluster.exe "zorah_main_public.v2.gltf" --clusterconfig 4 --processingonly 1 --processingthreadpct 0.5 --processingpartial 1 --compressed 1`

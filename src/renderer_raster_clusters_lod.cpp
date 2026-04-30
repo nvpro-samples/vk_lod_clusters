@@ -42,6 +42,9 @@ private:
     shaderc::SpvCompilationResult graphicsMesh;
     shaderc::SpvCompilationResult graphicsFragment;
 
+    shaderc::SpvCompilationResult graphicsMeshAlpha;
+    shaderc::SpvCompilationResult graphicsFragmentAlpha;
+
     shaderc::SpvCompilationResult computeTraversalPresort;
     shaderc::SpvCompilationResult computeTraversalInit;
     shaderc::SpvCompilationResult computeTraversalRun;
@@ -50,11 +53,13 @@ private:
     shaderc::SpvCompilationResult computeBuildSetup;
 
     shaderc::SpvCompilationResult computeRaster;
+    shaderc::SpvCompilationResult computeRasterAlpha;
   };
 
   struct Pipelines
   {
     VkPipeline graphicsMesh            = nullptr;
+    VkPipeline graphicsMeshAlpha       = nullptr;
     VkPipeline graphicsBboxes          = nullptr;
     VkPipeline computeTraversalPresort = nullptr;
     VkPipeline computeTraversalInit    = nullptr;
@@ -62,6 +67,7 @@ private:
     VkPipeline computeTraversalGroups  = nullptr;
     VkPipeline computeBuildSetup       = nullptr;
     VkPipeline computeRaster           = nullptr;
+    VkPipeline computeRasterAlpha      = nullptr;
   };
 
   Shaders            m_shaders;
@@ -80,9 +86,9 @@ private:
 
 bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene, const RendererConfig& config)
 {
-  if(config.useComputeRaster && (config.useShading || !config.useSeparateGroups || !config.useCulling))
+  if(config.useComputeRaster && (config.useShading || !config.useCulling))
   {
-    LOGW("Compute rasterization requires:  \nshading off == VISUALIZE_VISIBILITY_BUFFER\n  separate groups on\n  culling on\n\n");
+    LOGW("Compute rasterization requires:  \nshading off == VISUALIZE_VISIBILITY_BUFFER\n  culling on\n\n");
     return false;
   }
 
@@ -108,7 +114,6 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
   options.AddMacroDefinition("USE_PRIMITIVE_CULLING", config.useCulling && config.usePrimitiveCulling ? "1" : "0");
   options.AddMacroDefinition("USE_TWO_PASS_CULLING", config.useCulling && config.useTwoPassCulling ? "1" : "0");
   options.AddMacroDefinition("USE_RENDER_STATS", config.useRenderStats ? "1" : "0");
-  options.AddMacroDefinition("USE_SEPARATE_GROUPS", config.useSeparateGroups ? "1" : "0");
   options.AddMacroDefinition("USE_DLSS", "0");
   options.AddMacroDefinition("USE_BLAS_SHARING", "0");
   options.AddMacroDefinition("USE_BLAS_MERGING", "0");
@@ -118,8 +123,10 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
   options.AddMacroDefinition("MESHSHADER_BBOX_COUNT", fmt::format("{}", m_meshShaderBoxes));
   options.AddMacroDefinition("ALLOW_VERTEX_NORMALS", rscene.scene->m_hasVertexNormals && res.m_supportsBarycentrics ? "1" : "0");
   options.AddMacroDefinition("ALLOW_VERTEX_TANGENTS", rscene.scene->m_hasVertexTangents && res.m_supportsBarycentrics ? "1" : "0");
-  options.AddMacroDefinition("ALLOW_VERTEX_TEXCOORDS", rscene.scene->m_hasVertexTexCoord0 ? "1" : "0");
-  //options.AddMacroDefinition("ALLOW_VERTEX_TEXCOORD_1", rscene.scene->m_hasVertexTexCoord1 ? "1" : "0");
+  options.AddMacroDefinition("ALLOW_VERTEX_TEXCOORDS",
+                             rscene.scene->m_hasVertexTexCoord0 || rscene.scene->m_hasVertexTexCoord1 ? "1" : "0");
+  options.AddMacroDefinition("ALLOW_VERTEX_TEXCOORD_0", rscene.scene->m_hasVertexTexCoord0 ? "1" : "0");
+  options.AddMacroDefinition("ALLOW_VERTEX_TEXCOORD_1", rscene.scene->m_hasVertexTexCoord1 ? "1" : "0");
   options.AddMacroDefinition("ALLOW_SHADING", config.useShading && !config.useComputeRaster ? "1" : "0");
   options.AddMacroDefinition("USE_DEPTH_ONLY", !config.useShading && config.useDepthOnly ? "1" : "0");
   options.AddMacroDefinition("DEBUG_VISUALIZATION", config.useDebugVisualization && res.m_supportsBarycentrics ? "1" : "0");
@@ -127,23 +134,29 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
   options.AddMacroDefinition("USE_TWO_SIDED", rscene.scene->m_hasTwoSided && !config.forceTwoSided ? "1" : "0");
   options.AddMacroDefinition("USE_FORCED_TWO_SIDED", config.forceTwoSided ? "1" : "0");
   options.AddMacroDefinition("USE_FORCED_INVISIBLE_CULLING", "0");
+  options.AddMacroDefinition("USE_PERSISTENT_TRAVERSAL_KERNEL", config.usePersistentTraversal ? "1" : "0");
+  options.AddMacroDefinition("USE_ANISOTROPIC_GRADIENT", config.useAnisotropicGradient ? "1" : "0");
 
-  res.compileShader(m_shaders.graphicsMesh, VK_SHADER_STAGE_MESH_BIT_NV, "render_raster_clusters.mesh.glsl", &options);
-  res.compileShader(m_shaders.graphicsFragment, VK_SHADER_STAGE_FRAGMENT_BIT, "render_raster.frag.glsl", &options);
+  shaderc::CompileOptions optionsNoAlpha = options;
+  optionsNoAlpha.AddMacroDefinition("HAS_ALPHA_TEST", "0");
+  options.AddMacroDefinition("HAS_ALPHA_TEST", rscene.scene->m_hasAlphaMask ? "1" : "0");
+
+  res.compileShader(m_shaders.graphicsMesh, VK_SHADER_STAGE_MESH_BIT_NV, "render_raster_clusters.mesh.glsl", &optionsNoAlpha);
+  res.compileShader(m_shaders.graphicsFragment, VK_SHADER_STAGE_FRAGMENT_BIT, "render_raster.frag.glsl", &optionsNoAlpha);
+
+  res.compileShader(m_shaders.graphicsMeshAlpha, VK_SHADER_STAGE_MESH_BIT_NV, "render_raster_clusters.mesh.glsl", &options);
+  res.compileShader(m_shaders.graphicsFragmentAlpha, VK_SHADER_STAGE_FRAGMENT_BIT, "render_raster.frag.glsl", &options);
+
   res.compileShader(m_shaders.computeTraversalPresort, VK_SHADER_STAGE_COMPUTE_BIT, "traversal_presort.comp.glsl", &options);
   res.compileShader(m_shaders.computeTraversalInit, VK_SHADER_STAGE_COMPUTE_BIT, "traversal_init.comp.glsl", &options);
   res.compileShader(m_shaders.computeTraversalRun, VK_SHADER_STAGE_COMPUTE_BIT, "traversal_run.comp.glsl", &options);
+  res.compileShader(m_shaders.computeTraversalGroups, VK_SHADER_STAGE_COMPUTE_BIT, "traversal_run_groups.comp.glsl", &options);
   res.compileShader(m_shaders.computeBuildSetup, VK_SHADER_STAGE_COMPUTE_BIT, "build_setup.comp.glsl", &options);
 
   if(config.useComputeRaster)
   {
-    res.compileShader(m_shaders.computeRaster, VK_SHADER_STAGE_COMPUTE_BIT, "render_raster_clusters_sw.comp.glsl", &options);
-  }
-
-  if(config.useSeparateGroups)
-  {
-    res.compileShader(m_shaders.computeTraversalGroups, VK_SHADER_STAGE_COMPUTE_BIT,
-                      "traversal_run_separate_groups.comp.glsl", &options);
+    res.compileShader(m_shaders.computeRaster, VK_SHADER_STAGE_COMPUTE_BIT, "render_raster_clusters_sw.comp.glsl", &optionsNoAlpha);
+    res.compileShader(m_shaders.computeRasterAlpha, VK_SHADER_STAGE_COMPUTE_BIT, "render_raster_clusters_sw.comp.glsl", &options);
   }
 
   return res.verifyShaders(m_shaders);
@@ -187,21 +200,35 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     m_sceneBuildShaderio.maxRenderClusters  = uint32_t(1u << config.numRenderClusterBits);
     m_sceneBuildShaderio.maxTraversalInfos  = uint32_t(1u << config.numTraversalTaskBits);
 
-    m_sceneBuildShaderio.indirectDispatchGroups.gridY  = 1;
-    m_sceneBuildShaderio.indirectDispatchGroups.gridZ  = 1;
-    m_sceneBuildShaderio.indirectDrawClustersEXT.gridZ = 1;
-    m_sceneBuildShaderio.indirectDrawClustersNV.first  = 0;
-    m_sceneBuildShaderio.indirectDrawClustersSW.gridY  = 1;
-    m_sceneBuildShaderio.indirectDrawClustersSW.gridZ  = 1;
+    m_sceneBuildShaderio.indirectDispatchGroups.gridY          = 1;
+    m_sceneBuildShaderio.indirectDispatchGroups.gridZ          = 1;
+    m_sceneBuildShaderio.indirectDrawClustersEXT.gridZ         = 1;
+    m_sceneBuildShaderio.indirectDrawClustersNV.first          = 0;
+    m_sceneBuildShaderio.indirectDispatchClustersSW.gridY      = 1;
+    m_sceneBuildShaderio.indirectDispatchClustersSW.gridZ      = 1;
+    m_sceneBuildShaderio.indirectDrawClustersAlphaEXT.gridZ    = 1;
+    m_sceneBuildShaderio.indirectDrawClustersAlphaNV.first     = 0;
+    m_sceneBuildShaderio.indirectDispatchClustersAlphaSW.gridY = 1;
+    m_sceneBuildShaderio.indirectDispatchClustersAlphaSW.gridZ = 1;
 
     BufferRanges mem = {};
     m_sceneBuildShaderio.renderClusterInfos =
         mem.append(sizeof(shaderio::ClusterInfo) * m_sceneBuildShaderio.maxRenderClusters, 8);
+    if(rscene.scene->m_hasAlphaMask)
+    {
+      m_sceneBuildShaderio.renderClusterInfosAlpha =
+          mem.append(sizeof(shaderio::ClusterInfo) * m_sceneBuildShaderio.maxRenderClusters, 8);
+    }
 
     if(config.useComputeRaster)
     {
       m_sceneBuildShaderio.renderClusterInfosSW =
           mem.append(sizeof(shaderio::ClusterInfo) * m_sceneBuildShaderio.maxRenderClusters, 8);
+      if(rscene.scene->m_hasAlphaMask)
+      {
+        m_sceneBuildShaderio.renderClusterInfosAlphaSW =
+            mem.append(sizeof(shaderio::ClusterInfo) * m_sceneBuildShaderio.maxRenderClusters, 8);
+      }
     }
 
     if(config.useSorting)
@@ -210,10 +237,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
       m_sceneBuildShaderio.instanceSortValues = mem.append(sizeof(uint32_t) * m_renderInstances.size(), 4);
     }
 
-    if(config.useSeparateGroups)
-    {
-      m_sceneBuildShaderio.traversalGroupInfos = mem.append(sizeof(uint64_t) * m_sceneBuildShaderio.maxTraversalInfos, 8);
-    }
+    m_sceneBuildShaderio.traversalGroupInfos = mem.append(sizeof(uint64_t) * m_sceneBuildShaderio.maxTraversalInfos, 8);
 
     if(config.useTwoPassCulling && config.useCulling)
     {
@@ -225,15 +249,22 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sceneDataBuffer.bufferSize, "operations", "build data");
 
     m_sceneBuildShaderio.renderClusterInfos += m_sceneDataBuffer.address;
+    if(rscene.scene->m_hasAlphaMask)
+    {
+      m_sceneBuildShaderio.renderClusterInfosAlpha += m_sceneDataBuffer.address;
+    }
+
     m_sceneBuildShaderio.instanceSortKeys += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.instanceSortValues += m_sceneDataBuffer.address;
-    if(config.useSeparateGroups)
-    {
-      m_sceneBuildShaderio.traversalGroupInfos += m_sceneDataBuffer.address;
-    }
+    m_sceneBuildShaderio.traversalGroupInfos += m_sceneDataBuffer.address;
+
     if(config.useComputeRaster)
     {
       m_sceneBuildShaderio.renderClusterInfosSW += m_sceneDataBuffer.address;
+      if(rscene.scene->m_hasAlphaMask)
+      {
+        m_sceneBuildShaderio.renderClusterInfosAlphaSW += m_sceneDataBuffer.address;
+      }
     }
     if(config.useTwoPassCulling && config.useCulling)
     {
@@ -263,6 +294,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     bindings.addBinding(BINDINGS_READBACK_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_GEOMETRIES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_RENDERINSTANCES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
+    bindings.addBinding(BINDINGS_RENDERMATERIALS_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_SCENEBUILDING_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_SCENEBUILDING_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_HIZ_TEX, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -275,7 +307,9 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     }
     m_dsetPack.init(bindings, res.m_device);
 
-    nvvk::createPipelineLayout(res.m_device, &m_pipelineLayout, {m_dsetPack.getLayout()}, {{m_stageFlags, 0, sizeof(uint32_t)}});
+    nvvk::createPipelineLayout(res.m_device, &m_pipelineLayout,
+                               {m_dsetPack.getLayout(), rscene.sceneTextures.getDsetPack().getLayout()},
+                               {{m_stageFlags, 0, sizeof(uint32_t)}});
 
     nvvk::WriteSetContainer writeSets;
 
@@ -283,6 +317,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_READBACK_SSBO), &res.m_commonBuffers.readBack);
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_GEOMETRIES_SSBO), rscene.getShaderGeometriesBuffer());
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_RENDERINSTANCES_SSBO), m_renderInstanceBuffer);
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_RENDERMATERIALS_SSBO), m_renderMaterialBuffer);
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_SCENEBUILDING_SSBO), m_sceneBuildBuffer);
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_SCENEBUILDING_UBO), m_sceneBuildBuffer);
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_HIZ_TEX, 0, 0), &res.m_hizUpdate[0].farImageInfo);
@@ -324,6 +359,11 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
       graphicsGen.addShader(VK_SHADER_STAGE_FRAGMENT_BIT, "main", nvvkglsl::GlslCompiler::getSpirvData(m_shaders.graphicsFragment));
     }
     graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_pipelines.graphicsMesh);
+
+    graphicsGen.clearShaders();
+    graphicsGen.addShader(VK_SHADER_STAGE_MESH_BIT_NV, "main", nvvkglsl::GlslCompiler::getSpirvData(m_shaders.graphicsMeshAlpha));
+    graphicsGen.addShader(VK_SHADER_STAGE_FRAGMENT_BIT, "main", nvvkglsl::GlslCompiler::getSpirvData(m_shaders.graphicsFragmentAlpha));
+    graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_pipelines.graphicsMeshAlpha);
   }
 
   {
@@ -350,16 +390,16 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeTraversalRun);
     vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTraversalRun);
 
+    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeTraversalGroups);
+    vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTraversalGroups);
+
     if(config.useComputeRaster)
     {
       shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeRaster);
       vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeRaster);
-    }
 
-    if(config.useSeparateGroups)
-    {
-      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeTraversalGroups);
-      vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTraversalGroups);
+      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeRasterAlpha);
+      vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeRasterAlpha);
     }
   }
 
@@ -442,6 +482,9 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
     {
       auto timerSection = profiler.cmdFrameSection(cmd, "Traversal Preparation");
       vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 1, 1,
+                              rscene.sceneTextures.getDsetPack().getSetPtr(), 0, nullptr);
+
 
       if(pass == 0 && m_config.useSorting)
       {
@@ -465,6 +508,8 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
       }
 
       vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 1, 1,
+                              rscene.sceneTextures.getDsetPack().getSetPtr(), 0, nullptr);
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalInit);
       res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TRAVERSAL_INIT_WORKGROUP));
 
@@ -479,18 +524,21 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
       vkCmdPushConstants(cmd, m_pipelineLayout, m_stageFlags, 0, sizeof(uint32_t), &buildSetupID);
       vkCmdDispatch(cmd, 1, 1, 1);
 
-      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+      memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 1,
                            &memBarrier, 0, nullptr, 0, nullptr);
     }
 
     {
       auto timerSection = profiler.cmdFrameSection(cmd, "Traversal Run");
 
-      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalRun);
-      res.cmdLinearDispatch(cmd, getWorkGroupCount(frame.traversalPersistentThreads, TRAVERSAL_RUN_WORKGROUP));
-
-      if(m_config.useSeparateGroups)
+      if(m_config.usePersistentTraversal)
       {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalRun);
+        res.cmdLinearDispatch(cmd, getWorkGroupCount(frame.traversalPersistentThreads, TRAVERSAL_RUN_WORKGROUP));
+
         memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -499,6 +547,44 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalGroups);
         vkCmdDispatchIndirect(cmd, m_sceneBuildBuffer.buffer, offsetof(shaderio::SceneBuilding, indirectDispatchGroups));
+      }
+      else
+      {
+        // this is typically faster
+        constexpr bool batchGroupsAtEnd = true;
+
+        for(uint32_t p = 0; p < rscene.scene->m_maxNodeTreeDepth; p++)
+        {
+          vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalRun);
+          vkCmdDispatchIndirect(cmd, m_sceneBuildBuffer.buffer, offsetof(shaderio::SceneBuilding, indirectDispatchNodes));
+
+          memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+          memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
+          vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                               &memBarrier, 0, nullptr, 0, nullptr);
+
+          // first time we hit hiNodes == 1, is when we built the tree over the groups of highest detail lod
+          // second time is when we link that node to the root node
+          bool isLast = rscene.scene->m_maxNodeTreeDepth - 1 == p;
+
+          uint32_t buildSetupID = !isLast && batchGroupsAtEnd ? BUILD_SETUP_TRAVERSAL_RUN_PASS_NODES_ONLY :
+                                                                BUILD_SETUP_TRAVERSAL_RUN_PASS_COMBINED;
+          vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeBuildSetup);
+          vkCmdPushConstants(cmd, m_pipelineLayout, m_stageFlags, 0, sizeof(uint32_t), &buildSetupID);
+          vkCmdDispatch(cmd, 1, 1, 1);
+
+          memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+          memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+          vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 1,
+                               &memBarrier, 0, nullptr, 0, nullptr);
+
+          if(buildSetupID == BUILD_SETUP_TRAVERSAL_RUN_PASS_COMBINED)
+          {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalGroups);
+            vkCmdDispatchIndirect(cmd, m_sceneBuildBuffer.buffer, offsetof(shaderio::SceneBuilding, indirectDispatchGroups));
+          }
+        }
       }
 
       memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -538,7 +624,14 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeRaster);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
-        vkCmdDispatchIndirect(cmd, m_sceneBuildBuffer.buffer, offsetof(shaderio::SceneBuilding, indirectDrawClustersSW));
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 1, 1,
+                                rscene.sceneTextures.getDsetPack().getSetPtr(), 0, nullptr);
+        vkCmdDispatchIndirect(cmd, m_sceneBuildBuffer.buffer, offsetof(shaderio::SceneBuilding, indirectDispatchClustersSW));
+        if(rscene.scene->m_hasAlphaMask)
+        {
+          vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeRasterAlpha);
+          vkCmdDispatchIndirect(cmd, m_sceneBuildBuffer.buffer, offsetof(shaderio::SceneBuilding, indirectDispatchClustersAlphaSW));
+        }
       }
 
       VkAttachmentLoadOp op = pass == 1 ? VK_ATTACHMENT_LOAD_OP_LOAD :
@@ -555,6 +648,8 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
         auto timerSection = profiler.cmdFrameSection(cmd, "HW-Raster");
 
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 1, 1,
+                                rscene.sceneTextures.getDsetPack().getSetPtr(), 0, nullptr);
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelines.graphicsMesh);
 
@@ -567,6 +662,22 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
         {
           vkCmdDrawMeshTasksIndirectNV(cmd, m_sceneBuildBuffer.buffer,
                                        offsetof(shaderio::SceneBuilding, indirectDrawClustersNV), 1, 0);
+        }
+
+        if(rscene.scene->m_hasAlphaMask)
+        {
+          vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelines.graphicsMeshAlpha);
+
+          if(m_config.useEXTmeshShader)
+          {
+            vkCmdDrawMeshTasksIndirectEXT(cmd, m_sceneBuildBuffer.buffer,
+                                          offsetof(shaderio::SceneBuilding, indirectDrawClustersAlphaEXT), 1, 0);
+          }
+          else
+          {
+            vkCmdDrawMeshTasksIndirectNV(cmd, m_sceneBuildBuffer.buffer,
+                                         offsetof(shaderio::SceneBuilding, indirectDrawClustersAlphaNV), 1, 0);
+          }
         }
       }
 
@@ -583,7 +694,11 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
 
       if(frame.showClusterBboxes)
       {
-        renderClusterBboxes(cmd, m_sceneBuildBuffer);
+        renderClusterBboxes(cmd, m_sceneBuildBuffer, false);
+        if(rscene.scene->m_hasAlphaMask)
+        {
+          renderClusterBboxes(cmd, m_sceneBuildBuffer, true);
+        }
       }
 
       if(pass == lastPass && frame.showInstanceBboxes)

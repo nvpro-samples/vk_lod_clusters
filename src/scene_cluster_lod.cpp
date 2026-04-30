@@ -1,6 +1,6 @@
 
 /*
-* Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2025-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -39,6 +39,52 @@ void padZeroes(std::span<T0>& previous, T1* next)
       memset(previous.data() + previous.size(), 0, padSize);
     }
   }
+}
+
+void Scene::applyMaterialStateBits(uint32_t& stateBits, uint32_t clusterBits, bool isFirst)
+{
+  if(!isFirst)
+  {
+    if((stateBits & shaderio::CLUSTER_STATE_ALPHAMASKED) != (clusterBits & shaderio::CLUSTER_STATE_ALPHAMASKED))
+      stateBits |= shaderio::CLUSTER_STATE_ALPHAMASKED_MIXED;
+    if((stateBits & shaderio::CLUSTER_STATE_TWOSIDED) != (clusterBits & shaderio::CLUSTER_STATE_TWOSIDED))
+      stateBits |= shaderio::CLUSTER_STATE_TWOSIDED_MIXED;
+  }
+
+  stateBits |= clusterBits;
+}
+
+void Scene::applyMaterialStateBits(uint32_t& stateBits, const GeometryStorage& geometry, uint32_t localMaterialID, bool isFirst)
+{
+  const Material& material = m_materials[geometry.localMaterialIDs[localMaterialID]];
+
+  if(!isFirst)
+  {
+    if(material.alphaMasked != ((stateBits & shaderio::CLUSTER_STATE_ALPHAMASKED) != 0))
+      stateBits |= shaderio::CLUSTER_STATE_ALPHAMASKED_MIXED;
+    if(material.twoSided != ((stateBits & shaderio::CLUSTER_STATE_TWOSIDED) != 0))
+      stateBits |= shaderio::CLUSTER_STATE_TWOSIDED_MIXED;
+  }
+
+  if(material.alphaMasked)
+    stateBits |= shaderio::CLUSTER_STATE_ALPHAMASKED;
+  if(material.twoSided)
+    stateBits |= shaderio::CLUSTER_STATE_TWOSIDED;
+}
+
+void Scene::applyMaterialTriangleBits(uint8_t& triangleBits, const GeometryStorage& geometry, uint32_t localMaterialID)
+{
+  const Material& material = m_materials[geometry.localMaterialIDs[localMaterialID]];
+  if(material.alphaMasked)
+    triangleBits |= SHADERIO_CLUSTER_TRIANGLE_ALPHAMASKED;
+  if(material.twoSided)
+    triangleBits |= SHADERIO_CLUSTER_TRIANGLE_TWOSIDED;
+}
+
+
+uint8_t Scene::getMaterialLocalIndex(const GeometryStorage& geometry, uint32_t index, uint32_t attributeStride)
+{
+  return uint8_t(geometry.vertexAttributes[index * attributeStride + geometry.attributeMaterialOffset]);
 }
 
 // Takes the resulting cluster group of the lod generation and stores it into
@@ -72,6 +118,11 @@ uint32_t Scene::storeGroup(TempContext*       context,
   uint32_t       clusterMaxTrianglesCount = 0;
   shaderio::BBox groupBbox                = {{FLT_MAX, FLT_MAX, FLT_MAX}, {-FLT_MAX, -FLT_MAX, -FLT_MAX}, 0, 0};
 
+  bool hasMultiMaterial = geometry.localMaterialIDs.size() > 1;
+
+  // Union of CLUSTER_STATE_* across clusters (group-level material hints).
+  uint32_t groupStateBits = 0;
+
   // Fill all data into temporary group storage.
   // This also does vertex de-duplication, prior that we don't know the final group storage
   // requirements in advance.
@@ -84,9 +135,10 @@ uint32_t Scene::storeGroup(TempContext*       context,
     uint32_t triangleOffset = 0;
     uint32_t vertexOffset   = 0;
 
-    // runtime offset so all vertex data for a cluster
+    // runtime data offsets so all vertex/triangle data for a single cluster
     // is in a contiguous region
-    uint32_t vertexDataOffset = 0;
+    uint32_t vertexDataOffset   = 0;
+    uint32_t triangleDataOffset = 0;
 
     // stats
     size_t vertexPosBytes      = 0;
@@ -104,9 +156,24 @@ uint32_t Scene::storeGroup(TempContext*       context,
       shaderio::Cluster& groupCluster  = groupTempStorage.clusters[c];
       uint32_t           triangleCount = uint32_t(tempCluster.index_count / 3);
       uint32_t           vertexCount   = 0;
+      uint32_t           stateBits     = 0;
 
-      groupCluster.vertices = vertexDataOffset;
-      groupCluster.indices  = triangleOffset * 3;
+      assert(triangleCount);
+
+      groupCluster.localMaterialID = 0;
+      groupCluster.vertices        = vertexDataOffset;
+      groupCluster.triangles       = triangleDataOffset;
+
+
+      // start assigning first triangle's material
+      uint8_t localMaterialID = 0;
+      if(hasMultiMaterial)
+      {
+        localMaterialID              = getMaterialLocalIndex(geometry, tempCluster.indices[0], attributeStride);
+        groupCluster.localMaterialID = localMaterialID;
+      }
+
+      applyMaterialStateBits(stateBits, geometry, localMaterialID, true);
 
       memset(vertexCacheEarlyValue.data(), ~0, vertexCacheEarlyValue.size_bytes());
       for(uint32_t i = 0; i < tempCluster.index_count; i++)
@@ -138,12 +205,53 @@ uint32_t Scene::storeGroup(TempContext*       context,
           localVertices[cacheIndex]                 = vertexIndex;
           vertexCacheEarlyValue[vertexIndex & 0xFF] = vertexIndex;
           vertexCacheEarlyPos[vertexIndex & 0xFF]   = cacheIndex;
+
+          if(hasMultiMaterial && localMaterialID != getMaterialLocalIndex(geometry, vertexIndex, attributeStride))
+          {
+            // signals that we have per-triangle assignments
+            groupCluster.localMaterialID = SHADERIO_PER_TRIANGLE_MATERIALS;
+          }
         }
-        groupTempStorage.indices[i + triangleOffset * 3] = uint8_t(cacheIndex);
+        groupTempStorage.triangles[i + triangleDataOffset] = uint8_t(cacheIndex);
+      }
+      triangleDataOffset += uint32_t(tempCluster.index_count);
+
+
+      // build per-triangle material indices
+      if(groupCluster.localMaterialID == SHADERIO_PER_TRIANGLE_MATERIALS)
+      {
+        processing.stats.multiMaterialClusters++;
+
+        stateBits = 0;
+
+        for(uint32_t t = 0; t < triangleCount; t++)
+        {
+          uint8_t vertexMaterial[3];
+          vertexMaterial[0] = getMaterialLocalIndex(geometry, tempCluster.indices[t * 3 + 0], attributeStride);
+          vertexMaterial[1] = getMaterialLocalIndex(geometry, tempCluster.indices[t * 3 + 1], attributeStride);
+          vertexMaterial[2] = getMaterialLocalIndex(geometry, tempCluster.indices[t * 3 + 2], attributeStride);
+
+          bool diff01 = vertexMaterial[0] != vertexMaterial[1];
+          bool diff12 = vertexMaterial[1] != vertexMaterial[2];
+          // not all are the same
+          if(diff01 || diff12)
+          {
+            // let's pick where maybe at least 2 are the same
+            bool diff02 = vertexMaterial[0] != vertexMaterial[2];
+            if(diff02)
+            {
+              vertexMaterial[0] = vertexMaterial[2];
+            }
+          }
+          applyMaterialStateBits(stateBits, geometry, vertexMaterial[0], t == 0);
+          applyMaterialTriangleBits(vertexMaterial[0], geometry, vertexMaterial[0]);
+          groupTempStorage.triangles[t + triangleDataOffset] = vertexMaterial[0];
+        }
+
+        triangleDataOffset += triangleCount;
       }
 
       shaderio::BBox bbox = {{FLT_MAX, FLT_MAX, FLT_MAX}, {-FLT_MAX, -FLT_MAX, -FLT_MAX}, FLT_MAX, -FLT_MAX};
-
       {
         // in compression case we pack the attributes later
         if(m_config.useCompressedData)
@@ -246,7 +354,7 @@ uint32_t Scene::storeGroup(TempContext*       context,
         for(uint32_t v = 0; v < 3; v++)
         {
           trianglePositions[v] =
-              geometry.vertexPositions[localVertices[groupTempStorage.indices[(triangleOffset + t) * 3 + v]]];
+              geometry.vertexPositions[localVertices[groupTempStorage.triangles[(triangleOffset + t) * 3 + v]]];
         }
 
         for(uint32_t e = 0; e < 3; e++)
@@ -268,8 +376,10 @@ uint32_t Scene::storeGroup(TempContext*       context,
       groupCluster.lodLevel              = uint8_t(level);
       groupCluster.groupChildIndex       = uint8_t(c);
       groupCluster.attributeBits         = uint8_t(geometry.attributeBits);
-      groupCluster.localMaterialID       = uint8_t(0);
+      groupCluster.stateBits             = uint8_t(stateBits);
       groupCluster.reserved              = 0;
+
+      applyMaterialStateBits(groupStateBits, stateBits, c == 0);
 
       clusterMaxTrianglesCount = std::max(clusterMaxTrianglesCount, triangleCount);
       clusterMaxVerticesCount  = std::max(clusterMaxVerticesCount, vertexCount);
@@ -282,13 +392,12 @@ uint32_t Scene::storeGroup(TempContext*       context,
     }
 
     groupInfo.offsetBytes                 = 0;
-    groupInfo.reserved1                   = 0;
     groupInfo.clusterCount                = uint8_t(clusterCount);
     groupInfo.triangleCount               = uint16_t(triangleOffset);
     groupInfo.vertexCount                 = uint16_t(vertexOffset);
     groupInfo.lodLevel                    = uint8_t(level);
-    groupInfo.attributeBits               = uint8_t(geometry.attributeBits);
     groupInfo.vertexDataCount             = vertexDataOffset;
+    groupInfo.triangleDataCount           = triangleDataOffset;
     groupInfo.uncompressedVertexDataCount = 0;
     groupInfo.uncompressedSizeBytes       = 0;
     groupInfo.sizeBytes                   = groupInfo.computeSize();
@@ -302,6 +411,7 @@ uint32_t Scene::storeGroup(TempContext*       context,
       processing.stats.clusterBboxBytes += sizeof(shaderio::BBox) * clusterCount;
       processing.stats.clusterGenBytes += sizeof(uint32_t) * clusterCount;
       processing.stats.triangleIndexBytes += sizeof(uint8_t) * triangleOffset * 3;
+      processing.stats.triangleDataBytes += sizeof(uint8_t) * triangleDataOffset;
       processing.stats.vertexPosBytes += vertexPosBytes;
       processing.stats.vertexNrmBytes += vertexNrmBytes;
       processing.stats.vertexTexCoordBytes += vertexTexCoordBytes;
@@ -437,7 +547,8 @@ uint32_t Scene::storeGroup(TempContext*       context,
       groupStorage.group->clusterResidentID = 0;
 
       // regular values
-      groupStorage.group->lodLevel                             = level;
+      groupStorage.group->lodLevel                             = uint8_t(level);
+      groupStorage.group->stateBits                            = uint8_t(groupStateBits);
       groupStorage.group->clusterCount                         = groupInfo.clusterCount;
       groupStorage.group->traversalMetric.boundingSphereX      = group.simplified.center[0];
       groupStorage.group->traversalMetric.boundingSphereY      = group.simplified.center[1];
@@ -456,20 +567,20 @@ uint32_t Scene::storeGroup(TempContext*       context,
         {
           groupCluster.vertices = groupStorage.getClusterLocalOffset(c, groupStorage.vertices.data() + groupCluster.vertices,
                                                                      groupInfo.uncompressedSizeBytes);
-          groupCluster.indices = groupStorage.getClusterLocalOffset(c, groupStorage.vertices.data() + groupCluster.indices);
+          groupCluster.triangles = groupStorage.getClusterLocalOffset(c, groupStorage.vertices.data() + groupCluster.triangles);
         }
         else
         {
           groupCluster.vertices = groupStorage.getClusterLocalOffset(c, groupStorage.vertices.data() + groupCluster.vertices);
-          groupCluster.indices = groupStorage.getClusterLocalOffset(c, groupStorage.indices.data() + groupCluster.indices);
+          groupCluster.triangles = groupStorage.getClusterLocalOffset(c, groupStorage.triangles.data() + groupCluster.triangles);
         }
       }
       memcpy(groupStorage.clusterGeneratingGroups.data(), groupTempStorage.clusterGeneratingGroups.data(),
              groupStorage.clusterGeneratingGroups.size_bytes());
       padZeroes(groupStorage.clusterGeneratingGroups, groupStorage.clusterBboxes.data());
       memcpy(groupStorage.clusterBboxes.data(), groupTempStorage.clusterBboxes.data(), groupStorage.clusterBboxes.size_bytes());
-      memcpy(groupStorage.indices.data(), groupTempStorage.indices.data(), groupStorage.indices.size_bytes());
-      padZeroes(groupStorage.indices, groupStorage.vertices.data());
+      memcpy(groupStorage.triangles.data(), groupTempStorage.triangles.data(), groupStorage.triangles.size_bytes());
+      padZeroes(groupStorage.triangles, groupStorage.vertices.data());
       memcpy(groupStorage.vertices.data(), groupTempStorage.vertices.data(), groupStorage.vertices.size_bytes());
       padZeroes(groupStorage.vertices, (uint32_t*)(groupStorage.raw + groupInfo.sizeBytes));
     }
@@ -580,7 +691,10 @@ void Scene::buildGeometryLod(ProcessingInfo& processingInfo, GeometryStorage& ge
       attributeWeights[geometry.attributeTangentOffset + 2] = m_config.simplifyTangentWeight;
       attributeWeights[geometry.attributeTangentOffset + 3] = m_config.simplifyTangentSignWeight;
     }
-    // TODO  material index handling...
+    if(m_config.simplifyMaterialWeight > 0 && geometry.localMaterialIDs.size() > 1)
+    {
+      attributeWeights[geometry.attributeMaterialOffset + 0] = m_config.simplifyMaterialWeight;
+    }
 
     inputMesh.attribute_count          = geometry.attributesWithWeights;
     inputMesh.vertex_attributes        = geometry.vertexAttributes.data();
@@ -590,13 +704,13 @@ void Scene::buildGeometryLod(ProcessingInfo& processingInfo, GeometryStorage& ge
 
   TempContext context = {processingInfo, geometry, *this};
 
-  GroupInfo worstGroup       = {};
-  worstGroup.clusterCount    = uint8_t(m_config.clusterGroupSize);
-  worstGroup.vertexCount     = uint16_t(m_config.clusterGroupSize * m_config.clusterVertices);
-  worstGroup.triangleCount   = uint16_t(m_config.clusterGroupSize * m_config.clusterTriangles);
-  worstGroup.attributeBits   = geometry.attributeBits;
-  worstGroup.vertexDataCount = worstGroup.estimateVertexDataCount();
-  worstGroup.sizeBytes       = worstGroup.computeSize();
+  GroupInfo worstGroup         = {};
+  worstGroup.clusterCount      = uint8_t(m_config.clusterGroupSize);
+  worstGroup.vertexCount       = uint16_t(m_config.clusterGroupSize * m_config.clusterVertices);
+  worstGroup.triangleCount     = uint16_t(m_config.clusterGroupSize * m_config.clusterTriangles);
+  worstGroup.vertexDataCount   = worstGroup.estimateVertexDataCount(geometry.attributeBits);
+  worstGroup.triangleDataCount = worstGroup.estimateTriangleDataCount(geometry.localMaterialIDs.size() > 1);
+  worstGroup.sizeBytes         = worstGroup.computeSize();
 
   context.innerThreadingActive   = processingInfo.numInnerThreads > 1;
   context.threadGroupInfo        = worstGroup;
@@ -634,7 +748,8 @@ void Scene::buildGeometryLod(ProcessingInfo& processingInfo, GeometryStorage& ge
   geometry.vertexAttributes = {};
 
   // check last lod level
-  geometry.lodLevelsCount = uint32_t(geometry.lodLevels.size());
+  geometry.lodLevelsCount            = uint32_t(geometry.lodLevels.size());
+  geometry.lowDetailClusterStateBits = 0;
   if(geometry.lodLevelsCount)
   {
     shaderio::LodLevel& lastLodLevel = geometry.lodLevels.back();
@@ -645,6 +760,10 @@ void Scene::buildGeometryLod(ProcessingInfo& processingInfo, GeometryStorage& ge
       LOGE("clodBuild failed: last lod level has more than one cluster\n");
       std::exit(-1);
     }
+
+    const GroupInfo& lastGroupInfo = geometry.groupInfos[lastLodLevel.groupOffset];
+    GroupView        lastGroupView(std::span<const uint8_t>(geometry.groupData), lastGroupInfo);
+    geometry.lowDetailClusterStateBits = lastGroupView.clusters.empty() ? uint8_t(0) : lastGroupView.clusters[0].stateBits;
   }
 
   // vectors are resized at end of lod processing,

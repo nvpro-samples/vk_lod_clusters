@@ -690,6 +690,7 @@ void StreamingUpdates::initClas(Resources& res, const StreamingConfig& config, c
   m_shaderData.newClasAddresses   = ranges.append(sizeof(uint64_t) * maxLoadClusters, 8);
   m_shaderData.newClasSizes       = ranges.append(sizeof(uint32_t) * maxLoadClusters, 4);
   m_shaderData.newClasResidentIDs = ranges.append(sizeof(uint32_t) * maxLoadClusters, 4);
+  m_shaderData.newClasGeometryIndices = ranges.append(sizeof(uint32_t) * maxLoadClusters * sceneConfig.clusterTriangles, 4);
 
   uint32_t maxMovedClusters = config.usePersistentClasAllocator ? maxLoadClusters : maxClusters;
 
@@ -704,6 +705,7 @@ void StreamingUpdates::initClas(Resources& res, const StreamingConfig& config, c
   m_shaderData.newClasAddresses += m_clasBuffer.address;
   m_shaderData.newClasSizes += m_clasBuffer.address;
   m_shaderData.newClasResidentIDs += m_clasBuffer.address;
+  m_shaderData.newClasGeometryIndices += m_clasBuffer.address;
 
   m_shaderData.moveClasDstAddresses += m_clasBuffer.address;
   m_shaderData.moveClasSrcAddresses += m_clasBuffer.address;
@@ -723,10 +725,11 @@ void StreamingUpdates::deinitClas(Resources& res)
 {
   res.m_allocator.destroyBuffer(m_clasBuffer);
 
-  m_shaderData.newClasBuilds      = 0;
-  m_shaderData.newClasAddresses   = 0;
-  m_shaderData.newClasSizes       = 0;
-  m_shaderData.newClasResidentIDs = 0;
+  m_shaderData.newClasBuilds          = 0;
+  m_shaderData.newClasAddresses       = 0;
+  m_shaderData.newClasSizes           = 0;
+  m_shaderData.newClasResidentIDs     = 0;
+  m_shaderData.newClasGeometryIndices = 0;
 
   m_shaderData.moveClasDstAddresses = 0;
   m_shaderData.moveClasSrcAddresses = 0;

@@ -32,6 +32,7 @@
 #include "scene.hpp"
 #include "scene_preloaded.hpp"
 #include "scene_streaming.hpp"
+#include "scene_textures.hpp"
 
 namespace lodclusters {
 
@@ -44,9 +45,10 @@ public:
   bool           useStreaming = false;
   ScenePreloaded scenePreloaded;
   SceneStreaming sceneStreaming;
+  SceneTextures  sceneTextures;
 
   // pointers must stay valid during lifetime
-  bool init(Resources* res, const Scene* scene_, const StreamingConfig& streamingConfig_, bool useStreaming_);
+  bool init(Resources* res, const Scene* scene_, const StreamingConfig& streamingConfig_, bool useStreaming_, const SceneTexturesConfig& texturesConfig);
   void deinit();
 
   void streamingReset();
@@ -74,11 +76,12 @@ struct RendererConfig
   bool useBlasCaching            = false;
   bool useShading                = true;
   bool useDebugVisualization     = true;
-  bool useSeparateGroups         = true;
   bool useEXTmeshShader          = false;
   bool useComputeRaster          = false;
   bool usePrimitiveCulling       = false;
   bool useDepthOnly              = false;
+  bool usePersistentTraversal    = true;
+  bool useAnisotropicGradient    = false;
 
   bool useDlss = false;
 #if USE_DLSS
@@ -136,6 +139,11 @@ public:
   uint32_t getMaxTraversalTasks() const { return m_maxTraversalTasks; }
   uint32_t getMaxBlasBuilds() const { return m_maxBlasBuilds; }
 
+  uint32_t getOriginalMaterialID(uint32_t renderMaterialID) const
+  {
+    return m_renderMaterials[renderMaterialID].originalID;
+  }
+
 protected:
   void initBasics(Resources& res, RenderScene& rscene, const RendererConfig& config);
   void deinitBasics(Resources& res);
@@ -148,7 +156,7 @@ protected:
   void writeRayTracingDepthBuffer(VkCommandBuffer cmd);
   void writeBackgroundSky(VkCommandBuffer cmd);
   void renderInstanceBboxes(VkCommandBuffer cmd);
-  void renderClusterBboxes(VkCommandBuffer cmd, nvvk::Buffer sceneBuildBuffer);
+  void renderClusterBboxes(VkCommandBuffer cmd, nvvk::Buffer sceneBuildBuffer, bool alpha);
 
   struct BasicShaders
   {
@@ -186,6 +194,9 @@ protected:
 
   std::vector<shaderio::RenderInstance> m_renderInstances;
   nvvk::Buffer                          m_renderInstanceBuffer;
+
+  std::vector<shaderio::RenderMaterial> m_renderMaterials;
+  nvvk::Buffer                          m_renderMaterialBuffer;
 
   ResourceUsageInfo m_resourceReservedUsage{};
   ResourceUsageInfo m_resourceActualUsage{};

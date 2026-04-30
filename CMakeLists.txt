@@ -44,6 +44,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
   nvpro2::nvutils
   nvpro2::nvvk
   nvpro2::nvvkglsl
+  nvpro2::nvimageformats
   meshoptimizer
   cgltf
 )

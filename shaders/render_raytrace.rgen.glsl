@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -42,6 +42,11 @@ layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuff
   FrameConstants view;
 };
 
+layout(scalar, binding = BINDINGS_RENDERMATERIALS_SSBO, set = 0) buffer renderMaterialsBuffer
+{
+  RenderMaterial materials[];
+};
+
 layout(set = 0, binding = BINDINGS_TLAS) uniform accelerationStructureEXT asScene;
 
 layout(set = 0, binding = BINDINGS_RAYTRACING_DEPTH, r32f) uniform image2D imgRaytracingDepth;
@@ -51,6 +56,12 @@ layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssAlbedo, rgba8) 
 layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssSpecAlbedo, rgba16f)       uniform image2D imgDlssSpecAlbedo;
 layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssNormalRoughness, rgba16f)  uniform image2D imgDlssNormalRoughness;
 layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssMotion, rg16f)             uniform image2D imgDlssMotion;
+#endif
+
+//////////////////////////////////////////////////////////////
+
+#if (HAS_ALPHA_TEST && USE_ANISOTROPIC_GRADIENT) || (DEBUG_VISUALIZATION && ALLOW_SHADING)
+#include "texturing.glsl"
 #endif
 
 //////////////////////////////////////////////////////////////
@@ -68,16 +79,16 @@ float hitBbox(vec3 rayPos, vec3 rayDir, vec3 bboxMin, vec3 bboxMax)
   vec3  tmax   = max(ttop, tbot);
   float t0     = max(tmin.x, max(tmin.y, tmin.z));
   float t1     = min(tmax.x, min(tmax.y, tmax.z));
-  
+
   return t1 > max(t0, 0.0) ? t0 : -1.0;
 }
 
 void main()
 {
   // for writing debugging values to stats.debug etc.
-  bool center = gl_LaunchIDEXT.xy == (gl_LaunchSizeEXT.xy / 2);
+  bool center      = gl_LaunchIDEXT.xy == (gl_LaunchSizeEXT.xy / 2);
   vec2 pixelOffset = vec2(0.5);
-  
+
 #if USE_DLSS
   pixelOffset += view.jitter;
 #endif
@@ -96,85 +107,88 @@ void main()
   float tMin = view.nearPlane;
   float tMax = view.farPlane;
 
-#if DEBUG_VISUALIZATION && ALLOW_SHADING
-  vec2 uvOffset            = (vec2(gl_LaunchIDEXT.xy) + vec2(1.5, 1.5)) / vec2(gl_LaunchSizeEXT.xy);
-  vec2 dOffset             = uvOffset * 2.0 - 1.0;
-  vec4 targetOffsetX       = normalize(view.projMatrixI * vec4(dOffset.x, d.y, 1, 1));
-  vec4 targetOffsetY       = normalize(view.projMatrixI * vec4(d.x, dOffset.y, 1, 1));
-  vec4 directionOffsetX    = normalize(view.viewMatrixI * vec4(targetOffsetX.xyz, 0));
-  vec4 directionOffsetY    = normalize(view.viewMatrixI * vec4(targetOffsetY.xyz, 0));
-  rayHit.color.xyz         = directionOffsetX.xyz;
-  rayHit.differentialY.xyz = directionOffsetY.xyz;
+#if (HAS_ALPHA_TEST && USE_ANISOTROPIC_GRADIENT) || (DEBUG_VISUALIZATION && ALLOW_SHADING)
+  vec2 differentialPixel = vec2(gl_LaunchIDEXT.xy) + pixelOffset;
+  rayHit.rayDifferentialX =
+      computeViewRayDirection(((differentialPixel + vec2(1.0, 0.0)) / vec2(gl_LaunchSizeEXT.xy)) * 2.0 - 1.0);
+  rayHit.rayDifferentialY =
+      computeViewRayDirection(((differentialPixel + vec2(0.0, 1.0)) / vec2(gl_LaunchSizeEXT.xy)) * 2.0 - 1.0);
 #endif
 
 #if ALLOW_SHADING
   vec3  mirrorCenter = view.wMirrorBox.xyz;
   float mirrorSize   = view.wMirrorBox.w;
-  vec3 mirrorHitPoint;
-  vec3 mirrorNormal;
-  bool mirrorHit = false;
+  vec3  mirrorHitPoint;
+  vec3  mirrorNormal;
+  bool  mirrorHit = false;
   float mirrorT;
 
-  if (view.useMirrorBox != 0)
+  if(view.useMirrorBox != 0)
   {
-    mirrorT = hitBbox(origin.xyz, direction.xyz, mirrorCenter - mirrorSize, mirrorCenter + mirrorSize);
+    mirrorT   = hitBbox(origin.xyz, direction.xyz, mirrorCenter - mirrorSize, mirrorCenter + mirrorSize);
     mirrorHit = mirrorT > 0;
-    if (mirrorHit)
+    if(mirrorHit)
     {
-      mirrorHitPoint = origin.xyz + direction.xyz * mirrorT;    
+      mirrorHitPoint = origin.xyz + direction.xyz * mirrorT;
       mirrorNormal   = mirrorHitPoint - mirrorCenter;
       vec3 signs     = sign(mirrorNormal);
       mirrorNormal   = abs(mirrorNormal);
-      mirrorNormal   = vec3(equal(mirrorNormal, vec3(max(max(mirrorNormal.x, mirrorNormal.y),mirrorNormal.z)))) * signs;
-      
+      mirrorNormal = vec3(equal(mirrorNormal, vec3(max(max(mirrorNormal.x, mirrorNormal.y), mirrorNormal.z)))) * signs;
+
       tMax = mirrorT;
     }
   }
 #endif
 
-  traceRayEXT(asScene, USE_FORCED_TWO_SIDED != 0 ? 0 : gl_RayFlagsCullBackFacingTrianglesEXT, 0xff, 0, 0,  // hit offset, hit stride
-              0,                                                           // miss offset
+  traceRayEXT(asScene, USE_FORCED_TWO_SIDED != 0 ? 0 : gl_RayFlagsCullBackFacingTrianglesEXT, 0xff,
+              0, 1,  // hit offset, hit stride
+              0,  // miss offset
               origin.xyz, tMin, direction.xyz, tMax,
               0  // rayPayloadNV location qualifier
   );
-  
+
 #if ALLOW_SHADING
-  if (view.useMirrorBox != 0)
+  if(view.useMirrorBox != 0)
   {
-    if (rayHit.hitT == 0 && mirrorHit)
+    if(rayHit.hitT == 0 && mirrorHit)
     {
-      traceRayEXT(asScene, USE_FORCED_TWO_SIDED != 0 ? 0 : gl_RayFlagsCullBackFacingTrianglesEXT, 0xff, 0, 0,  // hit offset, hit stride
-                0,                                                           // miss offset
-                mirrorHitPoint, 0, reflect(direction.xyz, mirrorNormal), view.farPlane + mirrorT,
-                0  // rayPayloadNV location qualifier
+#if (HAS_ALPHA_TEST && USE_ANISOTROPIC_GRADIENT) || (DEBUG_VISUALIZATION && ALLOW_SHADING)
+      rayHit.rayDifferentialX = reflect(rayHit.rayDifferentialX, mirrorNormal);
+      rayHit.rayDifferentialY = reflect(rayHit.rayDifferentialY, mirrorNormal);
+#endif
+      traceRayEXT(asScene, USE_FORCED_TWO_SIDED != 0 ? 0 : gl_RayFlagsCullBackFacingTrianglesEXT, 0xff,
+                  0, 1,  // hit offset, hit stride
+                  0,  // miss offset
+                  mirrorHitPoint, 0, reflect(direction.xyz, mirrorNormal), view.farPlane + mirrorT,
+                  0  // rayPayloadNV location qualifier
       );
-      
-      rayHit.color.xyz *= max(0,dot(mirrorNormal,-direction.xyz)) * 0.5 + 0.5;
+
+      rayHit.color.xyz *= max(0, dot(mirrorNormal, -direction.xyz)) * 0.5 + 0.5;
       rayHit.hitT = mirrorT;
     }
   }
 #endif
 
-  bool  hitValid = rayHit.hitT != 0;  
+  bool  hitValid = rayHit.hitT != 0;
   vec3  hitPos   = origin.xyz + direction.xyz * (hitValid ? rayHit.hitT : view.farPlane * 0.99f);
   float hitDepth = 1;
-  
-  if (hitValid) {
+
+  if(hitValid)
+  {
     vec4 screenPos = view.viewProjMatrix * vec4(hitPos, 1);
-    hitDepth = screenPos.z / screenPos.w;
+    hitDepth       = screenPos.z / screenPos.w;
   }
-  
+
 #if !USE_DEPTH_ONLY
   imageStore(imgColor, screen, vec4(rayHit.color.xyz, 1));
 #endif
   imageStore(imgRaytracingDepth, screen, vec4(hitDepth, 0.f, 0.f, 0.f));
-  
+
 #if USE_DLSS
   vec2 motionVec = vec2(0);
-  
-  motionVec = calculateMotionVector(hitPos, view.viewProjMatrixPrev,
-                                    view.viewProjMatrix, view.viewportf);
-                                    
+
+  motionVec = calculateMotionVector(hitPos, view.viewProjMatrixPrev, view.viewProjMatrix, view.viewportf);
+
   imageStore(imgDlssMotion, screen, vec4(motionVec.x, motionVec.y, 0, 0));
 #if ALLOW_SHADING
   imageStore(imgDlssAlbedo, screen, rayHit.dlssAlbedo);
@@ -186,5 +200,4 @@ void main()
   imageStore(imgDlssNormalRoughness, screen, vec4(0));
 #endif
 #endif
-  
 }

@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
+* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 *
-* SPDX-FileCopyrightText: Copyright (c) 2024-2025, NVIDIA CORPORATION.
+* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
 * SPDX-License-Identifier: Apache-2.0
 */
 
@@ -39,7 +39,7 @@
 
 layout(push_constant) uniform pushData
 {
-  uint numRenderInstances;
+  uint alpha;
 }
 push;
 
@@ -56,6 +56,11 @@ layout(scalar,binding=BINDINGS_READBACK_SSBO,set=0) buffer readbackBuffer
 layout(scalar, binding = BINDINGS_RENDERINSTANCES_SSBO, set = 0) buffer renderInstancesBuffer
 {
   RenderInstance instances[];
+};
+
+layout(scalar, binding = BINDINGS_RENDERMATERIALS_SSBO, set = 0) buffer renderMaterialsBuffer
+{
+  RenderMaterial materials[];
 };
 
 layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffer
@@ -117,8 +122,9 @@ void main()
 #else
   uint workGroupID = gl_WorkGroupID.x;
 #endif
-  uint numRenderedClusters = build.numRenderedClusters;
-  uint baseID   = workGroupID * MESHSHADER_BBOX_COUNT;  
+
+  uint numRenderedClusters = push.alpha != 0 ? build.numRenderedClustersAlpha : build.numRenderedClusters;
+  uint baseID   = workGroupID * MESHSHADER_BBOX_COUNT;
   uint numBoxes = min(numRenderedClusters, baseID + MESHSHADER_BBOX_COUNT) - baseID;
   
 #if USE_EXT_MESH_SHADER
@@ -142,7 +148,7 @@ void main()
     
     uint boxLoad = min(box,numBoxes-1);
   
-    ClusterInfo cinfo = build.renderClusterInfos.d[boxLoad + baseID];
+    ClusterInfo cinfo = push.alpha != 0 ? build.renderClusterInfosAlpha.d[boxLoad + baseID] : build.renderClusterInfos.d[boxLoad + baseID];
     uint clusterID = cinfo.clusterID;
     RenderInstance instance = instances[cinfo.instanceID];
     

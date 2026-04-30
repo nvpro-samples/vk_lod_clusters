@@ -52,6 +52,7 @@ private:
   {
     shaderc::SpvCompilationResult rayGen;
     shaderc::SpvCompilationResult rayClosestHit;
+    shaderc::SpvCompilationResult rayAnyHit;
     shaderc::SpvCompilationResult rayMiss;
     shaderc::SpvCompilationResult rayMissAO;
 
@@ -154,12 +155,13 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("USE_BLAS_MERGING", config.useBlasSharing && config.useBlasMerging ? "1" : "0");
   options.AddMacroDefinition("USE_BLAS_CACHING", config.useBlasSharing && config.useBlasCaching ? "1" : "0");
   options.AddMacroDefinition("USE_RENDER_STATS", config.useRenderStats ? "1" : "0");
-  options.AddMacroDefinition("USE_SEPARATE_GROUPS", config.useSeparateGroups ? "1" : "0");
   options.AddMacroDefinition("USE_DLSS", supportsDLSS && config.useDlss ? "1" : "0");
   options.AddMacroDefinition("ALLOW_VERTEX_NORMALS", rscene.scene->m_hasVertexNormals ? "1" : "0");
   options.AddMacroDefinition("ALLOW_VERTEX_TANGENTS", rscene.scene->m_hasVertexTangents ? "1" : "0");
-  options.AddMacroDefinition("ALLOW_VERTEX_TEXCOORDS", rscene.scene->m_hasVertexTexCoord0 ? "1" : "0");
-  //options.AddMacroDefinition("ALLOW_VERTEX_TEXCOORD_1", rscene.scene->m_hasVertexTexCoord1 ? "1" : "0");
+  options.AddMacroDefinition("ALLOW_VERTEX_TEXCOORDS",
+                             rscene.scene->m_hasVertexTexCoord0 || rscene.scene->m_hasVertexTexCoord1 ? "1" : "0");
+  options.AddMacroDefinition("ALLOW_VERTEX_TEXCOORD_0", rscene.scene->m_hasVertexTexCoord0 ? "1" : "0");
+  options.AddMacroDefinition("ALLOW_VERTEX_TEXCOORD_1", rscene.scene->m_hasVertexTexCoord1 ? "1" : "0");
   options.AddMacroDefinition("ALLOW_SHADING", config.useShading ? "1" : "0");
   options.AddMacroDefinition("USE_DEPTH_ONLY", !config.useShading && config.useDepthOnly ? "1" : "0");
   options.AddMacroDefinition("DEBUG_VISUALIZATION", config.useDebugVisualization ? "1" : "0");
@@ -170,6 +172,9 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("USE_TWO_SIDED", rscene.scene->m_hasTwoSided && !config.forceTwoSided ? "1" : "0");
   options.AddMacroDefinition("USE_FORCED_TWO_SIDED", config.forceTwoSided ? "1" : "0");
   options.AddMacroDefinition("USE_FORCED_INVISIBLE_CULLING", config.useForcedInvisibleCulling ? "1" : "0");
+  options.AddMacroDefinition("USE_PERSISTENT_TRAVERSAL_KERNEL", config.usePersistentTraversal ? "1" : "0");
+  options.AddMacroDefinition("USE_ANISOTROPIC_GRADIENT", config.useAnisotropicGradient ? "1" : "0");
+  options.AddMacroDefinition("HAS_ALPHA_TEST", rscene.scene->m_hasAlphaMask ? "1" : "0");
 
   shaderc::CompileOptions optionsAO = options;
   options.AddMacroDefinition("RAYTRACING_PAYLOAD_INDEX", "0");
@@ -177,6 +182,7 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
 
   res.compileShader(m_shaders.rayGen, VK_SHADER_STAGE_RAYGEN_BIT_KHR, "render_raytrace.rgen.glsl", &options);
   res.compileShader(m_shaders.rayClosestHit, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, "render_raytrace_clusters.rchit.glsl", &options);
+  res.compileShader(m_shaders.rayAnyHit, VK_SHADER_STAGE_ANY_HIT_BIT_KHR, "render_raytrace_clusters.rahit.glsl", &options);
   res.compileShader(m_shaders.rayMiss, VK_SHADER_STAGE_MISS_BIT_KHR, "render_raytrace.rmiss.glsl", &options);
   res.compileShader(m_shaders.rayMissAO, VK_SHADER_STAGE_MISS_BIT_KHR, "render_raytrace.rmiss.glsl", &optionsAO);
 
@@ -198,12 +204,7 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
     res.compileShader(m_shaders.computeTraversalInit, VK_SHADER_STAGE_COMPUTE_BIT, "traversal_init.comp.glsl", &options);
   }
 
-  if(m_config.useSeparateGroups)
-  {
-    res.compileShader(m_shaders.computeTraversalGroups, VK_SHADER_STAGE_COMPUTE_BIT,
-                      "traversal_run_separate_groups.comp.glsl", &options);
-  }
-
+  res.compileShader(m_shaders.computeTraversalGroups, VK_SHADER_STAGE_COMPUTE_BIT, "traversal_run_groups.comp.glsl", &options);
   res.compileShader(m_shaders.computeTraversalRun, VK_SHADER_STAGE_COMPUTE_BIT, "traversal_run.comp.glsl", &options);
   res.compileShader(m_shaders.computeBuildSetup, VK_SHADER_STAGE_COMPUTE_BIT, "build_setup.comp.glsl", &options);
   res.compileShader(m_shaders.computeBlasInsertClusters, VK_SHADER_STAGE_COMPUTE_BIT, "blas_clusters_insert.comp.glsl", &options);
@@ -358,13 +359,9 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
       mem.splitOverlap();
     }
 
-    if(config.useSeparateGroups)
-    {
-      m_sceneBuildShaderio.traversalGroupInfos = mem.append(sizeof(uint64_t) * m_sceneBuildShaderio.maxTraversalInfos, 8);
-    }
-
-    m_sceneBuildShaderio.blasBuildSizes     = mem.append(sizeof(uint32_t) * m_maxBlasBuilds, 4);
-    m_sceneBuildShaderio.blasBuildAddresses = mem.append(sizeof(uint64_t) * m_maxBlasBuilds, 8);
+    m_sceneBuildShaderio.traversalGroupInfos = mem.append(sizeof(uint64_t) * m_sceneBuildShaderio.maxTraversalInfos, 8);
+    m_sceneBuildShaderio.blasBuildSizes      = mem.append(sizeof(uint32_t) * m_maxBlasBuilds, 4);
+    m_sceneBuildShaderio.blasBuildAddresses  = mem.append(sizeof(uint64_t) * m_maxBlasBuilds, 8);
 
     m_sceneBuildShaderio.blasClusterAddresses = mem.append(sizeof(uint64_t) * m_sceneBuildShaderio.maxRenderClusters, 8);
 
@@ -387,10 +384,7 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     m_sceneBuildShaderio.instanceSortKeys += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.instanceSortValues += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.instanceBuildInfos += m_sceneDataBuffer.address;
-    if(config.useSeparateGroups)
-    {
-      m_sceneBuildShaderio.traversalGroupInfos += m_sceneDataBuffer.address;
-    }
+    m_sceneBuildShaderio.traversalGroupInfos += m_sceneDataBuffer.address;
     if(config.useBlasSharing)
     {
       m_sceneBuildShaderio.geometryBuildInfos += m_sceneDataBuffer.address;
@@ -435,13 +429,14 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
 
   {
     m_stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR
-                   | VK_SHADER_STAGE_COMPUTE_BIT;
+                   | VK_SHADER_STAGE_ANY_HIT_BIT_KHR | VK_SHADER_STAGE_COMPUTE_BIT;
 
     nvvk::DescriptorBindings bindings;
     bindings.addBinding(BINDINGS_FRAME_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_READBACK_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_GEOMETRIES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_RENDERINSTANCES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
+    bindings.addBinding(BINDINGS_RENDERMATERIALS_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_SCENEBUILDING_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_SCENEBUILDING_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_HIZ_TEX, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, m_stageFlags);
@@ -466,13 +461,16 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
 
     m_dsetPack.init(bindings, res.m_device);
 
-    nvvk::createPipelineLayout(res.m_device, &m_pipelineLayout, {m_dsetPack.getLayout()}, {{m_stageFlags, 0, sizeof(uint32_t)}});
+    nvvk::createPipelineLayout(res.m_device, &m_pipelineLayout,
+                               {m_dsetPack.getLayout(), rscene.sceneTextures.getDsetPack().getLayout()},
+                               {{m_stageFlags, 0, sizeof(uint32_t)}});
 
     nvvk::WriteSetContainer writeSets;
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_FRAME_UBO), res.m_commonBuffers.frameConstants);
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_READBACK_SSBO), &res.m_commonBuffers.readBack);
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_GEOMETRIES_SSBO), rscene.getShaderGeometriesBuffer());
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_RENDERINSTANCES_SSBO), m_renderInstanceBuffer);
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_RENDERMATERIALS_SSBO), m_renderMaterialBuffer);
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_SCENEBUILDING_SSBO), m_sceneBuildBuffer);
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_SCENEBUILDING_UBO), m_sceneBuildBuffer);
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_HIZ_TEX), &res.m_hizUpdate[0].farImageInfo);
@@ -537,6 +535,9 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeTraversalRun);
     vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTraversalRun);
 
+    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeTraversalGroups);
+    vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTraversalGroups);
+
     shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeBlasInsertClusters);
     vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeBlasInsertClusters);
 
@@ -566,12 +567,6 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
         shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeBlasCachingSetupBuild);
         vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeBlasCachingSetupBuild);
       }
-    }
-
-    if(config.useSeparateGroups)
-    {
-      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeTraversalGroups);
-      vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTraversalGroups);
     }
   }
 
@@ -656,6 +651,8 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
   {
     auto timerSection = profiler.cmdFrameSection(cmd, "Traversal Preparation");
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 1, 1,
+                            rscene.sceneTextures.getDsetPack().getSetPtr(), 0, nullptr);
 
     if(m_config.useSorting)
     {
@@ -679,6 +676,8 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
         auto timerSection = profiler.cmdFrameSection(cmd, "Instance Classify");
 
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 1, 1,
+                                rscene.sceneTextures.getDsetPack().getSetPtr(), 0, nullptr);
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeInstanceClassifyLod);
         res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, INSTANCES_CLASSIFY_LOD_WORKGROUP));
@@ -711,6 +710,9 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
 
     // we prepare traversal by filling in instance root nodes into the traversal queue
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 1, 1,
+                            rscene.sceneTextures.getDsetPack().getSetPtr(), 0, nullptr);
+
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalInit);
     res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TRAVERSAL_INIT_WORKGROUP));
 
@@ -727,9 +729,10 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     vkCmdDispatch(cmd, 1, 1, 1);
 
     memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
-                         &memBarrier, 0, nullptr, 0, nullptr);
+    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 1, &memBarrier,
+                         0, nullptr, 0, nullptr);
   }
 
   {
@@ -738,11 +741,61 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     // this does the main traversal
     // it returns a list of render clusters
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalRun);
-    res.cmdLinearDispatch(cmd, getWorkGroupCount(frame.traversalPersistentThreads, TRAVERSAL_RUN_WORKGROUP));
+    if(m_config.usePersistentTraversal)
+    {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalRun);
+      res.cmdLinearDispatch(cmd, getWorkGroupCount(frame.traversalPersistentThreads, TRAVERSAL_RUN_WORKGROUP));
+
+      memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 1,
+                           &memBarrier, 0, nullptr, 0, nullptr);
+
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalGroups);
+      vkCmdDispatchIndirect(cmd, m_sceneBuildBuffer.buffer, offsetof(shaderio::SceneBuilding, indirectDispatchGroups));
+    }
+    else
+    {
+      // this is typically faster
+      constexpr bool batchGroupsAtEnd = true;
+
+      for(uint32_t p = 0; p < rscene.scene->m_maxNodeTreeDepth; p++)
+      {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalRun);
+        vkCmdDispatchIndirect(cmd, m_sceneBuildBuffer.buffer, offsetof(shaderio::SceneBuilding, indirectDispatchNodes));
+
+        memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                             &memBarrier, 0, nullptr, 0, nullptr);
+
+        // first time we hit hiNodes == 1, is when we built the tree over the groups of highest detail lod
+        // second time is when we link that node to the root node
+        bool isLast = rscene.scene->m_maxNodeTreeDepth - 1 == p;
+
+        uint32_t buildSetupID = !isLast && batchGroupsAtEnd ? BUILD_SETUP_TRAVERSAL_RUN_PASS_NODES_ONLY :
+                                                              BUILD_SETUP_TRAVERSAL_RUN_PASS_COMBINED;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeBuildSetup);
+        vkCmdPushConstants(cmd, m_pipelineLayout, m_stageFlags, 0, sizeof(uint32_t), &buildSetupID);
+        vkCmdDispatch(cmd, 1, 1, 1);
+
+        memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 1,
+                             &memBarrier, 0, nullptr, 0, nullptr);
+
+        if(buildSetupID == BUILD_SETUP_TRAVERSAL_RUN_PASS_COMBINED)
+        {
+          vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalGroups);
+          vkCmdDispatchIndirect(cmd, m_sceneBuildBuffer.buffer, offsetof(shaderio::SceneBuilding, indirectDispatchGroups));
+        }
+      }
+    }
 
     bool useBlasMerging = m_config.useBlasSharing && m_config.useBlasMerging;
-    if(useBlasMerging || m_config.useSeparateGroups)
+    if(useBlasMerging)
     {
       memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
       memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
@@ -761,12 +814,6 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
 
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalMerge);
       res.cmdLinearDispatch(cmd, getWorkGroupCount(shaderData.resident.activeGroupsCount, TRAVERSAL_BLAS_MERGING_WORKGROUP));
-    }
-
-    if(m_config.useSeparateGroups)
-    {
-      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalGroups);
-      vkCmdDispatchIndirect(cmd, m_sceneBuildBuffer.buffer, offsetof(shaderio::SceneBuilding, indirectDispatchGroups));
     }
 
     memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -801,6 +848,9 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     // this kernel prepares the per-blas clas reference list starting position.
     // it also resets the per-blas clas counters.
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 1, 1,
+                            rscene.sceneTextures.getDsetPack().getSetPtr(), 0, nullptr);
+
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeBlasSetupInsertion);
     res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, BLAS_SETUP_INSERTION_WORKGROUP));
 
@@ -823,6 +873,9 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
       {
         // seed blas builds
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 1, 1,
+                                rscene.sceneTextures.getDsetPack().getSetPtr(), 0, nullptr);
+
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeBlasCachingSetupBuild);
         // one work group per geometry
         res.cmdLinearDispatch(cmd, shaderData.update.patchCachedBlasCount);
@@ -976,6 +1029,8 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_pipelines.rayTracing);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_pipelineLayout, 1, 1,
+                            rscene.sceneTextures.getDsetPack().getSetPtr(), 0, nullptr);
 #if !STREAMING_DEBUG_WITHOUT_RT
     vkCmdTraceRaysKHR(cmd, &m_sbtRegions.raygen, &m_sbtRegions.miss, &m_sbtRegions.hit, &m_sbtRegions.callable,
                       frame.frameConstants.viewport.x, frame.frameConstants.viewport.y, 1);
@@ -990,7 +1045,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     }
     if(frame.showClusterBboxes)
     {
-      renderClusterBboxes(cmd, m_sceneBuildBuffer);
+      renderClusterBboxes(cmd, m_sceneBuildBuffer, false);
     }
     vkCmdEndRendering(cmd);
   }
@@ -1131,6 +1186,7 @@ void RendererRayTraceClustersLod::initRayTracingPipeline(Resources& res)
     eMiss,
     eMissAO,
     eClosestHit,
+    eAnyHit,
     eShaderGroupCount
   };
   std::array<VkPipelineShaderStageCreateInfo, eShaderGroupCount> stages{};
@@ -1158,6 +1214,9 @@ void RendererRayTraceClustersLod::initRayTracingPipeline(Resources& res)
   stages[eClosestHit].stage          = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
   stageShaders[eClosestHit].codeSize = nvvkglsl::GlslCompiler::getSpirvSize(m_shaders.rayClosestHit);
   stageShaders[eClosestHit].pCode    = nvvkglsl::GlslCompiler::getSpirv(m_shaders.rayClosestHit);
+  stages[eAnyHit].stage              = VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+  stageShaders[eAnyHit].codeSize     = nvvkglsl::GlslCompiler::getSpirvSize(m_shaders.rayAnyHit);
+  stageShaders[eAnyHit].pCode        = nvvkglsl::GlslCompiler::getSpirv(m_shaders.rayAnyHit);
 
   // Shader groups
   VkRayTracingShaderGroupCreateInfoKHR group{.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR,
@@ -1182,9 +1241,15 @@ void RendererRayTraceClustersLod::initRayTracingPipeline(Resources& res)
   group.generalShader = eMissAO;
   shaderGroups.push_back(group);
 
-  // closest hit shader
+  // hit group
   group.type             = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
   group.generalShader    = VK_SHADER_UNUSED_KHR;
+  group.closestHitShader = eClosestHit;
+  shaderGroups.push_back(group);
+
+  // hit group
+  group.type             = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+  group.anyHitShader     = eAnyHit;
   group.closestHitShader = eClosestHit;
   shaderGroups.push_back(group);
 
@@ -1249,16 +1314,10 @@ void RendererRayTraceClustersLod::initRayTracingTlas(Resources& res, const Rende
   for(size_t i = 0; i < m_renderInstances.size(); i++)
   {
     VkAccelerationStructureInstanceKHR instance{};
-    instance.transform                              = nvvk::toTransformMatrixKHR(m_renderInstances[i].worldMatrix);
-    instance.instanceCustomIndex                    = static_cast<uint32_t>(i);  // gl_InstanceCustomIndexEX
-    instance.mask                                   = 0xFF;                      // All objects
-    instance.instanceShaderBindingTableRecordOffset = 0;  // We will use the same hit group for all object
-    instance.flags                                  = VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR;
-
-    if(m_renderInstances[i].twoSided)
-    {
-      instance.flags |= VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
-    }
+    instance.transform           = nvvk::toTransformMatrixKHR(m_renderInstances[i].worldMatrix);
+    instance.instanceCustomIndex = static_cast<uint32_t>(i);  // gl_InstanceCustomIndexEX
+    instance.mask                = 0xFF;                      // All objects
+    instance.flags               = 0;
 
     // no need to use m_renderInstances[i].flipWinding, as ray tracing handles
     // negative determinants automatically
