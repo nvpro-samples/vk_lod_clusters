@@ -1789,7 +1789,7 @@ bool SceneStreaming::initClas()
   if(m_config.allowBlasCaching)
   {
     nvvk::BufferSubAllocator::InitInfo initInfo;
-    initInfo.keepLastBlock    = false;
+    initInfo.keepBlockCount   = 0;
     initInfo.debugName        = "CachedBlasAllocator";
     initInfo.maxAllocatedSize = m_config.maxBlasCachingMegaBytes * 1024 * 1024;
     initInfo.blockSize        = std::min(size_t(16), m_config.maxBlasCachingMegaBytes) * 1024 * 1024;
