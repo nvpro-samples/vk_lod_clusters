@@ -294,9 +294,9 @@ void LodClusters::onUIRender()
   shaderio::Readback readback;
   m_resources.getReadbackData(readback);
 
-  bool      pickingValid = isPickingValid(readback);
-  glm::vec3 hitPos       = {};
-  bool      hitPosValid  = false;
+  bool       pickingValid = isPickingValid(readback);
+  glm::dvec3 hitPos       = {};
+  bool       hitPosValid  = false;
   if(pickingValid)
   {
     float d = decodePickingDepth(readback);
@@ -304,12 +304,12 @@ void LodClusters::onUIRender()
     {
       glm::uvec2 mousePos = {m_frameConfig.frameConstants.mousePosition.x, m_frameConfig.frameConstants.mousePosition.y};
 
-      const glm::mat4 view = m_info.cameraManipulator->getViewMatrix();
-      const glm::mat4 proj = m_frameConfig.frameConstants.projMatrix;
+      const glm::dmat4 view = m_info.cameraManipulator->getViewMatrix();
+      const glm::dmat4 proj = m_frameConfig.frameConstants.projMatrix;
 
-      glm::vec4 win_norm = {0, 0, m_frameConfig.frameConstants.viewport.x, m_frameConfig.frameConstants.viewport.y};
-      hitPosValid        = true;
-      hitPos             = glm::unProjectZO({mousePos.x, mousePos.y, d}, view, proj, win_norm);
+      glm::dvec4 win_norm = {0, 0, m_frameConfig.frameConstants.viewport.x, m_frameConfig.frameConstants.viewport.y};
+      hitPosValid         = true;
+      hitPos              = glm::unProjectZO({mousePos.x, mousePos.y, d}, view, proj, win_norm);
     }
   }
 
@@ -318,7 +318,7 @@ void LodClusters::onUIRender()
   {
     if(hitPosValid)
     {
-      glm::vec3 eye, center, up;
+      glm::dvec3 eye, center, up;
       m_info.cameraManipulator->getLookat(eye, center, up);
 
       if(requestCameraRecenter)

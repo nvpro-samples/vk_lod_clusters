@@ -1013,13 +1013,13 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     frameConstants.bgColor   = m_resources.m_bgColor;
     frameConstants.viewport  = glm::ivec2(renderWidth, renderHeight);
     frameConstants.viewportf = glm::vec2(renderWidth, renderHeight);
-    frameConstants.nearPlane = m_info.cameraManipulator->getClipPlanes().x;
-    frameConstants.farPlane  = m_info.cameraManipulator->getClipPlanes().y;
+    frameConstants.nearPlane = float(m_info.cameraManipulator->getClipPlanes().x);
+    frameConstants.farPlane  = float(m_info.cameraManipulator->getClipPlanes().y);
     frameConstants.wUpDir    = m_info.cameraManipulator->getUp();
 #if USE_DLSS
     frameConstants.jitter = shaderio::dlssJitter(m_frames);
 #endif
-    frameConstants.fov = glm::radians(m_info.cameraManipulator->getFov());
+    frameConstants.fov = float(glm::radians(m_info.cameraManipulator->getFov()));
 
     glm::mat4 projection = glm::perspectiveRH_ZO(frameConstants.fov, float(targetWidth) / float(targetHeight),
                                                  frameConstants.farPlane, frameConstants.nearPlane);

@@ -294,22 +294,18 @@ struct ParallelBatchUploader
 
         VkOffset3D offset = {0, 0, 0};
 
-        // bit of a hack to ensure the barriers are done on first and last mip.
-        // hence manipulating the imageLayout
+        // The simple automatic barrier manager inside staging uploader checks and
+        // manipulates the `image.descriptor.imageLayout` field each time.
+        // We must reset it for each mip map to ensure we generate correct per-mip barriers.
+        image.descriptor.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
         if(VK_SUCCESS
-           != NVVK_FAIL_REPORT(res.m_uploader.appendImageSubMapping(
-               image, offset, extent, subResource, mipSizes[m], mipMappings[m],
-               m == mipLevels - 1 ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)))
+           != NVVK_FAIL_REPORT(res.m_uploader.appendImageSubMapping(image, offset, extent, subResource, mipSizes[m],
+                                                                    mipMappings[m], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)))
         {
           failed = true;
           endPending();
           return;
-        }
-
-        if(m < mipLevels - 1)
-        {
-          image.descriptor.imageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         }
 
         extent.width  = (extent.width + 1) / 2;
