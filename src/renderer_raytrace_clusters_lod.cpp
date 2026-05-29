@@ -26,6 +26,8 @@
 
 #include "renderer.hpp"
 
+#define USE_LARGE_BUFFER_BLAS 1
+
 //////////////////////////////////////////////////////////////////////////
 
 namespace lodclusters {
@@ -108,9 +110,14 @@ private:
 
   nvvk::DescriptorPack m_dsetPack;
 
-  nvvk::Buffer            m_sceneBuildBuffer;
-  nvvk::Buffer            m_sceneDataBuffer;
-  nvvk::LargeBuffer       m_sceneBlasDataBuffer;
+  nvvk::Buffer m_sceneBuildBuffer;
+  nvvk::Buffer m_sceneDataBuffer;
+
+#if USE_LARGE_BUFFER_BLAS
+  nvvk::LargeBuffer m_sceneBlasDataBuffer;
+#else
+  nvvk::Buffer m_sceneBlasDataBuffer;
+#endif
   nvvk::Buffer            m_sceneTraversalBuffer;
   nvvk::Buffer            m_sceneGeometryHistogramBuffer;
   shaderio::SceneBuilding m_sceneBuildShaderio;
@@ -402,8 +409,13 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
 
     m_sceneBuildShaderio.traversalNodeInfos = m_sceneTraversalBuffer.address;
 
+#if USE_LARGE_BUFFER_BLAS
     res.createLargeBuffer(m_sceneBlasDataBuffer, m_blasDataSize,
                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
+#else
+    res.createBuffer(m_sceneBlasDataBuffer, m_blasDataSize,
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
+#endif
     NVVK_DBG_NAME(m_sceneBlasDataBuffer.buffer);
 
     if(m_config.useBlasSharing)
@@ -1094,7 +1106,11 @@ void RendererRayTraceClustersLod::deinit(Resources& res)
   res.m_allocator.destroyBuffer(m_sceneBuildBuffer);
   res.m_allocator.destroyBuffer(m_sceneDataBuffer);
   res.m_allocator.destroyBuffer(m_sceneTraversalBuffer);
+#if USE_LARGE_BUFFER_BLAS
   res.m_allocator.destroyLargeBuffer(m_sceneBlasDataBuffer);
+#else
+  res.m_allocator.destroyBuffer(m_sceneBlasDataBuffer);
+#endif
   res.m_allocator.destroyBuffer(m_sceneGeometryHistogramBuffer);
 
   res.m_allocator.destroyBuffer(m_sbtBuffer);

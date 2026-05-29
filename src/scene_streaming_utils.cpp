@@ -225,9 +225,14 @@ const StreamingResident::Group* StreamingResident::initClas(Resources&          
     m_shaderData.groupClasSizes += m_clasManageBuffer.address;
   }
 
+#if USE_LARGE_BUFFER_CLAS
   // one buffer for actual storage, allow > 4 GB
   res.createLargeBuffer(m_clasDataBuffer, m_maxClasBytes,
                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
+#else
+  res.createBuffer(m_clasDataBuffer, m_maxClasBytes,
+                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
+#endif
   NVVK_DBG_NAME(m_clasDataBuffer.buffer);
 
   m_shaderData.clasBaseAddress = m_clasDataBuffer.address;
@@ -260,7 +265,11 @@ void StreamingResident::getStats(StreamingStats& stats) const
 void StreamingResident::deinitClas(Resources& res)
 {
   res.m_allocator.destroyBuffer(m_clasManageBuffer);
+#if USE_LARGE_BUFFER_CLAS
   res.m_allocator.destroyLargeBuffer(m_clasDataBuffer);
+#else
+  res.m_allocator.destroyBuffer(m_clasDataBuffer);
+#endif
 
   m_shaderData.clasBaseAddress           = 0;
   m_shaderData.clasAddresses             = 0;

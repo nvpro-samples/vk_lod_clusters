@@ -37,7 +37,7 @@ namespace lodclusters {
 
 void Scene::ProcessingInfo::init(float processingThreadsPct)
 {
-  numPoolThreadsOriginal = nvutils::get_thread_pool().get_thread_count();
+  numPoolThreadsOriginal = uint32_t(nvutils::get_thread_pool().get_thread_count());
 
   numPoolThreads = numPoolThreadsOriginal;
   if(processingThreadsPct > 0.0f && processingThreadsPct < 1.0f)

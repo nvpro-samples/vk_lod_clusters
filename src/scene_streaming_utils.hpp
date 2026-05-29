@@ -30,6 +30,7 @@
 #include "resources.hpp"
 #include "../shaders/shaderio_streaming.h"
 
+#define USE_LARGE_BUFFER_CLAS 1
 
 namespace lodclusters {
 
@@ -300,9 +301,12 @@ private:
   uint64_t     m_residentActiveOffset;
   uint64_t     m_residentActiveUpdateOffset;
 
-  nvvk::Buffer      m_clasManageBuffer;
+  nvvk::Buffer m_clasManageBuffer;
+#if USE_LARGE_BUFFER_CLAS
   nvvk::LargeBuffer m_clasDataBuffer;
-
+#else
+  nvvk::Buffer m_clasDataBuffer;
+#endif
   shaderio::StreamingResident m_shaderData;
 
   nvvk::BufferTyped<uint32_t> m_residentActiveHostBuffer;
@@ -456,7 +460,7 @@ private:
   NewInfo  m_scheduledNew[STREAMING_MAX_ACTIVE_TASKS]      = {};
   uint64_t m_scheduledNewFrame[STREAMING_MAX_ACTIVE_TASKS] = {};
 
-  // persistent
+  // newly built CLAS
   nvvk::Buffer m_clasBuffer;
 };
 
