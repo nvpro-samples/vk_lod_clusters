@@ -200,7 +200,7 @@ vec4 shading(uint instanceID, vec3 wPos, vec3 wNormal, vec4 wTangent, vec2 oTexC
 
 uint64_t packPickingValue(uint32_t v, float z)
 {
-  z         = 1.f - clamp(z, 0.f, 1.f);
+  z         = clamp(z, 0.f, 1.f);
   uint bits = floatBitsToUint(z);
   bits ^= (int(bits) >> 31) | 0x80000000u;
   uint64_t value = (uint64_t(bits) << 32) | uint64_t(v);

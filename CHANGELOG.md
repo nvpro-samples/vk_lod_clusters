@@ -1,4 +1,7 @@
 # Changelog for vk_lod_clusters
+* 2026-6-1:
+  * bugfix in occlusion culling, missed testing for crossed eye plane / near plane and skip.
+  * bugfix picking, wasn't adjusted for inverted Z
 * 2026-4-29:
   
   **WARNING** Old cache files are not compatible anymore. First time loading such scenes will trigger processing and overwrite / delete them.

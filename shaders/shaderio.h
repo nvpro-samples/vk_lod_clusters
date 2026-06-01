@@ -160,6 +160,10 @@ using namespace glm;
 #define USE_CULLING 1
 #endif
 
+#ifndef USE_INSTANCE_OCCLUSION_CULLING
+#define USE_INSTANCE_OCCLUSION_CULLING 1
+#endif
+
 #ifndef USE_NODE_OCCLUSION_CULLING
 #define USE_NODE_OCCLUSION_CULLING 1
 #endif

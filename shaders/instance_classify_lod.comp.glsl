@@ -122,9 +122,15 @@ void main()
   vec4 clipMin;
   vec4 clipMax;
   bool clipValid;
+
+#if USE_INSTANCE_OCCLUSION_CULLING
+  bool useOcclusion = true;
+#else
+  bool useOcclusion = false;
+#endif
   
   bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, geometry.bbox.lo, geometry.bbox.hi, instance.worldMatrix, clipMin, clipMax, clipValid);
-  bool isVisible = inFrustum && (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 0)));
+  bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 0)));
   
   uint visibilityState = isVisible ? INSTANCE_VISIBLE_BIT : 0;
   

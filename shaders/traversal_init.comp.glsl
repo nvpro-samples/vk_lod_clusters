@@ -121,6 +121,12 @@ void main()
   Geometry geometry = geometries[geometryID];
   
   uint blasBuildIndex = BLAS_BUILD_INDEX_LOWDETAIL;
+
+#if USE_INSTANCE_OCCLUSION_CULLING
+  bool useOcclusion = true;
+#else
+  bool useOcclusion = false;
+#endif
   
   vec4 clipMin;
   vec4 clipMax;
@@ -128,7 +134,7 @@ void main()
   
 #if USE_TWO_PASS_CULLING && TARGETS_RASTERIZATION
   bool inFrustum = intersectFrustum( build.cullPass == 0 ? build.cullViewProjMatrixLast : build.cullViewProjMatrix, geometry.bbox.lo, geometry.bbox.hi, instance.worldMatrix, clipMin, clipMax, clipValid);
-  bool isVisible = inFrustum && (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, build.cullPass)));
+  bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, build.cullPass)));
   
   // if smallish and was already drawn, don't process again
   if (build.cullPass == 1 && isVisible && clipValid && !intersectSize(clipMin, clipMax, 8.0) && ((uint(build.instanceVisibility.d[instanceLoad]) & INSTANCE_VISIBLE_BIT) != 0)) {
@@ -137,7 +143,7 @@ void main()
   
 #else
   bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, geometry.bbox.lo, geometry.bbox.hi, instance.worldMatrix, clipMin, clipMax, clipValid);
-  bool isVisible = inFrustum && (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 0)));
+  bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 0)));
 #endif
   
   uint visibilityState = isVisible ? INSTANCE_VISIBLE_BIT : 0;

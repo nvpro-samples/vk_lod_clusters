@@ -81,7 +81,8 @@ bool intersectFrustum(mat4 viewProjMatrix, vec3 bboxMin, vec3 bboxMax, mat4x3 wo
   // clipspace bbox
   vec4 hPos     = worldViewProjTM * getBoxCorner(bboxMin, bboxMax, 0);
   vec4 clip     = getClip(hPos, valid);
-  uint bits     = getCullBits(hPos);
+  uint andBits  = getCullBits(hPos);
+  uint orBits   = andBits;
   vec4 clipMin  = clip;
   vec4 clipMax  = clip;
   bool clipValid = valid;
@@ -90,20 +91,25 @@ bool intersectFrustum(mat4 viewProjMatrix, vec3 bboxMin, vec3 bboxMax, mat4x3 wo
   for (int n = 1; n < 8; n++){
     hPos  = worldViewProjTM * getBoxCorner(bboxMin, bboxMax, n);
     clip  = getClip(hPos, valid);
-    bits &= getCullBits(hPos);
-
+    uint bits = getCullBits(hPos);
+    orBits |= bits;
+    andBits &= bits;
     clipMin = min(clipMin,clip);
     clipMax = max(clipMax,clip);
 
     clipValid = clipValid && valid;
   }
   
+  // also detect whether to avoid occlusion culling lookups
+  // 16 nearplane / 64 eye crossing
+  clipValid = clipValid && (orBits & (16u | 64u)) == 0u;
+
   oClipvalid = clipValid;
   oClipmin = vec4(clamp(clipMin.xy, vec2(-1), vec2(1)), clipMin.zw);
   oClipmax = vec4(clamp(clipMax.xy, vec2(-1), vec2(1)), clipMax.zw);
 
   //return true;
-  return bits == 0;
+  return andBits == 0;
 }
 
 #ifndef CULLING_NO_HIZ
