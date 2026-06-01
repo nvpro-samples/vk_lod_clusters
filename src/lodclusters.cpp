@@ -1069,7 +1069,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     {
       // hiz
       m_resources.m_hizUpdate[0].farInfo.getShaderFactors((float*)&frameConstants.hizSizeFactors);
-      frameConstants.hizSizeMax = m_resources.m_hizUpdate[0].farInfo.getSizeMax();
+      m_resources.m_hizUpdate[0].farInfo.getSize((float*)&frameConstants.hizSize);
     }
 
     {

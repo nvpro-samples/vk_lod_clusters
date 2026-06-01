@@ -125,12 +125,21 @@ bool intersectHiz(vec4 clipMin, vec4 clipMax, uint idx)
   clipMax.xy = min(clipMax.xy, view.hizSizeFactors.zw);
   
   vec2  size = (clipMax.xy - clipMin.xy);
-  float maxsize = max(size.x, size.y) * view.hizSizeMax;
-  float miplevel = ceil(log2(maxsize));
+  float maxSize = max(size.x * view.hizSize.x, size.y * view.hizSize.y);
+
+  // round up to ensure the 2x2 footprint we sample covers the entire box.
+  float mipLevel = ceil(log2(maxSize));
+
+  // optimization from niagara renderer by Arseny Kapoulkine.
+  // https://github.com/zeux/niagara/commit/acb8c838ef0413bf101d02177b66a84dcfed210d
+  // use finer mip if our samples can fit in grid without straddling
+  vec2 fineMipSize = view.hizSize * exp2(1 - mipLevel);
+  mipLevel -= float(all(lessThanEqual(fract(clipMin.xy * fineMipSize) + size * fineMipSize, vec2(2.0))));
+
 #if USE_TWO_PASS_CULLING
-  float depth = textureLod(texHizFar[idx], ((clipMin.xy + clipMax.xy)*0.5),miplevel).r;
+  float depth = textureLod(texHizFar[idx], ((clipMin.xy + clipMax.xy)*0.5),mipLevel).r;
 #else
-  float depth = textureLod(texHizFar, ((clipMin.xy + clipMax.xy)*0.5),miplevel).r;
+  float depth = textureLod(texHizFar, ((clipMin.xy + clipMax.xy)*0.5),mipLevel).r;
 #endif
   bool result = clipMax.z >= depth - c_depthNudge;
 

@@ -314,9 +314,8 @@ struct FrameConstants
   vec4 hizSizeFactors;
   vec4 nearSizeFactors;
 
-  float hizSizeMax;
-  int   facetShading;
-  vec2  jitter;
+  vec2 hizSize;
+  vec2 jitter;
 
   uint  dbgUint;
   float dbgFloat;
@@ -342,6 +341,7 @@ struct FrameConstants
 
   float texGradScale;
   float pixelAngle;
+  int   facetShading;
 
   SkySimpleParameters skyParams;
 };

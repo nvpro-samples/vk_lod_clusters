@@ -2,6 +2,7 @@
 * 2026-6-1:
   * bugfix in occlusion culling, missed testing for crossed eye plane / near plane and skip.
   * bugfix picking, wasn't adjusted for inverted Z
+  * add [hi-z mip optimization](https://github.com/zeux/niagara/commit/acb8c838ef0413bf101d02177b66a84dcfed210d) from Arseny Kapoulkine
 * 2026-4-29:
   
   **WARNING** Old cache files are not compatible anymore. First time loading such scenes will trigger processing and overwrite / delete them.
