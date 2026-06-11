@@ -92,7 +92,7 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
     return false;
   }
 
-  if(!initBasicShaders(res, rscene, config))
+  if(!initBasicShaders(res, rscene, config, true))
   {
     return false;
   }
@@ -114,7 +114,8 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
   options.AddMacroDefinition("USE_PRIMITIVE_CULLING", config.useCulling && config.usePrimitiveCulling ? "1" : "0");
   options.AddMacroDefinition("USE_TWO_PASS_CULLING", config.useCulling && config.useTwoPassCulling ? "1" : "0");
   options.AddMacroDefinition("USE_RENDER_STATS", config.useRenderStats ? "1" : "0");
-  options.AddMacroDefinition("USE_DLSS", "0");
+  options.AddMacroDefinition("USE_DLSS", config.useDlss ? "1" : "0");
+  options.AddMacroDefinition("USE_DLSS_GUIDE_BUFFERS", "0");
   options.AddMacroDefinition("USE_BLAS_SHARING", "0");
   options.AddMacroDefinition("USE_BLAS_MERGING", "0");
   options.AddMacroDefinition("USE_BLAS_CACHING", "0");
@@ -136,6 +137,7 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
   options.AddMacroDefinition("USE_FORCED_INVISIBLE_CULLING", "0");
   options.AddMacroDefinition("USE_PERSISTENT_TRAVERSAL_KERNEL", config.usePersistentTraversal ? "1" : "0");
   options.AddMacroDefinition("USE_ANISOTROPIC_GRADIENT", config.useAnisotropicGradient ? "1" : "0");
+  options.AddMacroDefinition("HAS_TEXTURED_MATERIALS", rscene.scene->m_hasTexturedMaterials ? "1" : "0");
 
   shaderc::CompileOptions optionsNoAlpha = options;
   optionsNoAlpha.AddMacroDefinition("HAS_ALPHA_TEST", "0");
@@ -166,10 +168,15 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
 {
   m_resourceReservedUsage = {};
   m_config                = config;
-  m_maxRenderClusters     = 1u << config.numRenderClusterBits;
-  m_maxTraversalTasks     = 1u << config.numTraversalTaskBits;
+#if USE_DLSS
+  m_config.useDlss = config.useDlss && res.m_frameBuffer.dlssUpscaler.isAvailable();
+#else
+  m_config.useDlss = false;
+#endif
+  m_maxRenderClusters = 1u << m_config.numRenderClusterBits;
+  m_maxTraversalTasks = 1u << m_config.numTraversalTaskBits;
 
-  if(!initShaders(res, rscene, config))
+  if(!initShaders(res, rscene, m_config))
   {
     return false;
   }
@@ -180,11 +187,10 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
   }
 
 #if USE_DLSS
-  // not supported in raster for now
-  res.setFramebufferDlss(false, config.dlssQuality);
+  res.setFramebufferDlss(m_config.useDlss ? Resources::DlssMode::eSuperResolution : Resources::DlssMode::eNone, m_config.dlssQuality);
 #endif
 
-  initBasics(res, rscene, config);
+  initBasics(res, rscene, m_config);
 
   m_resourceReservedUsage.geometryMemBytes   = rscene.getGeometrySize(true);
   m_resourceReservedUsage.operationsMemBytes = logMemoryUsage(rscene.getOperationsSize(), "operations", "rscene total");
@@ -340,7 +346,21 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     graphicsGen.pipelineInfo.layout                  = m_pipelineLayout;
     graphicsGen.renderingState.depthAttachmentFormat = res.m_frameBuffer.pipelineRenderingInfo.depthAttachmentFormat;
     graphicsGen.renderingState.stencilAttachmentFormat = res.m_frameBuffer.pipelineRenderingInfo.stencilAttachmentFormat;
-    graphicsGen.colorFormats = {res.m_frameBuffer.colorFormat};
+#if USE_DLSS
+    if(m_config.useDlss)
+    {
+      graphicsGen.colorFormats = res.m_frameBuffer.dlssUpscaler.getBufferFormats();
+      state.colorWriteMasks.resize(2, state.colorWriteMasks[0]);
+      state.colorBlendEnables.resize(2, state.colorBlendEnables[0]);
+      state.colorBlendEquations.resize(2, state.colorBlendEquations[0]);
+      if(m_config.useComputeRaster || !m_config.useShading)
+      {
+        state.colorWriteMasks[1] = 0;
+      }
+    }
+    else
+#endif
+      graphicsGen.colorFormats = {res.m_frameBuffer.colorFormat};
 
     state.rasterizationState.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     if(config.forceTwoSided)
@@ -637,11 +657,32 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
       VkAttachmentLoadOp op = pass == 1 ? VK_ATTACHMENT_LOAD_OP_LOAD :
                                           (m_config.useShading ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : VK_ATTACHMENT_LOAD_OP_CLEAR);
 
-      res.cmdBeginRendering(cmd, false, op, op);
-
-      if(pass == 0 && m_config.useShading)
+#if USE_DLSS
+      if(m_config.useDlss)
       {
-        writeBackgroundSky(cmd);
+        const bool writeDlssMotion = m_config.useShading && !m_config.useComputeRaster;
+        const VkAttachmentLoadOp motionLoadOp = writeDlssMotion && pass != 0 ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
+
+        if(pass == 0 && m_config.useShading)
+        {
+          // Single pass: sky then geometry share color/depth/motion attachments.
+          res.cmdBeginRenderingDlssSr(cmd, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_LOAD_OP_CLEAR);
+          writeBackgroundSky(cmd);
+        }
+        else
+        {
+          res.cmdBeginRenderingDlssSr(cmd, op, op, motionLoadOp);
+        }
+      }
+      else
+#endif
+      {
+        res.cmdBeginRendering(cmd, false, op, op);
+
+        if(pass == 0 && m_config.useShading)
+        {
+          writeBackgroundSky(cmd);
+        }
       }
 
       {
@@ -692,18 +733,23 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
         writeAtomicRaster(cmd);
       }
 
-      if(frame.showClusterBboxes)
-      {
-        renderClusterBboxes(cmd, m_sceneBuildBuffer, false);
-        if(rscene.scene->m_hasAlphaMask)
-        {
-          renderClusterBboxes(cmd, m_sceneBuildBuffer, true);
-        }
-      }
+      bool hasOverlays = frame.showClusterBboxes || (pass == lastPass && frame.showInstanceBboxes);
 
-      if(pass == lastPass && frame.showInstanceBboxes)
+      if(hasOverlays)
       {
-        renderInstanceBboxes(cmd);
+        if(frame.showClusterBboxes)
+        {
+          renderClusterBboxes(cmd, m_sceneBuildBuffer, false);
+          if(rscene.scene->m_hasAlphaMask)
+          {
+            renderClusterBboxes(cmd, m_sceneBuildBuffer, true);
+          }
+        }
+
+        if(pass == lastPass && frame.showInstanceBboxes)
+        {
+          renderInstanceBboxes(cmd);
+        }
       }
 
       vkCmdEndRendering(cmd);
@@ -725,6 +771,18 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
   {
     profiler.getProfilerTimeline()->frameAccumulationSplit();
   }
+
+#if USE_DLSS
+  if(m_config.useDlss)
+  {
+    if(frame.hbaoActive)
+    {
+      res.cmdHBAO(cmd, frame, profiler);
+    }
+    res.cmdPrepareDlssSrEvaluation(cmd);
+    res.cmdEvaluateDlssSr(cmd, frame.frameConstants.jitter, profiler);
+  }
+#endif
 
   if(rscene.useStreaming)
   {

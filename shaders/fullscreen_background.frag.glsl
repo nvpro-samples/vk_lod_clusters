@@ -40,6 +40,9 @@
 #extension GL_EXT_fragment_shader_barycentric : enable
 
 #include "shaderio.h"
+#if USE_DLSS
+#include "dlss_util.h"
+#endif
 #include "nvshaders/sky_functions.h.slang"
 
 layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuffer
@@ -50,17 +53,25 @@ layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuff
 ///////////////////////////////////////////////////
 
 layout(location = 0, index = 0) out vec4 out_Color;
+#if USE_DLSS && ALLOW_SHADING
+layout(location = 1, index = 0) out vec2 out_DlssMotion;
+#endif
 
 ///////////////////////////////////////////////////
 
 void main()
 {
   vec2 screenPos = ((vec2(gl_FragCoord.xy) / view.viewportf) * 2.0) - 1.0;
-  
-  vec4 transformed = view.skyProjMatrixI * vec4(screenPos, 1.0,  1);
-  vec3 rayDir      = normalize(transformed.xyz);
-  
+
+  vec4 clipRay = view.projMatrixI * vec4(screenPos, 1.0, 1.0);
+  vec3 rayDir  = normalize((view.viewMatrixI * vec4(normalize(clipRay.xyz), 0.0)).xyz);
+
   vec3 skyColor = evalSimpleSky(view.skyParams, rayDir);
 
   out_Color = vec4(skyColor, 1);
+
+#if USE_DLSS && ALLOW_SHADING
+  vec3 worldPos = view.viewMatrixI[3].xyz + rayDir * view.farPlane * 0.99;
+  out_DlssMotion = calculateMotionVector(worldPos, view.viewProjMatrixPrev, view.viewProjMatrix, view.viewportf);
+#endif
 }

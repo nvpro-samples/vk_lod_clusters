@@ -105,8 +105,7 @@ void uiPlot(const std::string& plotName, const std::string& tooltipFormat, const
 
     ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
     ImPlot::PlotShaded("", data.data(), (int)size, -INFINITY, 1.0, 0.0,
-                       ImPlotSpec(ImPlotProp_FillColor, (ImU32)plotColor, ImPlotProp_FillAlpha, 0.25f,
-                                  ImPlotProp_Offset, offset));
+                       ImPlotSpec(ImPlotProp_FillColor, (ImU32)plotColor, ImPlotProp_FillAlpha, 0.50f, ImPlotProp_Offset, offset));
 
     if(ImPlot::IsPlotHovered())
     {
@@ -377,6 +376,7 @@ void LodClusters::onUIRender()
     if(ImGui::CollapsingHeader("Scene Modifiers"))  //, nullptr, ImGuiTreeNodeFlags_DefaultOpen ))
     {
       PE::begin("##Scene Complexity", ImGuiTableFlags_Resizable);
+      PE::Checkbox("Allow textured materials", &m_sceneLoaderConfig.enableTexturedMaterials);
       PE::Checkbox("Flip faces winding", &m_rendererConfig.flipWinding);
       PE::Checkbox("Disable back-face culling", &m_rendererConfig.forceTwoSided);
 
@@ -446,16 +446,48 @@ void LodClusters::onUIRender()
       PE::entry("Super Resolution",
                 [&]() { return m_ui.enumCombobox(GUI_SUPERSAMPLE, "sampling", &m_tweak.supersample); });
 #if USE_DLSS
-      ImGui::BeginDisabled(
-          !(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD && m_resources.m_frameBuffer.dlssDenoiser.isAvailable()));
+      bool        dlssAvailable = false;
+      const char* dlssLabel     = "DLSS";
+      if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
       {
-        PE::entry("DLSS - Denoiser", [&]() {
-          ImGui::Checkbox("Enabled", &m_rendererConfig.useDlss);
+        dlssAvailable = m_resources.m_frameBuffer.dlssDenoiser.isAvailable();
+        dlssLabel     = "DLSS - RR";
+      }
+      else if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD)
+      {
+        dlssAvailable = m_resources.m_frameBuffer.dlssUpscaler.isAvailable();
+        dlssLabel     = "DLSS - SR";
+      }
+      ImGui::BeginDisabled(!dlssAvailable);
+      {
+        PE::entry(dlssLabel, [&]() {
+          bool changed = ImGui::Checkbox("Enabled", &m_rendererConfig.useDlss);
           ImGui::SameLine();
-          bool dlaa = m_rendererConfig.dlssQuality == NVSDK_NGX_PerfQuality_Value_DLAA;
-          ImGui::Checkbox("DLAA", &dlaa);
-          m_rendererConfig.dlssQuality = dlaa ? NVSDK_NGX_PerfQuality_Value_DLAA : NVSDK_NGX_PerfQuality_Value_MaxQuality;
-          return false;
+
+          const char* labels[] = {"DLAA", "Quality", "Balanced", "Performance", "Ultra Performance"};
+          const NVSDK_NGX_PerfQuality_Value values[] = {
+              NVSDK_NGX_PerfQuality_Value_DLAA,
+              NVSDK_NGX_PerfQuality_Value_MaxQuality,
+              NVSDK_NGX_PerfQuality_Value_Balanced,
+              NVSDK_NGX_PerfQuality_Value_MaxPerf,
+              NVSDK_NGX_PerfQuality_Value_UltraPerformance,
+          };
+
+          int current = 1;
+          for(int i = 0; i < IM_ARRAYSIZE(values); i++)
+          {
+            if(m_rendererConfig.dlssQuality == values[i])
+            {
+              current = i;
+              break;
+            }
+          }
+          if(ImGui::Combo("Quality", &current, labels, IM_ARRAYSIZE(labels)))
+          {
+            m_rendererConfig.dlssQuality = values[current];
+            changed                      = true;
+          }
+          return changed;
         });
       }
       ImGui::EndDisabled();

@@ -127,8 +127,10 @@ size_t RenderScene::getOperationsSize() const
 
 //////////////////////////////////////////////////////////////////////////
 
-bool Renderer::initBasicShaders(Resources& res, RenderScene& rscene, const RendererConfig& config)
+bool Renderer::initBasicShaders(Resources& res, RenderScene& rscene, const RendererConfig& config, bool isRaster)
 {
+  m_isRaster = isRaster;
+
   uint32_t maxPrimitiveOutputs = config.useEXTmeshShader ? res.m_meshShaderPropsEXT.maxMeshOutputPrimitives :
                                                            res.m_meshShaderPropsNV.maxMeshOutputPrimitives;
   uint32_t maxVertexOutputs    = config.useEXTmeshShader ? res.m_meshShaderPropsEXT.maxMeshOutputVertices :
@@ -163,7 +165,15 @@ bool Renderer::initBasicShaders(Resources& res, RenderScene& rscene, const Rende
   {
     res.compileShader(m_basicShaders.fullScreenWriteDepthFragShader, VK_SHADER_STAGE_FRAGMENT_BIT, "fullscreen_write_depth.frag.glsl");
   }
-  res.compileShader(m_basicShaders.fullScreenBackgroundFragShader, VK_SHADER_STAGE_FRAGMENT_BIT, "fullscreen_background.frag.glsl");
+  shaderc::CompileOptions backgroundOptions = res.makeCompilerOptions();
+  backgroundOptions.AddMacroDefinition("USE_DLSS", fmt::format("{}", isRaster && config.useDlss ? 1 : 0));
+  if(isRaster)
+  {
+    backgroundOptions.AddMacroDefinition("ALLOW_SHADING",
+                                         fmt::format("{}", config.useShading && !config.useComputeRaster ? 1 : 0));
+  }
+  res.compileShader(m_basicShaders.fullScreenBackgroundFragShader, VK_SHADER_STAGE_FRAGMENT_BIT,
+                    "fullscreen_background.frag.glsl", &backgroundOptions);
   res.compileShader(m_basicShaders.fullscreenAtomicRasterFragmentShader, VK_SHADER_STAGE_FRAGMENT_BIT,
                     "fullscreen_raster_atomic.frag.glsl");
 
@@ -181,6 +191,40 @@ bool Renderer::initBasicShaders(Resources& res, RenderScene& rscene, const Rende
   }
 
   return true;
+}
+
+static void setupRenderMaterial(shaderio::RenderMaterial& renderMaterial, const Scene::Material& sceneMaterial, uint32_t originalID)
+{
+  renderMaterial                = {};
+  renderMaterial.originalID     = originalID;
+  renderMaterial.twoSided       = sceneMaterial.twoSided ? uint8_t(1) : uint8_t(0);
+  renderMaterial.metallic       = sceneMaterial.metallicFactor;
+  renderMaterial.roughness      = sceneMaterial.roughnessFactor;
+  renderMaterial.packedAlbedo   = glm::packUnorm4x8(sceneMaterial.color);
+  renderMaterial.packedEmissive = glm::packUnorm4x8(sceneMaterial.emissive);
+
+  renderMaterial.alphaMaskTexture = sceneMaterial.alphaMasked && sceneMaterial.alphaMaskImageID != ~0U ?
+                                        uint16_t(sceneMaterial.alphaMaskImageID + Scene::NUM_IMAGE_DEFAULTS) :
+                                        uint16_t(0xFFFF);
+
+  renderMaterial.baseTexture = sceneMaterial.baseImageID != ~0U ?
+                                   uint16_t(sceneMaterial.baseImageID + Scene::NUM_IMAGE_DEFAULTS) :
+                                   uint16_t(Scene::IMAGE_DEFAULT_WHITE);
+
+  renderMaterial.normalTexture =
+      sceneMaterial.normalImageID != ~0U ? uint16_t(sceneMaterial.normalImageID + Scene::NUM_IMAGE_DEFAULTS) : uint16_t(0xFFFF);
+
+  renderMaterial.occlusionTexture = sceneMaterial.occlusionImageID != ~0U ?
+                                        uint16_t(sceneMaterial.occlusionImageID + Scene::NUM_IMAGE_DEFAULTS) :
+                                        uint16_t(Scene::IMAGE_DEFAULT_WHITE);
+
+  renderMaterial.metallicRoughnessTexture = sceneMaterial.metallicRoughnessImageID != ~0U ?
+                                                uint16_t(sceneMaterial.metallicRoughnessImageID + Scene::NUM_IMAGE_DEFAULTS) :
+                                                uint16_t(Scene::IMAGE_DEFAULT_WHITE);
+
+  renderMaterial.emissiveTexture = sceneMaterial.emissiveImageID != ~0U ?
+                                       uint16_t(sceneMaterial.emissiveImageID + Scene::NUM_IMAGE_DEFAULTS) :
+                                       uint16_t(Scene::IMAGE_DEFAULT_BLACK);
 }
 
 void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererConfig& config)
@@ -215,12 +259,8 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
         {
           const Scene::Material&    sceneMaterial  = scene.m_materials[geometry.localMaterialIDs[m]];
           shaderio::RenderMaterial& renderMaterial = m_renderMaterials[renderMaterialID + m];
-          renderMaterial                           = {};
-          renderMaterial.originalID                = uint32_t(geometry.localMaterialIDs[m]);
-          renderMaterial.twoSided                  = sceneMaterial.twoSided ? uint8_t(1) : uint8_t(0);
-          renderMaterial.alphaMaskTexture = sceneMaterial.alphaMasked && sceneMaterial.alphaMaskImageID != ~0U ?
-                                                uint16_t(sceneMaterial.alphaMaskImageID) :
-                                                uint16_t(0xFFFF);
+          setupRenderMaterial(renderMaterial, sceneMaterial, uint32_t(geometry.localMaterialIDs[m]));
+
           if(sceneMaterial.alphaMasked && sceneMaterial.alphaMaskImageID != ~0U)
           {
             alphaMaskedCount++;
@@ -244,12 +284,7 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
           numMaterials += 1;
 
           shaderio::RenderMaterial& renderMaterial = m_renderMaterials[renderMaterialID];
-          renderMaterial                           = {};
-          renderMaterial.originalID                = sceneMaterialID;
-          renderMaterial.twoSided                  = sceneMaterial.twoSided ? uint8_t(1) : uint8_t(0);
-          renderMaterial.alphaMaskTexture = sceneMaterial.alphaMasked && sceneMaterial.alphaMaskImageID != ~0U ?
-                                                uint16_t(sceneMaterial.alphaMaskImageID) :
-                                                uint16_t(0xFFFF);
+          setupRenderMaterial(renderMaterial, sceneMaterial, sceneMaterialID);
         }
       }
 
@@ -294,10 +329,12 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
     }
     else
     {
-      renderInstance.materialID    = uint16_t(sceneMaterialMapping[sceneInstance.materialID]);
-      renderInstance.multiMaterial = 0;
-      renderInstance.twoSided      = material.twoSided ? 1 : 0;
-      renderInstance.alphaMaskTexture = material.alphaMasked && material.alphaMaskImageID != ~0 ? material.alphaMaskImageID : 0xFFFF;
+      renderInstance.materialID       = uint16_t(sceneMaterialMapping[sceneInstance.materialID]);
+      renderInstance.multiMaterial    = 0;
+      renderInstance.twoSided         = material.twoSided ? 1 : 0;
+      renderInstance.alphaMaskTexture = material.alphaMasked && material.alphaMaskImageID != ~0 ?
+                                            material.alphaMaskImageID + Scene::NUM_IMAGE_DEFAULTS :
+                                            0xFFFF;
       renderInstance.opaqueStatus =
           renderInstance.alphaMaskTexture == 0xFFFF ? SHADERIO_OPAQUE_STATUS_OPAQUE : SHADERIO_OPAQUE_STATUS_ALPHAMASKED;
     }
@@ -398,7 +435,28 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene, const Ren
   graphicsGen.pipelineInfo.layout                    = m_basicPipelineLayout;
   graphicsGen.renderingState.depthAttachmentFormat   = res.m_frameBuffer.pipelineRenderingInfo.depthAttachmentFormat;
   graphicsGen.renderingState.stencilAttachmentFormat = res.m_frameBuffer.pipelineRenderingInfo.stencilAttachmentFormat;
-  graphicsGen.colorFormats                           = {res.m_frameBuffer.colorFormat};
+  VkFormat basicColorFormat                          = res.m_frameBuffer.colorFormat;
+#if USE_DLSS
+  if(res.m_frameBuffer.dlssMode == Resources::DlssMode::eSuperResolution)
+  {
+    basicColorFormat = res.m_frameBuffer.dlssUpscaler.getColorFormat(DlssUpscaler::eDlssInputColor);
+  }
+#endif
+  graphicsGen.colorFormats = {basicColorFormat};
+
+#if USE_DLSS
+  const bool useDlssSr = config.useDlss && res.m_frameBuffer.dlssMode == Resources::DlssMode::eSuperResolution;
+  const bool useDlssSrMotionWrite                  = useDlssSr && config.useShading && !config.useComputeRaster;
+  const VkColorComponentFlags dlssSrColorWriteMask = state.colorWriteMasks[0];
+  if(useDlssSr)
+  {
+    graphicsGen.colorFormats = res.m_frameBuffer.dlssUpscaler.getBufferFormats();
+    state.colorWriteMasks.resize(2, dlssSrColorWriteMask);
+    state.colorBlendEnables.resize(2, state.colorBlendEnables[0]);
+    state.colorBlendEquations.resize(2, state.colorBlendEquations[0]);
+    state.colorWriteMasks[1] = 0;
+  }
+#endif
 
   state.rasterizationState.lineWidth = float(res.m_frameBuffer.pixelScale * 2.0f);
 
@@ -424,6 +482,12 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene, const Ren
   state.depthStencilState.depthCompareOp   = VK_COMPARE_OP_ALWAYS;
   state.rasterizationState.cullMode        = VK_CULL_MODE_NONE;
 
+#if USE_DLSS
+  if(useDlssSrMotionWrite)
+  {
+    state.colorWriteMasks[1] = dlssSrColorWriteMask;
+  }
+#endif
   graphicsGen.clearShaders();
   graphicsGen.addShader(VK_SHADER_STAGE_VERTEX_BIT, "main",
                         nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullScreenVertexShader));
@@ -431,6 +495,12 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene, const Ren
                         nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullScreenBackgroundFragShader));
 
   graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_basicPipelines.background);
+#if USE_DLSS
+  if(useDlssSrMotionWrite)
+  {
+    state.colorWriteMasks[1] = 0;
+  }
+#endif
 
   graphicsGen.clearShaders();
   graphicsGen.addShader(VK_SHADER_STAGE_VERTEX_BIT, "main",
@@ -440,10 +510,8 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene, const Ren
 
   graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_basicPipelines.atomicRaster);
 
-  if(res.m_supportsClusterRaytracing)
+  if(!m_isRaster)
   {
-    state.colorWriteMasks = {0};
-
     graphicsGen.clearShaders();
     graphicsGen.addShader(VK_SHADER_STAGE_VERTEX_BIT, "main",
                           nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullScreenVertexShader));

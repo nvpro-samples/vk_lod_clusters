@@ -47,6 +47,7 @@
 
 #if USE_DLSS
 #include "dlss_denoiser.hpp"
+#include "dlss_upscaler.hpp"
 #endif
 
 #include "hbao_pass.hpp"
@@ -193,6 +194,14 @@ public:
       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_PRE_RASTERIZATION_SHADERS_BIT
       | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
 
+#if USE_DLSS
+  enum class DlssMode
+  {
+    eNone,
+    eRayReconstruction,
+    eSuperResolution,
+  };
+#endif
 
   struct FrameBuffer
   {
@@ -245,9 +254,13 @@ public:
     VkPipelineRenderingCreateInfo pipelineRenderingInfo = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
 
 #if USE_DLSS
-    bool                        hasDenoiser  = false;
-    DlssDenoiser                dlssDenoiser = {};
-    NVSDK_NGX_PerfQuality_Value dlssQuality  = NVSDK_NGX_PerfQuality_Value(-1);
+    DlssMode                    dlssMode           = DlssMode::eNone;
+    bool                        hasDenoiser        = false;
+    DlssDenoiser                dlssDenoiser       = {};
+    DlssUpscaler                dlssUpscaler       = {};
+    NVSDK_NGX_PerfQuality_Value dlssQuality        = NVSDK_NGX_PerfQuality_Value(-1);
+    VkImageLayout               dlssSrColorLayout  = VK_IMAGE_LAYOUT_GENERAL;
+    VkImageLayout               dlssSrMotionLayout = VK_IMAGE_LAYOUT_GENERAL;
 #endif
   };
 
@@ -258,6 +271,7 @@ public:
   void updateFramebufferRenderSizeDependent(VkCommandBuffer cmd);
 #if USE_DLSS
   void updateFramebufferDlss(VkCommandBuffer cmd);
+  void setFramebufferDlss(DlssMode mode, NVSDK_NGX_PerfQuality_Value dlssQuality);
   void setFramebufferDlss(bool enabled, NVSDK_NGX_PerfQuality_Value dlssQuality);
 #endif
   void deinitFramebufferRenderSizeDependent();
@@ -347,6 +361,17 @@ public:
                          bool               hasSecondary = false,
                          VkAttachmentLoadOp loadOpColor  = VK_ATTACHMENT_LOAD_OP_CLEAR,
                          VkAttachmentLoadOp loadOpDepth  = VK_ATTACHMENT_LOAD_OP_CLEAR);
+#if USE_DLSS
+  void cmdBeginRenderingDlssSrColor(VkCommandBuffer    cmd,
+                                    VkAttachmentLoadOp loadOpColor = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                    VkAttachmentLoadOp loadOpDepth = VK_ATTACHMENT_LOAD_OP_CLEAR);
+  void cmdBeginRenderingDlssSr(VkCommandBuffer    cmd,
+                               VkAttachmentLoadOp loadOpColor  = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                               VkAttachmentLoadOp loadOpDepth  = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                               VkAttachmentLoadOp loadOpMotion = VK_ATTACHMENT_LOAD_OP_CLEAR);
+  void cmdPrepareDlssSrEvaluation(VkCommandBuffer cmd);
+  bool cmdEvaluateDlssSr(VkCommandBuffer cmd, glm::vec2 jitter, nvvk::ProfilerGpuTimer& profiler);
+#endif
   void cmdBeginRayTracing(VkCommandBuffer cmd);
 
   void cmdImageTransition(VkCommandBuffer cmd, nvvk::Image& rimg, VkImageAspectFlags aspects, VkImageLayout newLayout, bool needBarrier = false) const;

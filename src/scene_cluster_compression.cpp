@@ -556,6 +556,13 @@ void Scene::decompressGroup(const GroupInfo& info, const GroupView& groupSrc, vo
       // texcoords
       if((clusterSrc.attributeBits & (usedBit | compressedBit)) == (usedBit | compressedBit))
       {
+        // align to vec2: must match the uncompressed branch below and the shader's
+        // Cluster_getVertexTexCoords 8-byte alignment, otherwise clusters whose preceding
+        // attributes don't already land on an 8-byte boundary (e.g. no-normal meshes with an
+        // odd vertex count, where positions end at 12*vertexCount bytes) read their texcoords
+        // one uint32 off and the UVs break up at cluster boundaries.
+        dstOffset = (dstOffset + 1) & ~1;
+
         ptrdiff_t srcSize = ptrdiff_t(groupSrc.vertices.data() + groupSrc.vertices.size()) - ptrdiff_t(srcData);
         assert(srcSize >= 0);
 

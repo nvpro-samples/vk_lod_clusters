@@ -48,7 +48,9 @@ public:
 
 private:
   Resources*               m_res = nullptr;
-  nvvk::Image              m_defaultImage{};
+  nvvk::Image              m_defaultWhiteImage{};
+  nvvk::Image              m_defaultBlackImage{};
+  nvvk::Image              m_defaultNormalImage{};
   std::vector<nvvk::Image> m_images;
   nvvk::DescriptorPack     m_dsetPack;
 };

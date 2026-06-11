@@ -33,7 +33,7 @@
 #else
 #extension GL_NV_mesh_shader : require
 #endif
-#extension GL_EXT_control_flow_attributes: require
+#extension GL_EXT_control_flow_attributes : require
 
 #include "shaderio.h"
 
@@ -48,7 +48,7 @@ layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuff
   FrameConstants view;
 };
 
-layout(scalar,binding=BINDINGS_READBACK_SSBO,set=0) buffer readbackBuffer
+layout(scalar, binding = BINDINGS_READBACK_SSBO, set = 0) buffer readbackBuffer
 {
   Readback readback;
 };
@@ -70,7 +70,7 @@ layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffe
 
 layout(scalar, binding = BINDINGS_SCENEBUILDING_UBO, set = 0) uniform buildBuffer
 {
-  SceneBuilding build;  
+  SceneBuilding build;
 };
 
 #if USE_STREAMING
@@ -83,14 +83,16 @@ layout(scalar, binding = BINDINGS_STREAMING_UBO, set = 0) uniform streamingBuffe
 
 ////////////////////////////////////////////
 
-layout(location=0) out Interpolants {
+layout(location = 0) out Interpolants
+{
   flat uint clusterID;
-} OUT[];
+}
+OUT[];
 
 ////////////////////////////////////////////
 
 #ifndef MESHSHADER_WORKGROUP_SIZE
-#define MESHSHADER_WORKGROUP_SIZE  32
+#define MESHSHADER_WORKGROUP_SIZE 32
 #endif
 
 #ifndef MESHSHADER_BBOX_COUNT
@@ -98,9 +100,9 @@ layout(location=0) out Interpolants {
 #endif
 
 
-
-layout(local_size_x=MESHSHADER_WORKGROUP_SIZE) in;
-layout(max_vertices=MESHSHADER_BBOX_COUNT * MESHSHADER_BBOX_VERTICES, max_primitives=MESHSHADER_BBOX_COUNT * MESHSHADER_BBOX_LINES) out;
+layout(local_size_x = MESHSHADER_WORKGROUP_SIZE) in;
+layout(max_vertices   = MESHSHADER_BBOX_COUNT * MESHSHADER_BBOX_VERTICES,
+       max_primitives = MESHSHADER_BBOX_COUNT * MESHSHADER_BBOX_LINES) out;
 layout(lines) out;
 
 ////////////////////////////////////////////
@@ -124,70 +126,70 @@ void main()
 #endif
 
   uint numRenderedClusters = push.alpha != 0 ? build.numRenderedClustersAlpha : build.numRenderedClusters;
-  uint baseID   = workGroupID * MESHSHADER_BBOX_COUNT;
-  uint numBoxes = min(numRenderedClusters, baseID + MESHSHADER_BBOX_COUNT) - baseID;
-  
+  uint baseID              = workGroupID * MESHSHADER_BBOX_COUNT;
+  uint numBoxes            = min(numRenderedClusters, baseID + MESHSHADER_BBOX_COUNT) - baseID;
+
 #if USE_EXT_MESH_SHADER
   SetMeshOutputsEXT(numBoxes * MESHSHADER_BBOX_VERTICES, numBoxes * MESHSHADER_BBOX_LINES);
-  if (numBoxes == 0) return;
+  if(numBoxes == 0)
+    return;
 #else
-  if (gl_LocalInvocationID.x == 0)
+  if(gl_LocalInvocationID.x == 0)
   {
     gl_PrimitiveCountNV = numBoxes * MESHSHADER_BBOX_LINES;
   }
 #endif
 
-  const uint vertexRuns = ((MESHSHADER_BBOX_COUNT * MESHSHADER_BBOX_VERTICES) + MESHSHADER_WORKGROUP_SIZE-1) / MESHSHADER_WORKGROUP_SIZE;
-  
+  const uint vertexRuns = ((MESHSHADER_BBOX_COUNT * MESHSHADER_BBOX_VERTICES) + MESHSHADER_WORKGROUP_SIZE - 1) / MESHSHADER_WORKGROUP_SIZE;
+
   [[unroll]]
-  for (uint32_t run = 0; run < vertexRuns; run++)
+  for(uint32_t run = 0; run < vertexRuns; run++)
   {
     uint vert   = gl_LocalInvocationID.x + run * MESHSHADER_WORKGROUP_SIZE;
     uint box    = vert / MESHSHADER_BBOX_VERTICES;
     uint corner = vert % MESHSHADER_BBOX_VERTICES;
-    
-    uint boxLoad = min(box,numBoxes-1);
-  
-    ClusterInfo cinfo = push.alpha != 0 ? build.renderClusterInfosAlpha.d[boxLoad + baseID] : build.renderClusterInfos.d[boxLoad + baseID];
-    uint clusterID = cinfo.clusterID;
-    RenderInstance instance = instances[cinfo.instanceID];
-    
-  #if USE_STREAMING
+
+    uint boxLoad = min(box, numBoxes - 1);
+
+    ClusterInfo    cinfo     = push.alpha != 0 ? build.renderClusterInfosAlpha.d[boxLoad + baseID] :
+                                                 build.renderClusterInfos.d[boxLoad + baseID];
+    uint           clusterID = cinfo.clusterID;
+    RenderInstance instance  = instances[cinfo.instanceID];
+
+#if USE_STREAMING
     Cluster_in clusterRef = Cluster_in(streaming.resident.clusters.d[clusterID]);
-  #else
-    Geometry geometry = geometries[instance.geometryID];
+#else
+    Geometry   geometry   = geometries[instance.geometryID];
     Cluster_in clusterRef = Cluster_in(geometry.preloadedClusters.d[clusterID]);
-  #endif
-    
+#endif
+
     BBox bbox = Cluster_getBBox(clusterRef);
-    
-    bvec3 weight   = bvec3((corner & 1) != 0, (corner & 2) != 0, (corner & 4) != 0);
-    vec3 cornerPos = mix(bbox.lo, bbox.hi, weight);
-    
-    if (box < numBoxes)
+
+    bvec3 weight    = bvec3((corner & 1) != 0, (corner & 2) != 0, (corner & 4) != 0);
+    vec3  cornerPos = mix(bbox.lo, bbox.hi, weight);
+
+    if(box < numBoxes)
     {
-    #if USE_EXT_MESH_SHADER
-      gl_MeshVerticesEXT[vert].gl_Position = 
-    #else
-      gl_MeshVerticesNV[vert].gl_Position = 
-    #endif
-        view.viewProjMatrix * vec4(instance.worldMatrix * vec4(cornerPos,1), 1);
+#if USE_EXT_MESH_SHADER
+      gl_MeshVerticesEXT[vert].gl_Position =
+#else
+      gl_MeshVerticesNV[vert].gl_Position =
+#endif
+          view.viewProjMatrixRender * vec4(instance.worldMatrix * vec4(cornerPos, 1), 1);
       OUT[vert].clusterID = clusterID;
     }
   }
-  
+
   {
-    uvec2 boxIndices[4] = uvec2[4](
-      uvec2(0,1),uvec2(1,3),uvec2(3,2),uvec2(2,0)
-    );
-  
-    uint subID = gl_LocalInvocationID.x & (MESHSHADER_BBOX_THREADS-1);
+    uvec2 boxIndices[4] = uvec2[4](uvec2(0, 1), uvec2(1, 3), uvec2(3, 2), uvec2(2, 0));
+
+    uint subID = gl_LocalInvocationID.x & (MESHSHADER_BBOX_THREADS - 1);
     uint box   = gl_LocalInvocationID.x / MESHSHADER_BBOX_THREADS;
-  
+
     uvec2 circle = boxIndices[subID];
-    
-    if (box < numBoxes)
-    {  
+
+    if(box < numBoxes)
+    {
       // lower
       writePrimitiveLineIndices(box * 12 + subID + 0, circle + box * MESHSHADER_BBOX_VERTICES);
       // upper

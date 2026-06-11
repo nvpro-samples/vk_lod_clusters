@@ -51,7 +51,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 
 #####################################################################################
 # Adding DLSS if selected
-option(USE_DLSS "Use DLSS-RR for denoising" ON)
+option(USE_DLSS "Use DLSS for denoising/upscaling" ON)
 if(USE_DLSS)
   set(DLSS_VERSION "310.5.3")
   find_package(NGX REQUIRED)
@@ -62,6 +62,8 @@ if(USE_DLSS)
     ${CMAKE_CURRENT_SOURCE_DIR}/src/dlss_wrapper.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/dlss_denoiser.cpp 
     ${CMAKE_CURRENT_SOURCE_DIR}/src/dlss_denoiser.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/dlss_upscaler.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/dlss_upscaler.hpp
   )
 endif()
 
@@ -81,6 +83,9 @@ copy_to_runtime_and_install( ${PROJECT_NAME}
                     "${NVSHADERS_DIR}/nvshaders/sky_io.h.slang"
                     "${NVSHADERS_DIR}/nvshaders/sky_functions.h.slang"
                     "${NVSHADERS_DIR}/nvshaders/constants.h.slang"
+                    "${NVSHADERS_DIR}/nvshaders/functions.h.slang"
+                    "${NVSHADERS_DIR}/nvshaders/pbr_material_types.h.slang"
+                    "${NVSHADERS_DIR}/nvshaders/pbr_ggx_microfacet.h.slang"
     LOCAL_DIRS "${CMAKE_CURRENT_LIST_DIR}/shaders"
     AUTO
 )

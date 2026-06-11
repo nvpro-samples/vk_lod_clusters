@@ -58,8 +58,7 @@ struct SceneConfig
 
   // allow materials
   bool enableMultiMaterials = true;
-
-  bool _reserved = false;
+  bool _reserved            = false;
 
   // due to the simple shading, only enable normals for now
   uint32_t enabledAttributes = shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL;
@@ -138,6 +137,22 @@ struct SceneLoaderConfig
   // discard instances whose materials have these properties
   bool skipAlphaMasked  = false;
   bool skipAlphaBlended = true;
+
+  bool enableTexturedMaterials = false;
+
+  bool operator==(const SceneLoaderConfig& other) const
+  {
+    // ignore progressPct
+    return processingThreadsPct == other.processingThreadsPct && processingOnly == other.processingOnly
+           && processingAllowPartial == other.processingAllowPartial && processingMode == other.processingMode
+           && autoSaveCache == other.autoSaveCache && autoLoadCache == other.autoLoadCache
+           && memoryMappedCache == other.memoryMappedCache && forcePreprocessMiB == other.forcePreprocessMiB
+           && skipNodeNames == other.skipNodeNames && skipMaterialNames == other.skipMaterialNames
+           && skipMeshNames == other.skipMeshNames && skipAlphaMasked == other.skipAlphaMasked
+           && skipAlphaBlended == other.skipAlphaBlended && enableTexturedMaterials == other.enableTexturedMaterials;
+  }
+
+  bool operator!=(const SceneLoaderConfig& other) const { return !(*this == other); }
 };
 
 // To artificially instance the full scene on a grid multiple times.
@@ -482,13 +497,37 @@ public:
     float     fovy;
   };
 
+  enum ImageDefaultType
+  {
+    IMAGE_DEFAULT_WHITE,
+    IMAGE_DEFAULT_BLACK,
+    IMAGE_DEFAULT_NORMAL,
+    NUM_IMAGE_DEFAULTS,
+  };
+
+  struct Image
+  {
+    std::string      filename;
+    bool             sRGB        = false;
+    ImageDefaultType defaultType = IMAGE_DEFAULT_NORMAL;
+  };
+
   struct Material
   {
+    bool  twoSided    = false;
+    bool  alphaMasked = false;
+    float alphaCutOff = 0.5f;
+
     glm::vec4 color{0, 0, 0, 1};
-    bool      twoSided         = false;
-    bool      alphaMasked      = false;
-    float     alphaCutOff      = 0.5f;
-    uint32_t  alphaMaskImageID = ~0U;
+    glm::vec4 emissive{0, 0, 0, 1};
+    float     metallicFactor           = 1.0;
+    float     roughnessFactor          = 1.0;
+    uint32_t  normalImageID            = ~0u;
+    uint32_t  baseImageID              = ~0u;
+    uint32_t  occlusionImageID         = ~0u;
+    uint32_t  metallicRoughnessImageID = ~0u;
+    uint32_t  emissiveImageID          = ~0u;
+    uint32_t  alphaMaskImageID         = ~0u;
   };
 
   //////////////////////////////////////////////////////////////////////////
@@ -527,11 +566,12 @@ public:
   std::vector<Material>    m_materials;
   std::vector<std::string> m_geometryNames;
   std::vector<std::string> m_materialNames;
-  std::vector<std::string> m_imageFileNames;
+  std::vector<Image>       m_images;
 
-  bool m_isBig        = false;
-  bool m_hasTwoSided  = false;
-  bool m_hasAlphaMask = false;
+  bool m_isBig                = false;
+  bool m_hasTwoSided          = false;
+  bool m_hasAlphaMask         = false;
+  bool m_hasTexturedMaterials = false;
 
   uint32_t m_geometryMultiMaterialCount = 0;
 

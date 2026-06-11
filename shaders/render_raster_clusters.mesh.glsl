@@ -66,7 +66,7 @@ layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuff
   FrameConstants view;
 };
 
-layout(scalar,binding=BINDINGS_READBACK_SSBO,set=0) buffer readbackBuffer
+layout(scalar, binding = BINDINGS_READBACK_SSBO, set = 0) buffer readbackBuffer
 {
   Readback readback;
 };
@@ -88,12 +88,12 @@ layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffe
 
 layout(scalar, binding = BINDINGS_SCENEBUILDING_UBO, set = 0) uniform buildBuffer
 {
-  SceneBuilding build;  
+  SceneBuilding build;
 };
 
 layout(scalar, binding = BINDINGS_SCENEBUILDING_SSBO, set = 0) buffer buildBufferRW
 {
-  SceneBuilding buildRW;  
+  SceneBuilding buildRW;
 };
 
 #if USE_STREAMING
@@ -113,43 +113,43 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
 
 #if USE_PERPRIMITIVE_OUT
 
-  // Used if we have less triangles than vertices per cluster.
-  // Stores cluster-uniform outputs as perprimitive output.
+// Used if we have less triangles than vertices per cluster.
+// Stores cluster-uniform outputs as perprimitive output.
 
-  layout(location = 0)
-  #if USE_EXT_MESH_SHADER
-  perprimitiveEXT
-  #else
-  perprimitiveNV
-  #endif
-  out PrimitiveAttributes
-  {
-    uint clusterID;
-    uint instanceID;
-  }
-  OUTPRIM[];
+layout(location = 0)
+#if USE_EXT_MESH_SHADER
+    perprimitiveEXT
+#else
+    perprimitiveNV
+#endif
+    out PrimitiveAttributes
+{
+  uint clusterID;
+  uint instanceID;
+}
+OUTPRIM[];
 
-  #if ALLOW_SHADING
-  layout(location = 2) out Interpolants
-  {
-    vec3      wPos;
-  }
-  OUT[];
-  #endif
+#if ALLOW_SHADING
+layout(location = 2) out Interpolants
+{
+  vec3 wPos;
+}
+OUT[];
+#endif
 
 #else
 
-  // Otherwise rely on non-interpolated vertex outputs.
+// Otherwise rely on non-interpolated vertex outputs.
 
-  layout(location = 0) out Interpolants
-  {
-    flat uint clusterID;
-    flat uint instanceID;
-  #if ALLOW_SHADING
-    vec3      wPos;
-  #endif
-  }
-  OUT[];
+layout(location = 0) out Interpolants
+{
+  flat uint clusterID;
+  flat uint instanceID;
+#if ALLOW_SHADING
+  vec3 wPos;
+#endif
+}
+OUT[];
 
 #endif
 #endif
@@ -162,7 +162,6 @@ layout(location = 3) out Interpolants2
 }
 OUTBARY[];
 #endif
-
 
 
 ////////////////////////////////////////////
@@ -197,17 +196,17 @@ void main()
 {
 #if USE_EXT_MESH_SHADER
   // EXT mesh shader's launch grid can overshoot actual work
-  uint workGroupID  = getWorkGroupIndexLinearized(gl_WorkGroupID);
+  uint workGroupID = getWorkGroupIndexLinearized(gl_WorkGroupID);
 #if HAS_ALPHA_TEST
   uint numRenderedClustersAlpha = build.numRenderedClustersAlpha;
 #else
   uint numRenderedClusters = build.numRenderedClusters;
 #endif
-  bool isValid      = workGroupID < numRenderedClusters;
-  uint loadID       = min(workGroupID, numRenderedClusters-1);
+  bool isValid = workGroupID < numRenderedClusters;
+  uint loadID  = min(workGroupID, numRenderedClusters - 1);
 #else
-  uint workGroupID  = gl_WorkGroupID.x;
-  uint loadID       = workGroupID;
+  uint workGroupID = gl_WorkGroupID.x;
+  uint loadID      = workGroupID;
 #endif
 
 #if HAS_ALPHA_TEST
@@ -220,7 +219,7 @@ void main()
   uint clusterID  = cinfo.clusterID;
 
   RenderInstance instance = instances[instanceID];
-  Geometry geometry       = geometries[instance.geometryID];
+  Geometry       geometry = geometries[instance.geometryID];
 
 #if USE_STREAMING
   Cluster_in clusterRef = Cluster_in(streaming.resident.clusters.d[clusterID]);
@@ -235,30 +234,32 @@ void main()
 #if USE_EXT_MESH_SHADER
   uint vertCount = isValid ? vertMax + 1 : 0;
   uint triCount  = isValid ? triMax + 1 : 0;
-  
+
   SetMeshOutputsEXT(vertCount, triCount);
-  if (triCount == 0)
+  if(triCount == 0)
     return;
 #elif !USE_PRIMITIVE_CULLING
-  if (gl_LocalInvocationID.x == 0) {
+  if(gl_LocalInvocationID.x == 0)
+  {
     gl_PrimitiveCountNV = triMax + 1;
   }
 #endif
 
 #if USE_RENDER_STATS
-  if (gl_LocalInvocationID.x == 0) {
-  #if HAS_ALPHA_TEST
+  if(gl_LocalInvocationID.x == 0)
+  {
+#if HAS_ALPHA_TEST
     atomicAdd(readback.numRenderedTrianglesAlpha, uint(triMax + 1));
-  #else
+#else
     atomicAdd(readback.numRenderedTriangles, uint(triMax + 1));
-  #endif
-  #if !USE_PRIMITIVE_CULLING
-    #if HAS_ALPHA_TEST
-      atomicAdd(readback.numRasteredTrianglesAlpha, uint(triMax + 1));
-    #else
-      atomicAdd(readback.numRasteredTriangles, uint(triMax + 1));
-    #endif
-  #endif
+#endif
+#if !USE_PRIMITIVE_CULLING
+#if HAS_ALPHA_TEST
+    atomicAdd(readback.numRasteredTrianglesAlpha, uint(triMax + 1));
+#else
+    atomicAdd(readback.numRasteredTriangles, uint(triMax + 1));
+#endif
+#endif
   }
 #endif
 
@@ -267,45 +268,45 @@ void main()
 
   [[unroll]] for(uint i = 0; i < uint(MESHLET_VERTEX_ITERATIONS); i++)
   {
-    uint vert        = gl_LocalInvocationID.x + i * MESHSHADER_WORKGROUP_SIZE;
-    uint vertLoad    = min(vert, vertMax);
-    
-    vec3 oPos = oVertices.d[vertLoad]; 
+    uint vert     = gl_LocalInvocationID.x + i * MESHSHADER_WORKGROUP_SIZE;
+    uint vertLoad = min(vert, vertMax);
+
+    vec3 oPos = oVertices.d[vertLoad];
     vec3 wPos = instance.worldMatrix * vec4(oPos, 1.0f);
 
     if(vert <= vertMax)
     {
-      vec4 hPos = view.viewProjMatrix * vec4(wPos,1);
-    #if USE_EXT_MESH_SHADER
+      vec4 hPos = view.viewProjMatrixRender * vec4(wPos, 1);
+#if USE_EXT_MESH_SHADER
       gl_MeshVerticesEXT[vert].gl_Position = hPos;
-    #else
+#else
       gl_MeshVerticesNV[vert].gl_Position = hPos;
-    #endif
+#endif
 
-    #if USE_EXT_MESH_SHADER && USE_TWO_SIDED
+#if USE_EXT_MESH_SHADER && USE_TWO_SIDED
       s_vertices[vert] = hPos;
-    #endif
-    
-    #if !USE_DEPTH_ONLY
-    #if ALLOW_SHADING
-      OUT[vert].wPos                      = wPos.xyz;
-    #endif
-    #if !USE_PERPRIMITIVE_OUT
-      OUT[vert].clusterID                 = clusterID;
-      OUT[vert].instanceID                = instanceID;
-    #endif
-    #endif
+#endif
 
-    #if (!USE_DEPTH_ONLY && ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS)) || (HAS_ALPHA_TEST && ALLOW_VERTEX_TEXCOORDS)
-      OUTBARY[vert].vertexID              = vert;
-    #endif
+#if !USE_DEPTH_ONLY
+#if ALLOW_SHADING
+      OUT[vert].wPos = wPos.xyz;
+#endif
+#if !USE_PERPRIMITIVE_OUT
+      OUT[vert].clusterID  = clusterID;
+      OUT[vert].instanceID = instanceID;
+#endif
+#endif
+
+#if (!USE_DEPTH_ONLY && ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS)) || (HAS_ALPHA_TEST && ALLOW_VERTEX_TEXCOORDS)
+      OUTBARY[vert].vertexID = vert;
+#endif
     }
   }
 
 #if USE_PRIMITIVE_CULLING
   barrier();
 #endif
-  
+
   uint triOutCount = 0;
 
   [[unroll]] for(uint i = 0; i < uint(MESHLET_TRIANGLE_ITERATIONS); i++)
@@ -313,37 +314,32 @@ void main()
     uint tri     = gl_LocalInvocationID.x + i * MESHSHADER_WORKGROUP_SIZE;
     uint triLoad = min(tri, triMax);
 
-    uvec3 indices = uvec3(localIndices.d[triLoad * 3 + 0],
-                          localIndices.d[triLoad * 3 + 1],
-                          localIndices.d[triLoad * 3 + 2]);
+    uvec3 indices = uvec3(localIndices.d[triLoad * 3 + 0], localIndices.d[triLoad * 3 + 1], localIndices.d[triLoad * 3 + 2]);
 #if !USE_FORCED_TWO_SIDED
-  #if USE_TWO_SIDED
+#if USE_TWO_SIDED
     bool effectiveTwoSided = resolveTriangleTwoSided(instance, clusterRef, triLoad);
-  #endif
-    if (instance.flipWinding != 0
+#endif
+    if(instance.flipWinding != 0
 #if USE_TWO_SIDED && !USE_EXT_MESH_SHADER
-      || (effectiveTwoSided && !isFrontFacingHW(gl_MeshVerticesNV[indices.x].gl_Position,
-                                                gl_MeshVerticesNV[indices.y].gl_Position,
-                                                gl_MeshVerticesNV[indices.z].gl_Position))
+       || (effectiveTwoSided
+           && !isFrontFacingHW(gl_MeshVerticesNV[indices.x].gl_Position, gl_MeshVerticesNV[indices.y].gl_Position,
+                               gl_MeshVerticesNV[indices.z].gl_Position))
 #elif USE_TWO_SIDED && USE_EXT_MESH_SHADER
-      || (effectiveTwoSided && !isFrontFacingHW(s_vertices[indices.x],
-                                                s_vertices[indices.y],
-                                                s_vertices[indices.z]))
+       || (effectiveTwoSided && !isFrontFacingHW(s_vertices[indices.x], s_vertices[indices.y], s_vertices[indices.z]))
 #endif
     )
     {
       indices.xy = indices.yx;
     }
 #endif
-    
+
 #if USE_PRIMITIVE_CULLING
     bool isRendered = tri <= triMax
-       && testTriangleHW( gl_MeshVerticesNV[indices.x].gl_Position,
-                          gl_MeshVerticesNV[indices.y].gl_Position,
-                          gl_MeshVerticesNV[indices.z].gl_Position);
-    
+                      && testTriangleHW(gl_MeshVerticesNV[indices.x].gl_Position, gl_MeshVerticesNV[indices.y].gl_Position,
+                                        gl_MeshVerticesNV[indices.z].gl_Position);
+
     uvec4 voteRendered = subgroupBallot(isRendered);
-    
+
     uint triOut = subgroupBallotExclusiveBitCount(voteRendered) + triOutCount;
     triOutCount += subgroupBallotBitCount(voteRendered);
 #else
@@ -353,36 +349,38 @@ void main()
 
     if(isRendered)
     {
-    #if USE_EXT_MESH_SHADER
+#if USE_EXT_MESH_SHADER
       gl_PrimitiveTriangleIndicesEXT[triOut] = indices;
-      #if !USE_DEPTH_ONLY
+#if !USE_DEPTH_ONLY
       gl_MeshPrimitivesEXT[triOut].gl_PrimitiveID = int(tri);
-      #endif
-    #else
+#endif
+#else
       gl_PrimitiveIndicesNV[triOut * 3 + 0] = indices.x;
       gl_PrimitiveIndicesNV[triOut * 3 + 1] = indices.y;
       gl_PrimitiveIndicesNV[triOut * 3 + 2] = indices.z;
-      #if !USE_DEPTH_ONLY
+#if !USE_DEPTH_ONLY
       gl_MeshPrimitivesNV[triOut].gl_PrimitiveID = int(tri);
-      #endif
-    #endif
-    #if USE_PERPRIMITIVE_OUT
+#endif
+#endif
+#if USE_PERPRIMITIVE_OUT && !USE_DEPTH_ONLY
       OUTPRIM[triOut].instanceID = instanceID;
       OUTPRIM[triOut].clusterID  = clusterID;
-    #endif
+#endif
     }
   }
 #if USE_PRIMITIVE_CULLING
-  if (gl_LocalInvocationID.x == 0) {
+  if(gl_LocalInvocationID.x == 0)
+  {
     gl_PrimitiveCountNV = triOutCount;
   }
 #if USE_RENDER_STATS
-  if (gl_LocalInvocationID.x == 0) {
-  #if HAS_ALPHA_TEST
+  if(gl_LocalInvocationID.x == 0)
+  {
+#if HAS_ALPHA_TEST
     atomicAdd(readback.numRasteredTrianglesAlpha, triOutCount);
-  #else
+#else
     atomicAdd(readback.numRasteredTriangles, triOutCount);
-  #endif
+#endif
   }
 #endif
 #endif

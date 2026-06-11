@@ -28,16 +28,17 @@
 
 /////////////////////////////////////////
 
-#define VISUALIZE_MATERIAL 0
+#define VISUALIZE_SHADED 0
 #define VISUALIZE_GREY 1
 #define VISUALIZE_VIS_BUFFER 2
-#define VISUALIZE_CLUSTER 3
-#define VISUALIZE_GROUP 4
-#define VISUALIZE_LOD 5
-#define VISUALIZE_TRIANGLE 6
-#define VISUALIZE_BLAS 7
-#define VISUALIZE_BLAS_CACHED 8
-#define VISUALIZE_DEPTH_ONLY 9
+#define VISUALIZE_MATERIAL 3
+#define VISUALIZE_CLUSTER 4
+#define VISUALIZE_GROUP 5
+#define VISUALIZE_LOD 6
+#define VISUALIZE_TRIANGLE 7
+#define VISUALIZE_BLAS 8
+#define VISUALIZE_BLAS_CACHED 9
+#define VISUALIZE_DEPTH_ONLY 10
 
 #define MESHSHADER_BBOX_VERTICES 8
 #define MESHSHADER_BBOX_LINES 12
@@ -235,8 +236,16 @@ using namespace glm;
 #define USE_DLSS 0
 #endif
 
+#ifndef USE_DLSS_GUIDE_BUFFERS
+#define USE_DLSS_GUIDE_BUFFERS USE_DLSS
+#endif
+
 #ifndef HAS_ALPHA_TEST
 #define HAS_ALPHA_TEST 1
+#endif
+
+#ifndef HAS_TEXTURED_MATERIALS
+#define HAS_TEXTURED_MATERIALS 1
 #endif
 
 #ifndef CLUSTER_VERTEX_COUNT
@@ -271,9 +280,11 @@ struct RayPayload
 
 struct FrameConstants
 {
+  // jittered version for DLSS
+  mat4 viewProjMatrixRender;
+
   mat4 projMatrix;
   mat4 projMatrixI;
-
   mat4 viewProjMatrix;
   mat4 viewProjMatrixI;
   mat4 viewMatrix;
@@ -281,8 +292,6 @@ struct FrameConstants
   vec4 viewPos;
   vec4 viewDir;
   vec4 viewPlane;
-
-  mat4 skyProjMatrixI;
 
   // for motion vectors
   mat4 viewProjMatrixPrev;

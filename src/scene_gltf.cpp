@@ -373,13 +373,40 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
   {
     std::unordered_map<std::string, uint32_t> uniqueImagesMap;
 
+    auto assignTexture = [&](const cgltf_texture* texture, bool sRGB, ImageDefaultType type, uint32_t& outImageID) {
+      if(!texture || !texture->image)
+        return false;
+
+      const cgltf_image* image = texture->image;
+
+      std::string imageFileName;
+      combine_paths(imageFileName, fileName, image->uri);
+
+      auto it = uniqueImagesMap.find(imageFileName);
+      if(it == uniqueImagesMap.end())
+      {
+        uint32_t imageIndex = static_cast<uint32_t>(m_images.size());
+        m_images.push_back({imageFileName, sRGB, type});
+        uniqueImagesMap[imageFileName] = imageIndex;
+        outImageID                     = imageIndex;
+      }
+      else
+      {
+        outImageID = it->second;
+      }
+
+      return true;
+    };
+
+    bool supportTexcoords        = (m_config.enabledAttributes & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0);
+    bool enableTexturedMaterials = supportTexcoords && m_loaderConfig.enableTexturedMaterials;
+
     m_materials.resize(gltf->materials_count);
     m_materialNames.resize(gltf->materials_count);
     for(size_t m = 0; m < gltf->materials_count; m++)
     {
       Material&             material     = m_materials[m];
       const cgltf_material& gltfMaterial = gltf->materials[m];
-      const cgltf_image*    gltfImage    = nullptr;
 
       if(gltfMaterial.name)
       {
@@ -392,41 +419,63 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
 
       if(gltfMaterial.has_pbr_metallic_roughness)
       {
-        material.color                   = glm::make_vec4(gltfMaterial.pbr_metallic_roughness.base_color_factor);
-        const cgltf_texture* gltfTexture = gltfMaterial.pbr_metallic_roughness.base_color_texture.texture;
-        gltfImage                        = gltfTexture ? gltfTexture->image : nullptr;
+        material.color           = glm::make_vec4(gltfMaterial.pbr_metallic_roughness.base_color_factor);
+        material.metallicFactor  = gltfMaterial.pbr_metallic_roughness.metallic_factor;
+        material.roughnessFactor = gltfMaterial.pbr_metallic_roughness.roughness_factor;
       }
       else if(gltfMaterial.has_pbr_specular_glossiness)
       {
-        material.color                   = glm::make_vec4(gltfMaterial.pbr_specular_glossiness.diffuse_factor);
-        const cgltf_texture* gltfTexture = gltfMaterial.pbr_specular_glossiness.diffuse_texture.texture;
-        gltfImage                        = gltfTexture ? gltfTexture->image : nullptr;
+        material.color = glm::make_vec4(gltfMaterial.pbr_specular_glossiness.diffuse_factor);
+      }
+      material.emissive = glm::vec4(glm::make_vec3(gltfMaterial.emissive_factor), 1.0f);
+
+      if(enableTexturedMaterials)
+      {
+        // if we enabled textured materials assign them
+
+        assignTexture(gltfMaterial.normal_texture.texture, false, IMAGE_DEFAULT_NORMAL, material.normalImageID);
+        if(gltfMaterial.has_pbr_metallic_roughness)
+        {
+          if(assignTexture(gltfMaterial.pbr_metallic_roughness.base_color_texture.texture, true, IMAGE_DEFAULT_WHITE,
+                           material.baseImageID))
+          {
+            m_hasTexturedMaterials = true;
+          }
+
+          assignTexture(gltfMaterial.pbr_metallic_roughness.metallic_roughness_texture.texture, false,
+                        IMAGE_DEFAULT_WHITE, material.metallicRoughnessImageID);
+        }
+        else if(gltfMaterial.has_pbr_specular_glossiness)
+        {
+          assignTexture(gltfMaterial.pbr_specular_glossiness.diffuse_texture.texture, true, IMAGE_DEFAULT_WHITE,
+                        material.baseImageID);
+        }
+        assignTexture(gltfMaterial.occlusion_texture.texture, false, IMAGE_DEFAULT_WHITE, material.occlusionImageID);
+        assignTexture(gltfMaterial.emissive_texture.texture, true, IMAGE_DEFAULT_BLACK, material.emissiveImageID);
+      }
+      else if(material.alphaMasked && supportTexcoords)
+      {
+        // if a material is alpha masked always assign texture
+
+        if(gltfMaterial.has_pbr_metallic_roughness)
+        {
+          assignTexture(gltfMaterial.pbr_metallic_roughness.base_color_texture.texture, true, IMAGE_DEFAULT_WHITE,
+                        material.baseImageID);
+        }
+        else if(gltfMaterial.has_pbr_specular_glossiness)
+        {
+          assignTexture(gltfMaterial.pbr_specular_glossiness.diffuse_texture.texture, true, IMAGE_DEFAULT_WHITE,
+                        material.baseImageID);
+        }
       }
 
-      if(gltfImage)
+      if(material.alphaMasked)
       {
-        std::string imageFileName;
-        combine_paths(imageFileName, fileName, gltfImage->uri);
-
-        auto it = uniqueImagesMap.find(imageFileName);
-        if(it == uniqueImagesMap.end())
+        material.alphaMaskImageID = material.baseImageID;
+        if(material.alphaMaskImageID == ~0u)
         {
-          // Not found, so add it to m_imageFileNames and map
-          uint32_t imageIndex = static_cast<uint32_t>(m_imageFileNames.size());
-          m_imageFileNames.push_back(imageFileName);
-          uniqueImagesMap[imageFileName] = imageIndex;
-          material.alphaMaskImageID      = imageIndex;
+          material.alphaMasked = false;
         }
-        else
-        {
-          material.alphaMaskImageID = it->second;
-        }
-      }
-
-      // disable if there is no texture
-      if(material.alphaMasked && !gltfImage)
-      {
-        material.alphaMasked = false;
       }
     }
   }
@@ -682,10 +731,8 @@ void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
   if(node->mesh != nullptr)
   {
     lodclusters::Scene::Instance instance{};
-    const ptrdiff_t              meshIndex = (node->mesh) - data->meshes;
-
-    const cgltf_material* material    = node->mesh->primitives[0].material;
-    bool                  addInstance = true;
+    const ptrdiff_t              meshIndex   = (node->mesh) - data->meshes;
+    bool                         addInstance = true;
 
     if(filters && node->mesh->name && std::regex_match(node->mesh->name, filters->meshNames))
       addInstance = false;
@@ -705,14 +752,16 @@ void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
         const cgltf_material*  material  = primitive->material;
         if(material)
         {
+          const ptrdiff_t materialIndex = (material)-data->materials;
+          const Material& sceneMaterial = m_materials[materialIndex];
+
           if(filters && material->name && std::regex_match(material->name, filters->materialNames))
           {
             addInstance = false;
           }
-          instance.materialID = uint32_t(material - data->materials);
-          instance.color      = m_materials[instance.materialID].color;
-          if(material->alpha_mode == cgltf_alpha_mode_mask && m_hasVertexTexCoord0
-             && material->pbr_metallic_roughness.base_color_texture.texture)
+          instance.materialID = uint32_t(materialIndex);
+          instance.color      = sceneMaterial.color;
+          if(sceneMaterial.alphaMaskImageID != ~0)
           {
             hasAlphaMasked = true;
           }
@@ -1177,7 +1226,7 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
 
     if((geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT))
     {
-      if(m_config.simplifyTangentSignWeight > 0 && m_config.simplifyTangentSignWeight > 0)
+      if(m_config.simplifyTangentWeight > 0 && m_config.simplifyTangentSignWeight > 0)
       {
         geometry.attributeTangentOffset = attributeStart;
         attributeStart += 4;

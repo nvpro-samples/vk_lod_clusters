@@ -149,6 +149,7 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"persistenttraversal"}, &m_rendererConfig.usePersistentTraversal);
   m_info.parameterRegistry->add({"anisotropicgradient"}, &m_rendererConfig.useAnisotropicGradient);
   m_info.parameterRegistry->add({"texturegradientscale"}, &m_frameConfig.frameConstants.texGradScale);
+  m_info.parameterRegistry->add({"texturedmaterials", "enable textured materials"}, &m_sceneLoaderConfig.enableTexturedMaterials);
   {
     // HACK as zorah.cfg ships with some deprecated settings
     static bool dummy;
@@ -192,9 +193,10 @@ void LodClusters::initScene(std::filesystem::path filePath, std::string cacheSuf
   {
     LOGI("Loading scene %s\n", fileName.c_str());
 
-    m_scene         = nullptr;
-    m_sceneLoading  = true;
-    m_sceneProgress = 0;
+    m_scene                 = nullptr;
+    m_sceneLoading          = true;
+    m_sceneProgress         = 0;
+    m_sceneLoaderConfigLast = m_sceneLoaderConfig;
 
 #if USE_DLSS
     // disable when inactive
@@ -461,9 +463,10 @@ void LodClusters::onAttach(nvapp::Application* app)
     m_ui.enumAdd(GUI_SUPERSAMPLE, 2048, "2048 sq");
     m_ui.enumAdd(GUI_SUPERSAMPLE, 4096, "4096 sq");
 
-    m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_MATERIAL, "material");
+    m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_SHADED, "shaded");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_GREY, "grey");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_VIS_BUFFER, "visibility buffer");
+    m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_MATERIAL, "material");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_CLUSTER, "clusters");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_GROUP, "cluster groups");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_LOD, "lod levels");
@@ -639,6 +642,24 @@ void LodClusters::doProcessingOnly()
 {
   setFromClusterConfig(m_sceneConfig, m_tweak.clusterConfig);
   assert(m_app == nullptr);
+
+  if(m_sceneFilePathDropNew.extension() == ".cfg")
+  {
+    std::string filePathString = nvutils::utf8FromPath(m_sceneFilePathDropNew);
+
+    LOGI("Loading config: %s\n", filePathString.c_str());
+
+    std::vector<const char*> args;
+    args.push_back("--configfile");
+    args.push_back(filePathString.c_str());
+
+    std::filesystem::path oldFilePath = m_sceneFilePathDropNew;
+
+    // config parsing might change m_sceneFilePathDropNew
+    // and m_cameraString
+    m_info.parameterParser->parse(std::span(args), false, {}, {}, true);
+  }
+
   m_scene = std::make_unique<Scene>();
   m_scene->init(m_sceneFilePathDropNew, m_sceneConfig, m_sceneLoaderConfig, m_sceneCacheSuffix, false);
 }
@@ -784,6 +805,12 @@ void LodClusters::handleChanges()
 {
   if(m_sceneLoading)
     return;
+
+  if(m_scene && m_sceneLoaderConfig != m_sceneLoaderConfigLast)
+  {
+    std::filesystem::path filePath = m_sceneFilePathDropLast;
+    onFileDrop(filePath);
+  }
 
   if(m_sceneFilePathDropLast != m_sceneFilePathDropNew)
   {
@@ -981,6 +1008,11 @@ void LodClusters::onRender(VkCommandBuffer cmd)
       m_rendererFboChangeID = m_resources.m_fboChangeID;
     }
 
+    bool rasterDlssSrActive = false;
+#if USE_DLSS
+    rasterDlssSrActive = m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD && m_rendererConfig.useDlss
+                         && m_resources.m_frameBuffer.dlssUpscaler.isAvailable();
+#endif
     m_frameConfig.hbaoActive = m_rendererConfig.useShading && m_tweak.hbaoActive && m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD;
 
     shaderio::FrameConstants& frameConstants = m_frameConfig.frameConstants;
@@ -1024,21 +1056,26 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     glm::mat4 projection = glm::perspectiveRH_ZO(frameConstants.fov, float(targetWidth) / float(targetHeight),
                                                  frameConstants.farPlane, frameConstants.nearPlane);
     projection[1][1] *= -1;
+    glm::mat4 projectionRender = projection;
+    if(rasterDlssSrActive)
+    {
+      glm::mat4 jitterMatrix(1.0f);
+      jitterMatrix[3][0] = -frameConstants.jitter.x * 2.0f / std::max(frameConstants.viewportf.x, 1.0f);
+      jitterMatrix[3][1] = -frameConstants.jitter.y * 2.0f / std::max(frameConstants.viewportf.y, 1.0f);
+      projectionRender   = jitterMatrix * projection;
+    }
 
     glm::mat4 view  = m_info.cameraManipulator->getViewMatrix();
     glm::mat4 viewI = glm::inverse(view);
 
-    frameConstants.viewProjMatrix  = projection * view;
-    frameConstants.viewProjMatrixI = glm::inverse(frameConstants.viewProjMatrix);
-    frameConstants.viewMatrix      = view;
-    frameConstants.viewMatrixI     = viewI;
-    frameConstants.projMatrix      = projection;
-    frameConstants.projMatrixI     = glm::inverse(projection);
+    frameConstants.viewProjMatrix       = projection * view;
+    frameConstants.viewProjMatrixI      = glm::inverse(frameConstants.viewProjMatrix);
+    frameConstants.viewProjMatrixRender = projectionRender * view;
+    frameConstants.viewMatrix           = view;
+    frameConstants.viewMatrixI          = viewI;
+    frameConstants.projMatrix           = projection;
+    frameConstants.projMatrixI          = glm::inverse(projection);
     frameConstants.pixelAngle = 2.0f * glm::abs(frameConstants.projMatrixI[1][1]) / glm::max(frameConstants.viewportf.y, 1.0f);
-
-    glm::mat4 viewNoTrans         = view;
-    viewNoTrans[3]                = {0.0f, 0.0f, 0.0f, 1.0f};
-    frameConstants.skyProjMatrixI = glm::inverse(projection * viewNoTrans);
 
     glm::vec4 hPos   = projection * glm::vec4(1.0f, 1.0f, -frameConstants.farPlane, 1.0f);
     glm::vec2 hCoord = glm::vec2(hPos.x / hPos.w, hPos.y / hPos.w);
@@ -1107,7 +1144,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
       shaderio::FrameConstants frameCurrent = m_frameConfig.frameConstants;
       frameCurrent.frame                    = m_frameConfig.frameConstantsLast.frame;
       frameCurrent.jitter                   = m_frameConfig.frameConstantsLast.jitter;
-
+      frameCurrent.viewProjMatrixRender     = m_frameConfig.frameConstantsLast.viewProjMatrixRender;
       if(memcmp(&frameCurrent, &m_frameConfig.frameConstantsLast, sizeof(shaderio::FrameConstants)))
         m_equalFrames = 0;
       else

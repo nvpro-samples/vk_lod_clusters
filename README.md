@@ -113,6 +113,8 @@ Frustum and occlusion culling can be done to reduce the number of rendered clust
 * [shaders/render_raster_clusters_sw.comp.glsl](/shaders/render_raster_clusters.mesh.glsl): Compute shader to rasterize a cluster. It is only used when the "Allow SW-Raster" traversal option is active.
 * [shaders/render_raster.frag.glsl](/shaders/render_raster.frag.glsl)
 
+When `USE_DLSS` is enabled at build time, rasterization supports **DLSS Super Resolution (DLSS-SR)** to upscale a lower-resolution render target (requires `--renderer 0` or the rasterizer UI option). The motion-vector render target stays bound whenever DLSS-SR is active; only _shaded_ hardware rasterization writes motion vectors (SW-raster and other non-shaded modes disable color writes on that attachment and clear it each frame).
+
 In some conditions (visualize == visibility buffer, culling on) one can enable the usage of a basic compute-shader based rasterizer. However it hasn't been tuned yet and in typical usage scenarios is not faster than the mesh-shader because clusters tend to have larger than single pixel triangles. You can look for `USE_SW_RASTER` in the code where it does affect traversal.
 
 **Ray Tracing:**
@@ -166,6 +168,47 @@ You can use the commandline to change some defaults:
 * `--autosavecache 0` disables saving the cache file.
 * `--processingonly 1 --processingthreadpct 0.25 --processingpartial 1` when processing big scenes, the dedicated processing only mode is better and one can reduce the memory consumption by lowering the amount of threads used.
 * `--forcepreprocessmegabytes 1024` if a scene's raw geometry (vertex & indices) is greater than this cutoff, use a dedicated preprocess pass. Can be quicker and allows using memory mapped cache file. Default is 2048 for 2 GiB.
+* `--multimaterials 1 --attributes 7 --texturedmaterials 1` enables textured PBR materials (see [Materials](#materials) below).
+* `--dlss 1` enables DLSS when built with `USE_DLSS` (Super Resolution in rasterization, denoising in ray tracing). Use `--dlssquality <0-3>` to set quality (max performance through ultra performance).
+
+## Materials
+
+The sample supports simple colored materials, alpha-masked materials, and (optionally) textured PBR shading.
+However, the shading quality is kept rather basic given the focus was geometry in this sample. For higher quality
+shading with a lot more features please refer to [vk_gltf_renderer](https://github.com/nvpro-samples/vk_gltf_renderer)
+
+### Textured PBR (metallic-roughness)
+
+Textured PBR is **disabled by default**. When enabled, glTF **PBR metallic-roughness** materials can use base color, metallic-roughness, normal, occlusion, and emissive textures. **Specular-glossiness** materials are not supported for texturing (factor colors only).
+
+**Command line:**
+
+```
+--multimaterials 1 --attributes 7 --texturedmaterials 1
+```
+
+**UI:**
+
+* _Scene Modifiers → Allow textured materials_
+* _Cluster Settings → Other → Mesh Multi-Materials_
+* _Cluster Settings → Other → Enabled Attributes_: enable **NRM**, **TAN**, and **TEX 0** (equivalent to `--attributes 7`)
+
+Changing _Allow textured materials_ reloads the scene.
+
+**Restrictions:**
+
+* **Workflow:** metallic-roughness only (no specular-glossiness texturing).
+* **Vertex attributes:** meshes must provide `NORMAL`, `TANGENT`, and `TEXCOORD_0`. Tangents are required for normal mapping.
+* **Texture coordinates:** only `TEXCOORD_0` is used; glTF per-texture texcoord indices are ignored.
+* **File formats:** textures must be external `dds` or `ktx2` files (same as alpha-masked materials).
+* **Loading:** material textures are fully loaded at scene init and are **not** streamed with geometry. Large scenes with many textures can require significant VRAM up front.
+* **Multi-material:** glTF meshes with multiple materials per mesh require `--multimaterials 1`.
+
+Shaders are compiled with texture sampling only when the loaded scene actually contains textured materials (`HAS_TEXTURED_MATERIALS`).
+
+### Alpha-masked materials
+
+Alpha-masked materials work independently of textured PBR and remain enabled by default when the glTF uses `alphaMode = MASK`. Their textures are also fully loaded at scene init (not streamed).
 
 ## Limitations
 
@@ -173,11 +216,14 @@ You can use the commandline to change some defaults:
   We use `GL_EXT_spirv_intrinsics` rather than dedicated GLSL extension support that may come at a later time.
 * Few error checks are performed on out of memory situations, which can happen on higher _"render copies"_ values, or the complexity of the loaded scene
 * The number of threads used in the persistent kernel is based on a crude heuristic for now and was not evaluated to be the optimal amount.
-* The bounding box visualizations don't show for ray tracing when DLSS is active, and they will only show clusters that are part of BLAS builds in the current frame. Prefer using rasterization to see them.
+* The bounding box visualizations don't show for ray tracing when DLSS denoising is active, and they will only show clusters that are part of BLAS builds in the current frame. Prefer using rasterization to see them.
+* DLSS Super Resolution (rasterization): motion-vector render target is always bound; only shaded HW raster writes it. HBAO is disabled while DLSS-SR is active.
+* Material textures (PBR and alpha-mask) are fully loaded at scene init and are not streamed, even when geometry streaming is enabled.
 * Alpha-masked materials: 
   - Always uses texture coordinate 0 independent of glTF material's texcoord. 
   - Does require enabling texture coordinate loading (`--attributes <bitflag containing 4>` or ui).
-  - May need multi-material support for glTF meshes (`--multimaterials 1` or ui). The textures must be provided as `ktx2` or `dds`. There is no texture-streaming yet, they are fully loaded.
+  - May need multi-material support for glTF meshes (`--multimaterials 1` or ui). The textures must be provided as `ktx2` or `dds`. Textures are fully loaded into VRAM at scene init (not streamed).
+  - See also [Materials](#materials) for full PBR texturing restrictions.
 * `doubleSided` materials:
   - Are a lot slower with `EXT_mesh_shader` than with `NV_mesh_shader` on NVIDIA hardware. Primitive culling is still exclusive to NV_mesh_shader, given there is no reasonable portable and fast way for EXT_mesh_shader.
   - Are only accurately done for multi-material meshes if alpha-masking is properly enabled.
@@ -188,8 +234,8 @@ You can use the commandline to change some defaults:
 Next:
 * For streaming transfer compressed cluster groups and uncompress them in a compute shader after upload.
 Other:
-* Add more material features and basic texturing.
-* Add texture streaming.
+* Add texture streaming for material textures.
+* Extend material support (e.g. specular-glossiness texturing, additional texture coordinate sets).
 * Fallback for persistent traversal kernel.
 * Implement sorting of streaming requests based on distance of instance. Sorting instances alone is not sufficient.
 
@@ -205,7 +251,12 @@ We recommend starting with a `Release` build, as the `Debug` build has a lot mor
 
 The cmake setup will download the `Stanford Bunny` glTF 2.0 model that serves as default scene.
 
-If `USE_DLSS` is activated in the cmake options, then the DLSS/NGX runtime is downloaded by cmake setup as well and DLSS denoising is available for the ray tracer.
+If `USE_DLSS` is activated in the cmake options, then the DLSS/NGX runtime is downloaded by cmake setup as well:
+
+* **Ray tracing:** DLSS Ray Reconstruction (DLSS-RR) denoising for the path-traced output (`DLSS - RR` in the UI, or `--dlss 1` with the ray tracer).
+* **Rasterization:** DLSS Super Resolution (DLSS-SR) upscales a jittered lower-resolution render (`DLSS - SR` in the UI, or `--dlss 1` with `--renderer 0`). Motion vectors are written only in shaded HW-raster mode.
+
+Use `--dlssquality` or the UI quality preset to control the performance/quality trade-off.
 
 It will also look for [`nvpro_core2`](https://github.com/nvpro-samples/nvpro_core2) either as subdirectory of the current project directory, or up to two levels above. If it is not found, it will automatically download the git repo into .
 

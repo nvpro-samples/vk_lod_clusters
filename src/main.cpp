@@ -26,6 +26,9 @@
   } while(false)
 #endif
 
+#include <algorithm>
+#include <cstring>
+
 #define VMA_IMPLEMENTATION
 
 #if __INTELLISENSE__
@@ -178,12 +181,23 @@ int main(int argc, char** argv)
 
 #if USE_DLSS
     // Adding the DLSS extensions to the instance
-    static std::vector<VkExtensionProperties> extraInstanceExtensions;
-    DlssRayReconstruction::getRequiredInstanceExtensions({}, extraInstanceExtensions);
-    for(auto& ext : extraInstanceExtensions)
-    {
-      vkSetup.instanceExtensions.emplace_back(ext.extensionName);
-    }
+    static std::vector<VkExtensionProperties> extraInstanceExtensionsRR;
+    static std::vector<VkExtensionProperties> extraInstanceExtensionsSR;
+    auto appendInstanceExtensions = [&](const std::vector<VkExtensionProperties>& extensions) {
+      for(auto& ext : extensions)
+      {
+        auto found = std::find_if(vkSetup.instanceExtensions.begin(), vkSetup.instanceExtensions.end(),
+                                  [&](const char* name) { return strcmp(name, ext.extensionName) == 0; });
+        if(found == vkSetup.instanceExtensions.end())
+        {
+          vkSetup.instanceExtensions.emplace_back(ext.extensionName);
+        }
+      }
+    };
+    DlssRayReconstruction::getRequiredInstanceExtensions({}, extraInstanceExtensionsRR);
+    DlssSuperResolution::getRequiredInstanceExtensions({}, extraInstanceExtensionsSR);
+    appendInstanceExtensions(extraInstanceExtensionsRR);
+    appendInstanceExtensions(extraInstanceExtensionsSR);
 #endif
     VkResult result{};
 
@@ -194,12 +208,25 @@ int main(int argc, char** argv)
 
 #if USE_DLSS
     // Adding the extra device extensions required by DLSS
-    static std::vector<VkExtensionProperties> extraDeviceExtensions;
-    DlssRayReconstruction::getRequiredDeviceExtensions({}, vkContext.getInstance(), vkContext.getPhysicalDevice(), extraDeviceExtensions);
-    for(auto& ext : extraDeviceExtensions)
-    {
-      vkContext.contextInfo.deviceExtensions.push_back({.extensionName = ext.extensionName, .specVersion = ext.specVersion});
-    }
+    static std::vector<VkExtensionProperties> extraDeviceExtensionsRR;
+    static std::vector<VkExtensionProperties> extraDeviceExtensionsSR;
+    auto appendDeviceExtensions = [&](const std::vector<VkExtensionProperties>& extensions) {
+      for(auto& ext : extensions)
+      {
+        auto found =
+            std::find_if(vkContext.contextInfo.deviceExtensions.begin(), vkContext.contextInfo.deviceExtensions.end(),
+                         [&](const auto& enabled) { return strcmp(enabled.extensionName, ext.extensionName) == 0; });
+        if(found == vkContext.contextInfo.deviceExtensions.end())
+        {
+          vkContext.contextInfo.deviceExtensions.push_back({.extensionName = ext.extensionName, .specVersion = ext.specVersion});
+        }
+      }
+    };
+    DlssRayReconstruction::getRequiredDeviceExtensions({}, vkContext.getInstance(), vkContext.getPhysicalDevice(),
+                                                       extraDeviceExtensionsRR);
+    DlssSuperResolution::getRequiredDeviceExtensions({}, vkContext.getInstance(), vkContext.getPhysicalDevice(), extraDeviceExtensionsSR);
+    appendDeviceExtensions(extraDeviceExtensionsRR);
+    appendDeviceExtensions(extraDeviceExtensionsSR);
 #endif
 
     result = vkContext.createDevice();

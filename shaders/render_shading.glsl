@@ -20,6 +20,8 @@
 
 #extension GL_EXT_fragment_shader_barycentric : enable
 
+#include "nvshaders/pbr_ggx_microfacet.h.slang"
+
 // Approximates the batlow color ramp from the scientific color ramps package.
 // Input will be clamped to [0, 1]; output is sRGB.
 vec3 batlow(float t)
@@ -60,6 +62,21 @@ vec3 lodMix(float v)
     v = (v - low) / (1.0 - low);
     return hue2rgb(0.5 - v * 0.5);
   }
+}
+
+vec3 toSrgb(vec3 rgb)
+{
+  vec3 low  = rgb * 12.92f;
+  vec3 high = fma(pow(rgb, vec3(1.0F / 2.4F)), vec3(1.055F), vec3(-0.055F));
+  return lerp(low, high, vec3(greaterThan(rgb, vec3(0.0031308F))));
+}
+
+// Converts a color from sRGB to linear RGB.
+vec3 toLinear(vec3 srgb)
+{
+  vec3 low  = srgb / 12.92F;
+  vec3 high = pow((srgb + vec3(0.055F)) / 1.055F, vec3(2.4F));
+  return lerp(low, high, vec3(greaterThan(srgb, vec3(0.04045F))));
 }
 
 vec3 colorizeID(uint clusterID)
@@ -111,52 +128,113 @@ vec3 visualizeColor(uint visData, uint instanceID)
   }
 }
 
-vec4 shading(uint instanceID, vec3 wPos, vec3 wNormal, vec4 wTangent, vec2 oTexCoord, uint visData, float overheadLight, float ambientOcclusion
-#if USE_DLSS
+struct ShadingMaterial
+{
+  vec3  albedo;
+  float roughness;
+  float metallic;
+  vec3  emissive;
+  float occlusion;
+};
+
+ShadingMaterial loadMaterial(uint materialID, vec2 oTexCoord, inout vec3 wNormal, vec4 wTangent)
+{
+  RenderMaterial material = materials[materialID];
+  ShadingMaterial shadingMaterial;
+  shadingMaterial.roughness = material.roughness;
+  shadingMaterial.metallic  = material.metallic;
+  shadingMaterial.albedo    = unpackUnorm4x8(material.packedAlbedo).xyz;
+  shadingMaterial.emissive  = unpackUnorm4x8(material.packedEmissive).xyz;
+#if HAS_TEXTURED_MATERIALS
+  vec2 metallicRoughness = texture(bindlessTextures[nonuniformEXT(material.metallicRoughnessTexture)],oTexCoord).xy;
+  shadingMaterial.roughness = metallicRoughness.y * shadingMaterial.roughness;
+  shadingMaterial.metallic  = metallicRoughness.x * shadingMaterial.metallic;
+  shadingMaterial.albedo    *= texture(bindlessTextures[nonuniformEXT(material.baseTexture)], oTexCoord).xyz;
+  shadingMaterial.occlusion = texture(bindlessTextures[nonuniformEXT(material.occlusionTexture)], oTexCoord).x;
+  shadingMaterial.emissive  *= texture(bindlessTextures[nonuniformEXT(material.emissiveTexture)], oTexCoord).xyz;
+  
+  if (material.normalTexture != 0xFFFF)
+  {
+    vec3 normalMap = texture(bindlessTextures[nonuniformEXT(material.normalTexture)], oTexCoord).xyz * 2.f - 1.f;
+    vec3 N = wNormal;
+    vec3 T = wTangent.xyz;
+    vec3 B = normalize(cross(N, T)) * wTangent.w;
+    mat3 tbn = mat3(T, B, N);
+    wNormal = normalize(tbn * normalMap);
+  }
+#endif
+  return shadingMaterial;
+}
+
+vec3 computeShading(ShadingMaterial material, vec3 N, vec3 L, vec3 V, float NdotV)
+{
+  L = normalize(L);
+
+  float perceptualRoughness = max(material.roughness, 0.04f);
+  float alphaRoughness      = perceptualRoughness * perceptualRoughness;
+
+  float NdotL = clamp(dot(N, L), 0.0f, 1.0f);
+  if(NdotV == 0.0f || NdotL == 0.0f)
+  {
+    return vec3(0.0f);
+  }
+
+  vec3  H     = normalize(L + V);
+  float VdotH = clamp(dot(V, H), 0.0f, 1.0f);
+  float NdotH = clamp(dot(N, H), 0.0f, 1.0f);
+
+  float c_min_reflectance = 0.04f;
+  vec3  f0                = mix(vec3(c_min_reflectance), material.albedo, material.metallic);
+  vec3  F                 = schlickFresnel(f0, vec3(1.0f), VdotH);
+
+  float D   = D_GGX(NdotH, alphaRoughness);
+  float Vis = V_GGX(NdotL, NdotV, alphaRoughness);
+
+  vec3 l_diffuse  = (vec3(1.0f) - F) * (1.0f - material.metallic) * (material.albedo) * NdotL;
+  vec3 l_specular = F * (Vis * NdotL) * D;
+
+  return l_diffuse + l_specular;
+}
+
+vec4 shading(uint instanceID, uint materialID, vec3 wPos, vec3 wNormal, vec4 wTangent, vec2 oTexCoord, uint visData, float overheadLight, float ambientOcclusion
+#if USE_DLSS_GUIDE_BUFFERS
   , out vec4 dlssAlbedo, out vec3 dlssSpecular, out vec4 dlssNormalRoughness
 #endif
 )
 {
-  const vec3 skyColor           = view.skyParams.skyColor;
-  const vec3 groundColor        = view.skyParams.groundColor;
-  const float materialRoughness = 0;
-        vec3  materialAlbedo    = visualizeColor(visData, instanceID);
+  const vec3 skyColor           = (view.skyParams.skyColor);
+  const vec3 groundColor        = (view.skyParams.groundColor);
+  ShadingMaterial shadingMaterial;
+  shadingMaterial.roughness = 0.4f;
+  shadingMaterial.metallic = 0.0f;
+  shadingMaterial.albedo = vec3(0);
+  shadingMaterial.emissive = vec3(0);
+  shadingMaterial.occlusion = 1;
+
+  if (view.visualize == VISUALIZE_SHADED) 
+  {
+    shadingMaterial = loadMaterial(materialID, oTexCoord, wNormal, wTangent);
+  }
+  else
+  {
+    shadingMaterial.albedo = (visualizeColor(visData, instanceID));
+  }
 
   vec4 color   = vec4(0.f);
   vec3 normal  = wNormal.xyz;
   vec3 wEyePos = vec3(view.viewMatrixI[3].x, view.viewMatrixI[3].y, view.viewMatrixI[3].z);
   vec3 eyeDir  = normalize(wEyePos.xyz - wPos.xyz);
+  float NdotV  = clamp(dot(normal, eyeDir), 0.0f, 1.0f);
   
-  
-#if ALLOW_VERTEX_TEXCOORDS && 0
-  // for debugging decode of attributes
-  if (view.visualize == VISUALIZE_GREY){
-  
-  #if ALLOW_VERTEX_TANGENTS
-    vec3 tangent   = normalize(wTangent.xyz);
-    vec3 bitangent = cross(normal,tangent) * wTangent.w;
-    
-    vec3 procNrm;
-    procNrm.xy = sin(oTexCoord.xy * 1000) * 0.25;
-    procNrm.z = 1.0;
-    procNrm = normalize(procNrm);
-    
-    normal = normalize(mat3(tangent, bitangent, normal) * procNrm);
-  #endif
-  
-    materialAlbedo.xy *= (oTexCoord * 0.3) + 0.7;
-  }
-#endif
-  
-#if USE_DLSS
-  dlssAlbedo = vec4(materialAlbedo,0);
-  dlssNormalRoughness = vec4(wNormal.xyz, materialRoughness);
-  dlssSpecular = EnvBRDFApprox2(vec3(1), materialRoughness, dot(wNormal, eyeDir));
+#if USE_DLSS_GUIDE_BUFFERS
+  dlssAlbedo = vec4(shadingMaterial.albedo, 0);
+  dlssNormalRoughness = vec4(wNormal.xyz, shadingMaterial.roughness);
+  dlssSpecular = EnvBRDFApprox2(vec3(1), shadingMaterial.roughness, dot(wNormal, eyeDir));
 #endif
 
   // Ambient
-  float ambientIntensity = 1.f;
-  vec3  ambientLighting  = ambientOcclusion * materialAlbedo * ambientIntensity
+  float ambientIntensity = shadingMaterial.occlusion * view.skyParams.brightness;
+  vec3  ambientLighting  = ambientOcclusion * shadingMaterial.albedo * ambientIntensity
                          * mix(mix(groundColor, skyColor, dot(normal, view.wUpDir.xyz) * 0.5 + 0.5), vec3(0.5), 0.5) ;
 
   // Light mixer
@@ -168,11 +246,9 @@ vec4 shading(uint instanceID, vec3 wPos, vec3 wNormal, vec4 wTangent, vec2 oTexC
   vec3  flashlightLighting  = vec3(0.f);
   {
     // Use a flashlight intensity similar to the sky color for average luminance consistency
-    flashlightIntensity *= max(skyColor.x, max(skyColor.y, skyColor.z));
-    vec3  lightDir     = normalize(view.wLightPos.xyz - wPos.xyz);
-    vec3  reflDir      = normalize(-reflect(lightDir, normal));
-    float bsdf         = abs(dot(normal, lightDir)) + pow(max(0, dot(reflDir, eyeDir)), 16) * 0.3;
-    flashlightLighting = flashlightIntensity * materialAlbedo * bsdf;
+    flashlightIntensity *= 0.9;
+    vec3 lightDir = normalize(view.wLightPos.xyz - wPos.xyz);
+    flashlightLighting = flashlightIntensity * computeShading(shadingMaterial, normal, lightDir, eyeDir, NdotV);
   }
 
   // Sky light
@@ -180,20 +256,21 @@ vec4 shading(uint instanceID, vec3 wPos, vec3 wNormal, vec4 wTangent, vec2 oTexC
   vec3 overheadLighting   = vec3(overheadLightIntensity * overheadLight * overheadLightColor);
   {
     vec3 lightDir = normalize(view.skyParams.sunDirection);
-    vec3 reflDir  = normalize(-reflect(lightDir, normal));
-    float diffuse    = max(0, dot(normal, lightDir));
-    float specular   = pow(max(0, dot(reflDir, eyeDir)), 16) * 0.3;
-    float bsdf       = diffuse + specular;
-    overheadLighting = overheadLighting * materialAlbedo * bsdf;
+    overheadLighting = overheadLighting * computeShading(shadingMaterial, normal, lightDir, eyeDir, NdotV);
   }
 
   color.xyz = overheadLighting + flashlightLighting + ambientLighting;
+  if(view.visualize == VISUALIZE_SHADED)
+  {
+    color.xyz += shadingMaterial.emissive;
+    color.xyz = toSrgb(color.xyz);
+  }
   color.w   = 1.0;
-  
+
+
 #if 0
   color.xyz = materialAlbedo;
 #endif
-
   
   return color;
 }

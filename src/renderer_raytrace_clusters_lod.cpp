@@ -137,7 +137,7 @@ private:
 
 bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscene, const RendererConfig& config)
 {
-  if(!initBasicShaders(res, rscene, config))
+  if(!initBasicShaders(res, rscene, config, false))
   {
     return false;
   }
@@ -182,6 +182,7 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("USE_PERSISTENT_TRAVERSAL_KERNEL", config.usePersistentTraversal ? "1" : "0");
   options.AddMacroDefinition("USE_ANISOTROPIC_GRADIENT", config.useAnisotropicGradient ? "1" : "0");
   options.AddMacroDefinition("HAS_ALPHA_TEST", rscene.scene->m_hasAlphaMask ? "1" : "0");
+  options.AddMacroDefinition("HAS_TEXTURED_MATERIALS", rscene.scene->m_hasTexturedMaterials ? "1" : "0");
 
   shaderc::CompileOptions optionsAO = options;
   options.AddMacroDefinition("RAYTRACING_PAYLOAD_INDEX", "0");

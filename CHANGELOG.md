@@ -1,4 +1,18 @@
 # Changelog for vk_lod_clusters
+* 2026-6-10:
+  * Added basic textured PBR shading for glTF materials using the **metallic-roughness** workflow. Specular-glossiness materials are not supported for texturing (factor colors only).
+    * Disabled by default (`--texturedmaterials 0`). Unlike cluster geometry, **material textures are not streamed** — every referenced texture is fully loaded into VRAM at scene init and stays resident.
+    * **Requirements:**
+      * glTF must provide `TEXCOORD_0`, `NORMAL`, and `TANGENT` vertex attributes. Enable loading via `--attributes 7` (normal + tangent + texcoord 0) or the **NRM**, **TAN**, and **TEX 0** checkboxes under _Cluster Settings → Other → Enabled Attributes_.
+      * Only `TEXCOORD_0` is used for texture lookups (glTF texcoord indices on material textures are ignored).
+      * Textures must be provided as external `dds` or `ktx2` files.
+      * Per-triangle materials require `--multimaterials 1` (or _Mesh Multi-Materials_ in the UI).
+    * **Enable via command line:** `--multimaterials 1 --attributes 7 --texturedmaterials 1`
+    * **Enable via UI:** _Scene Modifiers → Allow textured materials_, plus the cluster settings above.
+    * Supports base color, metallic-roughness, normal, occlusion, and emissive maps. Alpha-masked materials continue to use the base color texture's alpha channel.
+  * added DLSS-SR support for rasterization. Shaded mode uses color and motion render targets; other visualize modes (including `visibility buffer` and `depth only`) upscale color and depth only.
+* 2026-6-6:
+  * bugfix in compressed disk cache for texcoord alignment (thanks [Mathias Heyer](https://github.com/nvmheyer)). **WARNING** this might have corrupted some old cache files with textures.
 * 2026-6-1:
   * bugfix in occlusion culling, missed testing for crossed eye plane / near plane and skip.
   * bugfix picking, wasn't adjusted for inverted Z
@@ -150,7 +164,7 @@
   * Enforce facet shading when scene has no vertex normals (compile shaders `ALLOW_VERTEX_NORMALS` accordingly)
   * Bugfix "CLAS position drop bits" option being ignored.
   * Bugfix detection when pre-loading is likely to overshoot device memory
-  * Bugfix HiZ render target size with DLSS denoising active, which resulted in objects classifed as culled when they weren't.
+  * Bugfix HiZ render target size with DLSS-RR denoising active, which resulted in objects classifed as culled when they weren't.
   * Lot's of UI changes and added visible progress bar during scene loading.
   * Added `--processingpartial 1` command line option which allows the `--processingonly 1` mode to resume from partial results.
   * `--processingonly 1` mode now skips Vulkan context and application window creation.
@@ -160,7 +174,7 @@
 * 2025-8-24:
   * Updated `meshoptimizer` submodule to `v 0.25`
 * 2025-8-5:
-  * DLSS denoiser support in ray tracing. Activate `USE_DLSS` in `cmake` to download and enable support within the application. 
+  * DLSS-RR denoiser support in ray tracing. Activate `USE_DLSS` in `cmake` to download and enable support within the application. 
 * 2025-7-31:
   * Bugfix for objects with single lod level appearing black in lod visualization.
   * Filter out instances whose material uses BLENDED transparency.

@@ -105,7 +105,7 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
 layout(set = 0, binding = BINDINGS_RASTER_ATOMIC, r64ui) uniform u64image2D imgRasterAtomic;
 #endif
 
-#if HAS_ALPHA_TEST
+#if HAS_ALPHA_TEST || HAS_TEXTURED_MATERIALS
 layout(set = 1, binding = 0) uniform sampler2D bindlessTextures[];
 #endif
 
@@ -113,6 +113,9 @@ layout(set = 1, binding = 0) uniform sampler2D bindlessTextures[];
 
 #include "attribute_encoding.h"
 #include "texturing.glsl"
+#if USE_DLSS && ALLOW_SHADING && !USE_SW_RASTER
+#include "dlss_util.h"
+#endif
 #include "render_shading.glsl"
 
 ///////////////////////////////////////////////////
@@ -171,6 +174,9 @@ INBARY[];
 
 #if !USE_SW_RASTER
 layout(location = 0, index = 0) out vec4 out_Color;
+#if USE_DLSS && ALLOW_SHADING
+layout(location = 1, index = 0) out vec2 out_DlssMotion;
+#endif
 #else
 vec4 out_Color;
 #endif
@@ -266,7 +272,7 @@ void main()
                         + baryWeight.y * tangent_unpack(triNormals[1], triNormalsPacked.y >> ATTRENC_NORMAL_BITS).xyz
                         + baryWeight.z * tangent_unpack(triNormals[2], triNormalsPacked.z >> ATTRENC_NORMAL_BITS).xyz;
 
-        wTangent.xyz = oTangent * worldMatrixI;
+        wTangent.xyz = normalize(oTangent * worldMatrixI);
       }
   #endif
     }
@@ -326,7 +332,7 @@ void main()
     const float overHeadLight = 1.0f;
     const float ambientLight  = 0.7f;
 
-    out_Color = shading(instanceID, IN.wPos, wNormal, wTangent, oTexCoord, visData, overHeadLight, ambientLight);
+    out_Color = shading(instanceID, materialID, IN.wPos, wNormal, wTangent, oTexCoord, visData, overHeadLight, ambientLight);
   #if DEBUG_VISUALIZATION
     if(view.doWireframe != 0)
     {
@@ -341,6 +347,10 @@ void main()
     float relative = (float(gl_PrimitiveID) / float(triangleCountMinusOne)) * 0.25 + 0.75;
     out_Color = vec4(colorizeID(visData) * relative, 1.0);
   }
+#endif
+
+#if USE_DLSS && ALLOW_SHADING && !USE_SW_RASTER
+  out_DlssMotion = calculateMotionVector(IN.wPos, view.viewProjMatrixPrev, view.viewProjMatrix, view.viewportf);
 #endif
 
 #if 1

@@ -105,6 +105,10 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
 };
 #endif
 
+#if HAS_TEXTURED_MATERIALS
+layout(set = 1, binding = 0) uniform sampler2D bindlessTextures[];
+#endif
+
 layout(set = 0, binding = BINDINGS_TLAS) uniform accelerationStructureEXT asScene;
 
 
@@ -237,7 +241,7 @@ void main()
                       + baryWeight.y * tangent_unpack(triNormals[1], triNormalsPacked.y >> ATTRENC_NORMAL_BITS).xyz
                       + baryWeight.z * tangent_unpack(triNormals[2], triNormalsPacked.z >> ATTRENC_NORMAL_BITS).xyz;
 
-      wTangent.xyz = oTangent * worldMatrixI;
+      wTangent.xyz = normalize(oTangent * worldMatrixI);
     }
 #endif
   }
@@ -266,7 +270,7 @@ void main()
     if(view.doShadow == 1)
       sunContribution = traceShadowRay(wPos, wNormal, directionToLight);
 
-    shaded = shading(instanceID, wPos, wNormal, wTangent, oTexCoord, visData, sunContribution, ambientOcclusion
+    shaded = shading(instanceID, materialID, wPos, wNormal, wTangent, oTexCoord, visData, sunContribution, ambientOcclusion
 #if USE_DLSS
                      ,
                      rayHit.dlssAlbedo, rayHit.dlssSpecular, rayHit.dlssNormalRoughness

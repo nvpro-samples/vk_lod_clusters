@@ -148,7 +148,7 @@ protected:
   void initBasics(Resources& res, RenderScene& rscene, const RendererConfig& config);
   void deinitBasics(Resources& res);
 
-  bool initBasicShaders(Resources& res, RenderScene& rscene, const RendererConfig& config);
+  bool initBasicShaders(Resources& res, RenderScene& rscene, const RendererConfig& config, bool isRaster);
   void initBasicPipelines(Resources& res, RenderScene& rscene, const RendererConfig& config);
   void updateBasicDescriptors(Resources& res, RenderScene& scene, const nvvk::Buffer* sceneBuildBuffer = nullptr);
 
@@ -182,6 +182,7 @@ protected:
   };
 
   RendererConfig m_config;
+  bool           m_isRaster                = {false};
   uint32_t       m_maxRenderClusters       = 0;
   uint32_t       m_maxTraversalTasks       = 0;
   uint32_t       m_maxBlasBuilds           = 0;

@@ -330,16 +330,30 @@ bool SceneTextures::init(Resources* res, const Scene& scene, const SceneTextures
 {
   m_res = res;
 
-  uint32_t imageCount = uint32_t(scene.m_imageFileNames.size());
+  uint32_t imageCount = uint32_t(scene.m_images.size());
 
   m_images.resize(imageCount, {});
 
   {
+    VkResult          result;
     VkImageCreateInfo imageCreateInfo = DEFAULT_VkImageCreateInfo;
+    imageCreateInfo.format            = VK_FORMAT_R8G8B8A8_UNORM;
     imageCreateInfo.extent            = {1, 1, 1};
     imageCreateInfo.usage             = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    VkResult result =
-        NVVK_FAIL_REPORT(res->m_allocator.createImage(m_defaultImage, imageCreateInfo, DEFAULT_VkImageViewCreateInfo));
+
+    result = NVVK_FAIL_REPORT(res->m_allocator.createImage(m_defaultWhiteImage, imageCreateInfo, DEFAULT_VkImageViewCreateInfo));
+    if(result != VK_SUCCESS)
+    {
+      LOGW("Failed to create default image\n");
+      return false;
+    }
+    result = NVVK_FAIL_REPORT(res->m_allocator.createImage(m_defaultBlackImage, imageCreateInfo, DEFAULT_VkImageViewCreateInfo));
+    if(result != VK_SUCCESS)
+    {
+      LOGW("Failed to create default image\n");
+      return false;
+    }
+    result = NVVK_FAIL_REPORT(res->m_allocator.createImage(m_defaultNormalImage, imageCreateInfo, DEFAULT_VkImageViewCreateInfo));
     if(result != VK_SUCCESS)
     {
       LOGW("Failed to create default image\n");
@@ -347,7 +361,7 @@ bool SceneTextures::init(Resources* res, const Scene& scene, const SceneTextures
     }
   }
 
-  // multi-thread the loading of scene->m_imageFileNames
+  // multi-thread the loading of scene->m_images
   // insert a mutex to flush the staging space and one to acquire space.
 
   {
@@ -355,14 +369,21 @@ bool SceneTextures::init(Resources* res, const Scene& scene, const SceneTextures
 
     // Upload m_defaultImage with a simple RGBA of 0xFFFFFFFF value using the existing uploader class
     {
-      uint32_t defaultPixel = 0xFFFFFFFFu;
-      res->m_uploader.appendImage(m_defaultImage, sizeof(uint32_t), &defaultPixel, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+      uint32_t defaultWhitePixel = 0xFFFFFFFFu;
+      res->m_uploader.appendImage(m_defaultWhiteImage, sizeof(uint32_t), &defaultWhitePixel, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+      uint32_t defaultBlackPixel = 0xFF000000u;
+      res->m_uploader.appendImage(m_defaultBlackImage, sizeof(uint32_t), &defaultBlackPixel, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+      uint32_t defaultNormalPixel = 0xFFFF8080;  // R=128, G=128, B=255, A=255
+      res->m_uploader.appendImage(m_defaultNormalImage, sizeof(uint32_t), &defaultNormalPixel, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
 
     if(imageCount)
     {
       nvutils::parallel_batches<1>(
-          imageCount, [&](uint64_t idx) { uploader.uploadImage(scene.m_imageFileNames[idx], true, idx, m_images[idx]); },
+          imageCount,
+          [&](uint64_t idx) {
+            uploader.uploadImage(scene.m_images[idx].filename, scene.m_images[idx].sRGB, idx, m_images[idx]);
+          },
           config.maxThreads);
     }
 
@@ -370,48 +391,50 @@ bool SceneTextures::init(Resources* res, const Scene& scene, const SceneTextures
 
     if(uploader.failed)
       return false;
-
-    if(uploader.missing)
-    {
-      // use default image for missing images
-      for(uint32_t i = 0; i < imageCount; i++)
-      {
-        if(!m_images[i].image)
-        {
-          m_images[i] = m_defaultImage;
-        }
-      }
-    }
   }
 
   std::vector<VkSampler> immutableSamplers;
   if(config.immutableSampler)
   {
-    immutableSamplers.resize(std::max(imageCount, 1u), config.immutableSampler);
+    immutableSamplers.resize(Scene::NUM_IMAGE_DEFAULTS + imageCount, config.immutableSampler);
   }
 
   // always ensure 1 descriptor, even if empty.
   nvvk::DescriptorBindings bindings;
   bindings.addBinding(0, config.immutableSampler ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-                      std::max(imageCount, 1u), VK_SHADER_STAGE_ALL,
+                      imageCount + Scene::NUM_IMAGE_DEFAULTS, VK_SHADER_STAGE_ALL,
                       config.immutableSampler ? immutableSamplers.data() : nullptr, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
 
   m_dsetPack.init(bindings, res->m_device, 1);
 
   nvvk::WriteSetContainer writeSet;
+  writeSet.append(m_dsetPack.makeWrite(0, 0, Scene::IMAGE_DEFAULT_WHITE, 1), m_defaultWhiteImage);
+  writeSet.append(m_dsetPack.makeWrite(0, 0, Scene::IMAGE_DEFAULT_BLACK, 1), m_defaultBlackImage);
+  writeSet.append(m_dsetPack.makeWrite(0, 0, Scene::IMAGE_DEFAULT_NORMAL, 1), m_defaultNormalImage);
   if(imageCount > 0)
   {
     for(uint32_t i = 0; i < imageCount; i++)
     {
       if(m_images[i].image)
       {
-        writeSet.append(m_dsetPack.makeWrite(0, 0, i, 1), m_images[i]);
+        writeSet.append(m_dsetPack.makeWrite(0, 0, i + Scene::NUM_IMAGE_DEFAULTS, 1), m_images[i]);
+      }
+      else
+      {
+        switch(scene.m_images[i].defaultType)
+        {
+          case Scene::IMAGE_DEFAULT_WHITE:
+            writeSet.append(m_dsetPack.makeWrite(0, 0, i + Scene::NUM_IMAGE_DEFAULTS, 1), m_defaultWhiteImage);
+            break;
+          case Scene::IMAGE_DEFAULT_BLACK:
+            writeSet.append(m_dsetPack.makeWrite(0, 0, i + Scene::NUM_IMAGE_DEFAULTS, 1), m_defaultBlackImage);
+            break;
+          case Scene::IMAGE_DEFAULT_NORMAL:
+            writeSet.append(m_dsetPack.makeWrite(0, 0, i + Scene::NUM_IMAGE_DEFAULTS, 1), m_defaultNormalImage);
+            break;
+        }
       }
     }
-  }
-  else
-  {
-    writeSet.append(m_dsetPack.makeWrite(0, 0, 0, 1), m_defaultImage);
   }
 
   vkUpdateDescriptorSets(res->m_device, writeSet.size(), writeSet.data(), 0, nullptr);
@@ -423,12 +446,11 @@ void SceneTextures::deinit()
 {
   for(auto& image : m_images)
   {
-    if(image.image != m_defaultImage.image)
-    {
-      m_res->m_allocator.destroyImage(image);
-    }
+    m_res->m_allocator.destroyImage(image);
   }
-  m_res->m_allocator.destroyImage(m_defaultImage);
+  m_res->m_allocator.destroyImage(m_defaultWhiteImage);
+  m_res->m_allocator.destroyImage(m_defaultBlackImage);
+  m_res->m_allocator.destroyImage(m_defaultNormalImage);
   m_images.clear();
   m_dsetPack.deinit();
 }

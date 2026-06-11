@@ -321,11 +321,24 @@ BUFFER_REF_DECLARE(Geometry_inout, Geometry, , 16);
 struct RenderMaterial
 {
   uint16_t alphaMaskTexture;
+  uint16_t baseTexture;
+
+  uint16_t normalTexture;
+  uint16_t occlusionTexture;
+
+  uint16_t emissiveTexture;
+  uint16_t metallicRoughnessTexture;
+
   uint8_t  twoSided;
-  uint8_t  _reserved;
-  uint32_t originalID;
+  uint8_t  occlussion;
+  uint16_t originalID;
+
+  uint32_t packedAlbedo;
+  uint32_t packedEmissive;
+  float    roughness;
+  float    metallic;
 };
-BUFFER_REF_DECLARE_ARRAY(RenderMaterials_in, RenderMaterial, readonly, 4);
+BUFFER_REF_DECLARE_ARRAY(RenderMaterials_in, RenderMaterial, readonly, 16);
 
 struct RenderInstance
 {

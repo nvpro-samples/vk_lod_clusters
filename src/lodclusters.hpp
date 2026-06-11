@@ -187,6 +187,7 @@ private:
   std::filesystem::path  m_sceneFilePathDropNew;
   std::string            m_sceneCacheSuffix = ".nvsngeo";
   SceneLoaderConfig      m_sceneLoaderConfig;
+  SceneLoaderConfig      m_sceneLoaderConfigLast;
   SceneConfig            m_sceneConfig;
   SceneConfig            m_sceneConfigLast;
   SceneConfig            m_sceneConfigEdit;
