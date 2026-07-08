@@ -2151,7 +2151,7 @@ bool SceneStreaming::initClas()
         buildInfo.vertexBuffer             = clusterVA + sceneCluster.vertices;
         buildInfo.positionTruncateBitCount = m_clasTriangleInput.minPositionTruncateBitCount;
 
-        if(requiresMixedGeometryBuffer)
+        if(m_scene->m_hasAlphaMask && requiresMixedGeometryBuffer)
         {
           assert((geometryOffset + buildInfo.triangleCount) <= (loClustersCount * m_scene->m_maxClusterTriangles));
 
@@ -2182,7 +2182,7 @@ bool SceneStreaming::initClas()
         }
         else
         {
-          if((sceneCluster.stateBits & shaderio::CLUSTER_STATE_ALPHAMASKED) != 0)
+          if(m_scene->m_hasAlphaMask && (sceneCluster.stateBits & shaderio::CLUSTER_STATE_ALPHAMASKED) != 0)
             buildInfo.baseGeometryIndexAndGeometryFlags.geometryIndex = 1;
           else
             buildInfo.baseGeometryIndexAndGeometryFlags.geometryFlags = VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT_NV;

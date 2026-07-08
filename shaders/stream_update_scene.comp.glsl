@@ -207,7 +207,7 @@ void main()
         else
       #endif
         {
-          buildInfo.baseGeometryIndexAndFlags = (cluster.stateBits & CLUSTER_STATE_ALPHAMASKED) != 0 ? 1 : ClasGeometryFlag_OPAQUE_BIT_NV;
+          buildInfo.baseGeometryIndexAndFlags = HAS_ALPHA_TEST != 0 && (cluster.stateBits & CLUSTER_STATE_ALPHAMASKED) != 0 ? 1 : ClasGeometryFlag_OPAQUE_BIT_NV;
           buildInfo.baseGeometryIndexAndFlags |= (cluster.stateBits & CLUSTER_STATE_TWOSIDED) != 0 ? ClasGeometryFlag_CULL_DISABLE_BIT_NV : 0;
         }
 
