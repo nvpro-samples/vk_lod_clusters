@@ -84,6 +84,13 @@ std::string formatMetric(size_t size)
   return fmt::format("{:.3} {}", fsize, units[currentUnit]);
 }
 
+static const ImColor   kStreamGeometryFillColor(0.07f, 0.9f, 0.06f, 1.0f);
+static const ImColor   kStreamGeometryLineColor(0.45f, 1.0f, 0.35f, 1.0f);
+static const ImColor   kStreamClasFillColor(0.2f, 0.55f, 1.0f, 1.0f);
+static const ImColor   kStreamClasLineColor(0.55f, 0.85f, 1.0f, 1.0f);
+static constexpr float kMemoryPlotFillAlpha  = 0.50f;
+static constexpr float kMemoryPlotLineWeight = 1.0f;
+
 template <typename T, typename Tcont>
 void uiPlot(const std::string& plotName, const std::string& tooltipFormat, const Tcont& data, const T& maxValue, int offset = 0, size_t sizeOverride = 0)
 {
@@ -95,7 +102,6 @@ void uiPlot(const std::string& plotName, const std::string& tooltipFormat, const
 
   const ImPlotFlags     plotFlags = ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText | ImPlotFlags_Crosshairs;
   const ImPlotAxisFlags axesFlags = ImPlotAxisFlags_Lock | ImPlotAxisFlags_NoLabel;
-  const ImColor         plotColor = ImColor(0.07f, 0.9f, 0.06f, 1.0f);
 
   if(ImPlot::BeginPlot(plotName.c_str(), plotSize, plotFlags))
   {
@@ -104,8 +110,10 @@ void uiPlot(const std::string& plotName, const std::string& tooltipFormat, const
     ImPlot::SetupAxesLimits(0, double(size), 0, static_cast<double>(maxValue), ImPlotCond_Always);
 
     ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
-    ImPlot::PlotShaded("", data.data(), (int)size, -INFINITY, 1.0, 0.0,
-                       ImPlotSpec(ImPlotProp_FillColor, (ImU32)plotColor, ImPlotProp_FillAlpha, 0.50f, ImPlotProp_Offset, offset));
+    ImPlot::PlotLine("", data.data(), (int)size, 1.0, 0.0,
+                     ImPlotSpec(ImPlotProp_LineColor, (ImU32)kStreamGeometryLineColor, ImPlotProp_LineWeight,
+                                kMemoryPlotLineWeight, ImPlotProp_FillColor, (ImU32)kStreamGeometryFillColor, ImPlotProp_FillAlpha,
+                                kMemoryPlotFillAlpha, ImPlotProp_Offset, offset, ImPlotProp_Flags, ImPlotLineFlags_Shaded));
 
     if(ImPlot::IsPlotHovered())
     {
@@ -119,6 +127,64 @@ void uiPlot(const std::string& plotName, const std::string& tooltipFormat, const
     ImPlot::EndPlot();
   }
 }
+
+// clasData contains geometry + CLAS accumulated totals for stacked display
+void uiPlotStreamingMemory(const std::string&           yAxisLabel,
+                           const std::vector<uint32_t>& geometryData,
+                           const std::vector<uint32_t>* clasData,
+                           uint32_t                     maxValue,
+                           int                          offset)
+{
+  ImVec2 plotSize = ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y);
+  size_t size     = geometryData.size();
+
+  plotSize.y = std::max(plotSize.y, ImGui::GetTextLineHeight() * 20);
+
+  const ImPlotFlags     plotFlags = ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText | ImPlotFlags_Crosshairs;
+  const ImPlotAxisFlags axesFlags = ImPlotAxisFlags_Lock | ImPlotAxisFlags_NoLabel;
+
+  if(ImPlot::BeginPlot("Streaming Memory", plotSize, plotFlags))
+  {
+    ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_NoButtons);
+    ImPlot::SetupAxes(nullptr, yAxisLabel.c_str(), axesFlags, axesFlags);
+    ImPlot::SetupAxesLimits(0, double(size), 0, static_cast<double>(maxValue), ImPlotCond_Always);
+
+    ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
+
+    // For stacked display: plot CLAS accumulated total first (background), then Geometry on top.
+    // CLAS fill covers the range from Geometry to the combined total.
+    if(clasData && !clasData->empty())
+    {
+      ImPlot::PlotLine("CLAS", clasData->data(), (int)size, 1.0, 0.0,
+                       ImPlotSpec(ImPlotProp_LineColor, (ImU32)kStreamClasLineColor, ImPlotProp_LineWeight,
+                                  kMemoryPlotLineWeight, ImPlotProp_FillColor, (ImU32)kStreamClasFillColor, ImPlotProp_FillAlpha,
+                                  1.0f, ImPlotProp_Offset, offset, ImPlotProp_Flags, ImPlotLineFlags_Shaded));
+    }
+
+    ImPlot::PlotLine("Geometry", geometryData.data(), (int)size, 1.0, 0.0,
+                     ImPlotSpec(ImPlotProp_LineColor, (ImU32)kStreamGeometryLineColor, ImPlotProp_LineWeight,
+                                kMemoryPlotLineWeight, ImPlotProp_FillColor, (ImU32)kStreamGeometryFillColor, ImPlotProp_FillAlpha,
+                                1.0f, ImPlotProp_Offset, offset, ImPlotProp_Flags, ImPlotLineFlags_Shaded));
+
+    if(ImPlot::IsPlotHovered())
+    {
+      ImPlotPoint mouse       = ImPlot::GetPlotMousePos();
+      int         mouseOffset = (int(mouse.x)) % (int)size;
+      ImGui::BeginTooltip();
+      ImGui::Text("Geometry: %u %s", geometryData[mouseOffset], yAxisLabel.c_str());
+      if(clasData && !clasData->empty())
+      {
+        uint32_t clasMB =
+            (*clasData)[mouseOffset] >= geometryData[mouseOffset] ? (*clasData)[mouseOffset] - geometryData[mouseOffset] : 0;
+        ImGui::Text("CLAS: %u %s", clasMB, yAxisLabel.c_str());
+      }
+      ImGui::EndTooltip();
+    }
+
+    ImPlot::EndPlot();
+  }
+}
+
 static uint32_t getUsagePct(uint64_t requested, uint64_t reserved)
 {
   bool     exceeds = requested > reserved;
@@ -150,7 +216,7 @@ struct UsagePercentages
   void setupPercentages(StreamingStats& stats, const StreamingConfig& streamingConfig)
   {
     pctResident = uint32_t(double(stats.residentGroups) * 100.0 / double(stats.maxGroups));
-    pctClasLeft = stats.reservedClasBytes ? uint32_t(double(stats.maxSizedLeft) * 100.0 / double(stats.maxSizedReserved)) : 100;
+    pctClasLeft = stats.maxClasBytes ? uint32_t(double(stats.maxSizedLeft) * 100.0 / double(stats.maxSizedReserved)) : 100;
     pctGeoMemory = uint32_t(double(stats.usedDataBytes) * 100.0 / double(stats.maxDataBytes));
   }
 
@@ -575,6 +641,11 @@ void LodClusters::onUIRender()
                           ImGuiInputTextFlags_EnterReturnsTrue,
                           "Maximum clusters that can be enqueued per-frame in bits. For raster this equals rendered clusters, for ray tracing its BLAS input.");
       PE::InputFloat("LoD pixel error", &m_frameConfig.lodPixelError, 0.25f, 0.25f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
+      PE::Checkbox("Adaptive error", &m_frameConfig.adaptiveError, "alters pixel error based on streaming load");
+      if(m_frameConfig.adaptiveError && m_renderer)
+      {
+        PE::Text("LoD pixel error (used)", fmt::format("{}", m_renderer->getLodError()));
+      }
 
       m_frameConfig.lodPixelError = std::max(0.001f, m_frameConfig.lodPixelError);
 
@@ -881,6 +952,8 @@ void LodClusters::onUIRender()
                        "Mesh error propagation: scales previous lod error before combining it with the current error to compute the group error as max(previous_error * factor, error).");
         PE::InputFloat("Error merge additive", &m_sceneConfigEdit.lodErrorMergeAdditive, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
                        "Mesh error propagation: adds scaled current error to the group error after the maximum computation.");
+        PE::InputFloat("Error edge limit", &m_sceneConfigEdit.lodErrorEdgeLimit, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
+                       "Mesh error: limit error by edge length, aiming to remove subpixel triangles even if the attribute error is high");
         PE::InputFloat("Normal weight", &m_sceneConfigEdit.simplifyNormalWeight, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
                        "How much to weight this attribute for the error metric. 0 Disables");
         PE::InputFloat("TexCoord weight", &m_sceneConfigEdit.simplifyTexCoordWeight, 0, 0, "%.3f",
@@ -963,7 +1036,11 @@ void LodClusters::onUIRender()
                           ImGuiInputTextFlags_EnterReturnsTrue);
       if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
       {
-        PE::InputIntClamped("Max CLAS MiB", (int*)&m_streamingConfig.maxClasMegaBytes, 128, 1024 * 48, 16, 16,
+        PE::InputIntClamped("Max CLAS MiB", (int*)&m_streamingConfig.maxClasMegaBytes, 256, 1024 * 48, 128, 128,
+                            ImGuiInputTextFlags_EnterReturnsTrue);
+        PE::InputIntClamped("Start CLAS MiB", (int*)&m_streamingConfig.startClasMegaBytes, 128, 1024 * 48, 128, 128,
+                            ImGuiInputTextFlags_EnterReturnsTrue);
+        PE::InputIntClamped("CLAS grow MiB", (int*)&m_streamingConfig.clasGrowMegaBytes, 128, 1024 * 48, 128, 128,
                             ImGuiInputTextFlags_EnterReturnsTrue);
 
         PE::Checkbox("Persistent CLAS Allocator", &m_streamingConfig.usePersistentClasAllocator,
@@ -1031,7 +1108,7 @@ void LodClusters::onUIRender()
                              formatMemorySize(stats.usedClasBytes).c_str());
           ImGui::TableNextColumn();
           ImGui::TextColored(stats.couldNotAllocateClas ? warn_color : text_color, "%d %%",
-                             getUsagePct(stats.usedClasBytes, stats.reservedClasBytes));
+                             getUsagePct(stats.usedClasBytes, stats.maxClasBytes));
           ImGui::TableNextRow();
           ImGui::TableNextColumn();
 
@@ -1152,8 +1229,8 @@ void LodClusters::onUIRender()
     const uint32_t maxSlots = 512;
     if(m_streamGeometryHistogram.empty() == m_tweak.useStreaming)
     {
-      m_streamGeometryHistogramMax = 0;
-      m_streamHistogramOffset      = 0;
+      m_streamHistogramMax    = 0;
+      m_streamHistogramOffset = 0;
       m_streamGeometryHistogram.resize(m_tweak.useStreaming ? maxSlots : 0, 0);
       m_streamClasHistogram.resize(m_tweak.useStreaming ? maxSlots : 0, 0);
     }
@@ -1170,24 +1247,25 @@ void LodClusters::onUIRender()
 #define MEMORY_MB "MB"
 #endif
 
+      uint32_t mbGeometry = uint32_t((stats.usedDataBytes + divisor - 1) / divisor);
+      uint32_t mbClas     = uint32_t((stats.usedClasBytes + divisor - 1) / divisor);
+      uint32_t mbCombined = mbGeometry;
 
-      uint32_t mbGeometry          = uint32_t((stats.usedDataBytes + divisor - 1) / divisor);
-      uint32_t mbClas              = uint32_t((stats.usedClasBytes + divisor - 1) / divisor);
-      m_streamGeometryHistogramMax = std::max(m_streamGeometryHistogramMax, mbGeometry);
-      m_streamClasHistogramMax     = std::max(m_streamClasHistogramMax, mbClas);
-      {
-        m_streamHistogramOffset = (m_streamHistogramOffset + 1) % maxSlots;
-        m_streamGeometryHistogram[(m_streamHistogramOffset + maxSlots - 1) % maxSlots] = mbGeometry;
-        m_streamClasHistogram[(m_streamHistogramOffset + maxSlots - 1) % maxSlots]     = mbClas;
-      }
-
-      uiPlot(std::string("Streaming Geometry Memory (" MEMORY_MB ")"), std::string("past %d " MEMORY_MB " %d"),
-             m_streamGeometryHistogram, m_streamGeometryHistogramMax, m_streamHistogramOffset);
       if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
       {
-        uiPlot(std::string("Streaming CLAS Memory (" MEMORY_MB ")"), std::string("past % d " MEMORY_MB " % d"),
-               m_streamClasHistogram, m_streamClasHistogramMax, m_streamHistogramOffset);
+        mbCombined = mbGeometry + mbClas;
       }
+
+      m_streamHistogramMax = std::max(uint32_t(double(mbCombined) * 1.1), m_streamHistogramMax);
+
+      m_streamHistogramOffset = (m_streamHistogramOffset + 1) % maxSlots;
+      m_streamGeometryHistogram[(m_streamHistogramOffset + maxSlots - 1) % maxSlots] = mbGeometry;
+      m_streamClasHistogram[(m_streamHistogramOffset + maxSlots - 1) % maxSlots]     = mbCombined;
+
+      const std::vector<uint32_t>* clasHistogram =
+          (m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD) ? &m_streamClasHistogram : nullptr;
+      uiPlotStreamingMemory(std::string(MEMORY_MB), m_streamGeometryHistogram, clasHistogram, m_streamHistogramMax,
+                            m_streamHistogramOffset);
     }
   }
   ImGui::End();
@@ -1410,10 +1488,13 @@ void LodClusters::onUIRender()
 
         if(m_renderer)
         {
-          materialID          = m_renderer->getOriginalMaterialID(readback.materialId);
-          materialName        = m_scene->m_materialNames[materialID].c_str();
-          materialAlphaMasked = m_scene->m_materials[materialID].alphaMasked;
-          materialTwoSided    = m_scene->m_materials[materialID].twoSided;
+          materialID = m_renderer->getOriginalMaterialID(readback.materialId);
+          if(materialID != ~0)
+          {
+            materialName        = m_scene->m_materialNames[materialID].c_str();
+            materialAlphaMasked = m_scene->m_materials[materialID].alphaMasked;
+            materialTwoSided    = m_scene->m_materials[materialID].twoSided;
+          }
         }
 
         clusterID    = readback.clusterTriangleId >> 8;

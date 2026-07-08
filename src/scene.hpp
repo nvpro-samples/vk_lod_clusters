@@ -80,18 +80,18 @@ struct SceneConfig
 
   // mesh simplification weights for attributes
   // zero to disable
-  float simplifyNormalWeight      = 0.5f;
-  float simplifyTangentWeight     = 0.01f;
-  float simplifyTangentSignWeight = 0.5f;
+  float simplifyNormalWeight      = 0.0f;
+  float simplifyTangentWeight     = 0.0f;
+  float simplifyTangentSignWeight = 0.1f;
   float simplifyTexCoordWeight    = 0;
-  float simplifyMaterialWeight    = 0.5f;
+  float simplifyMaterialWeight    = 0.1f;
 
   // used when compression is enabled
   uint32_t compressionPosDropBits = 7;
   uint32_t compressionTexDropBits = 7;
 
   // experimental meshoptimizer, try to remove small triangles despite high error
-  float lodErrorEdgeLimit = 0;
+  float lodErrorEdgeLimit = 1.0;
 
   // want to allow some binary compatibility with older cache files
   // safe to add new variables into this section as long as they are zeroed by default

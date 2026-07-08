@@ -30,12 +30,12 @@
 #include "resources.hpp"
 #include "../shaders/shaderio_streaming.h"
 
-#define USE_LARGE_BUFFER_CLAS 1
-
 namespace lodclusters {
 
 static const uint32_t STREAMING_MAX_ACTIVE_TASKS = 3;
 static const uint32_t INVALID_TASK_INDEX         = ~0;
+
+static constexpr VkDeviceSize CLAS_CHUNK_SIZE = 128ull * 1024 * 1024;  // 128 MiB
 
 struct StreamingConfig
 {
@@ -53,6 +53,8 @@ struct StreamingConfig
   size_t maxTransferMegaBytes    = 32;
   size_t maxGeometryMegaBytes    = 1024 * 2;
   size_t maxClasMegaBytes        = 1024 * 2;
+  size_t startClasMegaBytes      = 128;
+  size_t clasGrowMegaBytes       = 128;
   size_t maxBlasCachingMegaBytes = 1024;
 
   VkBuildAccelerationStructureFlagsKHR clasBuildFlags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
@@ -82,11 +84,13 @@ struct StreamingStats
   uint64_t reservedDataBytes = 0;
   uint64_t usedDataBytes     = 0;
 
+  uint64_t maxClasBytes      = 0;
   uint64_t reservedClasBytes = 0;
   uint64_t usedClasBytes     = 0;
   uint64_t wastedClasBytes   = 0;
   uint32_t maxSizedLeft      = 0;
   uint32_t maxSizedReserved  = 0;
+  uint32_t maxSizedMax       = 0;
 
   uint64_t maxTransferBytes     = 0;
   uint64_t transferBytes        = 0;
@@ -214,6 +218,9 @@ public:
                         uint32_t&                    loGroupsCount,
                         uint32_t&                    loClustersCount,
                         uint32_t&                    loMaxGroupClustersCount);
+  bool         growClas(Resources& res, size_t newAllocatedBytes);
+  size_t       getAllocatedClasBytes() const { return size_t(m_clasDataBuffer.getAllocatedSize()); }
+  size_t       getMaxClasBytes() const { return m_maxClasBytes; }
   void         deinitClas(Resources& res);
   void         deinit(Resources& res);
   void         reset(shaderio::StreamingResident& shaderData);
@@ -279,6 +286,7 @@ private:
   uint32_t m_maxClusters;
   uint32_t m_maxGroups;
   size_t   m_maxClasBytes;
+  size_t   m_allocatedClasBytes;
 
   std::vector<Group> m_groups;
 
@@ -301,12 +309,8 @@ private:
   uint64_t     m_residentActiveOffset;
   uint64_t     m_residentActiveUpdateOffset;
 
-  nvvk::Buffer m_clasManageBuffer;
-#if USE_LARGE_BUFFER_CLAS
-  nvvk::LargeBuffer m_clasDataBuffer;
-#else
-  nvvk::Buffer m_clasDataBuffer;
-#endif
+  nvvk::Buffer                m_clasManageBuffer;
+  nvvk::LargeBuffer           m_clasDataBuffer;
   shaderio::StreamingResident m_shaderData;
 
   nvvk::BufferTyped<uint32_t> m_residentActiveHostBuffer;
@@ -336,8 +340,18 @@ private:
 class StreamingAllocator
 {
 public:
+  struct Layout
+  {
+    uint32_t memory32s;
+    uint32_t sectorCount;
+    uint32_t baseWastedSize;  // granularity units (not bytes)
+  };
+
+  static Layout computeLayout(size_t clasBytes, uint32_t granularityByteSize, uint32_t sectorSizeShift);
+
   void init(Resources&                    res,
-            size_t                        totalMegaBytes,
+            size_t                        maxMegaBytes,
+            size_t                        allocatedClasBytes,
             uint32_t                      maxAllocationByteSize,
             uint32_t                      granularityByteSize,
             uint32_t                      sectorSizeShift,
@@ -345,13 +359,25 @@ public:
   void deinit(Resources& res);
 
   size_t   getOperationsSize() const;
-  uint32_t getMaxSized() const;
+  uint32_t getMaxSizedEffective() const;
+  uint32_t getMaxSizedMax() const;
+
+  // grow effective coverage after CLAS backing was resized; returns additional max-sized slots
+  uint32_t growEffective(VkCommandBuffer cmd, size_t newAllocatedClasBytes);
+
+  void applyShaderData(shaderio::StreamingAllocator& shaderData) const { shaderData = m_shaderData; }
 
   void cmdReset(VkCommandBuffer cmd);
   void cmdBeginFrame(VkCommandBuffer cmd);
 
 private:
   shaderio::StreamingAllocator m_shaderData;
+
+  Layout m_maxLayout       = {};
+  Layout m_effectiveLayout = {};
+
+  VkDeviceSize m_usedBitsOffset       = 0;
+  VkDeviceSize m_usedSectorBitsOffset = 0;
 
   nvvk::Buffer m_managementBuffer;
 };
@@ -602,6 +628,11 @@ public:
   {
     assert((m_availableTaskBits & (1 << index)) == 0);
     m_availableTaskBits |= (1 << index);
+  }
+
+  bool isIdle() const
+  {
+    return m_taskQueue.empty() && m_availableTaskBits == ((1u << STREAMING_MAX_ACTIVE_TASKS) - 1u);
   }
 
   bool canPop(VkDevice device, bool ensureAcquisition)

@@ -190,6 +190,8 @@ public:
   size_t getGeometrySize(bool reserved) const;
   size_t getOperationsSize() const { return m_operationsSize + m_clasOperationsSize; }
 
+  float getLoadFactor() const;
+
   uint32_t getMaxCachedBlasBuilds() const { return m_updates.getMaxCachedBlasBuilds(); }
 
   void updateBindings(const nvvk::Buffer& sceneBuildingBuffer);
@@ -223,6 +225,15 @@ private:
   uint32_t        m_lastUpdateIndex;
   uint32_t        m_frameIndex;
   StreamingStats  m_stats;
+
+  // When growing the clas storage we may actually have more allocations left
+  // than a request's readback reports, given requests recorded prior to the grow
+  // may still be in flight.
+  // The delta accumulates grows and stays active until we pop a request that was
+  // recorded at or after the frame of the last grow, as only then the readback
+  // reflects the grown state.
+  uint32_t m_clasGrowMaxSizedLeftDelta = 0;
+  uint32_t m_clasGrowFrameIndex        = 0;
 
   // persistent scene data
 
@@ -321,6 +332,9 @@ private:
 
   bool initClas();
   void deinitClas();
+
+  // command buffer may record filling allocation manager for new empty memory space
+  uint32_t tryGrowClas(VkCommandBuffer cmd, const StreamingRequests::TaskInfo& request);
 
   // shaders & pipelines
 

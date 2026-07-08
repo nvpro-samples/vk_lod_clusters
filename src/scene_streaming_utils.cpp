@@ -126,9 +126,10 @@ void StreamingResident::init(Resources& res, const StreamingConfig& config, uint
 
   // some values are aligned up for easier gpu kernel access
 
-  m_maxClusters  = nvutils::align_up(config.maxClusters, clusterCountAlignment);
-  m_maxGroups    = nvutils::align_up(config.maxGroups, groupCountAlignment);
-  m_maxClasBytes = 0;
+  m_maxClusters        = nvutils::align_up(config.maxClusters, clusterCountAlignment);
+  m_maxGroups          = nvutils::align_up(config.maxGroups, groupCountAlignment);
+  m_maxClasBytes       = 0;
+  m_allocatedClasBytes = 0;
 
   m_lowDetailGroupsCount   = 0;
   m_lowDetailClustersCount = 0;
@@ -200,7 +201,12 @@ const StreamingResident::Group* StreamingResident::initClas(Resources&          
                                                             uint32_t&                    loClustersCount,
                                                             uint32_t&                    loMaxGroupClustersCount)
 {
-  m_maxClasBytes = config.maxClasMegaBytes * 1024 * 1024;
+  m_maxClasBytes       = config.maxClasMegaBytes * 1024 * 1024;
+  m_allocatedClasBytes = config.startClasMegaBytes * 1024 * 1024;
+
+  assert(m_maxClasBytes > CLAS_CHUNK_SIZE);
+  assert(m_allocatedClasBytes > 0 && m_allocatedClasBytes <= m_maxClasBytes);
+  assert(config.startClasMegaBytes <= config.maxClasMegaBytes);
 
   BufferRanges ranges                    = {};
   m_shaderData.clasAddresses             = ranges.append(sizeof(shaderio::uint64_t) * m_maxClusters, 8);
@@ -225,18 +231,18 @@ const StreamingResident::Group* StreamingResident::initClas(Resources&          
     m_shaderData.groupClasSizes += m_clasManageBuffer.address;
   }
 
-#if USE_LARGE_BUFFER_CLAS
-  // one buffer for actual storage, allow > 4 GB
-  res.createLargeBuffer(m_clasDataBuffer, m_maxClasBytes,
-                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
-#else
-  res.createBuffer(m_clasDataBuffer, m_maxClasBytes,
-                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
-#endif
+  const VkDeviceSize initialBytes =
+      (config.usePersistentClasAllocator ? config.startClasMegaBytes : config.maxClasMegaBytes) * 1024 * 1024;
+  const uint32_t initialChunkCount = uint32_t((initialBytes + CLAS_CHUNK_SIZE - 1) / CLAS_CHUNK_SIZE);
+
+  NVVK_CHECK(res.createLargeBuffer(m_clasDataBuffer, m_maxClasBytes,
+                                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
+                                   CLAS_CHUNK_SIZE, initialChunkCount));
   NVVK_DBG_NAME(m_clasDataBuffer.buffer);
 
+  m_allocatedClasBytes         = m_clasDataBuffer.getAllocatedSize();
   m_shaderData.clasBaseAddress = m_clasDataBuffer.address;
-  m_shaderData.clasMaxSize     = m_maxClasBytes;
+  m_shaderData.clasMaxSize     = m_allocatedClasBytes;
 
   shaderData = m_shaderData;
 
@@ -245,6 +251,27 @@ const StreamingResident::Group* StreamingResident::initClas(Resources&          
   loMaxGroupClustersCount = m_lowDetailMaxGroupClusters;
 
   return m_groups.data();
+}
+
+bool StreamingResident::growClas(Resources& res, size_t newAllocatedBytes)
+{
+  newAllocatedBytes = nvutils::align_up(newAllocatedBytes, CLAS_CHUNK_SIZE);
+
+  const VkDeviceSize allocatedSize = m_clasDataBuffer.getAllocatedSize();
+  if(newAllocatedBytes <= allocatedSize || newAllocatedBytes > m_maxClasBytes)
+  {
+    return false;
+  }
+
+  if(res.resizeLargeBuffer(m_clasDataBuffer, newAllocatedBytes) != VK_SUCCESS)
+  {
+    LOGE("StreamingResident::growClas: resizeLargeBuffer failed\n");
+    return false;
+  }
+
+  m_allocatedClasBytes     = m_clasDataBuffer.getAllocatedSize();
+  m_shaderData.clasMaxSize = m_allocatedClasBytes;
+  return true;
 }
 
 size_t StreamingResident::getClasOperationsSize() const
@@ -265,11 +292,7 @@ void StreamingResident::getStats(StreamingStats& stats) const
 void StreamingResident::deinitClas(Resources& res)
 {
   res.m_allocator.destroyBuffer(m_clasManageBuffer);
-#if USE_LARGE_BUFFER_CLAS
   res.m_allocator.destroyLargeBuffer(m_clasDataBuffer);
-#else
-  res.m_allocator.destroyBuffer(m_clasDataBuffer);
-#endif
 
   m_shaderData.clasBaseAddress           = 0;
   m_shaderData.clasAddresses             = 0;
@@ -278,6 +301,8 @@ void StreamingResident::deinitClas(Resources& res)
   m_shaderData.clasAllocatedMaxSizedLeft = 0;
   m_shaderData.groupClasSizes            = 0;
   m_shaderData.clasMaxSize               = 0;
+  m_maxClasBytes                         = 0;
+  m_allocatedClasBytes                   = 0;
 }
 
 void StreamingResident::reset(shaderio::StreamingResident& shaderData)
@@ -518,8 +543,21 @@ void StreamingResident::removeGroup(uint32_t groupResidentID)
 //
 // StreamingAllocator
 
+StreamingAllocator::Layout StreamingAllocator::computeLayout(size_t clasBytes, uint32_t granularityByteSize, uint32_t sectorSizeShift)
+{
+  const size_t   sectorSize32s  = size_t(1) << sectorSizeShift;
+  const size_t   memoryBits     = clasBytes / granularityByteSize;
+  size_t         memory32s      = memoryBits / 32;
+  const size_t   sectorCount    = memory32s / sectorSize32s;
+  const uint32_t baseWastedSize = uint32_t(memory32s - (sectorCount * sectorSize32s));
+  memory32s                     = sectorCount * sectorSize32s;
+
+  return Layout{uint32_t(memory32s), uint32_t(sectorCount), baseWastedSize};
+}
+
 void StreamingAllocator::init(Resources&                    res,
-                              size_t                        totalMegaBytes,
+                              size_t                        maxMegaBytes,
+                              size_t                        allocatedClasBytes,
                               uint32_t                      maxAllocationByteSize,
                               uint32_t                      granularityByteSize,
                               uint32_t                      sectorSizeShift,
@@ -538,34 +576,32 @@ void StreamingAllocator::init(Resources&                    res,
   // want power of two
   assert(granularityByteShift <= 16 && granularityByteSize == (1u << granularityByteShift));
 
-  size_t sectorSize32s = size_t(1) << sectorSizeShift;
-  size_t memoryBits    = size_t(totalMegaBytes) * 1024 * 1024 / granularityByteSize;
-  size_t memory32s     = memoryBits / 32;
-  size_t sectorCount   = memory32s / sectorSize32s;
+  const size_t maxClasBytes = maxMegaBytes * 1024 * 1024;
+  m_maxLayout               = computeLayout(maxClasBytes, granularityByteSize, sectorSizeShift);
+  m_effectiveLayout         = computeLayout(allocatedClasBytes, granularityByteSize, sectorSizeShift);
+
+  const size_t maxMemory32s   = m_maxLayout.memory32s;
+  const size_t maxSectorCount = m_maxLayout.sectorCount;
 
   m_shaderData                      = {};
   m_shaderData.freeGapsCounter      = 0;
   m_shaderData.granularityByteShift = granularityByteShift;
   // align up to be multiple of 32
   m_shaderData.maxAllocationSize = (((maxAllocationByteSize + granularityByteSize - 1) / granularityByteSize) + 31) & (~31);
-  m_shaderData.sectorSizeShift          = sectorSizeShift;
-  m_shaderData.sectorMaxAllocationSized = uint32_t(sectorSize32s * 32 / m_shaderData.maxAllocationSize);
-  m_shaderData.sectorCount              = uint32_t(sectorCount);
-
-  // can only manage memory in multiple of sectorSize
-  // so there might be some initial waste
-  m_shaderData.baseWastedSize = uint32_t(memory32s - (sectorCount * sectorSize32s));
-
-  // reset to multiples of sectors
-  memory32s = sectorCount * sectorSize32s;
+  m_shaderData.sectorSizeShift = sectorSizeShift;
+  m_shaderData.sectorMaxAllocationSized = uint32_t((size_t(1) << sectorSizeShift) * 32 / m_shaderData.maxAllocationSize);
+  m_shaderData.sectorCount    = m_effectiveLayout.sectorCount;
+  m_shaderData.baseWastedSize = m_effectiveLayout.baseWastedSize;
 
   BufferRanges ranges            = {};
-  m_shaderData.freeGapsPos       = ranges.append(sizeof(uint32_t) * memory32s, 4);
-  m_shaderData.freeGapsSize      = ranges.append(sizeof(uint16_t) * memory32s, 4);
-  m_shaderData.freeGapsPosBinned = ranges.append(sizeof(uint32_t) * memory32s, 4);
+  m_shaderData.freeGapsPos       = ranges.append(sizeof(uint32_t) * maxMemory32s, 4);
+  m_shaderData.freeGapsSize      = ranges.append(sizeof(uint16_t) * maxMemory32s, 4);
+  m_shaderData.freeGapsPosBinned = ranges.append(sizeof(uint32_t) * maxMemory32s, 4);
   m_shaderData.freeSizeRanges    = ranges.append(sizeof(shaderio::AllocatorRange) * m_shaderData.maxAllocationSize, 8);
-  m_shaderData.usedSectorBits    = ranges.append(sizeof(uint32_t) * ((sectorCount + 31) / 32), 4);
-  m_shaderData.usedBits          = ranges.append(sizeof(uint32_t) * memory32s, 4);
+  m_shaderData.usedSectorBits    = ranges.append(sizeof(uint32_t) * ((maxSectorCount + 31) / 32), 4);
+  m_usedSectorBitsOffset         = ranges.getSize() - sizeof(uint32_t) * ((maxSectorCount + 31) / 32);
+  m_shaderData.usedBits          = ranges.append(sizeof(uint32_t) * maxMemory32s, 4);
+  m_usedBitsOffset               = ranges.getSize() - sizeof(uint32_t) * maxMemory32s;
   m_shaderData.stats             = ranges.append(sizeof(shaderio::AllocatorStats), 8);
 
   res.createBuffer(m_managementBuffer, ranges.getSize(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -596,9 +632,52 @@ size_t StreamingAllocator::getOperationsSize() const
   return m_managementBuffer.bufferSize;
 }
 
-uint32_t StreamingAllocator::getMaxSized() const
+uint32_t StreamingAllocator::getMaxSizedEffective() const
 {
-  return m_shaderData.sectorMaxAllocationSized * m_shaderData.sectorCount;
+  return m_shaderData.sectorMaxAllocationSized * m_effectiveLayout.sectorCount;
+}
+
+uint32_t StreamingAllocator::getMaxSizedMax() const
+{
+  return m_shaderData.sectorMaxAllocationSized * m_maxLayout.sectorCount;
+}
+
+uint32_t StreamingAllocator::growEffective(VkCommandBuffer cmd, size_t newAllocatedClasBytes)
+{
+  const Layout oldLayout = m_effectiveLayout;
+  const Layout newLayout =
+      computeLayout(newAllocatedClasBytes, 1u << m_shaderData.granularityByteShift, m_shaderData.sectorSizeShift);
+
+  if(newLayout.sectorCount <= oldLayout.sectorCount)
+  {
+    return 0;
+  }
+
+  m_effectiveLayout           = newLayout;
+  m_shaderData.sectorCount    = newLayout.sectorCount;
+  m_shaderData.baseWastedSize = newLayout.baseWastedSize;
+
+
+  // ensure the new memory bits are tagged empty prior use
+  if(newLayout.memory32s > oldLayout.memory32s)
+  {
+    const VkDeviceSize offset = m_usedBitsOffset + VkDeviceSize(oldLayout.memory32s) * sizeof(uint32_t);
+    const VkDeviceSize size   = VkDeviceSize(newLayout.memory32s - oldLayout.memory32s) * sizeof(uint32_t);
+    vkCmdFillBuffer(cmd, m_managementBuffer.buffer, offset, size, 0);
+  }
+
+  // ensure the new sector bits are tagged empty prior use
+  const uint32_t oldSectorBits = (oldLayout.sectorCount + 31) / 32;
+  const uint32_t newSectorBits = (newLayout.sectorCount + 31) / 32;
+  if(newSectorBits > oldSectorBits)
+  {
+    const VkDeviceSize offset = m_usedSectorBitsOffset + VkDeviceSize(oldSectorBits) * sizeof(uint32_t);
+    const VkDeviceSize size   = VkDeviceSize(newSectorBits - oldSectorBits) * sizeof(uint32_t);
+    vkCmdFillBuffer(cmd, m_managementBuffer.buffer, offset, size, 0);
+  }
+
+  // returns the number of new worst-case allocations
+  return (newLayout.sectorCount - oldLayout.sectorCount) * m_shaderData.sectorMaxAllocationSized;
 }
 
 void StreamingAllocator::cmdReset(VkCommandBuffer cmd)
@@ -1050,6 +1129,7 @@ void StreamingStorage::getStats(StreamingStats& stats) const
   nvvk::BufferSubAllocator::Report report = m_dataAllocator.getReport();
   stats.reservedDataBytes                 = report.freeSize + report.reservedSize;
   stats.usedDataBytes                     = report.requestedSize;
+  stats.maxDataBytes                      = getMaxDataSize();
 }
 
 }  // namespace lodclusters

@@ -147,6 +147,14 @@ Please have a look at the [Streaming Operations documentation](docs/streaming.md
 
 ### GPU-Driven CLAS Allocation
 
+> [!IMPORTANT] Resizable CLAS storage through sparse buffer usage
+> We are leveraging a sparse buffer for the CLAS allocation, so we can grow it on demand. For this we read back the information about
+> actual CLAS sizes from the GPU-side allocation manager.
+> This is crucial as the host-side estimates are way too conservative (e.g. often 3-5x bigger than actual). The CLAS 
+> buffer is sized in such a way that it can fit N-frames worth of worst-case sized CLAS builds.
+> The streaming manager is configured for a certain number of CLAS builds per frame, and N defines the maximum frame latency
+> between GPU-produced allocation data and CPU readback/decision-making.
+
 ![image illustrating the streaming operations](docs/lod_allocation.png)
 
 Please have a look at the [GPU-Driven CLAS Allocation documentation](docs/clas_allocation.md)

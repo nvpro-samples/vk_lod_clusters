@@ -219,8 +219,7 @@ private:
 
   std::vector<uint32_t> m_streamClasHistogram;
   std::vector<uint32_t> m_streamGeometryHistogram;
-  uint32_t              m_streamGeometryHistogramMax;
-  uint32_t              m_streamClasHistogramMax;
+  uint32_t              m_streamHistogramMax    = 0;
   int32_t               m_streamHistogramOffset = 0;
 
   uint32_t m_equalFrames = 0;

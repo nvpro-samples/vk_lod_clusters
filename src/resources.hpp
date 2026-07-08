@@ -65,7 +65,9 @@ struct FrameConfig
   bool  freezeCulling      = false;
   bool  freezeLoD          = false;
   bool  hbaoActive         = true;
+  bool  adaptiveError      = false;
   float lodPixelError      = 1.0f;
+
   // increase error by this for instances not having primary visibility in ray tracing
   float culledErrorScale = 2.0f;
   // if less pixels than this, use sw raster
@@ -402,9 +404,20 @@ public:
     return m_allocator.createBuffer(buffer, bufferSize, bufferUsageFlags, vmaMemUsage, vmaAllocFlags, minAlignment, queueFamilies);
   }
 
-  VkResult createLargeBuffer(nvvk::LargeBuffer& buffer, VkDeviceSize bufferSize, VkBufferUsageFlagBits2 bufferUsageFlags)
+  VkResult createLargeBuffer(nvvk::LargeBuffer&     buffer,
+                             VkDeviceSize           bufferSize,
+                             VkBufferUsageFlagBits2 bufferUsageFlags,
+                             VkDeviceSize           chunkSize = nvvk::ResourceAllocator::DEFAULT_LARGE_CHUNK_SIZE,
+                             uint32_t               initialChunkCount = 0)
   {
-    return m_allocator.createLargeBuffer(buffer, bufferSize, bufferUsageFlags, m_queue.queue);
+    return m_allocator.createLargeBuffer(buffer, bufferSize, bufferUsageFlags, m_queue.queue, VK_NULL_HANDLE, chunkSize,
+                                         VMA_MEMORY_USAGE_AUTO, {}, 0, {}, initialChunkCount);
+  }
+
+  VkResult resizeLargeBuffer(nvvk::LargeBuffer& buffer, VkDeviceSize newSize, VkFence sparseBindingFence = VK_NULL_HANDLE) const
+  {
+    bool bindNeeded;
+    return m_allocator.resizeLargeBuffer(buffer, newSize, bindNeeded, m_queue.queue, sparseBindingFence);
   }
 
   VkDeviceSize getDeviceLocalHeapSize() const;

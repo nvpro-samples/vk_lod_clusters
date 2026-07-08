@@ -598,4 +598,39 @@ void Renderer::writeBackgroundSky(VkCommandBuffer cmd)
   vkCmdDraw(cmd, 3, 1, 0, 0);
 }
 
+float Renderer::updateLodPixelError(Resources& res, RenderScene& rscene, const FrameConfig& frame)
+{
+  float lodPixelError = frame.lodPixelError;
+  if(rscene.useStreaming && frame.adaptiveError)
+  {
+    m_lodPixelError  = std::max(frame.lodPixelError, m_lodPixelError);
+    float loadFactor = rscene.sceneStreaming.getLoadFactor();
+    // Smooth load factor to avoid reacting to single-frame spikes.
+    m_smoothedLoadFactor = glm::mix(m_smoothedLoadFactor, loadFactor, 0.05f);
+    // Deadband [0.70, 0.85]: no adjustment to prevent oscillation near the threshold.
+    // Outside the band: increase error quickly when overloaded, recover slowly.
+    if(m_smoothedLoadFactor > 0.85f)
+      m_lodPixelError *= 1.02f;
+    else if(m_smoothedLoadFactor < 0.70f)
+      m_lodPixelError *= 0.995f;
+
+    m_lodPixelError = std::max(frame.lodPixelError, m_lodPixelError);
+    lodPixelError   = m_lodPixelError;
+  }
+  else
+  {
+    // keep synchronized so enabling adaptive mode starts from the
+    // current error rather than a stale adaptive value
+    m_lodPixelError = frame.lodPixelError;
+  }
+
+  glm::vec2 renderScale       = res.getFramebufferWindow2RenderScale();
+  float     pixelScale        = std::min(renderScale.x, renderScale.y);
+  float     errorSizeInPixels = lodPixelError * pixelScale;
+
+  // note we use half-pixel sizes: error taken as radius, not as diameter.
+  // otherwise there was more LoD popping.
+  return (tanf(frame.traversalFov * 0.5f) * errorSizeInPixels / frame.traversalViewHeight);
+}
+
 }  // namespace lodclusters

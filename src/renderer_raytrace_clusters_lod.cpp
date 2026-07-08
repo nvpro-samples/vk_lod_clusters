@@ -595,13 +595,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
 {
   VkMemoryBarrier memBarrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
 
-  {
-    glm::vec2 renderScale = res.getFramebufferWindow2RenderScale();
-    float     pixelScale  = std::min(renderScale.x, renderScale.y);
-
-    m_sceneBuildShaderio.errorOverDistanceThreshold =
-        clusterLodErrorOverDistance(frame.lodPixelError * pixelScale, frame.traversalFov, frame.traversalViewHeight);
-  }
+  m_sceneBuildShaderio.errorOverDistanceThreshold = updateLodPixelError(res, rscene, frame);
 
   m_sceneBuildShaderio.traversalViewMatrix    = frame.traversalViewMatrix;
   m_sceneBuildShaderio.cullViewProjMatrix     = frame.cullViewProjMatrix;
@@ -1084,6 +1078,8 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     m_resourceReservedUsage.geometryMemBytes = rscene.getGeometrySize(true);
     // reservation for blas may change
     m_resourceReservedUsage.rtBlasMemBytes = m_blasDataSize + rscene.getBlasSize(true);
+    // reservation for clas may grow via sparse buffer resize
+    m_resourceReservedUsage.rtClasMemBytes = rscene.getClasSize(true);
 
     m_resourceActualUsage                  = m_resourceReservedUsage;
     m_resourceActualUsage.geometryMemBytes = rscene.getGeometrySize(false);

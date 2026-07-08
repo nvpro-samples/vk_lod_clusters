@@ -88,6 +88,8 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"maxtransfermegabytes"}, (uint32_t*)&m_streamingConfig.maxTransferMegaBytes);
   m_info.parameterRegistry->add({"maxblascachingmegabytes"}, (uint32_t*)&m_streamingConfig.maxBlasCachingMegaBytes);
   m_info.parameterRegistry->add({"maxclasmegabytes"}, (uint32_t*)&m_streamingConfig.maxClasMegaBytes);
+  m_info.parameterRegistry->add({"startclasmegabytes"}, (uint32_t*)&m_streamingConfig.startClasMegaBytes);
+  m_info.parameterRegistry->add({"clasgrowmegabytes"}, (uint32_t*)&m_streamingConfig.clasGrowMegaBytes);
   m_info.parameterRegistry->add({"maxgeomegabytes"}, (uint32_t*)&m_streamingConfig.maxGeometryMegaBytes);
   m_info.parameterRegistry->add({"maxresidentgroups"}, &m_streamingConfig.maxGroups);
   m_info.parameterRegistry->add({"maxframeloadrequests"}, &m_streamingConfig.maxPerFrameLoadRequests);
@@ -918,8 +920,7 @@ void LodClusters::handleChanges()
 
       if(streamingChanged)
       {
-        m_streamClasHistogramMax     = 0;
-        m_streamGeometryHistogramMax = 0;
+        m_streamHistogramMax = 0;
       }
     }
 

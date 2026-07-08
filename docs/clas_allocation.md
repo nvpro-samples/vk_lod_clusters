@@ -3,13 +3,24 @@
 ![image illustrating the streaming operations](lod_allocation.png)
 
 The goal of the persistent CLAS (Cluster Level Acceleration Structure) allocator is to provide a persistent 
-CLAS memory location with a fixed budget CLAS buffer. This means we need
+CLAS memory location with a fixed upper budget CLAS buffer. This means we need
 to move the CLAS only once from its scratch space to a permanent location.
 We later reclaim that memory when the group owning the CLAS is unloaded.
 
 The implementation is completely on the device and does not require the host.
 However, we need to read back the status of the free space to the host, so that
-it can guarantee not to schedule newly loaded groups that are not guaranteed to fit.
+it can guarantee not to schedule newly loaded groups that are not guaranteed to fit,
+or ensure that we grow the CLAS buffer so they can fit (look for `SceneStreaming::tryGrowClas`)
+
+> [!IMPORTANT] The CLAS buffer is using sparse buffer bindings, so we can grow it on demand.
+> We grow the CLAS buffer in chunks of 128 MiB and the use of sparse memory
+> bindings allows us to keep the CLAS content as well as their addresses
+> the same. The CLAS allocator is initialized for the maximum address space 
+> that the CLAS buffer may cover, but during processing we are effectively limiting
+> it to how much was actually allocated. The resize is strictly growing, there is
+> no shrinking or defragmentation. We highly recommend this because the host-side
+> estimates for CLAS sizes are way too conservative and would yield a lot of 
+> memory waste otherwise.
 
 Building the CLAS into scratch space first allows us to easily access the actual
 size of the CLAS when making the allocation. While upper bounds can be
@@ -45,7 +56,7 @@ Following operations are performed per frame:
    which finds the gaps in sector bits and writes them out in an unsorted fashion into
    `StreamingAllocator::freeGapsPos` and `StreamingAllocator::freeGapsSize`. We also 
    bump the histogram over the various gap sizes, `StreamingAllocator::freeSizeRanges[size].count`.
-3. We reset a global gap count via using `STREAM_SETUP_ALLOCATOR_FREEINSERT` in [shaders/stream_setup.glsl](../shaders/stream_setup.comp.glsl)
+3. We reset a global gap count via using `STREAM_SETUP_ALLOCATOR_FREEINSERT` in [shaders/stream_setup.comp.glsl](../shaders/stream_setup.comp.glsl)
 4. Using the global gap counter and the `StreamingAllocator::freeSizeRanges[size].count` the offset
    `StreamingAllocator::freeSizeRanges[size].offset` is computed for each size within 
    [shaders/stream_allocator_setup_insertion.comp.glsl](../shaders/stream_allocator_setup_insertion.comp.glsl).
@@ -62,6 +73,9 @@ Following operations are performed per frame:
    that we would never trigger more loads than we have worst-case free space for.
 7. To ensure this guarantee, after the allocation is completed, we store the state of the worst-case gap sizes that are left into the 
    currently recorded request task information.
-   This is done by running `STREAM_SETUP_ALLOCATOR_STATUS` in [shaders/stream_setup.glsl](../shaders/stream_setup.comp.glsl)
+   This is done by running `STREAM_SETUP_ALLOCATOR_STATUS` in [shaders/stream_setup.comp.glsl](../shaders/stream_setup.comp.glsl).
+   That is also the value that the dynamic resizing of the CLAS buffer is looking at. If we can still grow the allocation of the 
+   sparse buffer, and we ran out of worst-case gap sizes, we will append more allocations to the CLAS buffer. The buffer is
+   strictly increasing in memory, we do not compact or defragment the CLAS buffer.
 
 In future versions we will try to optimize this scheme a bit further.

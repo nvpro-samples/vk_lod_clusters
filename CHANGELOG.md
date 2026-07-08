@@ -1,4 +1,8 @@
 # Changelog for vk_lod_clusters
+* 2026-7-6:
+  * Added adaptive LoD error based on streaming load factor.
+  * Changed visualization of streaming memory into single combined graph.
+  * CLAS allocator now makes use of sparse buffers to grow CLAS allocation based on use. As with geometry data, there is no need for a large upfront allocation.
 * 2026-6-10:
   * Added basic textured PBR shading for glTF materials using the **metallic-roughness** workflow. Specular-glossiness materials are not supported for texturing (factor colors only).
     * Disabled by default (`--texturedmaterials 0`). Unlike cluster geometry, **material textures are not streamed** — every referenced texture is fully loaded into VRAM at scene init and stays resident.

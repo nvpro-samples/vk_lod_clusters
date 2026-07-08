@@ -141,8 +141,12 @@ public:
 
   uint32_t getOriginalMaterialID(uint32_t renderMaterialID) const
   {
+    if(renderMaterialID >= m_renderMaterials.size())
+      return ~0;
     return m_renderMaterials[renderMaterialID].originalID;
   }
+
+  inline float getLodError() const { return m_lodPixelError; }
 
 protected:
   void initBasics(Resources& res, RenderScene& rscene, const RendererConfig& config);
@@ -157,6 +161,8 @@ protected:
   void writeBackgroundSky(VkCommandBuffer cmd);
   void renderInstanceBboxes(VkCommandBuffer cmd);
   void renderClusterBboxes(VkCommandBuffer cmd, nvvk::Buffer sceneBuildBuffer, bool alpha);
+
+  float updateLodPixelError(Resources& res, RenderScene& rscene, const FrameConfig& frame);
 
   struct BasicShaders
   {
@@ -189,6 +195,8 @@ protected:
   uint32_t       m_meshShaderWorkgroupSize = 0;
   uint32_t       m_meshShaderBoxes         = 0;
   uint32_t       m_frameIndex              = 0;
+  float          m_lodPixelError{};
+  float          m_smoothedLoadFactor{};
 
   BasicShaders   m_basicShaders;
   BasicPipelines m_basicPipelines;
@@ -208,15 +216,6 @@ protected:
 
   nvvk::Buffer m_sortingAuxBuffer;
 };
-
-//////////////////////////////////////////////////////////////////////////
-
-inline float clusterLodErrorOverDistance(float errorSizeInPixels, float fov, float resolution)
-{
-  // note we use half-pixel sizes: error taken as radius, not as diameter.
-  // otherwise there was more LoD popping.
-  return (tanf(fov * 0.5f) * errorSizeInPixels / resolution);
-}
 
 //////////////////////////////////////////////////////////////////////////
 
