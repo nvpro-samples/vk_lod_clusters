@@ -57,7 +57,7 @@ struct SceneConfig
   bool useCompressedData = false;
 
   // allow materials
-  bool enableMultiMaterials = true;
+  bool enableMultiMaterials = false;
   bool _reserved            = false;
 
   // due to the simple shading, only enable normals for now
