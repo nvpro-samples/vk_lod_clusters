@@ -141,6 +141,7 @@ void StreamingResident::init(Resources& res, const StreamingConfig& config, uint
   m_groupIndicesUpdateRange    = {};
   m_groups                     = {};
   m_activeGroupIndices         = {};
+  m_removedGroups              = {};
   m_mapGeometryGroup2Residency = {};
 
   m_mapGeometryGroup2Residency.reserve(m_maxGroups);
@@ -307,6 +308,10 @@ void StreamingResident::deinitClas(Resources& res)
 
 void StreamingResident::reset(shaderio::StreamingResident& shaderData)
 {
+  // pending removals reference groups no longer in the active list,
+  // their IDs must still be given back
+  flushRemovedGroups();
+
   for(uint32_t activeGroup = m_lowDetailGroupsCount; activeGroup < m_activeGroupsCount; activeGroup++)
   {
     Group& group = m_groups[m_activeGroupIndices[activeGroup]];
@@ -354,6 +359,10 @@ void StreamingResident::uploadInitialState(Resources::BatchedUploader& uploader,
                                                    sizeof(shaderio::uint64_t) * m_activeClustersCount,
                                                    (uint64_t*)nullptr, Resources::DONT_FLUSH);
 
+  uint32_t* shaderGroupIDs = uploader.uploadBuffer(m_residentBuffer, m_residentGroupIDsOffset,
+                                                   sizeof(shaderio::uint32_t) * m_lowDetailGroupsCount,
+                                                   (uint32_t*)nullptr, Resources::DONT_FLUSH);
+
   for(uint32_t g = 0; g < m_lowDetailGroupsCount; g++)
   {
     const Group& group = m_groups[g];
@@ -362,7 +371,9 @@ void StreamingResident::uploadInitialState(Resources::BatchedUploader& uploader,
     shaderio::StreamingGroup& shaderGroup = shaderGroups[g];
     shaderGroup.age                       = 0x1234;
     shaderGroup.lodLevel                  = group.lodLevel;
+    shaderGroup.geometryID                = group.geometryGroup.geometryID;
     shaderGroup.group                     = group.deviceAddress;
+    shaderGroupIDs[g]                     = group.geometryGroup.groupID;
     for(uint32_t c = 0; c < group.clusterCount; c++)
     {
       shaderClusters[group.clusterResidentID + c] = group.deviceAddress + sizeof(shaderio::Group) + sizeof(shaderio::Cluster) * c;
@@ -533,10 +544,21 @@ void StreamingResident::removeGroup(uint32_t groupResidentID)
   m_activeClustersCount -= group.clusterCount;
   m_activeTrianglesCount -= group.triangleCount;
 
-  m_groupAllocator.destroyID(groupResidentID);
-  m_clusterAllocator.destroyRangeID(group.clusterResidentID, group.clusterCount);
+  // defer the ID frees to `flushRemovedGroups`, so loads of the same update
+  // task cannot reuse them (see header)
+  m_removedGroups.push_back({groupResidentID, group.clusterResidentID, uint32_t(group.clusterCount)});
 
   group = {};
+}
+
+void StreamingResident::flushRemovedGroups()
+{
+  for(const RemovedGroup& removed : m_removedGroups)
+  {
+    m_groupAllocator.destroyID(removed.groupResidentID);
+    m_clusterAllocator.destroyRangeID(removed.clusterResidentID, removed.clusterCount);
+  }
+  m_removedGroups.clear();
 }
 
 //////////////////////////////////////////////////////////////////////////

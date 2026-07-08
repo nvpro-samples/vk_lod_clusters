@@ -19,6 +19,8 @@
 
 #pragma once
 
+#include <thread>
+
 #include <backends/imgui_impl_vulkan.h>
 #include <nvapp/application.hpp>
 #include <nvutils/camera_manipulator.hpp>
@@ -197,6 +199,7 @@ private:
   std::atomic_bool       m_sceneLoading        = false;
   std::atomic_uint32_t   m_sceneProgress       = 0;
   bool                   m_sceneLoadFromConfig = false;
+  std::thread            m_sceneLoadingThread;
 
   std::string m_cameraString;
   std::string m_cameraStringLast;

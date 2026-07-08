@@ -205,7 +205,7 @@ void LodClusters::initScene(std::filesystem::path filePath, std::string cacheSuf
     m_resources.setFramebufferDlss(false, m_rendererConfig.dlssQuality);
 #endif
 
-    std::thread([=, this]() {
+    m_sceneLoadingThread = std::thread([=, this]() {
       auto scene = std::make_unique<Scene>();
       if(scene->init(filePath, m_sceneConfig, m_sceneLoaderConfig, cacheSuffix, configChange) != Scene::SCENE_RESULT_SUCCESS)
       {
@@ -234,7 +234,7 @@ void LodClusters::initScene(std::filesystem::path filePath, std::string cacheSuf
         }
       }
       m_sceneLoading = false;
-    }).detach();
+    });
 
     return;
   }
@@ -284,6 +284,13 @@ void LodClusters::deinitRenderScene()
 
 void LodClusters::deinitScene()
 {
+  // scene loading is asynchronous, it must complete before any teardown
+  // (headless runs can otherwise shut down mid-load and crash)
+  if(m_sceneLoadingThread.joinable())
+  {
+    m_sceneLoadingThread.join();
+  }
+
   deinitRenderScene();
 
   if(m_scene)

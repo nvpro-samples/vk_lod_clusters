@@ -555,11 +555,18 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
 
   {
     const char* errorCause = nullptr;
+    uint32_t    errorValue = 0;
 
     if(request.shaderData->errorUpdate != 0)
+    {
       errorCause = "update";
+      errorValue = request.shaderData->errorUpdate;
+    }
     else if(request.shaderData->errorAgeFilter != 0)
+    {
       errorCause = "age filter";
+      errorValue = request.shaderData->errorAgeFilter;
+    }
     else if(request.shaderData->errorClasNotFound != 0)
       errorCause = "clas not found";
     else if(request.shaderData->errorClasAlloc != 0)
@@ -573,8 +580,8 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
 
     if(errorCause)
     {
+      LOGE("streaming: fatal error - %s (%u)\n", errorCause, errorValue);
       assert(0 && "streaming fatal error");
-      LOGE("streaming: fatal error - %s\n", errorCause);
       exit(-1);
     }
   }
@@ -840,6 +847,10 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
     // stats
     transferBytes += groupInfo.sizeBytes;
   }
+
+  // now that all loads are done, the removed groups' resident IDs can be
+  // recycled for future tasks
+  m_resident.flushRemovedGroups();
 
   updateTask.newClusterCount = clasBuildOffset;
 
