@@ -1247,7 +1247,9 @@ float LodClusters::decodePickingDepth(const shaderio::Readback& readback)
   uint32_t bits = readback._packedDepth0;
   bits ^= ~(int(bits) >> 31) | 0x80000000u;
   float res = *(float*)&bits;
-  return 1.f - res;
+  // reversed-Z depth as written by the shaders (1 = near plane, 0 = far plane),
+  // matches frameConstants.projMatrix
+  return res;
 }
 
 bool LodClusters::isPickingValid(const shaderio::Readback& readback)

@@ -364,7 +364,8 @@ void LodClusters::onUIRender()
   if(pickingValid)
   {
     float d = decodePickingDepth(readback);
-    if(d < 1.0f)
+    // reject far plane and beyond (reversed-Z: 0 = far)
+    if(d > 0.0f)
     {
       glm::uvec2 mousePos = {m_frameConfig.frameConstants.mousePosition.x, m_frameConfig.frameConstants.mousePosition.y};
 
