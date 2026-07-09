@@ -153,6 +153,7 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("USE_16BIT_DISPATCH", fmt::format("{}", res.m_use16bitDispatch ? 1 : 0));
   options.AddMacroDefinition("CLUSTER_VERTEX_COUNT", fmt::format("{}", rscene.scene->m_maxClusterVertices));
   options.AddMacroDefinition("CLUSTER_TRIANGLE_COUNT", fmt::format("{}", rscene.scene->m_maxClusterTriangles));
+  options.AddMacroDefinition("GROUP_CLUSTER_COUNT", fmt::format("{}", rscene.scene->m_config.clusterGroupSize));
   options.AddMacroDefinition("TARGETS_RASTERIZATION", "0");
   options.AddMacroDefinition("USE_STREAMING", rscene.useStreaming ? "1" : "0");
   options.AddMacroDefinition("USE_SORTING", config.useSorting ? "1" : "0");

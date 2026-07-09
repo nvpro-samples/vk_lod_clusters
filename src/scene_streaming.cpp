@@ -1721,6 +1721,7 @@ bool SceneStreaming::initShadersAndPipelines()
   options.AddMacroDefinition("USE_16BIT_DISPATCH", fmt::format("{}", res.m_use16bitDispatch ? 1 : 0));
   options.AddMacroDefinition("CLUSTER_VERTEX_COUNT", fmt::format("{}", m_scene->m_maxClusterVertices));
   options.AddMacroDefinition("CLUSTER_TRIANGLE_COUNT", fmt::format("{}", m_scene->m_maxClusterTriangles));
+  options.AddMacroDefinition("GROUP_CLUSTER_COUNT", fmt::format("{}", m_scene->m_config.clusterGroupSize));
   options.AddMacroDefinition("HAS_ALPHA_TEST", m_scene->m_hasAlphaMask ? "1" : "0");
 
   shaderc::CompileOptions optionsRaster = options;

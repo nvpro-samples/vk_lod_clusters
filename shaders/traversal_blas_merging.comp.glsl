@@ -121,22 +121,31 @@ void main()
     {
       Geometry geometry  = geometries[geometryID];
       
-      uint renderClusterMask = 0;
-    
+      uvec4 renderClusterMask = uvec4(0);
+
       for (uint clusterIndex = 0; clusterIndex < groupRef.d.clusterCount; clusterIndex++)
       {
         uint clusterGeneratingGroup = Group_getGeneratingGroup(groupRef, clusterIndex);
-        
+
         // add clusters if we are at the highest detail, or if the generating group is not resident.
         if (clusterGeneratingGroup == SHADERIO_ORIGINAL_MESH_GROUP
           || geometry.streamingGroupAddresses.d[clusterGeneratingGroup] >= STREAMING_INVALID_ADDRESS_START)
         {
-          renderClusterMask |= 1 << clusterIndex;
+          renderClusterMask[GROUP_CLUSTER_COUNT > 32 ? clusterIndex / 32 : 0] |= 1u << (clusterIndex & 31);
         }
       }
-      
+
       // reserve space for clusters
-      uint renderClusterCount = bitCount(renderClusterMask);
+      uint renderClusterCount = bitCount(renderClusterMask.x);
+#if GROUP_CLUSTER_COUNT > 32
+      renderClusterCount += bitCount(renderClusterMask.y);
+#endif
+#if GROUP_CLUSTER_COUNT > 64
+      renderClusterCount += bitCount(renderClusterMask.z);
+#endif
+#if GROUP_CLUSTER_COUNT > 96
+      renderClusterCount += bitCount(renderClusterMask.w);
+#endif
       uvec4 voteActive        = subgroupBallot(true);
       uint offsetClusters     = subgroupExclusiveAdd(renderClusterCount);
       uint lastActiveLane     = subgroupBallotFindMSB(voteActive);
@@ -156,7 +165,7 @@ void main()
       clusterInfo.instanceID = mergedInstanceID;
       for (uint clusterIndex = 0; clusterIndex < groupRef.d.clusterCount; clusterIndex++)
       {
-        if ((renderClusterMask & (1<<clusterIndex)) != 0 && offsetClusters < build.maxRenderClusters){
+        if ((renderClusterMask[GROUP_CLUSTER_COUNT > 32 ? clusterIndex / 32 : 0] & (1u << (clusterIndex & 31))) != 0 && offsetClusters < build.maxRenderClusters){
           clusterInfo.clusterID  = groupRef.d.clusterResidentID + clusterIndex;
           build.renderClusterInfos.d[offsetClusters] = clusterInfo;
           offsetClusters++;

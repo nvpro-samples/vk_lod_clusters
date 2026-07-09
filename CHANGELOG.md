@@ -1,4 +1,7 @@
 # Changelog for vk_lod_clusters
+* 2026-7-9:
+  * bugfix BLAS merging for cluster group sizes > 32
+  * bugfix crash due to illegal geometryIndex when multi-materials were active but alpha test was off. Mixing Two-sided multi-materials still relies on alpha testing being enabled globally to work.
 * 2026-7-6:
   * Added adaptive LoD error based on streaming load factor.
   * Changed visualization of streaming memory into single combined graph.

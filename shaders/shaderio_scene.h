@@ -72,6 +72,10 @@ enum ClusterStateBits
 #define CLUSTER_TRIANGLE_COUNT 32
 #endif
 
+#ifndef GROUP_CLUSTER_COUNT
+#define GROUP_CLUSTER_COUNT 32
+#endif
+
 // if we have less triangles than vertices per cluster, store
 // cluster-uniform outputs perprimitive
 #ifndef USE_PERPRIMITIVE_OUT
