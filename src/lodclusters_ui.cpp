@@ -1,21 +1,7 @@
 /*
-* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
-*
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License.
-*
-* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
-* SPDX-License-Identifier: Apache-2.0
-*/
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 #include <cinttypes>
 #include <filesystem>
@@ -25,6 +11,7 @@
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h>
 #include <implot/implot.h>
+#include <nvutils/file_operations.hpp>
 #include <nvgui/fonts.hpp>
 #include <nvgui/camera.hpp>
 #include <nvgui/sky.hpp>
@@ -290,6 +277,218 @@ void LodClusters::viewportUI(ImVec2 corner)
 
 void LodClusters::loadingUI() {}
 
+void LodClusters::cameraPathUI()
+{
+  namespace PE = nvgui::PropertyEditor;
+
+  // File: Save / Load the per-scene paths file stored next to the executable
+  const std::filesystem::path pathsFile = sceneCameraPathsFile(m_sceneFilePath);
+  ImGui::TextUnformatted("File:");
+  ImGui::SameLine();
+  ImGui::BeginDisabled(pathsFile.empty());
+  if(ImGui::SmallButton("Save"))
+  {
+    if(saveCameraPaths(pathsFile, m_cameraPaths))
+      LOGI("Saved %zu camera path(s) to %s\n", m_cameraPaths.size(), nvutils::utf8FromPath(pathsFile).c_str());
+    else
+      LOGE("Could not write camera paths to %s\n", nvutils::utf8FromPath(pathsFile).c_str());
+  }
+  ImGui::SameLine();
+  if(ImGui::SmallButton("Load") && loadCameraPaths(pathsFile, m_cameraPaths))
+  {
+    m_cameraPathActive = m_cameraPaths.empty() ? -1 : std::min(std::max(m_cameraPathActive, 0), int(m_cameraPaths.size()) - 1);
+    m_cameraPathEditKey  = -1;
+    m_cameraPathPlayback = CAMERA_PATH_STOP;
+  }
+  ImGui::EndDisabled();
+  if(pathsFile.empty())
+    ImGui::TextDisabled("(load a scene to save/load its paths file)");
+  else
+    ImGui::TextDisabled("%s", nvutils::utf8FromPath(pathsFile.filename()).c_str());
+
+  ImGui::Spacing();
+
+  // Path: New / Delete / Copy / Paste (Copy/Paste exchange the path string via the clipboard)
+  ImGui::TextUnformatted("Path:");
+  ImGui::SameLine();
+  if(ImGui::SmallButton("New##path"))
+  {
+    m_cameraPaths.emplace_back();
+    m_cameraPathActive   = int(m_cameraPaths.size()) - 1;
+    m_cameraPathEditKey  = -1;
+    m_cameraPathPlayback = CAMERA_PATH_STOP;
+  }
+  ImGui::SameLine();
+  ImGui::BeginDisabled(m_cameraPathActive < 0 || m_cameraPathActive >= int(m_cameraPaths.size()));
+  if(ImGui::SmallButton("Delete##path"))
+  {
+    m_cameraPaths.erase(m_cameraPaths.begin() + m_cameraPathActive);
+    m_cameraPathActive   = m_cameraPaths.empty() ? -1 : std::min(m_cameraPathActive, int(m_cameraPaths.size()) - 1);
+    m_cameraPathEditKey  = -1;
+    m_cameraPathPlayback = CAMERA_PATH_STOP;
+  }
+  ImGui::SameLine();
+  if(ImGui::SmallButton("Copy") && m_cameraPathActive >= 0 && m_cameraPathActive < int(m_cameraPaths.size()))
+    ImGui::SetClipboardText(m_cameraPaths[m_cameraPathActive].getString().c_str());
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if(ImGui::SmallButton("Paste"))
+  {
+    const char* clip = ImGui::GetClipboardText();
+    CameraPath  pasted;
+    if(clip && pasted.setFromString(clip))
+    {
+      m_cameraPaths.push_back(std::move(pasted));
+      m_cameraPathActive   = int(m_cameraPaths.size()) - 1;
+      m_cameraPathEditKey  = -1;
+      m_cameraPathPlayback = CAMERA_PATH_STOP;
+    }
+  }
+
+  // active path selector
+  {
+    std::string preview = (m_cameraPathActive >= 0 && m_cameraPathActive < int(m_cameraPaths.size())) ?
+                              fmt::format("Path {} ({} keys)", m_cameraPathActive, m_cameraPaths[m_cameraPathActive].size()) :
+                              std::string("<none>");
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if(ImGui::BeginCombo("##camerapathsel", preview.c_str()))
+    {
+      for(int i = 0; i < int(m_cameraPaths.size()); i++)
+      {
+        if(ImGui::Selectable(fmt::format("Path {} ({} keys)", i, m_cameraPaths[i].size()).c_str(), i == m_cameraPathActive))
+        {
+          m_cameraPathActive   = i;
+          m_cameraPathEditKey  = -1;
+          m_cameraPathPlayback = CAMERA_PATH_STOP;
+          m_cameraPathU        = 0.0;
+        }
+      }
+      ImGui::EndCombo();
+    }
+  }
+
+  const bool hasPath = m_cameraPathActive >= 0 && m_cameraPathActive < int(m_cameraPaths.size());
+  const nvutils::CameraManipulator::Camera& cam = m_info.cameraManipulator->getCamera();
+
+  // Key: New / Update / Delete (captured from the current camera)
+  ImGui::TextUnformatted("Key:");
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!hasPath);
+  if(ImGui::SmallButton("New##key") && hasPath)
+  {
+    CameraPath& keyPath = m_cameraPaths[m_cameraPathActive];
+    int insertAt = (m_cameraPathEditKey >= 0 && m_cameraPathEditKey < int(keyPath.keys.size())) ? m_cameraPathEditKey + 1 :
+                                                                                                  int(keyPath.keys.size());
+    keyPath.keys.insert(keyPath.keys.begin() + insertAt, CameraPathKey{cam.eye, cam.ctr, cam.up, cam.fov});
+    m_cameraPathEditKey = insertAt;
+  }
+  ImGui::SameLine();
+  if(ImGui::SmallButton("Update##key") && hasPath && m_cameraPathEditKey >= 0
+     && m_cameraPathEditKey < int(m_cameraPaths[m_cameraPathActive].keys.size()))
+  {
+    m_cameraPaths[m_cameraPathActive].keys[m_cameraPathEditKey] = CameraPathKey{cam.eye, cam.ctr, cam.up, cam.fov};
+  }
+  ImGui::SameLine();
+  if(ImGui::SmallButton("Delete##key") && hasPath && m_cameraPathEditKey >= 0
+     && m_cameraPathEditKey < int(m_cameraPaths[m_cameraPathActive].keys.size()))
+  {
+    CameraPath& keyPath = m_cameraPaths[m_cameraPathActive];
+    keyPath.keys.erase(keyPath.keys.begin() + m_cameraPathEditKey);
+    m_cameraPathEditKey = std::min(m_cameraPathEditKey, int(keyPath.keys.size()) - 1);
+  }
+  ImGui::EndDisabled();
+
+  // keyframe list (always shown, even when empty; selecting previews the camera)
+  if(ImGui::BeginListBox("##keys", ImVec2(-FLT_MIN, ImGui::GetTextLineHeightWithSpacing() * 4.5f)))
+  {
+    if(hasPath)
+    {
+      const CameraPath& selPath = m_cameraPaths[m_cameraPathActive];
+      for(int i = 0; i < int(selPath.keys.size()); i++)
+      {
+        const CameraPathKey& k = selPath.keys[i];
+        if(ImGui::Selectable(
+               fmt::format("{:2d}: eye {:.1f} {:.1f} {:.1f}  fov {:.0f}", i, k.eye.x, k.eye.y, k.eye.z, k.fov).c_str(),
+               i == m_cameraPathEditKey))
+        {
+          m_cameraPathEditKey                  = i;
+          m_cameraPathPlayback                 = CAMERA_PATH_STOP;
+          nvutils::CameraManipulator::Camera c = cam;
+          c.eye = k.eye, c.ctr = k.ctr, c.up = k.up, c.fov = k.fov;
+          m_info.cameraManipulator->setCamera(c, false);  // animate for a nicer preview
+        }
+      }
+    }
+    ImGui::EndListBox();
+  }
+
+  if(!hasPath)
+    return;
+
+  CameraPath& path = m_cameraPaths[m_cameraPathActive];
+
+  PE::begin("camerapath", ImGuiTableFlags_Resizable);
+  PE::Checkbox("Smooth", &path.smooth, "Catmull-Rom interpolation, otherwise piecewise linear");
+  PE::Checkbox("Loop", &path.loop, "Real-time playback wraps around");
+  {
+    float dur = float(path.duration);
+    if(PE::InputFloat("Duration (s)", &dur, 0.1f, 1.0f, "%.2f", 0, "Seconds for a full real-time playback"))
+      path.duration = std::max(double(dur), 0.0);
+  }
+  PE::end();
+
+  // real-time playback + scrub
+  const bool active = m_cameraPathPlayback != CAMERA_PATH_STOP;
+  if(ImGui::Button(active ? "Stop" : "Play"))
+  {
+    if(active)
+    {
+      m_cameraPathPlayback = CAMERA_PATH_STOP;
+    }
+    else
+    {
+      m_cameraPathPlayback = CAMERA_PATH_REALTIME;
+      m_cameraPathStarted  = false;
+      if(m_cameraPathU >= 1.0)
+        m_cameraPathU = 0.0;
+    }
+  }
+  ImGui::SameLine();
+  if(ImGui::Button("Restart"))
+  {
+    m_cameraPathU       = 0.0;
+    m_cameraPathStarted = false;
+  }
+  ImGui::SameLine();
+  {
+    float u = float(m_cameraPathU);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if(ImGui::SliderFloat("##scrub", &u, 0.0f, 1.0f, "t = %.3f"))
+    {
+      m_cameraPathU        = u;
+      m_cameraPathPlayback = CAMERA_PATH_STOP;
+      applyCameraPathSample(m_cameraPathU);
+    }
+  }
+
+  // deterministic (fixed-step) playback, same behaviour as --runcamerapath
+  PE::begin("camerapathfixed", ImGuiTableFlags_Resizable);
+  PE::InputInt("Fixed frames", &m_cameraPathFrames, 1, 16, 0,
+               "Number of frames for a full fixed-step (deterministic) traversal, as used by --runcamerapath");
+  PE::end();
+  m_cameraPathFrames = std::max(m_cameraPathFrames, 1);
+  if(ImGui::Button("Run fixed"))
+  {
+    m_cameraPathFrame    = 0;
+    m_cameraPathPlayback = CAMERA_PATH_FIXED;
+  }
+  ImGui::SameLine();
+  if(m_cameraPathPlayback == CAMERA_PATH_FIXED)
+    ImGui::Text("frame %d / %d", m_cameraPathFrame, m_cameraPathFrames);
+  else
+    ImGui::TextDisabled("cmd: --runcamerapath %d %d", m_cameraPathActive, m_cameraPathFrames);
+}
+
 void LodClusters::onUIRender()
 {
   ImGuiWindow* viewport = ImGui::FindWindowByName("Viewport");
@@ -444,6 +643,9 @@ void LodClusters::onUIRender()
     {
       PE::begin("##Scene Complexity", ImGuiTableFlags_Resizable);
       PE::Checkbox("Allow textured materials", &m_sceneLoaderConfig.enableTexturedMaterials);
+      PE::InputIntClamped("Max texture MiB", (int*)&m_texturesConfig.maxBudgetMiB, 0, 1024 * 48, 128, 128,
+                          ImGuiInputTextFlags_EnterReturnsTrue,
+                          "VRAM budget for material textures. 0 disables the limit. Textures reload when changed.");
       PE::Checkbox("Flip faces winding", &m_rendererConfig.flipWinding);
       PE::Checkbox("Disable back-face culling", &m_rendererConfig.forceTwoSided);
 
@@ -570,16 +772,34 @@ void LodClusters::onUIRender()
 
       if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
       {
-        PE::Checkbox("Cast shadow rays", (bool*)&m_frameConfig.frameConstants.doShadow);
-        PE::Checkbox("Ambient occlusion", &m_tweak.hbaoActive);
+        PE::Checkbox("Path tracing", &m_rendererConfig.usePathtrace,
+                     "Basic path tracer: shade in the ray-generation shader with multi-bounce GI under the "
+                     "physical sky (1 spp). Best with DLSS Ray Reconstruction; noisy otherwise.");
 
-        if(!m_tweak.hbaoActive)
+        if(m_rendererConfig.usePathtrace)
         {
-          m_frameConfig.frameConstants.ambientOcclusionSamples = 0;
+          PE::SliderInt("Bounces", &m_frameConfig.frameConstants.pathtraceNumBounces, 1, 8);
+          PE::SliderFloat("Firefly clamp", &m_frameConfig.frameConstants.pathtraceFireflyClamp, 0.0f, 100.0f, "%.1f");
+          PE::Checkbox("Auto-exposure", (bool*)&m_frameConfig.frameConstants.pathtraceAutoExposure);
+          PE::SliderFloat("Exposure (EV)", &m_frameConfig.frameConstants.pathtraceExposureBias, -6.0f, 6.0f, "%.2f");
+          PE::entry("Tonemap", [&]() {
+            const char* items[] = {"Filmic", "ACES", "Uncharted2", "Clip (no curve)"};
+            return ImGui::Combo("##pttonemap", &m_frameConfig.frameConstants.pathtraceTonemap, items, IM_ARRAYSIZE(items));
+          });
         }
         else
         {
-          m_frameConfig.frameConstants.ambientOcclusionSamples = m_lastAmbientOcclusionSamples;
+          PE::Checkbox("Cast shadow rays", (bool*)&m_frameConfig.frameConstants.doShadow);
+          PE::Checkbox("Ambient occlusion", &m_tweak.hbaoActive);
+
+          if(!m_tweak.hbaoActive)
+          {
+            m_frameConfig.frameConstants.ambientOcclusionSamples = 0;
+          }
+          else
+          {
+            m_frameConfig.frameConstants.ambientOcclusionSamples = m_lastAmbientOcclusionSamples;
+          }
         }
       }
       if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD)
@@ -1349,6 +1569,9 @@ void LodClusters::onUIRender()
     }
     if(m_renderer && ImGui::CollapsingHeader("Memory", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {
+      const bool   hasTextures     = m_renderScene && m_renderScene->sceneTextures.hasTextures();
+      const size_t textureMemBytes = hasTextures ? m_renderScene->sceneTextures.getTextureMemBytes() : 0;
+
       if(ImGui::BeginTable("Memory stats", 3, ImGuiTableFlags_RowBg))
       {
         ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
@@ -1357,6 +1580,16 @@ void LodClusters::onUIRender()
         ImGui::TableHeadersRow();
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
+        if(hasTextures)
+        {
+          ImGui::Text("Textures");
+          ImGui::TableNextColumn();
+          ImGui::Text("%s", formatMemorySize(textureMemBytes).c_str());
+          ImGui::TableNextColumn();
+          ImGui::Text("==");
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+        }
         ImGui::Text("Geometry");
         ImGui::TableNextColumn();
         ImGui::Text("%s", formatMemorySize(resourceActual.geometryMemBytes).c_str());
@@ -1394,9 +1627,9 @@ void LodClusters::onUIRender()
         ImGui::TableNextColumn();
         ImGui::Text("Total");
         ImGui::TableNextColumn();
-        ImGui::Text("%s", formatMemorySize(resourceActual.getTotalSum()).c_str());
+        ImGui::Text("%s", formatMemorySize(resourceActual.getTotalSum() + textureMemBytes).c_str());
         ImGui::TableNextColumn();
-        ImGui::Text("%s", formatMemorySize(resourceReserved.getTotalSum()).c_str());
+        ImGui::Text("%s", formatMemorySize(resourceReserved.getTotalSum() + textureMemBytes).c_str());
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         ImGui::EndTable();
@@ -1446,16 +1679,32 @@ void LodClusters::onUIRender()
                      "double click causes speed to be based on this percentage of the distance to hit point");
       PE::end();
     }
+    if(ImGui::CollapsingHeader("Camera Paths", nullptr))
+    {
+      cameraPathUI();
+    }
 
     if(ImGui::CollapsingHeader("Lighting", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {
       namespace PE = nvgui::PropertyEditor;
       PE::begin("misc", ImGuiTableFlags_Resizable);
       PE::SliderFloat("Light Mixer", &m_frameConfig.frameConstants.lightMixer, 0.0f, 1.0f, "%.3f", 0,
-                      "Mix between flashlight and sun light");
+                      "Raster / ray-trace: mix between flashlight and sun light.\n"
+                      "Path tracer: camera flashlight brightness added on top of the sky (1 = sky brightness).");
       PE::end();
-      ImGui::Text("Sun & Sky");
-      nvgui::skySimpleParametersUI(m_frameConfig.frameConstants.skyParams, "misc", ImGuiTableFlags_Resizable);
+      // Path tracing lights from the physical sky; raster / ray tracing use the simple analytic sky.
+      // Show the editor for whichever is active. The sun direction is shared across both models (synced
+      // in LodClusters::onRender), so switching renderers keeps the sun in place.
+      const bool pathtraceActive = m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD && m_rendererConfig.usePathtrace;
+      ImGui::Text(pathtraceActive ? "Sun & Sky (physical)" : "Sun & Sky (simple)");
+      if(pathtraceActive)
+      {
+        nvgui::skyPhysicalParameterUI(m_frameConfig.frameConstants.skyPhysical);
+      }
+      else
+      {
+        nvgui::skySimpleParametersUI(m_frameConfig.frameConstants.skyParams, "misc");
+      }
     }
 
     if(ImGui::CollapsingHeader("Mirror Box", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
@@ -1515,9 +1764,16 @@ void LodClusters::onUIRender()
     if(ImGui::CollapsingHeader("Advanced", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {
       PE::begin("misc", ImGuiTableFlags_Resizable);
-      PE::Checkbox("Anisotropic Texture Gradient", &m_rendererConfig.useAnisotropicGradient);
       PE::SliderFloat("Texture Gradient Scale", &m_frameConfig.frameConstants.texGradScale, 0.0f, 1.0f, "%.3f", 0,
                       "Influence texture gradient in ray tracing and compute rasterization");
+      PE::entry(
+          "Ray Cone Texture LOD",
+          [&]() {
+            const char* items[] = {"Gradient (textureGrad)", "Explicit LOD (textureLod)", "Mip 0 (baseline)"};
+            return ImGui::Combo("##texlodmode", &m_rendererConfig.textureLodMode, items, IM_ARRAYSIZE(items));
+          },
+          "Ray/path tracer: how material textures pick their mip level from the ray-cone footprint "
+          "(recompiles shaders; raster always uses hardware derivatives)");
       PE::InputIntClamped("Persistent Traversal Threads", (int*)&m_frameConfig.traversalPersistentThreads, 32,
                           256 * 1024, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue);
       PE::InputInt("Colorize xor", (int*)&m_frameConfig.frameConstants.colorXor);

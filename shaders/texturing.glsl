@@ -1,22 +1,92 @@
 /*
-* Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
-*
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License.
-*
-* SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION.
-* SPDX-License-Identifier: Apache-2.0
-*/
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
+
+///////////////////////////////////////////////////
+// Texture LOD selection for ray / path tracing
+//
+// A ray cone is tracked as a world-space footprint width plus a spread angle
+// (Akenine-Moeller et al., "Improved Shader and Texture Level of Detail using
+// Ray Cones", JCGT 2021 / Ray Tracing Gems 2019). At a hit the cone width is
+// turned into a texture LOD. Two ways to feed the sampler are supported, chosen
+// at compile time by TEXTURE_LOD_MODE (see shaderio.h):
+//   - TEXLODMODE_GRAD: a UV-space gradient handed to textureGrad(); the hardware
+//     folds in each texture's own resolution, so differently sized maps of one
+//     material pick the correct mip for free.
+//   - TEXLODMODE_LOD: an explicit, resolution-independent lambda handed to
+//     textureLod(); sampleBindless() adds 0.5*log2(w*h) per texture.
+
+// TexLOD carries only the payload the compile-time TEXTURE_LOD_MODE actually needs: an explicit lambda
+// for TEXLODMODE_LOD, or a UV gradient otherwise (TEXLODMODE_GRAD hands it to textureGrad; the raster
+// TEXLODMODE_IMPLICIT path ignores it and lets the hardware derivatives pick the mip).
+struct TexLOD
+{
+#if TEXTURE_LOD_MODE == TEXLODMODE_LOD
+  float lodBase;  // resolution-independent lambda; 0.5*log2(w*h) added per texture at sample time
+#else
+  vec2 gradX;     // UV-space gradient handed to textureGrad()
+  vec2 gradY;
+#endif
+};
+
+// LOD for the rasterizer / hardware-derivative path; the payload is unused (see sampleBindless()).
+TexLOD texLodImplicit()
+{
+  TexLOD tl;
+#if TEXTURE_LOD_MODE == TEXLODMODE_LOD
+  tl.lodBase = 0.0;
+#else
+  tl.gradX = vec2(0);
+  tl.gradY = vec2(0);
+#endif
+  return tl;
+}
+
+// World-space ray-cone width -> normalized-UV footprint, grazing-corrected (paper Eq. 16/24 normal term).
+// Shared by makeConeTexLOD (ray-gen material sampling) and the alpha-mask any-hit, so both derive the
+// identical footprint from the cone.
+//   coneWidth    : world-space width of the cone at the hit (accumulated spreadAngle*distance)
+//   texelDensity : sqrt(uvArea/worldArea) for the hit triangle (computeTexelDensity), normalized-UV per world length
+//   incidence    : |dot(rayDir, surfaceNormal)|, the grazing term (footprint stretches at grazing)
+float coneFootprintUV(float coneWidth, float texelDensity, float incidence)
+{
+  // grazing term uses sqrt(incidence) ("moreDetailOnSlopes", JCGT 2021): sharper on slopes than the
+  // paper's linear 1/incidence, which tends to over-blur at grazing angles.
+  return max(coneWidth * texelDensity * view.texGradScale / sqrt(max(incidence, 1e-4)), 1e-20);
+}
+
+// Build a TexLOD from an isotropic ray-cone footprint. The GRAD/LOD choice is the compile-time TEXTURE_LOD_MODE.
+TexLOD makeConeTexLOD(float coneWidth, float texelDensity, float incidence)
+{
+  TexLOD tl;
+  float footUV = coneFootprintUV(coneWidth, texelDensity, incidence);
+#if TEXTURE_LOD_MODE == TEXLODMODE_LOD
+  tl.lodBase = log2(footUV);  // per-texture 0.5*log2(w*h) added in sampleBindless()
+#else
+  tl.gradX = vec2(footUV, 0.0);
+  tl.gradY = vec2(0.0, footUV);
+#endif
+  return tl;
+}
+
+#if (HAS_TEXTURED_MATERIALS || HAS_ALPHA_TEST) && !defined(TEXTURING_SKIP_BINDLESS)
+vec4 sampleBindless(uint texIndex, vec2 uv, TexLOD texLod)
+{
+#if TEXTURE_LOD_MODE == TEXLODMODE_GRAD
+  return textureGrad(bindlessTextures[nonuniformEXT(texIndex)], uv, texLod.gradX, texLod.gradY);
+#elif TEXTURE_LOD_MODE == TEXLODMODE_LOD
+  // lodBase is resolution independent; fold in this texture's own dimensions here so different-sized maps
+  // of one material (base color vs. normal vs. metallic-roughness) each land on the right mip.
+  vec2  ts  = vec2(textureSize(bindlessTextures[nonuniformEXT(texIndex)], 0));
+  float lod = texLod.lodBase + 0.5 * log2(max(ts.x * ts.y, 1.0));
+  return textureLod(bindlessTextures[nonuniformEXT(texIndex)], uv, lod);
+#else  // TEXLODMODE_IMPLICIT
+  return texture(bindlessTextures[nonuniformEXT(texIndex)], uv);
+#endif
+}
+#endif
 
 ///////////////////////////////////////////////////
 
@@ -93,35 +163,6 @@ float computeTexelDensity(mat4x3 objectToWorld, vec3 pos0, vec3 pos1, vec3 pos2,
   return sqrt(max(uvArea, 1e-20) / max(wArea, 1e-20));
 }
 
-float computeRayFootprintGrad(float hitT, float pixelAngle, float texelDensity)
-{
-  return hitT * pixelAngle * texelDensity * view.texGradScale;
-}
-
-float computeRayFootprintGrad2(float hitT,
-                               float pixelAngle,
-                               mat4x3 objectToWorld,
-                               vec3 rayDirection,
-                               vec3 pos0,
-                               vec3 pos1,
-                               vec3 pos2,
-                               vec2 uv0,
-                               vec2 uv1,
-                               vec2 uv2)
-{
-  vec3  we1       = objectToWorld * vec4(pos1 - pos0, 0.0);
-  vec3  we2       = objectToWorld * vec4(pos2 - pos0, 0.0);
-  vec3  wNormal   = cross(we1, we2);
-  float wArea     = length(wNormal);
-  float wAreaSafe = max(wArea, 1e-20);
-  vec2  duv1      = uv1 - uv0;
-  vec2  duv2      = uv2 - uv0;
-  float uvArea    = abs(duv1.x * duv2.y - duv1.y * duv2.x);
-  float incidence = abs(dot(wNormal, rayDirection)) / wAreaSafe;
-
-  return hitT * pixelAngle * sqrt(max(uvArea, 1e-20) / wAreaSafe) * view.texGradScale / max(incidence, 1e-4);
-}
-
 vec3 computeViewRayDirection(vec2 clipPos)
 {
   vec4 target = normalize(view.projMatrixI * vec4(clipPos.x, clipPos.y, 1, 1));
@@ -137,101 +178,8 @@ float computeRasterFootprintGrad(float triArea, vec2 uv0, vec2 uv1, vec2 uv2)
   return sqrt(max(uvArea, 1e-20) / max(triArea, 1e-20)) * view.texGradScale;
 }
 
-#if USE_ANISOTROPIC_GRADIENT
-struct RayTriangleBarycentricBasis
-{
-  vec3  v0;
-  vec3  e1;
-  vec3  e2;
-  vec3  normal;
-  float d00;
-  float d01;
-  float d11;
-  float invDen;
-};
-
-bool computeRayTriangleBarycentricBasis(vec3 v0, vec3 v1, vec3 v2, out RayTriangleBarycentricBasis basis)
-{
-  basis.v0     = v0;
-  basis.e1     = v1 - v0;
-  basis.e2     = v2 - v0;
-  basis.normal = cross(basis.e1, basis.e2);
-  basis.d00    = dot(basis.e1, basis.e1);
-  basis.d01    = dot(basis.e1, basis.e2);
-  basis.d11    = dot(basis.e2, basis.e2);
-
-  float areaSqr = dot(basis.normal, basis.normal);
-  float den     = basis.d00 * basis.d11 - basis.d01 * basis.d01;
-
-  if (areaSqr < 1e-20 || abs(den) < 1e-20)
-  {
-    return false;
-  }
-
-  basis.invDen = 1.0 / den;
-  return true;
-}
-
-bool intersectRayTriangleBarycentrics(RayTriangleBarycentricBasis basis, vec3 origin, vec3 direction, out vec3 barycentrics)
-{
-  float nDotDir = dot(basis.normal, direction);
-
-  if (abs(nDotDir) < 1e-20)
-  {
-    barycentrics = vec3(0);
-    return false;
-  }
-
-  float t = dot(basis.normal, basis.v0 - origin) / nDotDir;
-  vec3  p = origin + t * direction;
-
-  vec3  vp  = p - basis.v0;
-  float d20 = dot(vp, basis.e1);
-  float d21 = dot(vp, basis.e2);
-  float v   = (basis.d11 * d20 - basis.d01 * d21) * basis.invDen;
-  float w   = (basis.d00 * d21 - basis.d01 * d20) * basis.invDen;
-  barycentrics = vec3(1.0 - v - w, v, w);
-  return true;
-}
-
-bool computeRayDifferentialTextureGradients(vec3 origin,
-                                            vec3 directionX,
-                                            vec3 directionY,
-                                            vec3 pos0,
-                                            vec3 pos1,
-                                            vec3 pos2,
-                                            vec2 uv0,
-                                            vec2 uv1,
-                                            vec2 uv2,
-                                            vec2 uv,
-                                            out vec2 texGradDdx,
-                                            out vec2 texGradDdy)
-{
-  RayTriangleBarycentricBasis basis;
-  if (!computeRayTriangleBarycentricBasis(pos0, pos1, pos2, basis))
-  {
-    texGradDdx = vec2(0);
-    texGradDdy = vec2(0);
-    return false;
-  }
-
-  vec3 baryX;
-  vec3 baryY;
-  bool validX = intersectRayTriangleBarycentrics(basis, origin, directionX, baryX);
-  bool validY = intersectRayTriangleBarycentrics(basis, origin, directionY, baryY);
-
-  if (!validX || !validY)
-  {
-    texGradDdx = vec2(0);
-    texGradDdy = vec2(0);
-    return false;
-  }
-
-  texGradDdx = (interpolateTexCoord(baryX, uv0, uv1, uv2) - uv) * view.texGradScale;
-  texGradDdy = (interpolateTexCoord(baryY, uv0, uv1, uv2) - uv) * view.texGradScale;
-  return true;
-}
-
+// Screen-space texture gradients from a rasterized triangle (software compute-raster alpha test; the
+// hardware fragment path gets these from the GPU). Equivalent to ddx/ddy of the interpolated texcoords.
 void computeRasterTextureGradients(vec2 pos0,
                                    vec2 pos1,
                                    vec2 pos2,
@@ -249,4 +197,3 @@ void computeRasterTextureGradients(vec2 pos0,
   texGradDdx = interpolateTexCoord(baryDdx, uv0, uv1, uv2) * view.texGradScale;
   texGradDdy = interpolateTexCoord(baryDdy, uv0, uv1, uv2) * view.texGradScale;
 }
-#endif

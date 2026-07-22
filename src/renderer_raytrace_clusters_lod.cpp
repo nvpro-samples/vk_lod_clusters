@@ -1,21 +1,7 @@
 /*
-* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
-*
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License.
-*
-* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
-* SPDX-License-Identifier: Apache-2.0
-*/
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 #include <volk.h>
 #include <nvvk/sbt_generator.hpp>
@@ -23,6 +9,9 @@
 #include <nvutils/alignment.hpp>
 #include <nvutils/logger.hpp>
 #include <fmt/format.h>
+
+#include <algorithm>
+#include <cmath>
 
 #include "renderer.hpp"
 
@@ -106,6 +95,7 @@ private:
   Shaders            m_shaders;
   Pipelines          m_pipelines;
   VkShaderStageFlags m_stageFlags{};
+  bool               m_hasAlphaMask = false;  // scene has alpha-masked geometry -> pipeline needs the any-hit group
   VkPipelineLayout   m_pipelineLayout{};
 
   nvvk::DescriptorPack m_dsetPack;
@@ -133,6 +123,9 @@ private:
   nvvk::AccelerationStructure                 m_tlas;
 
   nvvk::Buffer m_scratchBuffer;
+
+  // path tracer auto-exposure: smoothed exposure derived from the grid-sampled scene luminance readback
+  float m_ptExposure = 1.0f;
 };
 
 bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscene, const RendererConfig& config)
@@ -181,19 +174,34 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("USE_FORCED_TWO_SIDED", config.forceTwoSided ? "1" : "0");
   options.AddMacroDefinition("USE_FORCED_INVISIBLE_CULLING", config.useForcedInvisibleCulling ? "1" : "0");
   options.AddMacroDefinition("USE_PERSISTENT_TRAVERSAL_KERNEL", config.usePersistentTraversal ? "1" : "0");
-  options.AddMacroDefinition("USE_ANISOTROPIC_GRADIENT", config.useAnisotropicGradient ? "1" : "0");
+  // Ray/path tracer texture LOD mode (overrides the TARGETS_RASTERIZATION-derived default in shaderio.h).
+  options.AddMacroDefinition("TEXTURE_LOD_MODE", config.textureLodMode == 1 ? "TEXLODMODE_LOD" :
+                                                 config.textureLodMode == 2 ? "TEXLODMODE_IMPLICIT" :
+                                                                              "TEXLODMODE_GRAD");
   options.AddMacroDefinition("HAS_ALPHA_TEST", rscene.scene->m_hasAlphaMask ? "1" : "0");
   options.AddMacroDefinition("HAS_TEXTURED_MATERIALS", rscene.scene->m_hasTexturedMaterials ? "1" : "0");
+  options.AddMacroDefinition("USE_PATHTRACING", config.usePathtrace ? "1" : "0");
 
   shaderc::CompileOptions optionsAO = options;
   options.AddMacroDefinition("RAYTRACING_PAYLOAD_INDEX", "0");
   optionsAO.AddMacroDefinition("RAYTRACING_PAYLOAD_INDEX", "1");
 
-  res.compileShader(m_shaders.rayGen, VK_SHADER_STAGE_RAYGEN_BIT_KHR, "render_raytrace.rgen.glsl", &options);
-  res.compileShader(m_shaders.rayClosestHit, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, "render_raytrace_clusters.rchit.glsl", &options);
-  res.compileShader(m_shaders.rayAnyHit, VK_SHADER_STAGE_ANY_HIT_BIT_KHR, "render_raytrace_clusters.rahit.glsl", &options);
-  res.compileShader(m_shaders.rayMiss, VK_SHADER_STAGE_MISS_BIT_KHR, "render_raytrace.rmiss.glsl", &options);
-  res.compileShader(m_shaders.rayMissAO, VK_SHADER_STAGE_MISS_BIT_KHR, "render_raytrace.rmiss.glsl", &optionsAO);
+  // The basic path tracer uses a separate shader set: the closest-hit only reports the hit
+  // and all shading happens in the ray-generation shader.
+  const bool  pt        = config.usePathtrace;
+  const char* rgenFile  = pt ? "render_pathtrace.rgen.glsl" : "render_raytrace.rgen.glsl";
+  const char* rchitFile = pt ? "render_pathtrace_clusters.rchit.glsl" : "render_raytrace_clusters.rchit.glsl";
+  const char* rahitFile = pt ? "render_pathtrace_clusters.rahit.glsl" : "render_raytrace_clusters.rahit.glsl";
+  const char* rmissFile = pt ? "render_pathtrace.rmiss.glsl" : "render_raytrace.rmiss.glsl";
+
+  res.compileShader(m_shaders.rayGen, VK_SHADER_STAGE_RAYGEN_BIT_KHR, rgenFile, &options);
+  res.compileShader(m_shaders.rayClosestHit, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, rchitFile, &options);
+  // the any-hit only alpha-tests cutout geometry; skip it (and its hit group) when the scene has none
+  m_hasAlphaMask = rscene.scene->m_hasAlphaMask;
+  if(m_hasAlphaMask)
+    res.compileShader(m_shaders.rayAnyHit, VK_SHADER_STAGE_ANY_HIT_BIT_KHR, rahitFile, &options);
+  res.compileShader(m_shaders.rayMiss, VK_SHADER_STAGE_MISS_BIT_KHR, rmissFile, &options);
+  res.compileShader(m_shaders.rayMissAO, VK_SHADER_STAGE_MISS_BIT_KHR, rmissFile, &optionsAO);
 
   if(m_config.useSorting)
   {
@@ -608,8 +616,17 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
   m_sceneBuildShaderio.sharingTolerantLevels = frame.sharingTolerantLevels;
   m_sceneBuildShaderio.sharingEnabledLevels  = frame.sharingEnabledLevels;
 
+  shaderio::FrameConstants frameConstants = frame.frameConstants;
+  if(m_config.usePathtrace)
+  {
+    // Drive the tone-map exposure from the (auto-)exposure computed from last frame's readback,
+    // combined with the user exposure-compensation bias.
+    float autoScale                  = frameConstants.pathtraceAutoExposure != 0 ? m_ptExposure : 1.0f;
+    frameConstants.pathtraceExposure = autoScale * std::exp2(frameConstants.pathtraceExposureBias);
+  }
+
   vkCmdUpdateBuffer(cmd, res.m_commonBuffers.frameConstants.buffer, 0, sizeof(shaderio::FrameConstants),
-                    (const uint32_t*)&frame.frameConstants);
+                    (const uint32_t*)&frameConstants);
   vkCmdFillBuffer(cmd, res.m_commonBuffers.readBack.buffer, 0, sizeof(shaderio::Readback), 0);
   vkCmdFillBuffer(cmd, m_sceneTraversalBuffer.buffer, 0, m_sceneTraversalBuffer.bufferSize, ~0);
 
@@ -1089,6 +1106,19 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     shaderio::Readback readback;
     res.getReadbackData(readback);
     m_resourceActualUsage.rtBlasMemBytes = readback.blasActualSizes + rscene.getBlasSize(false);
+
+    // Path tracer auto-exposure: adapt the smoothed exposure towards a middle-grey key value based on
+    // the grid-sampled average scene luminance (accumulated with float atomics in the ray-gen shader).
+    if(m_config.usePathtrace && readback.autoExposureSampleCount > 0)
+    {
+      // geometric-mean (log-average) luminance -> exposure that maps it to the middle-grey key
+      float       avgLogLuma = readback.autoExposureLumaSum / float(readback.autoExposureSampleCount);
+      float       avgLuma    = std::exp2(avgLogLuma);
+      const float key        = 0.18f;
+      const float adaptRate  = 0.1f;
+      float       target     = std::clamp(key / std::max(avgLuma, 1e-4f), 0.01f, 100.0f);
+      m_ptExposure += (target - m_ptExposure) * adaptRate;
+    }
   }
 
   m_frameIndex++;
@@ -1228,9 +1258,12 @@ void RendererRayTraceClustersLod::initRayTracingPipeline(Resources& res)
   stages[eClosestHit].stage          = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
   stageShaders[eClosestHit].codeSize = nvvkglsl::GlslCompiler::getSpirvSize(m_shaders.rayClosestHit);
   stageShaders[eClosestHit].pCode    = nvvkglsl::GlslCompiler::getSpirv(m_shaders.rayClosestHit);
-  stages[eAnyHit].stage              = VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
-  stageShaders[eAnyHit].codeSize     = nvvkglsl::GlslCompiler::getSpirvSize(m_shaders.rayAnyHit);
-  stageShaders[eAnyHit].pCode        = nvvkglsl::GlslCompiler::getSpirv(m_shaders.rayAnyHit);
+  if(m_hasAlphaMask)
+  {
+    stages[eAnyHit].stage          = VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+    stageShaders[eAnyHit].codeSize = nvvkglsl::GlslCompiler::getSpirvSize(m_shaders.rayAnyHit);
+    stageShaders[eAnyHit].pCode    = nvvkglsl::GlslCompiler::getSpirv(m_shaders.rayAnyHit);
+  }
 
   // Shader groups
   VkRayTracingShaderGroupCreateInfoKHR group{.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR,
@@ -1261,20 +1294,26 @@ void RendererRayTraceClustersLod::initRayTracingPipeline(Resources& res)
   group.closestHitShader = eClosestHit;
   shaderGroups.push_back(group);
 
-  // hit group
-  group.type             = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-  group.anyHitShader     = eAnyHit;
-  group.closestHitShader = eClosestHit;
-  shaderGroups.push_back(group);
+  // hit group with any-hit, for alpha-masked geometry (only when the scene has any)
+  if(m_hasAlphaMask)
+  {
+    group.type             = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+    group.anyHitShader     = eAnyHit;
+    group.closestHitShader = eClosestHit;
+    shaderGroups.push_back(group);
+  }
 
   // Assemble the shader stages and recursion depth info into the ray tracing pipeline
   VkRayTracingPipelineCreateInfoKHR rayPipelineInfo{
-      .sType                        = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR,
-      .stageCount                   = uint32_t(eShaderGroupCount),
-      .pStages                      = stages.data(),
-      .groupCount                   = static_cast<uint32_t>(shaderGroups.size()),
-      .pGroups                      = shaderGroups.data(),
-      .maxPipelineRayRecursionDepth = m_config.useShading ? 2u : 1u,
+      .sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR,
+      // eAnyHit is the last stage, so dropping it is just a smaller count
+      .stageCount = uint32_t(m_hasAlphaMask ? eShaderGroupCount : eShaderGroupCount - 1),
+      .pStages    = stages.data(),
+      .groupCount = static_cast<uint32_t>(shaderGroups.size()),
+      .pGroups    = shaderGroups.data(),
+      // The path tracer issues all rays (primary, indirect, shadow) from the ray-gen shader;
+      // hit/miss shaders never trace, so a recursion depth of 1 suffices.
+      .maxPipelineRayRecursionDepth = m_config.usePathtrace ? 1u : (m_config.useShading ? 2u : 1u),
       .layout                       = m_pipelineLayout,
   };
 

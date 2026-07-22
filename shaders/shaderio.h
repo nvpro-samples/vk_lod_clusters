@@ -1,21 +1,7 @@
 /*
-* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
-*
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License.
-*
-* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
-* SPDX-License-Identifier: Apache-2.0
-*/
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 #ifndef _SHADERIO_H_
 #define _SHADERIO_H_
@@ -39,6 +25,23 @@
 #define VISUALIZE_BLAS 8
 #define VISUALIZE_BLAS_CACHED 9
 #define VISUALIZE_DEPTH_ONLY 10
+
+// Texture LOD selection for material sampling, resolved entirely at compile time via TEXTURE_LOD_MODE.
+// Raster uses hardware quad derivatives; the ray tracer / path tracer turn the ray-cone footprint into
+// either a texture gradient or an explicit lambda. The default is derived from TARGETS_RASTERIZATION
+// (set by every renderer) so raster shaders get IMPLICIT and ray/path traced shaders get a cone mode;
+// define TEXTURE_LOD_MODE explicitly to override (e.g. TEXLODMODE_LOD for the ray/path tracers).
+#define TEXLODMODE_GRAD 0      // convert the ray-cone footprint to a UV gradient and use textureGrad()
+#define TEXLODMODE_LOD 1       // compute an explicit lambda and use textureLod()
+#define TEXLODMODE_IMPLICIT 2  // use texture() with hardware derivatives (rasterization)
+
+#ifndef TEXTURE_LOD_MODE
+#if TARGETS_RASTERIZATION
+#define TEXTURE_LOD_MODE TEXLODMODE_IMPLICIT
+#else
+#define TEXTURE_LOD_MODE TEXLODMODE_GRAD
+#endif
+#endif
 
 #define MESHSHADER_BBOX_VERTICES 8
 #define MESHSHADER_BBOX_LINES 12
@@ -210,10 +213,6 @@ using namespace glm;
 #define USE_TWO_SIDED 1
 #endif
 
-#ifndef USE_ANISOTROPIC_GRADIENT
-#define USE_ANISOTROPIC_GRADIENT 1
-#endif
-
 #ifndef USE_FORCED_TWO_SIDED
 #define USE_FORCED_TWO_SIDED 0
 #endif
@@ -260,8 +259,8 @@ using namespace glm;
 
 struct RayPayload
 {
-#if (HAS_ALPHA_TEST && USE_ANISOTROPIC_GRADIENT) || (DEBUG_VISUALIZATION && ALLOW_SHADING)
-  // Ray directions through neighboring pixels for explicit texture gradients and wireframe differentials.
+#if DEBUG_VISUALIZATION && ALLOW_SHADING
+  // Ray directions through neighboring pixels, used to draw wireframe overlays (barycentric differentials).
   vec3 rayDifferentialX;
   vec3 rayDifferentialY;
 #endif
@@ -269,11 +268,32 @@ struct RayPayload
   vec3 color;
 #endif
   float hitT;
+  // Ray cone carried into traversal (matches PathRayPayload): width/spread at the ray ORIGIN, so the
+  // closest-hit material sampling and the alpha any-hit share the propagated footprint (and it accumulates
+  // across the mirror reflection), plus streaming-LOD hooks can read the footprint. width(t) = coneWidth + coneSpread*t.
+  float coneWidth;
+  float coneSpread;
 #if USE_DLSS && ALLOW_SHADING
   vec4 dlssNormalRoughness;
   vec4 dlssAlbedo;
   vec3 dlssSpecular;
 #endif
+};
+
+// Minimal payload for the path tracer: the closest-hit only reports the hit,
+// all shading happens in the ray-generation shader. hitT < 0 signals a miss.
+struct PathRayPayload
+{
+  float hitT;
+  uint  instanceID;
+  uint  clusterID;
+  uint  triangleID;
+  vec2  bary;
+  // Ray cone carried into traversal (Akenine-Moeller ray cones) so the alpha-mask any-hit - and future
+  // streaming-LOD hooks in the hit shaders - use the SAME propagated footprint as the ray-gen material
+  // sampling. Width/spread are taken at the ray ORIGIN; a hit at distance t has width = coneWidth + coneSpread * t.
+  float coneWidth;
+  float coneSpread;
 };
 
 #endif
@@ -353,6 +373,17 @@ struct FrameConstants
   int   facetShading;
 
   SkySimpleParameters skyParams;
+
+  // physical sky used by the basic path tracer
+  SkyPhysicalParameters skyPhysical;
+
+  // basic path tracing
+  int   pathtraceNumBounces;
+  float pathtraceFireflyClamp;
+  float pathtraceExposure;      // final exposure multiplier used by the shader (renderer-driven, e.g. auto-exposure)
+  float pathtraceExposureBias;  // user exposure compensation in EV stops
+  int   pathtraceAutoExposure;  // 0/1 toggle for grid-sampled auto-exposure
+  int   pathtraceTonemap;       // operator: 0 = Filmic, 1 = ACES, 2 = Uncharted2
 };
 
 struct Readback
@@ -378,6 +409,10 @@ struct Readback
   uint64_t numRasteredTrianglesAlphaSW;
 
   uint64_t blasActualSizes;
+
+  // path tracer auto-exposure: grid-sampled luminance accumulation (float32 atomics)
+  float autoExposureLumaSum;
+  uint  autoExposureSampleCount;
 
 #ifdef __cplusplus
   uint32_t clusterTriangleId;

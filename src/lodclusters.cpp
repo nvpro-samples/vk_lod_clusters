@@ -1,23 +1,11 @@
 /*
-* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
-*
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License.
-*
-* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
-* SPDX-License-Identifier: Apache-2.0
-*/
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 #include <thread>
+#include <cmath>
+#include <span>
 
 #include <volk.h>
 #include <fmt/format.h>
@@ -53,6 +41,7 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"dumpspirv", "dumps compiled spirv into working directory"}, &m_resources.m_dumpSpirv);
   m_info.parameterRegistry->add({"camerastring"}, &m_cameraString);
   m_info.parameterRegistry->add({"cameraspeed"}, &m_cameraSpeed);
+  registerCameraPathParameters();
   m_info.parameterRegistry->addVector({"sundirection"}, &m_frameConfig.frameConstants.skyParams.sunDirection);
   m_info.parameterRegistry->addVector({"suncolor"}, &m_frameConfig.frameConstants.skyParams.sunColor);
 
@@ -101,6 +90,14 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"forcedinvisculling"}, &m_rendererConfig.useForcedInvisibleCulling);
   m_info.parameterRegistry->add({"dlss"}, &m_rendererConfig.useDlss);
   m_info.parameterRegistry->add({"dlssquality"}, (int*)&m_rendererConfig.dlssQuality);
+  m_info.parameterRegistry->add({"pathtrace", "basic path tracing (shading in ray-gen). default false"},
+                                &m_rendererConfig.usePathtrace);
+  m_info.parameterRegistry->add({"pathtracebounces"}, &m_frameConfig.frameConstants.pathtraceNumBounces);
+  m_info.parameterRegistry->add({"pathtracetonemap", "0 Filmic, 1 ACES, 2 Uncharted2"}, &m_frameConfig.frameConstants.pathtraceTonemap);
+  m_info.parameterRegistry->add({"pathtraceautoexposure"}, &m_frameConfig.frameConstants.pathtraceAutoExposure);
+  m_info.parameterRegistry->add({"pathtraceexposurebias"}, &m_frameConfig.frameConstants.pathtraceExposureBias);
+  m_info.parameterRegistry->add({"pathtracefireflyclamp"}, &m_frameConfig.frameConstants.pathtraceFireflyClamp);
+  m_info.parameterRegistry->add({"lightmixer"}, &m_frameConfig.frameConstants.lightMixer);
   m_info.parameterRegistry->add({"blassharing"}, &m_rendererConfig.useBlasSharing);
   m_info.parameterRegistry->add({"blasmerging"}, &m_rendererConfig.useBlasMerging);
   m_info.parameterRegistry->add({"blascaching"}, &m_rendererConfig.useBlasCaching);
@@ -149,9 +146,12 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"skipalphablended"}, &m_sceneLoaderConfig.skipAlphaBlended);
   m_info.parameterRegistry->add({"skipalphamasked"}, &m_sceneLoaderConfig.skipAlphaMasked);
   m_info.parameterRegistry->add({"persistenttraversal"}, &m_rendererConfig.usePersistentTraversal);
-  m_info.parameterRegistry->add({"anisotropicgradient"}, &m_rendererConfig.useAnisotropicGradient);
+  m_info.parameterRegistry->add({"texlodmode", "ray/path tracer texture LOD: 0 gradient, 1 explicit lod, 2 mip0"},
+                                &m_rendererConfig.textureLodMode);
   m_info.parameterRegistry->add({"texturegradientscale"}, &m_frameConfig.frameConstants.texGradScale);
   m_info.parameterRegistry->add({"texturedmaterials", "enable textured materials"}, &m_sceneLoaderConfig.enableTexturedMaterials);
+  m_info.parameterRegistry->add({"maxtexturemegabytes", "upper VRAM budget for material textures in MiB; 0 disables limit (default 4096)"},
+                                &m_texturesConfig.maxBudgetMiB);
   {
     // HACK as zorah.cfg ships with some deprecated settings
     static bool dummy;
@@ -179,6 +179,15 @@ LodClusters::LodClusters(const Info& info)
 
   m_frameConfig.frameConstants.lightMixer = 0.5f;
   m_frameConfig.frameConstants.skyParams  = {};
+
+  // basic path tracer defaults
+  m_frameConfig.frameConstants.skyPhysical           = {};
+  m_frameConfig.frameConstants.pathtraceNumBounces   = 3;
+  m_frameConfig.frameConstants.pathtraceFireflyClamp = 20.0f;
+  m_frameConfig.frameConstants.pathtraceExposure     = 1.0f;
+  m_frameConfig.frameConstants.pathtraceExposureBias = 0.0f;
+  m_frameConfig.frameConstants.pathtraceAutoExposure = 1;
+  m_frameConfig.frameConstants.pathtraceTonemap      = 0;  // Filmic
 
   m_lastAmbientOcclusionSamples = m_frameConfig.frameConstants.ambientOcclusionSamples;
 
@@ -270,6 +279,7 @@ void LodClusters::initRenderScene()
   }
 
   m_streamingConfigLast = m_streamingConfig;
+  m_texturesConfigLast  = m_texturesConfig;
 }
 
 void LodClusters::deinitRenderScene()
@@ -402,6 +412,12 @@ void LodClusters::postInitNewScene()
     m_tweak.facetShading = true;
 
   m_frameConfig.frameConstants.skyParams.sunDirection = glm::normalize(m_frameConfig.frameConstants.skyParams.sunDirection);
+  // The physical sky (path tracer) is edited on its own but shares the same-meaning values with the simple
+  // sky; seed them from the simple sky so --sundirection / defaults apply to both and the azimuth/elevation
+  // UI reads correctly.
+  m_frameConfig.frameConstants.skyPhysical.sunDirection = m_frameConfig.frameConstants.skyParams.sunDirection;
+  m_frameConfig.frameConstants.skyPhysical.groundColor  = m_frameConfig.frameConstants.skyParams.groundColor;
+  m_frameConfig.frameConstants.skyPhysical.yIsUp = (m_frameConfig.frameConstants.skyParams.directionUp.y > 0.5f) ? 1 : 0;
 }
 
 
@@ -548,6 +564,9 @@ void LodClusters::onAttach(nvapp::Application* app)
   }
 
   m_cameraStringCommandLine = m_cameraString;
+  // camera-path provenance is tracked by m_cameraPathsExternal, which the
+  // --addcamerapath/--loadcamerapaths handlers set (also for config/sequence
+  // parsing that happens after this point), so no snapshot is needed here
 
   std::filesystem::path newFileDrop = m_sceneFilePathDropNew;
   onFileDrop(newFileDrop);
@@ -827,6 +846,31 @@ void LodClusters::handleChanges()
     onFileDrop(newFilePath);
   }
 
+  // Load the per-scene camera paths file once a (new) scene has finished loading.
+  // Done here on the main thread (not in the loader thread's setSceneCamera) so
+  // it does not race the UI / playback reads of m_cameraPaths. Explicitly provided
+  // paths (--addcamerapath/--loadcamerapaths, via command line, config, or sequence)
+  // are global and take precedence, so the per-scene file is only used without them.
+  if(m_scene && m_sceneFilePath != m_cameraPathsLoadedScene)
+  {
+    m_cameraPathsLoadedScene = m_sceneFilePath;
+
+    if(!m_cameraPathsExternal)
+    {
+      m_cameraPaths.clear();
+      m_cameraPathActive   = -1;
+      m_cameraPathEditKey  = -1;
+      m_cameraPathPlayback = CAMERA_PATH_STOP;
+
+      std::filesystem::path pathsFile = sceneCameraPathsFile(m_sceneFilePath);
+      if(std::filesystem::exists(pathsFile) && loadCameraPaths(pathsFile, m_cameraPaths))
+      {
+        m_cameraPathActive = m_cameraPaths.empty() ? -1 : 0;
+        LOGI("Loaded %zu camera path(s) from %s\n", m_cameraPaths.size(), nvutils::utf8FromPath(pathsFile).c_str());
+      }
+    }
+  }
+
   if(!m_resources.m_supportsMeshShaderNV)
   {
     m_rendererConfig.useEXTmeshShader = true;
@@ -913,7 +957,8 @@ void LodClusters::handleChanges()
 
     bool renderSceneChanged = false;
     bool streamingChanged   = tweakChanged(m_tweak.useStreaming)
-                            || (memcmp(&m_streamingConfig, &m_streamingConfigLast, sizeof(m_streamingConfig)));
+                            || (memcmp(&m_streamingConfig, &m_streamingConfigLast, sizeof(m_streamingConfig)))
+                            || (memcmp(&m_texturesConfig, &m_texturesConfigLast, sizeof(m_texturesConfig)));
     if(sceneGridChanged || streamingChanged)
     {
       if(!sceneChanged || !sceneGridChanged)
@@ -944,7 +989,8 @@ void LodClusters::handleChanges()
        || rendererCfgChanged(m_rendererConfig.useEXTmeshShader) || rendererCfgChanged(m_rendererConfig.useComputeRaster)
        || rendererCfgChanged(m_rendererConfig.usePrimitiveCulling) || rendererCfgChanged(m_rendererConfig.useTwoPassCulling)
        || rendererCfgChanged(m_rendererConfig.useDepthOnly) || rendererCfgChanged(m_rendererConfig.useForcedInvisibleCulling)
-       || rendererCfgChanged(m_rendererConfig.usePersistentTraversal) || rendererCfgChanged(m_rendererConfig.useAnisotropicGradient))
+       || rendererCfgChanged(m_rendererConfig.usePersistentTraversal)
+       || rendererCfgChanged(m_rendererConfig.textureLodMode) || rendererCfgChanged(m_rendererConfig.usePathtrace))
     {
       if(rendererCfgChanged(m_rendererConfig.useBlasCaching))
       {
@@ -971,10 +1017,12 @@ void LodClusters::handleChanges()
                    || memcmp(&m_rendererConfigLast, &m_rendererConfig, sizeof(m_rendererConfig))
                    || memcmp(&m_sceneConfigLast, &m_sceneConfig, sizeof(m_sceneConfig))
                    || memcmp(&m_streamingConfigLast, &m_streamingConfig, sizeof(m_streamingConfig))
+                   || memcmp(&m_texturesConfigLast, &m_texturesConfig, sizeof(m_texturesConfig))
                    || memcmp(&m_sceneGridConfigLast, &m_sceneGridConfig, sizeof(m_sceneGridConfig));
   m_tweakLast           = m_tweak;
   m_rendererConfigLast  = m_rendererConfig;
   m_streamingConfigLast = m_streamingConfig;
+  m_texturesConfigLast  = m_texturesConfig;
   m_sceneConfigLast     = m_sceneConfig;
   m_sceneGridConfigLast = m_sceneGridConfig;
 
@@ -999,9 +1047,153 @@ void LodClusters::applyCameraString()
   m_cameraStringLast = m_cameraString;
 }
 
+void LodClusters::registerCameraPathParameters()
+{
+  // `--addcamerapath "<string>"` appends a path definition; the index is the
+  // order in which the paths were added. Repeatable.
+  m_info.parameterRegistry->addCustom(
+      {"addcamerapath", "append a camera path definition string (repeatable); the path index equals the order added"}, 1,
+      [this](const nvutils::ParameterBase* const, std::span<char const* const> args, const std::filesystem::path&) -> bool {
+        CameraPath path;
+        if(!path.setFromString(args[0]))
+        {
+          LOGE("addcamerapath: could not parse camera path string\n");
+          return false;
+        }
+        m_cameraPaths.push_back(std::move(path));
+        m_cameraPathsExternal = true;
+        if(m_cameraPathActive < 0)
+          m_cameraPathActive = 0;
+        LOGI("addcamerapath: added path %d with %zu keyframes\n", int(m_cameraPaths.size()) - 1, m_cameraPaths.back().size());
+        return true;
+      });
+
+  // `--loadcamerapaths "<filename>"` replaces all path definitions with the
+  // paths from a simple text file (one path per line). Full overwrite.
+  m_info.parameterRegistry->addCustom(
+      {"loadcamerapaths", "load all camera path definitions from a text file (full overwrite)"}, 1,
+      [this](const nvutils::ParameterBase* const, std::span<char const* const> args, const std::filesystem::path& basePath) -> bool {
+        std::filesystem::path file = std::filesystem::path(args[0]);
+        if(file.is_relative() && !basePath.empty())
+          file = basePath / file;
+        if(!loadCameraPaths(file, m_cameraPaths))
+        {
+          LOGE("loadcamerapaths: could not open %s\n", nvutils::utf8FromPath(file).c_str());
+          return false;
+        }
+        m_cameraPathActive    = m_cameraPaths.empty() ? -1 : 0;
+        m_cameraPathPlayback  = CAMERA_PATH_STOP;
+        m_cameraPathsExternal = true;
+        LOGI("loadcamerapaths: loaded %zu path(s) from %s\n", m_cameraPaths.size(), nvutils::utf8FromPath(file).c_str());
+        return true;
+      });
+
+  // `--runcamerapath <index> <framecount>` plays back a path over a fixed number
+  // of frames (deterministic), one keyframe-step per rendered frame. Meant to be
+  // used within benchmark sequences.
+  m_info.parameterRegistry->addCustom(
+      {"runcamerapath", "deterministic fixed-step playback: <index> <framecount>, spreads the given path across framecount frames"},
+      2, [this](const nvutils::ParameterBase* const, std::span<char const* const> args, const std::filesystem::path&) -> bool {
+        int index      = atoi(args[0]);
+        int frameCount = atoi(args[1]);
+        if(index < 0 || index >= int(m_cameraPaths.size()))
+        {
+          LOGE("runcamerapath: path index %d out of range (%d paths defined)\n", index, int(m_cameraPaths.size()));
+          return false;
+        }
+        m_cameraPathActive   = index;
+        m_cameraPathFrames   = std::max(frameCount, 1);
+        m_cameraPathFrame    = 0;
+        m_cameraPathPlayback = CAMERA_PATH_FIXED;
+        return true;
+      });
+}
+
+std::filesystem::path LodClusters::sceneCameraPathsFile(const std::filesystem::path& scenePath) const
+{
+  if(scenePath.empty())
+    return {};
+
+  // stored next to the model file, named after it, e.g. ".../bunny.camerapaths.txt"
+  std::filesystem::path file = scenePath;
+  file.replace_extension(".camerapaths.txt");
+  return file;
+}
+
+bool LodClusters::applyCameraPathSample(double u)
+{
+  if(m_cameraPathActive < 0 || m_cameraPathActive >= int(m_cameraPaths.size()))
+    return false;
+
+  CameraPathKey key;
+  if(!m_cameraPaths[m_cameraPathActive].sample(u, key))
+    return false;
+
+  // keep the manipulator's other camera state (clip planes, projection, ...)
+  nvutils::CameraManipulator::Camera cam = m_info.cameraManipulator->getCamera();
+  cam.eye                                = key.eye;
+  cam.ctr                                = key.ctr;
+  cam.up                                 = key.up;
+  cam.fov                                = key.fov;
+  m_info.cameraManipulator->setCamera(cam, true);
+  return true;
+}
+
+void LodClusters::updateCameraPath(double time)
+{
+  if(m_cameraPathPlayback == CAMERA_PATH_STOP)
+    return;
+
+  if(m_cameraPathActive < 0 || m_cameraPathActive >= int(m_cameraPaths.size()) || m_cameraPaths[m_cameraPathActive].empty())
+  {
+    m_cameraPathPlayback = CAMERA_PATH_STOP;
+    return;
+  }
+
+  const CameraPath& path = m_cameraPaths[m_cameraPathActive];
+
+  if(m_cameraPathPlayback == CAMERA_PATH_FIXED)
+  {
+    // deterministic: frame f maps to u = f / (frames - 1)
+    int    denom = std::max(m_cameraPathFrames - 1, 1);
+    double u     = double(std::min(m_cameraPathFrame, denom)) / double(denom);
+    applyCameraPathSample(u);
+    m_cameraPathU = u;
+
+    // advance for the next frame, hold at the end (the sequence/headless run
+    // stops on its own frame count)
+    if(m_cameraPathFrame < m_cameraPathFrames - 1)
+      m_cameraPathFrame++;
+  }
+  else  // CAMERA_PATH_REALTIME
+  {
+    applyCameraPathSample(m_cameraPathU);
+
+    double dt           = m_cameraPathStarted ? std::max(time - m_lastTime, 0.0) : 0.0;
+    m_cameraPathStarted = true;
+    if(path.duration > 0.0)
+      m_cameraPathU += dt / path.duration;
+
+    if(m_cameraPathU >= 1.0)
+    {
+      if(path.loop)
+        m_cameraPathU = std::fmod(m_cameraPathU, 1.0);
+      else
+      {
+        m_cameraPathU        = 1.0;
+        m_cameraPathPlayback = CAMERA_PATH_STOP;
+      }
+    }
+  }
+}
+
 void LodClusters::onRender(VkCommandBuffer cmd)
 {
   double time = m_clock.getSeconds();
+
+  // drive the camera along the active path (overrides the manipulator for the
+  // rendered frame); runs after nvapp::ElementCamera's per-frame input update
+  updateCameraPath(time);
 
   m_resources.beginFrame(m_app->getFrameCycleIndex());
 
@@ -1110,6 +1302,24 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     frameConstants.viewPlane.w = -glm::dot(glm::vec3(frameConstants.viewPos), glm::vec3(frameConstants.viewDir));
 
     frameConstants.wLightPos = frameConstants.viewMatrixI[3];  // place light at position of eye in the world
+
+    // The simple sky (raster / RT) and the physical sky (path tracer) are edited independently via their
+    // own UIs, but they share the values that mean the same thing (and use the same scale) in both models
+    // - sun direction and ground color - so switching renderers doesn't move the sun or recolor the ground.
+    // These are propagated from whichever sky is currently being edited. Model-specific params (haze,
+    // saturation, horizon, sun disk, sky/horizon colors, and the differently-scaled sun intensity/size)
+    // stay independent.
+    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD && m_rendererConfig.usePathtrace)
+    {
+      frameConstants.skyParams.sunDirection = glm::normalize(frameConstants.skyPhysical.sunDirection);
+      frameConstants.skyParams.groundColor  = frameConstants.skyPhysical.groundColor;
+    }
+    else
+    {
+      frameConstants.skyPhysical.sunDirection = glm::normalize(frameConstants.skyParams.sunDirection);
+      frameConstants.skyPhysical.groundColor  = frameConstants.skyParams.groundColor;
+    }
+    frameConstants.skyPhysical.yIsUp = (frameConstants.skyParams.directionUp.y > 0.5f) ? 1 : 0;
 
     {
       // hiz

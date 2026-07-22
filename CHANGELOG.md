@@ -1,4 +1,25 @@
 # Changelog for vk_lod_clusters
+* 2026-7-22:
+  * Unified texture lod handling, which was influenced from the implementation of [RTXPT](https://github.com/NVIDIA-RTX/RTXPT). There is a new `--texlodmode <int>`, with `0 gradient, 1 explicit lod, 2 mip0` and the old `--anisotropicgradient` was removed in favor of a simpler heuristic from RTXPT.
+* 2026-7-21:
+  * Added keyframed **camera paths** for scripted fly-throughs, defined within the sample and copy/paste friendly. Thanks to Pyarelal Knowles for providing a reference implementation.
+    Author them under _Misc Settings → Camera Paths_, or provide them on the command line with 
+    `--addcamerapath "..."` (repeatable; index equals the order added).
+    `--runcamerapath <index> <framecount>` plays a path back with fixed-step timing 
+    (path position `f / (framecount-1)` per rendered frame) for **deterministic benchmarking**, e.g. dropped into 
+    each sequence of a `--sequencefile`.
+    Paths can be saved to / loaded from a `<model>.camerapaths.txt` text file stored next to the model
+    file (UI **Save** / **Load**), which is **auto-loaded** when that scene loads;
+    `--loadcamerapaths "file.txt"` loads a specific file (full overwrite), and command-line paths take
+    precedence over the per-scene file. See [Camera Path](README.md#camera-path).
+  * Improved shading robustness on low-tessellated geometry for both the ray tracer and the path tracer:
+    * The shading normal falls back to the geometric normal when it would reflect the view direction below the surface (avoids black specular artifacts and self-intersecting bounce rays).
+    * Shadow rays are offset along the smooth per-vertex normals (Hanika 2021, ["Hacking the Shadow Terminator"](https://jo.dreggn.org/home/2021_terminator.pdf)) to avoid self-shadowing along the terminator.
+* 2026-7-20:
+  * Texturing and material related fixes (wrong texture channels, and wrong number of mip maps loaded).
+  * "Path tracing" option added for the ray tracer. Based on the setup from [vk_gltf_renderer](https://github.com/nvpro-samples/vk_gltf_renderer) there is a new set of shaders that allow multi-bounce path tracing (see `shaders/render_pathtrace...`). This should be used with DLSS-RR active, otherwise it will appear noisy as the renderer will not do any accumulation.
+* 2026-7-16:
+  * Added optional VRAM budget for material textures via `--maxtexturemegabytes` (default **4096** MiB / 4 GiB; **0** disables the limit and loads all mips). Under _Settings → Scene Modifiers → Max texture MiB_ in the UI. When a budget is set, textures start at full resolution; if the total exceeds the budget, finer mips are dropped in round-robin order across textures until the limit is met. Each texture always retains at least its coarsest mip. Mip sizes are probed from DDS/KTX headers without decoding image data. Changing the budget reloads all textures.
 * 2026-7-9:
   * bugfix BLAS merging for cluster group sizes > 32
   * bugfix crash due to illegal geometryIndex when multi-materials were active but alpha test was off. Mixing Two-sided multi-materials still relies on alpha testing being enabled globally to work.

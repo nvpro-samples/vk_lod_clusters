@@ -1,21 +1,7 @@
 /*
-* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
-*
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License.
-*
-* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
-* SPDX-License-Identifier: Apache-2.0
-*/
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 
 #extension GL_EXT_fragment_shader_barycentric : enable
@@ -137,7 +123,7 @@ struct ShadingMaterial
   float occlusion;
 };
 
-ShadingMaterial loadMaterial(uint materialID, vec2 oTexCoord, inout vec3 wNormal, vec4 wTangent)
+ShadingMaterial loadMaterial(uint materialID, vec2 oTexCoord, inout vec3 wNormal, vec4 wTangent, TexLOD texLod)
 {
   RenderMaterial material = materials[materialID];
   ShadingMaterial shadingMaterial;
@@ -146,16 +132,22 @@ ShadingMaterial loadMaterial(uint materialID, vec2 oTexCoord, inout vec3 wNormal
   shadingMaterial.albedo    = unpackUnorm4x8(material.packedAlbedo).xyz;
   shadingMaterial.emissive  = unpackUnorm4x8(material.packedEmissive).xyz;
 #if HAS_TEXTURED_MATERIALS
-  vec2 metallicRoughness = texture(bindlessTextures[nonuniformEXT(material.metallicRoughnessTexture)],oTexCoord).xy;
+  // glTF packs roughness in the G channel and metalness in the B channel of the metallic-roughness texture.
+  vec3 metallicRoughness    = sampleBindless(material.metallicRoughnessTexture, oTexCoord, texLod).xyz;
   shadingMaterial.roughness = metallicRoughness.y * shadingMaterial.roughness;
-  shadingMaterial.metallic  = metallicRoughness.x * shadingMaterial.metallic;
-  shadingMaterial.albedo    *= texture(bindlessTextures[nonuniformEXT(material.baseTexture)], oTexCoord).xyz;
-  shadingMaterial.occlusion = texture(bindlessTextures[nonuniformEXT(material.occlusionTexture)], oTexCoord).x;
-  shadingMaterial.emissive  *= texture(bindlessTextures[nonuniformEXT(material.emissiveTexture)], oTexCoord).xyz;
-  
-  if (material.normalTexture != 0xFFFF)
+  shadingMaterial.metallic  = metallicRoughness.z * shadingMaterial.metallic;
+  shadingMaterial.albedo    *= sampleBindless(material.baseTexture, oTexCoord, texLod).xyz;
+  shadingMaterial.occlusion = sampleBindless(material.occlusionTexture, oTexCoord, texLod).x;
+  shadingMaterial.emissive  *= sampleBindless(material.emissiveTexture, oTexCoord, texLod).xyz;
+
+  // Only apply the tangent-space normal map when we have a valid smooth tangent frame. With facet
+  // shading there is no per-vertex tangent (wTangent is left at a dummy value), so applying the normal
+  // map would use a garbage basis and corrupt the normal (breaks directional lighting in raster).
+  if (view.facetShading == 0 && material.normalTexture != 0xFFFF)
   {
-    vec3 normalMap = texture(bindlessTextures[nonuniformEXT(material.normalTexture)], oTexCoord).xyz * 2.f - 1.f;
+    vec3 normalMap = sampleBindless(material.normalTexture, oTexCoord, texLod).xyz * 2.f - 1.f;
+    // Reconstruct Z from XY so compressed / 2-channel normal maps (where B may be dropped) stay valid.
+    normalMap.z = sqrt(clamp(1.f - dot(normalMap.xy, normalMap.xy), 0.f, 1.f));
     vec3 N = wNormal;
     vec3 T = wTangent.xyz;
     vec3 B = normalize(cross(N, T)) * wTangent.w;
@@ -196,7 +188,7 @@ vec3 computeShading(ShadingMaterial material, vec3 N, vec3 L, vec3 V, float Ndot
   return l_diffuse + l_specular;
 }
 
-vec4 shading(uint instanceID, uint materialID, vec3 wPos, vec3 wNormal, vec4 wTangent, vec2 oTexCoord, uint visData, float overheadLight, float ambientOcclusion
+vec4 shading(uint instanceID, uint materialID, vec3 wPos, vec3 wNormal, vec4 wTangent, vec2 oTexCoord, uint visData, float overheadLight, float ambientOcclusion, TexLOD texLod
 #if USE_DLSS_GUIDE_BUFFERS
   , out vec4 dlssAlbedo, out vec3 dlssSpecular, out vec4 dlssNormalRoughness
 #endif
@@ -213,7 +205,7 @@ vec4 shading(uint instanceID, uint materialID, vec3 wPos, vec3 wNormal, vec4 wTa
 
   if (view.visualize == VISUALIZE_SHADED) 
   {
-    shadingMaterial = loadMaterial(materialID, oTexCoord, wNormal, wTangent);
+    shadingMaterial = loadMaterial(materialID, oTexCoord, wNormal, wTangent, texLod);
   }
   else
   {
@@ -271,7 +263,7 @@ vec4 shading(uint instanceID, uint materialID, vec3 wPos, vec3 wNormal, vec4 wTa
 #if 0
   color.xyz = materialAlbedo;
 #endif
-  
+
   return color;
 }
 
@@ -419,6 +411,27 @@ vec3 offsetRay(vec3 p, vec3 dir, vec3 geonrm)
   return offsetPoint;
 }
 
+// Shadow terminator fix from Johannes Hanika, "Hacking the Shadow Terminator" (2021,
+// https://jo.dreggn.org/home/2021_terminator.pdf). Pushes the point `p` onto the smooth hull implied
+// by the per-vertex normals so that coarsely tessellated, smooth-shaded triangles don't self-shadow
+// along the terminator. Positions and normals must be in the same space (here object space).
+vec3 pointOffset(vec3 p, vec3 pa, vec3 pb, vec3 pc, vec3 na, vec3 nb, vec3 nc, vec3 bary)
+{
+  vec3 tmpu = p - pa;
+  vec3 tmpv = p - pb;
+  vec3 tmpw = p - pc;
+
+  float dotu = min(0.0, dot(tmpu, na));
+  float dotv = min(0.0, dot(tmpv, nb));
+  float dotw = min(0.0, dot(tmpw, nc));
+
+  tmpu -= dotu * na;
+  tmpv -= dotv * nb;
+  tmpw -= dotw * nc;
+
+  return p + tmpu * bary.x + tmpv * bary.y + tmpw * bary.z;
+}
+
 
 float ambientOcclusion(vec3 wPos, vec3 wNormal, uint32_t sampleCount, float radius)
 {
@@ -518,6 +531,9 @@ vec3 intersectRayTriangle(vec3 origin, vec3 direction, vec3 v0, vec3 v1, vec3 v2
   return vec3(w, u, v);
 }
 
+// gl_ObjectToWorldEXT is only available in hit/intersection shaders. The path-trace ray-gen
+// (which shades inline) has no object-space transform, so this hit-only helper is skipped there.
+#ifndef SKIP_OBJECT_SPACE_HELPERS
 ivec2 objectToPixel(vec3 objectPos)
 {
   vec3 wObjectPos = gl_ObjectToWorldEXT * vec4(objectPos, 1.f);
@@ -529,6 +545,7 @@ ivec2 objectToPixel(vec3 objectPos)
   pPos.xy *= vec2(gl_LaunchSizeEXT.xy);
   return ivec2(pPos.xy);
 }
+#endif
 
 
 

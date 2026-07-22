@@ -1,21 +1,7 @@
 /*
-* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
-*
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License.
-*
-* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
-* SPDX-License-Identifier: Apache-2.0
-*/
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 #version 460
 
@@ -60,7 +46,10 @@ layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssMotion, rg16f) 
 
 //////////////////////////////////////////////////////////////
 
-#if (HAS_ALPHA_TEST && USE_ANISOTROPIC_GRADIENT) || (DEBUG_VISUALIZATION && ALLOW_SHADING)
+#if DEBUG_VISUALIZATION && ALLOW_SHADING
+// This ray-gen declares no bindless texture array; it only needs texturing.glsl's computeViewRayDirection
+// for the wireframe-overlay differentials. Opt out of sampleBindless (which references that array).
+#define TEXTURING_SKIP_BINDLESS 1
 #include "texturing.glsl"
 #endif
 
@@ -107,7 +96,7 @@ void main()
   float tMin = view.nearPlane;
   float tMax = view.farPlane;
 
-#if (HAS_ALPHA_TEST && USE_ANISOTROPIC_GRADIENT) || (DEBUG_VISUALIZATION && ALLOW_SHADING)
+#if DEBUG_VISUALIZATION && ALLOW_SHADING
   vec2 differentialPixel = vec2(gl_LaunchIDEXT.xy) + pixelOffset;
   rayHit.rayDifferentialX =
       computeViewRayDirection(((differentialPixel + vec2(1.0, 0.0)) / vec2(gl_LaunchSizeEXT.xy)) * 2.0 - 1.0);
@@ -140,6 +129,10 @@ void main()
   }
 #endif
 
+  // Ray cone for texture LOD (and future streaming LOD): width 0 at the eye, spread = per-pixel angle.
+  rayHit.coneWidth  = 0.0;
+  rayHit.coneSpread = view.pixelAngle;
+
   traceRayEXT(asScene, USE_FORCED_TWO_SIDED != 0 ? 0 : gl_RayFlagsCullBackFacingTrianglesEXT, 0xff,
               0, 1,  // hit offset, hit stride
               0,  // miss offset
@@ -152,10 +145,15 @@ void main()
   {
     if(rayHit.hitT == 0 && mirrorHit)
     {
-#if (HAS_ALPHA_TEST && USE_ANISOTROPIC_GRADIENT) || (DEBUG_VISUALIZATION && ALLOW_SHADING)
+#if DEBUG_VISUALIZATION && ALLOW_SHADING
       rayHit.rayDifferentialX = reflect(rayHit.rayDifferentialX, mirrorNormal);
       rayHit.rayDifferentialY = reflect(rayHit.rayDifferentialY, mirrorNormal);
 #endif
+      // Propagate the cone to the mirror: the reflected ray starts with the width accumulated over the
+      // eye->mirror distance (specular reflection leaves the spread unchanged).
+      rayHit.coneWidth  = view.pixelAngle * mirrorT;
+      rayHit.coneSpread = view.pixelAngle;
+
       traceRayEXT(asScene, USE_FORCED_TWO_SIDED != 0 ? 0 : gl_RayFlagsCullBackFacingTrianglesEXT, 0xff,
                   0, 1,  // hit offset, hit stride
                   0,  // miss offset

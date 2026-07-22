@@ -126,9 +126,23 @@ Frustum and occlusion culling only influence the LoD factors per-instance throug
 Use the "Mirror Box" effect (double right-click or M key) to investigate the impact on geometry that is outside the frustum or
 otherwise occluded.
 
+![image show difference when path tracing is enabled](docs/path_tracing.jpg)
+
+There is two sets of shaders, and their usage depends on whether _Path Tracing_ is enabled. They have a slightly different configuration. The default / basic set of shaders do shading in the hit-shader, whilst path-tracing does shading in the ray generation shader. Overall the material complexity in this sample is intentionally kept low and we recommend to have a look at [vk_gltf_renderer](https://github.com/nvpro-samples/vk_gltf_renderer) for more fidelity. Path tracing uses the physical sky model, whilst the other options use a simplified version.
+
+Basic shaders:
+
 * [shaders/render_raytrace_clusters.rchit.glsl](/shaders/render_raytrace_clusters.rchit.glsl): Hit shader that handles shading of a hit on a cluster. There is only cluster geometry in this sample to be hit.
-* [shaders/render_raytrace.rgen.glsl](/shaders/render_raytrace.rgen.glsl)
-* [shaders/render_raytrace.rmiss.glsl](/shaders/render_raytrace.rmiss.glsl)
+* [shaders/render_raytrace_clusters.rahit.glsl](/shaders/render_raytrace_clusters.rahit.glsl): Any hit shader for alpha-masked materials.
+* [shaders/render_raytrace.rgen.glsl](/shaders/render_raytrace.rgen.glsl): Ray generation shader, also implements the simple mirror effect.
+* [shaders/render_raytrace.rmiss.glsl](/shaders/render_raytrace.rmiss.glsl): Miss shader.
+
+Path tracing shaders:
+
+* [shaders/render_pathtrace_clusters.rchit.glsl](/shaders/render_pathtrace_clusters.rchit.glsl): Hit shader that provides minimal information back to the ray generation shader.
+* [shaders/render_pathtrace_clusters.rahit.glsl](/shaders/render_pathtrace_clusters.rahit.glsl): Any hit shader for alpha-masked materials.
+* [shaders/render_pathtrace.rgen.glsl](/shaders/render_pathtrace.rgen.glsl): Ray generation shader that handles the multi-bounce path tracing as well as the material evaluation.
+* [shaders/render_pathtrace.rmiss.glsl](/shaders/render_pathtrace.rmiss.glsl) Miss shader.
 
 The ray tracing code path can optimize the number of BLAS builds through _"BLAS Sharing"_, which allows instances to use the BLAS
 from another instance.
@@ -177,7 +191,60 @@ You can use the commandline to change some defaults:
 * `--processingonly 1 --processingthreadpct 0.25 --processingpartial 1` when processing big scenes, the dedicated processing only mode is better and one can reduce the memory consumption by lowering the amount of threads used.
 * `--forcepreprocessmegabytes 1024` if a scene's raw geometry (vertex & indices) is greater than this cutoff, use a dedicated preprocess pass. Can be quicker and allows using memory mapped cache file. Default is 2048 for 2 GiB.
 * `--multimaterials 1 --attributes 7 --texturedmaterials 1` enables textured PBR materials (see [Materials](#materials) below).
+* `--maxtexturemegabytes <MiB>` sets an upper VRAM budget for material textures (default **4096**; **0** = no limit). See [Materials](#materials).
 * `--dlss 1` enables DLSS when built with `USE_DLSS` (Super Resolution in rasterization, denoising in ray tracing). Use `--dlssquality <0-3>` to set quality (max performance through ultra performance).
+* `--camerastring "..."` sets the initial camera (copy/paste from the _Misc Settings → Camera_ widget).
+* `--addcamerapath "..."` defines a camera fly-through path (repeatable, see [Camera Path](#camera-path)).
+* `--loadcamerapaths "file.txt"` replaces all paths with the definitions from a text file (see [Camera Path](#camera-path)).
+* `--runcamerapath <index> <framecount>` deterministically plays back a defined path for benchmarking (see [Camera Path](#camera-path)).
+
+## Camera Path
+
+A camera path is a keyframed fly-through defined entirely within this sample. It can be authored in the UI, is copy/paste friendly, and can be provided on the command line just like the camera string. Its main purpose is **deterministic benchmarking**: with fixed-step playback the camera visits the exact same positions every run, independent of frame rate or GPU speed.
+
+**UI** (_Misc Settings → Camera Paths_):
+
+* **File:** **Save** / **Load** write and read all paths to a text file stored **next to the model file**, named after it (`<model>.camerapaths.txt`, shown under the buttons). This file is **auto-loaded** whenever that scene is loaded.
+* **Path:** **New** / **Delete** add or remove a path, **Copy** / **Paste** exchange the selected path with the clipboard as a string; the dropdown below selects the active path (the index used by `--runcamerapath`).
+* **Key:** **New** captures the current camera as a keyframe (inserted after the selected one); **Update** / **Delete** edit the selection. The list below shows the keyframes — selecting one previews it.
+* **Smooth** uses Catmull-Rom interpolation (otherwise piecewise linear), **Loop** and **Duration (s)** affect real-time playback. When **Loop** is on and the first and last keyframes coincide, the smoothing wraps around the join for a seamless loop.
+* **Play** / **Stop** / **Restart** and the **t** slider drive a real-time preview.
+* **Run fixed** plays the path across **Fixed frames** frames, exactly as `--runcamerapath` does.
+
+**Command line / benchmarking:**
+
+Paths are defined with one or more `--addcamerapath` options; the index equals the order in which they were added (the first is `0`). `--loadcamerapaths "file.txt"` instead replaces the whole set with the paths from a text file (see the format below). Paths given on the command line are **global** and take precedence: when any are present the per-scene `<scene>.camerapaths.txt` file is not auto-loaded. `--runcamerapath <index> <framecount>` then spreads the selected path across exactly `<framecount>` rendered frames (frame `f` maps to path position `f / (framecount-1)`), so it is fully deterministic.
+
+> Note: the per-scene file is loaded only after its scene finishes loading (which is asynchronous), so a command-line `--runcamerapath` at startup cannot reference it yet. For benchmarking either provide the path on the command line with `--addcamerapath` / `--loadcamerapaths`, or place `--runcamerapath` inside the sequences of a `--sequencefile` (which run after the scene is resident).
+
+For benchmarking, put `--runcamerapath` in each sequence and match `--sequenceframes` to the frame count. For example a sequence script (`--sequencefile bench.txt`):
+
+```
+SEQUENCE "flythrough raytrace"
+--renderer 1
+--runcamerapath 0 256
+
+SEQUENCE "flythrough raster"
+--renderer 0
+--runcamerapath 0 256
+```
+
+with the path stored in a file `flythrough.camerapaths.txt`:
+
+```
+smooth 1 loop 0 dur 10 ;
+  {0, 2, 5}, {0, 0, 0}, {0, 1, 0}, {60} ;
+  {5, 2, 0}, {0, 0, 0}, {0, 1, 0}, {60} ;
+  {0, 2, -5}, {0, 0, 0}, {0, 1, 0}, {60}
+```
+
+run with:
+
+```
+vk_lod_clusters --sequenceframes 256 --loadcamerapaths flythrough.camerapaths.txt --sequencefile bench.txt
+```
+
+**String format** (also valid inside `.cfg` files as a single-line, quoted value): an optional header of `smooth <0/1> loop <0/1> dur <seconds>`, followed by `;`-separated keyframes each written as `{eye}, {center}, {up}, {fov}` (the per-keyframe fov is optional). The **Copy** button produces this canonical form. In the paths **file** a path may span any number of lines and is parsed until the next path begins (each path starts with the `smooth` header keyword); anything from a `#` to the end of a line is a comment.
 
 ## Materials
 
@@ -198,10 +265,12 @@ Textured PBR is **disabled by default**. When enabled, glTF **PBR metallic-rough
 **UI:**
 
 * _Scene Modifiers → Allow textured materials_
+* _Scene Modifiers → Max texture MiB_ — VRAM budget for material textures (default 4096; 0 = no limit). Reloads textures when changed.
 * _Cluster Settings → Other → Mesh Multi-Materials_
 * _Cluster Settings → Other → Enabled Attributes_: enable **NRM**, **TAN**, and **TEX 0** (equivalent to `--attributes 7`)
+* _Rendering Settings → Other → Facet shading_: disable it.
 
-Changing _Allow textured materials_ reloads the scene.
+Changing _Allow textured materials_ reloads the scene, but does not require new processing.
 
 **Restrictions:**
 
@@ -209,14 +278,14 @@ Changing _Allow textured materials_ reloads the scene.
 * **Vertex attributes:** meshes must provide `NORMAL`, `TANGENT`, and `TEXCOORD_0`. Tangents are required for normal mapping.
 * **Texture coordinates:** only `TEXCOORD_0` is used; glTF per-texture texcoord indices are ignored.
 * **File formats:** textures must be external `dds` or `ktx2` files (same as alpha-masked materials).
-* **Loading:** material textures are fully loaded at scene init and are **not** streamed with geometry. Large scenes with many textures can require significant VRAM up front.
+* **Loading:** material textures are loaded at scene init and are **not** streamed with geometry. By default a **4 GiB** VRAM budget applies (`--maxtexturemegabytes 4096`): textures start at full resolution, and if the total exceeds the budget, finer mips are dropped in round-robin order until the limit is met. Each texture always retains at least its coarsest mip. Set `--maxtexturemegabytes 0` to load all mips unconditionally.
 * **Multi-material:** glTF meshes with multiple materials per mesh require `--multimaterials 1`.
 
 Shaders are compiled with texture sampling only when the loaded scene actually contains textured materials (`HAS_TEXTURED_MATERIALS`).
 
 ### Alpha-masked materials
 
-Alpha-masked materials work independently of textured PBR and remain enabled by default when the glTF uses `alphaMode = MASK`. Their textures are also fully loaded at scene init (not streamed).
+Alpha-masked materials work independently of textured PBR and remain enabled by default when the glTF uses `alphaMode = MASK`. Their textures are also loaded at scene init (not streamed) and count toward the texture VRAM budget.
 
 ## Limitations
 
@@ -226,7 +295,7 @@ Alpha-masked materials work independently of textured PBR and remain enabled by 
 * The number of threads used in the persistent kernel is based on a crude heuristic for now and was not evaluated to be the optimal amount.
 * The bounding box visualizations don't show for ray tracing when DLSS denoising is active, and they will only show clusters that are part of BLAS builds in the current frame. Prefer using rasterization to see them.
 * DLSS Super Resolution (rasterization): motion-vector render target is always bound; only shaded HW raster writes it. HBAO is disabled while DLSS-SR is active.
-* Material textures (PBR and alpha-mask) are fully loaded at scene init and are not streamed, even when geometry streaming is enabled.
+* Material textures (PBR and alpha-mask) are loaded at scene init and are not streamed, even when geometry streaming is enabled. Use `--maxtexturemegabytes` (default 4096) to cap total texture VRAM; see [Materials](#materials).
 * Alpha-masked materials: 
   - Always uses texture coordinate 0 independent of glTF material's texcoord. 
   - Does require enabling texture coordinate loading (`--attributes <bitflag containing 4>` or ui).
@@ -235,17 +304,13 @@ Alpha-masked materials work independently of textured PBR and remain enabled by 
 * `doubleSided` materials:
   - Are a lot slower with `EXT_mesh_shader` than with `NV_mesh_shader` on NVIDIA hardware. Primitive culling is still exclusive to NV_mesh_shader, given there is no reasonable portable and fast way for EXT_mesh_shader.
   - Are only accurately done for multi-material meshes if alpha-masking is properly enabled.
-
+* Tangent space must be provided with the glTF meshes if normal maps are used, there is no automatic generation of these.
 
 ## Future Improvements
 
-Next:
-* For streaming transfer compressed cluster groups and uncompress them in a compute shader after upload.
-Other:
-* Add texture streaming for material textures.
-* Extend material support (e.g. specular-glossiness texturing, additional texture coordinate sets).
-* Fallback for persistent traversal kernel.
-* Implement sorting of streaming requests based on distance of instance. Sorting instances alone is not sufficient.
+* Improve streaming performance
+* Reduce memory consumption
+* Add texture streaming for material textures (long term).
 
 ## Building and Running
 

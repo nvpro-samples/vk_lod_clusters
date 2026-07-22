@@ -1,21 +1,7 @@
 /*
-* Copyright (c) 2025-2026, NVIDIA CORPORATION.  All rights reserved.
-*
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License.
-*
-* SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION.
-* SPDX-License-Identifier: Apache-2.0
-*/
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 /*
   
@@ -106,7 +92,7 @@ layout(binding = BINDINGS_HIZ_TEX) uniform sampler2D texHizFar;
 
 layout(set = 0, binding = BINDINGS_RASTER_ATOMIC, r64ui) uniform u64image2D imgRasterAtomic;
 
-#if HAS_ALPHA_TEST && ALLOW_VERTEX_TEXCOORDS
+#if HAS_TEXTURED_MATERIALS || (HAS_ALPHA_TEST && ALLOW_VERTEX_TEXCOORDS)
 layout(set = 1, binding = 0) uniform sampler2D bindlessTextures[];
 #endif
 
@@ -126,8 +112,13 @@ const uint MESHLET_TRIANGLE_ITERATIONS = ((CLUSTER_TRIANGLE_COUNT + COMPUTE_WORK
 ////////////////////////////////////////////
 
 #include "culling.glsl"
-#include "render_shading.glsl"
 #include "texturing.glsl"
+#include "render_shading.glsl"
+
+// Software-raster alpha-mask gradient. Unlike ray tracing (which uses the isotropic ray cone), a
+// rasterized triangle has a well-defined screen-space footprint, so default to the accurate anisotropic
+// gradient (matching the hardware fragment path). Set to 0 for the cheaper isotropic footprint.
+#define SW_ANISOTROPIC_GRADIENT 1
 
 
 ////////////////////////////////////////////
@@ -290,7 +281,7 @@ void main()
       uint texIndex = resolveAlphaMaskTextureIndex(instance, clusterRef, triLoad);
       vec2 texGradDdx;
       vec2 texGradDdy;
-#if USE_ANISOTROPIC_GRADIENT
+#if SW_ANISOTROPIC_GRADIENT
       computeRasterTextureGradients(a.xy, b.xy, c.xy, oTexCoordA, oTexCoordB, oTexCoordC, invTriArea, winding, texGradDdx, texGradDdy);
 #else
       float texGrad = computeRasterFootprintGrad(triArea, oTexCoordA, oTexCoordB, oTexCoordC);

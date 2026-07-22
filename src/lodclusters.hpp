@@ -1,21 +1,7 @@
 /*
-* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
-*
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License.
-*
-* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
-* SPDX-License-Identifier: Apache-2.0
-*/
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 #pragma once
 
@@ -31,6 +17,7 @@
 #include <nvgui/enum_registry.hpp>
 
 #include "renderer.hpp"
+#include "camera_path.hpp"
 
 namespace lodclusters {
 
@@ -207,6 +194,28 @@ private:
   float       m_cameraSpeed = 0;
   //std::filesystem::path  m_cameraFilePath;
 
+  // Fixed camera paths (fly-through), see camera_path.hpp.
+  // Defined via `--addcamerapath` (order == index) and/or the UI, and
+  // played back either in real-time (UI) or with a fixed number of frames
+  // (`--runcamerapath <index> <framecount>`) for deterministic benchmarking.
+  enum CameraPathPlayback
+  {
+    CAMERA_PATH_STOP,      // not playing
+    CAMERA_PATH_REALTIME,  // advance by wall-clock time over `duration` seconds
+    CAMERA_PATH_FIXED,     // advance one keyframe-step per rendered frame (deterministic)
+  };
+
+  std::vector<CameraPath> m_cameraPaths;  // path definitions, index == order added
+  bool m_cameraPathsExternal = false;  // paths set via --addcamerapath/--loadcamerapaths (command line, config, or sequence); global, take precedence over per-scene files
+  std::filesystem::path m_cameraPathsLoadedScene;  // scene for which the per-scene paths file was last loaded
+  int                   m_cameraPathActive   = -1;
+  CameraPathPlayback    m_cameraPathPlayback = CAMERA_PATH_STOP;
+  bool                  m_cameraPathStarted  = false;  // real-time: first frame has zero delta
+  double                m_cameraPathU        = 0.0;    // normalized playback position [0,1]
+  int                   m_cameraPathFrames   = 128;    // fixed: total frames for a full traversal
+  int                   m_cameraPathFrame    = 0;      // fixed: current frame
+  int                   m_cameraPathEditKey  = -1;     // UI: selected keyframe
+
   std::unique_ptr<RenderScene> m_renderScene;
   bool                         m_renderSceneCanPreload = false;
 
@@ -214,6 +223,7 @@ private:
   StreamingConfig m_streamingConfigLast;
 
   SceneTexturesConfig m_texturesConfig;
+  SceneTexturesConfig m_texturesConfigLast;
 
   std::unique_ptr<Renderer> m_renderer;
   uint64_t                  m_rendererFboChangeID{};
@@ -249,6 +259,15 @@ private:
 
   void handleChanges();
   void applyCameraString();
+
+  // Camera path (see camera_path.hpp)
+  void registerCameraPathParameters();   // `--addcamerapath`, `--loadcamerapaths`, `--runcamerapath`
+  void updateCameraPath(double time);    // drive the manipulator during playback (called from onRender)
+  bool applyCameraPathSample(double u);  // sample active path at `u` and set the camera; false if unavailable
+  void cameraPathUI();
+  // Per-scene camera paths file, stored next to the model file and named after
+  // it (e.g. "<modeldir>/<scene>.camerapaths.txt")
+  std::filesystem::path sceneCameraPathsFile(const std::filesystem::path& scenePath) const;
 
   float decodePickingDepth(const shaderio::Readback& readback);
   bool  isPickingValid(const shaderio::Readback& readback);

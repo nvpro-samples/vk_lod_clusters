@@ -27,3 +27,4 @@ bin_x64
 downloaded_resources/
 _downloaded_resources/
 zbsgfxpack.lua
+clang_format.bat

@@ -1,21 +1,7 @@
 /*
-* Copyright (c) 2024-2026, NVIDIA CORPORATION.  All rights reserved.
-*
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*     http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License.
-*
-* SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
-* SPDX-License-Identifier: Apache-2.0
-*/
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 /*
   
@@ -105,7 +91,7 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
 };
 #endif
 
-#if HAS_TEXTURED_MATERIALS
+#if HAS_ALPHA_TEST || HAS_TEXTURED_MATERIALS
 layout(set = 1, binding = 0) uniform sampler2D bindlessTextures[];
 #endif
 
@@ -131,8 +117,8 @@ layout(location = 1) rayPayloadEXT float rayHitAO;
 #endif
 
 #include "attribute_encoding.h"
-#include "render_shading.glsl"
 #include "texturing.glsl"
+#include "render_shading.glsl"
 
 /////////////////////////////////
 
@@ -177,6 +163,9 @@ void main()
   vec3 oPos = baryWeight.x * gl_HitTriangleVertexPositionsEXT[0] + baryWeight.y * gl_HitTriangleVertexPositionsEXT[1]
               + baryWeight.z * gl_HitTriangleVertexPositionsEXT[2];
   vec3 wPos = vec3(gl_ObjectToWorldEXT * vec4(oPos, 1.0));
+  // shadow-ray origin: defaults to the hit point, replaced by the terminator-corrected position below
+  // when smooth per-vertex normals are used.
+  vec3 wShadowPos = wPos;
 
   if(view.visualize == VISUALIZE_LOD || view.visualize == VISUALIZE_GROUP)
   {
@@ -218,6 +207,8 @@ void main()
 
     backFacing = dot(oNormal, gl_ObjectRayDirectionEXT) > 0;
   }
+  // keep the geometric normal; oNormal is replaced by the interpolated shading normal in the branch below
+  vec3 oGeoNormal = oNormal;
 #if ALLOW_VERTEX_NORMALS
   if(view.facetShading == 0 && (cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_NORMAL) != 0)
   {
@@ -230,6 +221,14 @@ void main()
     triNormals[2] = normal_unpack(triNormalsPacked.z);
 
     oNormal = baryWeight.x * triNormals[0] + baryWeight.y * triNormals[1] + baryWeight.z * triNormals[2];
+
+    // Shadow terminator offset (Hanika 2021), computed in object space and transformed to world.
+    // sideFlip keeps the offset on the visible side for back-face hits on two-sided meshes.
+    float sideFlip = backFacing ? -1.0 : 1.0;
+    vec3  oShadow  = pointOffset(oPos, gl_HitTriangleVertexPositionsEXT[0], gl_HitTriangleVertexPositionsEXT[1],
+                                 gl_HitTriangleVertexPositionsEXT[2], triNormals[0] * sideFlip,
+                                 triNormals[1] * sideFlip, triNormals[2] * sideFlip, baryWeight);
+    wShadowPos = vec3(gl_ObjectToWorldEXT * vec4(oShadow, 1.0));
 
 #if ALLOW_VERTEX_TANGENTS
     if((cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_TANGENT) != 0)
@@ -246,19 +245,33 @@ void main()
 #endif
   }
 #endif
+  // per-vertex texcoords, also kept for the ray-cone texel-density term below
+  vec2 uv0 = vec2(0);
+  vec2 uv1 = vec2(0);
+  vec2 uv2 = vec2(0);
 #if ALLOW_VERTEX_TEXCOORD_0
   if((cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_TEX_0) != 0)
   {
-    oTexCoord = baryWeight.x * oTexCoords.d[triangleIndices.x] + baryWeight.y * oTexCoords.d[triangleIndices.y]
-                + baryWeight.z * oTexCoords.d[triangleIndices.z];
+    uv0       = oTexCoords.d[triangleIndices.x];
+    uv1       = oTexCoords.d[triangleIndices.y];
+    uv2       = oTexCoords.d[triangleIndices.z];
+    oTexCoord = baryWeight.x * uv0 + baryWeight.y * uv1 + baryWeight.z * uv2;
   }
 #endif
 
-  vec3 wNormal = normalize(vec3(oNormal * worldMatrixI));
+  vec3 wNormal    = normalize(vec3(oNormal * worldMatrixI));
+  vec3 wGeoNormal = normalize(vec3(oGeoNormal * worldMatrixI));
   if(backFacing)
   {
-    wNormal = -wNormal;
+    wNormal    = -wNormal;
+    wGeoNormal = -wGeoNormal;
   }
+
+  // For low-tessellated geometry the interpolated shading normal can tilt far enough that the mirror-
+  // reflected view direction points below the geometric surface, producing black specular spots and
+  // shadow-ray self-intersection. Snap the shading normal back to the geometric normal in that case.
+  if(dot(reflect(gl_WorldRayDirectionEXT, wNormal), wGeoNormal) < 0.0)
+    wNormal = wGeoNormal;
 
   vec4 shaded;
   {
@@ -268,9 +281,25 @@ void main()
     float sunContribution  = 1.0;
     vec3  directionToLight = view.skyParams.sunDirection;
     if(view.doShadow == 1)
-      sunContribution = traceShadowRay(wPos, wNormal, directionToLight);
+      sunContribution = traceShadowRay(wShadowPos, wGeoNormal, directionToLight);
 
-    shaded = shading(instanceID, materialID, wPos, wNormal, wTangent, oTexCoord, visData, sunContribution, ambientOcclusion
+    // Ray-cone texture LOD: the cone (width/spread at the ray origin) arrives via the payload and is
+    // propagated to this hit - width = coneWidth + coneSpread * gl_HitTEXT. For the primary ray this is
+    // spreadAngle*distance, and it accumulates across the mirror reflection. Turns the footprint into a
+    // texture LOD so material minification stops sampling mip 0.
+    TexLOD texLod = texLodImplicit();
+#if HAS_TEXTURED_MATERIALS
+    {
+      float coneWidth    = rayHit.coneWidth + rayHit.coneSpread * gl_HitTEXT;
+      float texelDensity = computeTexelDensity(gl_ObjectToWorldEXT, gl_HitTriangleVertexPositionsEXT[0],
+                                               gl_HitTriangleVertexPositionsEXT[1],
+                                               gl_HitTriangleVertexPositionsEXT[2], uv0, uv1, uv2);
+      float incidence    = abs(dot(gl_WorldRayDirectionEXT, wGeoNormal));
+      texLod             = makeConeTexLOD(coneWidth, texelDensity, incidence);
+    }
+#endif
+
+    shaded = shading(instanceID, materialID, wPos, wNormal, wTangent, oTexCoord, visData, sunContribution, ambientOcclusion, texLod
 #if USE_DLSS
                      ,
                      rayHit.dlssAlbedo, rayHit.dlssSpecular, rayHit.dlssNormalRoughness
