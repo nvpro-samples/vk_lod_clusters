@@ -27,7 +27,7 @@ the device as `shaderio` structs. Each component can manage up to `STREAMING_MAX
 - `StreamingRequest`: Array of groups are missing and should be loaded or have not been accessed and can be unloaded. (purple in the diagram).
 - `StreamingResident`: The table of resident geometry groups and clusters. The table might be filled sparsely; therefore, we keep a compact array of active group indices as well.
 - `StreamingStorage`: Manages the storage and transfer for dynamically loaded geometry data, as well as freeing the memory for unloads. (dark red in diagram).
-- `StreamingUpdate`: Defines the update on the device for the actual loads and unloads. We might request more than we can serve. It executes after the transfer of new geometry data is completed. (orange in the diagram)
+- `StreamingUpdate`: Defines the update on the device for the actual loads and unloads. We might request more than we can serve. It executes after the transfer of new geometry data is completed. (orange in the diagram).
 
 
 In the UI under _"Streaming"_ one can change several behaviors and limitations.
@@ -85,6 +85,20 @@ We go through the core steps of streaming process in chronological order from th
    and an update to the resident object table. Along with this is a `StreamingResident` task
    that provides the new state of active group indices.
 
+   **Ray tracing:** The upload of a geometry group is split: The group meta data as well as vertex attributes
+   are stored persistently via `StreamingStorage` but the vertex positions are stored temporarily via 
+   `StreamingUpdate`. This avoids the cost of keeping the positions around after the CLAS are built,
+   because they encode the positions anyway.
+
+   **Rasterization:** No split is performed, the positions are kept with the persistent group data.
+
+   The disk representation of a group is the same for both. It only impacts the upload itself.
+
+   The runtime group blob addresses its sub-sections (`[header][clusters][...][attributes][positions]`)
+   relative to the group's base address, so the blob must always start 16-byte aligned — the persistent
+   allocation as well as each per-group staging slice. A misaligned base would shift the sub-sections and
+   let the decompressed data overrun the size computed for the blob.
+
    See `SceneStreaming::handleCompletedRequest`
 
 3. Once the storage upload is completed, the appropriate update task is run.
@@ -110,6 +124,27 @@ We go through the core steps of streaming process in chronological order from th
 This concludes the lifetime of a request from initial recording to all 
 its dependent operations being completed.
 
+##### Ray Tracing Specialization
+
+![image illustrating the separated transfers for ray tracing](lod_streaming_rt.png)
+
+As described in **2.** the transfers are separated for ray tracing, to avoid storing
+the positions persistently in memory. Instead we make use of various fetch intrinsics in
+the shading languages.
+
+```
+Slang:
+HitTriangleVertexPosition(0..2)
+
+HLSL:
+TriangleObjectPositions()
+
+GLSL:
+gl_HitTriangleVertexPositionsEXT[0..2]
+```
+
+#### Summary
+
 Overall, both loading and unloading strategies are rather basic and there is room for improvement. 
 Loading is purely based on the traversal, we expect that sorting the instances by camera distance 
 and then seeding traversal nodes accordingly will help loading with priority around
@@ -124,7 +159,7 @@ The provided defaults have not been tuned by any means and are not be seen as
 recommendations.
 
 Lastly, another major option is how the CLAS are allocated within the
-fixed size CLAS buffer. Since the actual size of a CLAS is only
+resizable CLAS buffer. Since the actual size of a CLAS is only
 known on the device after it was built and the estimates from the host
 can be a lot higher. We used solutions that can be implemented
 on the device, not relying on further host readbacks but still

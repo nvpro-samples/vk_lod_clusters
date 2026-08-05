@@ -21,7 +21,7 @@ public:
   virtual void deinit(Resources& res) override;
 
 private:
-  bool initShaders(Resources& res, RenderScene& scene, const RendererConfig& config);
+  bool initShaders(Resources& res, RenderScene& scene);
 
   struct Shaders
   {
@@ -70,15 +70,15 @@ private:
   shaderio::SceneBuilding m_sceneBuildShaderio;
 };
 
-bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene, const RendererConfig& config)
+bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene)
 {
-  if(config.useComputeRaster && (config.useShading || !config.useCulling))
+  if(m_config.useComputeRaster && (m_config.useShading || !m_config.useCulling))
   {
     LOGW("Compute rasterization requires:  \nshading off == VISUALIZE_VISIBILITY_BUFFER\n  culling on\n\n");
     return false;
   }
 
-  if(!initBasicShaders(res, rscene, config, true))
+  if(!initBasicShaders(res, rscene, true))
   {
     return false;
   }
@@ -96,17 +96,17 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
   options.AddMacroDefinition("GROUP_CLUSTER_COUNT", fmt::format("{}", rscene.scene->m_config.clusterGroupSize));
   options.AddMacroDefinition("TARGETS_RASTERIZATION", "1");
   options.AddMacroDefinition("USE_STREAMING", rscene.useStreaming ? "1" : "0");
-  options.AddMacroDefinition("USE_SORTING", config.useSorting ? "1" : "0");
-  options.AddMacroDefinition("USE_CULLING", config.useCulling ? "1" : "0");
-  options.AddMacroDefinition("USE_PRIMITIVE_CULLING", config.useCulling && config.usePrimitiveCulling ? "1" : "0");
-  options.AddMacroDefinition("USE_TWO_PASS_CULLING", config.useCulling && config.useTwoPassCulling ? "1" : "0");
-  options.AddMacroDefinition("USE_RENDER_STATS", config.useRenderStats ? "1" : "0");
-  options.AddMacroDefinition("USE_DLSS", config.useDlss ? "1" : "0");
+  options.AddMacroDefinition("USE_SORTING", m_config.useSorting ? "1" : "0");
+  options.AddMacroDefinition("USE_CULLING", m_config.useCulling ? "1" : "0");
+  options.AddMacroDefinition("USE_PRIMITIVE_CULLING", m_config.useCulling && m_config.usePrimitiveCulling ? "1" : "0");
+  options.AddMacroDefinition("USE_TWO_PASS_CULLING", m_config.useCulling && m_config.useTwoPassCulling ? "1" : "0");
+  options.AddMacroDefinition("USE_RENDER_STATS", m_config.useRenderStats ? "1" : "0");
+  options.AddMacroDefinition("USE_DLSS", m_config.useDlss ? "1" : "0");
   options.AddMacroDefinition("USE_DLSS_GUIDE_BUFFERS", "0");
   options.AddMacroDefinition("USE_BLAS_SHARING", "0");
   options.AddMacroDefinition("USE_BLAS_MERGING", "0");
   options.AddMacroDefinition("USE_BLAS_CACHING", "0");
-  options.AddMacroDefinition("USE_EXT_MESH_SHADER", fmt::format("{}", config.useEXTmeshShader ? 1 : 0));
+  options.AddMacroDefinition("USE_EXT_MESH_SHADER", fmt::format("{}", m_config.useEXTmeshShader ? 1 : 0));
   options.AddMacroDefinition("MESHSHADER_WORKGROUP_SIZE", fmt::format("{}", m_meshShaderWorkgroupSize));
   options.AddMacroDefinition("MESHSHADER_BBOX_COUNT", fmt::format("{}", m_meshShaderBoxes));
   options.AddMacroDefinition("ALLOW_VERTEX_NORMALS", rscene.scene->m_hasVertexNormals && res.m_supportsBarycentrics ? "1" : "0");
@@ -115,14 +115,14 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
                              rscene.scene->m_hasVertexTexCoord0 || rscene.scene->m_hasVertexTexCoord1 ? "1" : "0");
   options.AddMacroDefinition("ALLOW_VERTEX_TEXCOORD_0", rscene.scene->m_hasVertexTexCoord0 ? "1" : "0");
   options.AddMacroDefinition("ALLOW_VERTEX_TEXCOORD_1", rscene.scene->m_hasVertexTexCoord1 ? "1" : "0");
-  options.AddMacroDefinition("ALLOW_SHADING", config.useShading && !config.useComputeRaster ? "1" : "0");
-  options.AddMacroDefinition("USE_DEPTH_ONLY", !config.useShading && config.useDepthOnly ? "1" : "0");
-  options.AddMacroDefinition("DEBUG_VISUALIZATION", config.useDebugVisualization && res.m_supportsBarycentrics ? "1" : "0");
-  options.AddMacroDefinition("USE_SW_RASTER", config.useComputeRaster ? "1" : "0");
-  options.AddMacroDefinition("USE_TWO_SIDED", rscene.scene->m_hasTwoSided && !config.forceTwoSided ? "1" : "0");
-  options.AddMacroDefinition("USE_FORCED_TWO_SIDED", config.forceTwoSided ? "1" : "0");
+  options.AddMacroDefinition("ALLOW_SHADING", m_config.useShading && !m_config.useComputeRaster ? "1" : "0");
+  options.AddMacroDefinition("USE_DEPTH_ONLY", !m_config.useShading && m_config.useDepthOnly ? "1" : "0");
+  options.AddMacroDefinition("DEBUG_VISUALIZATION", m_config.useDebugVisualization && res.m_supportsBarycentrics ? "1" : "0");
+  options.AddMacroDefinition("USE_SW_RASTER", m_config.useComputeRaster ? "1" : "0");
+  options.AddMacroDefinition("USE_TWO_SIDED", rscene.scene->m_hasTwoSided && !m_config.forceTwoSided ? "1" : "0");
+  options.AddMacroDefinition("USE_FORCED_TWO_SIDED", m_config.forceTwoSided ? "1" : "0");
   options.AddMacroDefinition("USE_FORCED_INVISIBLE_CULLING", "0");
-  options.AddMacroDefinition("USE_PERSISTENT_TRAVERSAL_KERNEL", config.usePersistentTraversal ? "1" : "0");
+  options.AddMacroDefinition("USE_PERSISTENT_TRAVERSAL_KERNEL", m_config.usePersistentTraversal ? "1" : "0");
   options.AddMacroDefinition("HAS_TEXTURED_MATERIALS", rscene.scene->m_hasTexturedMaterials ? "1" : "0");
 
   shaderc::CompileOptions optionsNoAlpha = options;
@@ -141,7 +141,7 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene,
   res.compileShader(m_shaders.computeTraversalGroups, VK_SHADER_STAGE_COMPUTE_BIT, "traversal_run_groups.comp.glsl", &options);
   res.compileShader(m_shaders.computeBuildSetup, VK_SHADER_STAGE_COMPUTE_BIT, "build_setup.comp.glsl", &options);
 
-  if(config.useComputeRaster)
+  if(m_config.useComputeRaster)
   {
     res.compileShader(m_shaders.computeRaster, VK_SHADER_STAGE_COMPUTE_BIT, "render_raster_clusters_sw.comp.glsl", &optionsNoAlpha);
     res.compileShader(m_shaders.computeRasterAlpha, VK_SHADER_STAGE_COMPUTE_BIT, "render_raster_clusters_sw.comp.glsl", &options);
@@ -155,14 +155,19 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
   m_resourceReservedUsage = {};
   m_config                = config;
 #if USE_DLSS
-  m_config.useDlss = config.useDlss && res.m_frameBuffer.dlssUpscaler.isAvailable();
+  m_config.useDlss = m_config.useDlss && res.m_frameBuffer.dlssUpscaler.isAvailable();
+  res.setFramebufferDlss(m_config.useDlss ? Resources::DlssMode::eSuperResolution : Resources::DlssMode::eNone, m_config.dlssQuality);
+  // setFramebufferDlss falls back to eNone if the upscaler fails to initialize at
+  // runtime; reflect that before compiling shaders / building pipelines so they all
+  // take the native path consistently.
+  m_config.useDlss = m_config.useDlss && res.m_frameBuffer.dlssMode == Resources::DlssMode::eSuperResolution;
 #else
   m_config.useDlss = false;
 #endif
   m_maxRenderClusters = 1u << m_config.numRenderClusterBits;
   m_maxTraversalTasks = 1u << m_config.numTraversalTaskBits;
 
-  if(!initShaders(res, rscene, m_config))
+  if(!initShaders(res, rscene))
   {
     return false;
   }
@@ -172,11 +177,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     return false;
   }
 
-#if USE_DLSS
-  res.setFramebufferDlss(m_config.useDlss ? Resources::DlssMode::eSuperResolution : Resources::DlssMode::eNone, m_config.dlssQuality);
-#endif
-
-  initBasics(res, rscene, m_config);
+  initBasics(res, rscene);
 
   m_resourceReservedUsage.geometryMemBytes   = rscene.getGeometrySize(true);
   m_resourceReservedUsage.operationsMemBytes = logMemoryUsage(rscene.getOperationsSize(), "operations", "rscene total");
@@ -189,8 +190,8 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
 
     memset(&m_sceneBuildShaderio, 0, sizeof(m_sceneBuildShaderio));
     m_sceneBuildShaderio.numRenderInstances = uint32_t(m_renderInstances.size());
-    m_sceneBuildShaderio.maxRenderClusters  = uint32_t(1u << config.numRenderClusterBits);
-    m_sceneBuildShaderio.maxTraversalInfos  = uint32_t(1u << config.numTraversalTaskBits);
+    m_sceneBuildShaderio.maxRenderClusters  = uint32_t(1u << m_config.numRenderClusterBits);
+    m_sceneBuildShaderio.maxTraversalInfos  = uint32_t(1u << m_config.numTraversalTaskBits);
 
     m_sceneBuildShaderio.indirectDispatchGroups.gridY          = 1;
     m_sceneBuildShaderio.indirectDispatchGroups.gridZ          = 1;
@@ -212,7 +213,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
           mem.append(sizeof(shaderio::ClusterInfo) * m_sceneBuildShaderio.maxRenderClusters, 8);
     }
 
-    if(config.useComputeRaster)
+    if(m_config.useComputeRaster)
     {
       m_sceneBuildShaderio.renderClusterInfosSW =
           mem.append(sizeof(shaderio::ClusterInfo) * m_sceneBuildShaderio.maxRenderClusters, 8);
@@ -223,7 +224,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
       }
     }
 
-    if(config.useSorting)
+    if(m_config.useSorting)
     {
       m_sceneBuildShaderio.instanceSortKeys   = mem.append(sizeof(uint32_t) * m_renderInstances.size(), 4);
       m_sceneBuildShaderio.instanceSortValues = mem.append(sizeof(uint32_t) * m_renderInstances.size(), 4);
@@ -231,7 +232,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
 
     m_sceneBuildShaderio.traversalGroupInfos = mem.append(sizeof(uint64_t) * m_sceneBuildShaderio.maxTraversalInfos, 8);
 
-    if(config.useTwoPassCulling && config.useCulling)
+    if(m_config.useTwoPassCulling && m_config.useCulling)
     {
       m_sceneBuildShaderio.instanceVisibility = mem.append(sizeof(uint8_t) * m_renderInstances.size(), 4);
     }
@@ -250,7 +251,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     m_sceneBuildShaderio.instanceSortValues += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.traversalGroupInfos += m_sceneDataBuffer.address;
 
-    if(config.useComputeRaster)
+    if(m_config.useComputeRaster)
     {
       m_sceneBuildShaderio.renderClusterInfosSW += m_sceneDataBuffer.address;
       if(rscene.scene->m_hasAlphaMask)
@@ -258,7 +259,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
         m_sceneBuildShaderio.renderClusterInfosAlphaSW += m_sceneDataBuffer.address;
       }
     }
-    if(config.useTwoPassCulling && config.useCulling)
+    if(m_config.useTwoPassCulling && m_config.useCulling)
     {
       m_sceneBuildShaderio.instanceVisibility += m_sceneDataBuffer.address;
     }
@@ -290,7 +291,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     bindings.addBinding(BINDINGS_SCENEBUILDING_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_SCENEBUILDING_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_HIZ_TEX, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                        config.useCulling && config.useTwoPassCulling ? 2 : 1, m_stageFlags);
+                        m_config.useCulling && m_config.useTwoPassCulling ? 2 : 1, m_stageFlags);
     bindings.addBinding(BINDINGS_RASTER_ATOMIC, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_stageFlags);
     if(rscene.useStreaming)
     {
@@ -313,7 +314,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_SCENEBUILDING_SSBO), m_sceneBuildBuffer);
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_SCENEBUILDING_UBO), m_sceneBuildBuffer);
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_HIZ_TEX, 0, 0), &res.m_hizUpdate[0].farImageInfo);
-    if(config.useCulling && config.useTwoPassCulling)
+    if(m_config.useCulling && m_config.useTwoPassCulling)
     {
       writeSets.append(m_dsetPack.makeWrite(BINDINGS_HIZ_TEX, 0, 1), &res.m_hizUpdate[1].farImageInfo);
     }
@@ -349,11 +350,11 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
       graphicsGen.colorFormats = {res.m_frameBuffer.colorFormat};
 
     state.rasterizationState.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    if(config.forceTwoSided)
+    if(m_config.forceTwoSided)
     {
       state.rasterizationState.cullMode = VK_CULL_MODE_NONE;
     }
-    if(config.useComputeRaster && false)
+    if(m_config.useComputeRaster && false)
     {
       state.depthStencilState.depthWriteEnable = VK_FALSE;
       state.depthStencilState.depthTestEnable  = VK_FALSE;
@@ -381,7 +382,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     compInfo.stage.pNext                   = &shaderInfo;
     compInfo.layout                        = m_pipelineLayout;
 
-    if(config.useSorting)
+    if(m_config.useSorting)
     {
       shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeTraversalPresort);
       vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTraversalPresort);
@@ -399,7 +400,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeTraversalGroups);
     vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTraversalGroups);
 
-    if(config.useComputeRaster)
+    if(m_config.useComputeRaster)
     {
       shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeRaster);
       vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeRaster);
@@ -455,7 +456,9 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
   if(rscene.useStreaming)
   {
     SceneStreaming::FrameSettings settings;
-    settings.ageThreshold = frame.streamingAgeThreshold;
+    settings.ageThreshold    = frame.streamingAgeThreshold;
+    settings.unloadThreshold = frame.streamingUnloadThreshold;
+    settings.useBlasCaching  = false;
 
     rscene.sceneStreaming.cmdBeginFrame(cmd, res.m_queueStates.primary, res.m_queueStates.transfer, settings, profiler);
   }

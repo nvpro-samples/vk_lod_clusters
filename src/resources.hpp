@@ -36,6 +36,7 @@
 #include "dlss_upscaler.hpp"
 #endif
 
+#include "async_uploader.hpp"
 #include "hbao_pass.hpp"
 #include "nvhiz_vk.hpp"
 #include "../shaders/shaderio.h"
@@ -60,7 +61,8 @@ struct FrameConfig
   float swRasterThreshold = 8.0f;
 
   // how many frames until we schedule a group for unloading
-  uint32_t streamingAgeThreshold = 16;
+  uint32_t streamingAgeThreshold    = 16;
+  float    streamingUnloadThreshold = 0.0f;
 
   // how much threads to use in the persistent kernels
   uint32_t traversalPersistentThreads = 2048;
@@ -551,6 +553,9 @@ public:
   VkSampler               m_samplerTriLinear = {};
   nvvkglsl::GlslCompiler  m_glslCompiler     = {};
   nvvk::StagingUploader   m_uploader         = {};
+  // async transfer-queue uploader for load-time texture uploads (ownership transfer to graphics);
+  // drained every frame in onRender via cmdDrainOwnershipBarriers()
+  AsyncUploader m_asyncUploader = {};
 
   FrameBuffer m_frameBuffer;
   struct CommonBuffers

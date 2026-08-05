@@ -22,24 +22,37 @@ namespace lodclusters {
 
 bool RenderScene::init(Resources* res, const Scene* scene_, const StreamingConfig& streamingConfig_, bool useStreaming_, const SceneTexturesConfig& texturesConfig)
 {
-  scene        = scene_;
-  useStreaming = useStreaming_;
-
-  if(!sceneTextures.init(res, *scene_, texturesConfig))
+  if(!initTextures(res, scene_, texturesConfig))
   {
     return false;
   }
+  return initGeometry(res, streamingConfig_, useStreaming_);
+}
+
+bool RenderScene::initTextures(Resources*                 res,
+                               const Scene*               scene_,
+                               const SceneTexturesConfig& texturesConfig,
+                               std::atomic_uint32_t*      progressPct,
+                               std::atomic_uint32_t*      progressPhase)
+{
+  scene = scene_;
+  return sceneTextures.init(res, *scene_, texturesConfig, progressPct, progressPhase);
+}
+
+bool RenderScene::initGeometry(Resources* res, const StreamingConfig& streamingConfig_, bool useStreaming_)
+{
+  useStreaming = useStreaming_;
 
   if(useStreaming)
   {
-    return sceneStreaming.init(res, scene_, streamingConfig_);
+    return sceneStreaming.init(res, scene, streamingConfig_);
   }
   else
   {
     ScenePreloaded::Config preloadConfig;
     preloadConfig.clasBuildFlags           = streamingConfig_.clasBuildFlags;
     preloadConfig.clasPositionTruncateBits = streamingConfig_.clasPositionTruncateBits;
-    return scenePreloaded.init(res, scene_, preloadConfig);
+    return scenePreloaded.init(res, scene, preloadConfig);
   }
 }
 
@@ -113,17 +126,17 @@ size_t RenderScene::getOperationsSize() const
 
 //////////////////////////////////////////////////////////////////////////
 
-bool Renderer::initBasicShaders(Resources& res, RenderScene& rscene, const RendererConfig& config, bool isRaster)
+bool Renderer::initBasicShaders(Resources& res, RenderScene& rscene, bool isRaster)
 {
   m_isRaster = isRaster;
 
-  uint32_t maxPrimitiveOutputs = config.useEXTmeshShader ? res.m_meshShaderPropsEXT.maxMeshOutputPrimitives :
-                                                           res.m_meshShaderPropsNV.maxMeshOutputPrimitives;
-  uint32_t maxVertexOutputs    = config.useEXTmeshShader ? res.m_meshShaderPropsEXT.maxMeshOutputVertices :
-                                                           res.m_meshShaderPropsNV.maxMeshOutputVertices;
+  uint32_t maxPrimitiveOutputs = m_config.useEXTmeshShader ? res.m_meshShaderPropsEXT.maxMeshOutputPrimitives :
+                                                             res.m_meshShaderPropsNV.maxMeshOutputPrimitives;
+  uint32_t maxVertexOutputs    = m_config.useEXTmeshShader ? res.m_meshShaderPropsEXT.maxMeshOutputVertices :
+                                                             res.m_meshShaderPropsNV.maxMeshOutputVertices;
 
 
-  if(config.useEXTmeshShader)
+  if(m_config.useEXTmeshShader)
   {
     // don't go over 128, shaderc is using that limit and will fail to compile otherwise
     m_meshShaderWorkgroupSize = std::min(128u, std::min(res.m_meshShaderPropsEXT.maxPreferredMeshWorkGroupInvocations,
@@ -141,7 +154,7 @@ bool Renderer::initBasicShaders(Resources& res, RenderScene& rscene, const Rende
                std::min(maxPrimitiveOutputs / MESHSHADER_BBOX_LINES, maxVertexOutputs / MESHSHADER_BBOX_VERTICES));
 
   shaderc::CompileOptions options = res.makeCompilerOptions();
-  options.AddMacroDefinition("USE_EXT_MESH_SHADER", fmt::format("{}", config.useEXTmeshShader ? 1 : 0));
+  options.AddMacroDefinition("USE_EXT_MESH_SHADER", fmt::format("{}", m_config.useEXTmeshShader ? 1 : 0));
   options.AddMacroDefinition("USE_STREAMING", fmt::format("{}", rscene.useStreaming ? 1 : 0));
   options.AddMacroDefinition("MESHSHADER_WORKGROUP_SIZE", fmt::format("{}", m_meshShaderWorkgroupSize));
   options.AddMacroDefinition("MESHSHADER_BBOX_COUNT", fmt::format("{}", m_meshShaderBoxes));
@@ -152,11 +165,11 @@ bool Renderer::initBasicShaders(Resources& res, RenderScene& rscene, const Rende
     res.compileShader(m_basicShaders.fullScreenWriteDepthFragShader, VK_SHADER_STAGE_FRAGMENT_BIT, "fullscreen_write_depth.frag.glsl");
   }
   shaderc::CompileOptions backgroundOptions = res.makeCompilerOptions();
-  backgroundOptions.AddMacroDefinition("USE_DLSS", fmt::format("{}", isRaster && config.useDlss ? 1 : 0));
+  backgroundOptions.AddMacroDefinition("USE_DLSS", fmt::format("{}", isRaster && m_config.useDlss ? 1 : 0));
   if(isRaster)
   {
     backgroundOptions.AddMacroDefinition("ALLOW_SHADING",
-                                         fmt::format("{}", config.useShading && !config.useComputeRaster ? 1 : 0));
+                                         fmt::format("{}", m_config.useShading && !m_config.useComputeRaster ? 1 : 0));
   }
   res.compileShader(m_basicShaders.fullScreenBackgroundFragShader, VK_SHADER_STAGE_FRAGMENT_BIT,
                     "fullscreen_background.frag.glsl", &backgroundOptions);
@@ -213,9 +226,9 @@ static void setupRenderMaterial(shaderio::RenderMaterial& renderMaterial, const 
                                        uint16_t(Scene::IMAGE_DEFAULT_BLACK);
 }
 
-void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererConfig& config)
+void Renderer::initBasics(Resources& res, RenderScene& rscene)
 {
-  initBasicPipelines(res, rscene, config);
+  initBasicPipelines(res, rscene);
 
   const Scene& scene = *rscene.scene;
 
@@ -331,7 +344,7 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
     renderInstance.lowDetailClusterStateBits = geometry.lowDetailClusterStateBits;
 
     renderInstance.flipWinding =
-        (!renderInstance.twoSided && ((glm::determinant(sceneInstance.matrix) <= 0) != config.flipWinding)) ? 1 : 0;
+        (!renderInstance.twoSided && ((glm::determinant(sceneInstance.matrix) <= 0) != m_config.flipWinding)) ? 1 : 0;
   }
 
   res.createBuffer(m_renderInstanceBuffer, sizeof(shaderio::RenderInstance) * m_renderInstances.size(),
@@ -343,7 +356,7 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene, const RendererCon
   NVVK_DBG_NAME(m_renderMaterialBuffer.buffer);
   res.simpleUploadBuffer(m_renderMaterialBuffer, m_renderMaterials.data());
 
-  if(config.useSorting)
+  if(m_config.useSorting)
   {
     VrdxSorterStorageRequirements sorterRequirements = {};
     vrdxGetSorterKeyValueStorageRequirements(res.m_vrdxSorter, uint32_t(m_renderInstances.size()), &sorterRequirements);
@@ -391,7 +404,7 @@ void Renderer::updateBasicDescriptors(Resources& res, RenderScene& rscene, const
 }
 
 
-void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene, const RendererConfig& config)
+void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene)
 {
   m_basicShaderFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_MESH_BIT_NV | VK_SHADER_STAGE_FRAGMENT_BIT;
 
@@ -431,8 +444,8 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene, const Ren
   graphicsGen.colorFormats = {basicColorFormat};
 
 #if USE_DLSS
-  const bool useDlssSr = config.useDlss && res.m_frameBuffer.dlssMode == Resources::DlssMode::eSuperResolution;
-  const bool useDlssSrMotionWrite                  = useDlssSr && config.useShading && !config.useComputeRaster;
+  const bool useDlssSr = m_config.useDlss && res.m_frameBuffer.dlssMode == Resources::DlssMode::eSuperResolution;
+  const bool useDlssSrMotionWrite                  = useDlssSr && m_config.useShading && !m_config.useComputeRaster;
   const VkColorComponentFlags dlssSrColorWriteMask = state.colorWriteMasks[0];
   if(useDlssSr)
   {
@@ -591,14 +604,24 @@ float Renderer::updateLodPixelError(Resources& res, RenderScene& rscene, const F
   {
     m_lodPixelError  = std::max(frame.lodPixelError, m_lodPixelError);
     float loadFactor = rscene.sceneStreaming.getLoadFactor();
+#if 1
+    // staged response on the raw load factor (no smoothing lag)
+    if(loadFactor > 0.95f)
+      m_lodPixelError *= 1.05f;  // emergency near the wall
+    else if(loadFactor > 0.80f)
+      m_lodPixelError *= 1.005f;  // gentle creep
+    else if(loadFactor < 0.70f)
+      m_lodPixelError *= 0.995f;  // recover
+#else
     // Smooth load factor to avoid reacting to single-frame spikes.
     m_smoothedLoadFactor = glm::mix(m_smoothedLoadFactor, loadFactor, 0.05f);
-    // Deadband [0.70, 0.85]: no adjustment to prevent oscillation near the threshold.
+    // Deadband [0.70, 0.80]: no adjustment to prevent oscillation near the threshold.
     // Outside the band: increase error quickly when overloaded, recover slowly.
-    if(m_smoothedLoadFactor > 0.85f)
+    if(m_smoothedLoadFactor > 0.80f)
       m_lodPixelError *= 1.02f;
     else if(m_smoothedLoadFactor < 0.70f)
       m_lodPixelError *= 0.995f;
+#endif
 
     m_lodPixelError = std::max(frame.lodPixelError, m_lodPixelError);
     lodPixelError   = m_lodPixelError;

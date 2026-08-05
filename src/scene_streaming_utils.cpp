@@ -450,7 +450,7 @@ uint32_t StreamingResident::getLoadActiveClustersOffset() const
   return m_activeClustersCount - m_lowDetailClustersCount;
 }
 
-bool StreamingResident::canAllocateGroup(uint32_t numClusters) const
+bool StreamingResident::canAllocateGroup(uint32_t numClusters)
 {
   return m_groupAllocator.isRangeAvailable(1) && m_clusterAllocator.isRangeAvailable(numClusters);
 }
@@ -805,11 +805,35 @@ void StreamingUpdates::initClas(Resources& res, const StreamingConfig& config, c
 
   m_shaderData.moveClasDstAddresses += m_clasBuffer.address;
   m_shaderData.moveClasSrcAddresses += m_clasBuffer.address;
+
+  // per-frame scratch for streamed CLAS-build vertex positions (fixed slot per per-frame load index,
+  // per-task ring slices when async transfer pipelines tasks)
+  m_clasVerticesGroupStride = uint32_t(sceneConfig.clusterGroupSize * sceneConfig.clusterVertices * 3u * sizeof(float));
+  m_clasVerticesRingStride  = config.maxPerFrameLoadRequests * m_clasVerticesGroupStride;
+  m_clasVerticesRingBuffered = config.useAsyncTransfer;
+
+  // async transfer writes this on the transfer queue and the CLAS build reads it on the main queue,
+  // so it must be shared (concurrent) across both queue families
+  std::vector<uint32_t> queueFamilies;
+  if(config.useAsyncTransfer)
+  {
+    queueFamilies = {res.m_queueStates.primary.m_familyIndex, res.m_queueStates.transfer.m_familyIndex};
+  }
+
+  res.createBuffer(m_clasVerticesBuffer,
+                   size_t(m_clasVerticesRingStride) * (m_clasVerticesRingBuffered ? STREAMING_MAX_ACTIVE_TASKS : 1),
+                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
+                       | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                   VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0, 0, queueFamilies);
+  NVVK_DBG_NAME(m_clasVerticesBuffer.buffer);
+
+  m_shaderData.clasVerticesBuffer      = m_clasVerticesBuffer.address;
+  m_shaderData.clasVerticesGroupStride = m_clasVerticesGroupStride;
 }
 
 size_t StreamingUpdates::getClasOperationsSize() const
 {
-  return m_clasBuffer.bufferSize;
+  return m_clasBuffer.bufferSize + m_clasVerticesBuffer.bufferSize;
 }
 
 uint32_t StreamingUpdates::getMaxCachedBlasBuilds() const
@@ -820,6 +844,7 @@ uint32_t StreamingUpdates::getMaxCachedBlasBuilds() const
 void StreamingUpdates::deinitClas(Resources& res)
 {
   res.m_allocator.destroyBuffer(m_clasBuffer);
+  res.m_allocator.destroyBuffer(m_clasVerticesBuffer);
 
   m_shaderData.newClasBuilds          = 0;
   m_shaderData.newClasAddresses       = 0;
@@ -829,6 +854,11 @@ void StreamingUpdates::deinitClas(Resources& res)
 
   m_shaderData.moveClasDstAddresses = 0;
   m_shaderData.moveClasSrcAddresses = 0;
+
+  m_clasVerticesGroupStride            = 0;
+  m_clasVerticesRingStride             = 0;
+  m_shaderData.clasVerticesBuffer      = 0;
+  m_shaderData.clasVerticesGroupStride = 0;
 }
 
 void StreamingUpdates::deinit(Resources& res)
@@ -956,6 +986,10 @@ void StreamingUpdates::applyTask(shaderio::StreamingUpdate& shaderData, uint32_t
   shaderData.loadActiveGroupsOffset   = task.loadActiveGroupsOffset;
   shaderData.loadActiveClustersOffset = task.loadActiveClustersOffset;
 
+  // advance to this task's ring slice of the streamed positions
+  if(m_shaderData.clasVerticesBuffer)
+    shaderData.clasVerticesBuffer = m_shaderData.clasVerticesBuffer + getClasVerticesRingBase(task.clasVerticesRingSlot);
+
   // we also want to keep track of the total amount of "future" cluster builds.
   // This is relevant to ray tracing, as the GPU's allocator need to provide enough
   // space for this number of "worst case" cluster or group sizes.
@@ -990,8 +1024,9 @@ void StreamingStorage::init(Resources& res, const StreamingConfig& config)
                            VK_COMMAND_POOL_CREATE_TRANSIENT_BIT, STREAMING_MAX_ACTIVE_TASKS);
   }
 
-  res.createBuffer(m_transferHostBuffer, m_maxTransferBytes * STREAMING_MAX_ACTIVE_TASKS, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                   VMA_MEMORY_USAGE_CPU_ONLY, VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
+  res.createBuffer(m_transferHostBuffer, m_maxTransferBytes * STREAMING_MAX_ACTIVE_TASKS,
+                   VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY,
+                   VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
   NVVK_DBG_NAME(m_transferHostBuffer.buffer);
 
   m_dataInfo.blockSize         = m_blockBytes;
@@ -1039,6 +1074,8 @@ lodclusters::StreamingStorage::TaskInfo& StreamingStorage::getNewTask(uint32_t t
 
   m_copyInfos.clear();
   m_copyRegions.clear();
+  m_posCopyRegions.clear();
+  m_posCopyTarget = VK_NULL_HANDLE;
 
   return task;
 }
@@ -1048,43 +1085,44 @@ bool StreamingStorage::canTransfer(const TaskInfo& task, size_t size) const
   return task.usedMemory + size <= m_maxTransferBytes;
 }
 
-void* StreamingStorage::appendTransfer(TaskInfo& task, const nvvk::BufferSubAllocation& dstHandle)
+void* StreamingStorage::appendTransfer(TaskInfo& task, const nvvk::BufferSubAllocation& dstHandle, size_t positionsSize, VkBuffer posBuffer, size_t posDstOffset)
 {
   nvvk::BufferRange dstBinding = m_dataAllocator.subRange(dstHandle);
 
-  assert(task.usedMemory + dstBinding.range <= m_maxTransferBytes);
+  // staging holds the whole blob (persistent part + trailing positions).
+  // Group data must be aligned to 16 bytes.
+  size_t stagingSize = nvutils::align_up(dstBinding.range + positionsSize, size_t(16));
+  assert(task.usedMemory + stagingSize <= m_maxTransferBytes);
 
   size_t transferOffset  = task.baseOffset;
   void*  transferPointer = reinterpret_cast<uint8_t*>(m_transferHostBuffer.mapping) + task.baseOffset;
 
-  task.usedMemory += dstBinding.range;
-  task.baseOffset += dstBinding.range;
+  task.usedMemory += stagingSize;
+  task.baseOffset += stagingSize;
 
+  bool grown = false;
   if(!m_copyInfos.empty() && m_copyInfos.back().targetBuffer == dstBinding.buffer)
   {
     VkBufferCopy& lastRegion = m_copyRegions.back();
 
-    // check if we can grow the last region
-    if(lastRegion.dstOffset + lastRegion.size == dstBinding.offset)
+    // merge only without a split (positions between groups break staging contiguity)
+    if(positionsSize == 0 && lastRegion.dstOffset + lastRegion.size == dstBinding.offset)
     {
       lastRegion.size += dstBinding.range;
-      return transferPointer;
+      grown = true;
     }
-
-    // otherwise append new region below
   }
   else
   {
-    // new target buffer
-    CopyInfo task;
-    task.targetBuffer = dstBinding.buffer;
-    task.regionOffset = m_copyRegions.size();
-    task.regionCount  = 0;
-    m_copyInfos.push_back(task);
+    CopyInfo info;
+    info.targetBuffer = dstBinding.buffer;
+    info.regionOffset = m_copyRegions.size();
+    info.regionCount  = 0;
+    m_copyInfos.push_back(info);
   }
 
+  if(!grown)
   {
-    // append new region
     VkBufferCopy region;
     region.srcOffset = transferOffset;
     region.dstOffset = dstBinding.offset;
@@ -1092,6 +1130,21 @@ void* StreamingStorage::appendTransfer(TaskInfo& task, const nvvk::BufferSubAllo
 
     m_copyInfos.back().regionCount++;
     m_copyRegions.push_back(region);
+  }
+
+  // trailing positions -> streamed CLAS-build scratch
+  if(positionsSize)
+  {
+    assert(posBuffer);
+    // all position copies of a task go to the single streamed-positions buffer
+    assert(m_posCopyTarget == VK_NULL_HANDLE || m_posCopyTarget == posBuffer);
+    m_posCopyTarget = posBuffer;
+
+    VkBufferCopy region;
+    region.srcOffset = transferOffset + dstBinding.range;
+    region.dstOffset = posDstOffset;
+    region.size      = positionsSize;
+    m_posCopyRegions.push_back(region);
   }
 
   return transferPointer;
@@ -1104,7 +1157,13 @@ uint32_t StreamingStorage::cmdUploadTask(VkCommandBuffer cmd)
     vkCmdCopyBuffer(cmd, m_transferHostBuffer.buffer, it.targetBuffer, uint32_t(it.regionCount), &m_copyRegions[it.regionOffset]);
   }
 
-  return uint32_t(m_copyRegions.size());
+  if(m_posCopyTarget && !m_posCopyRegions.empty())
+  {
+    vkCmdCopyBuffer(cmd, m_transferHostBuffer.buffer, m_posCopyTarget, uint32_t(m_posCopyRegions.size()),
+                    m_posCopyRegions.data());
+  }
+
+  return uint32_t(m_copyRegions.size() + m_posCopyRegions.size());
 }
 
 void StreamingStorage::reset()

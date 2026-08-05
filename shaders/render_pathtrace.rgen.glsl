@@ -246,6 +246,38 @@ float ptTraceShadowRay(vec3 wPos, vec3 wNormal, vec3 wDir, float coneWidth, floa
   return rayHit.hitT < 0.0 ? 1.0 : 0.0;
 }
 
+// Ambient occlusion for the collocated headlight fill. The flashlight sits at the camera, so it casts no
+// shadow and would flood crevices with flat light; modulate it by a short cosine-hemisphere occlusion trace
+// (like the RT path's ambient term). Same payload/miss setup as ptTraceShadowRay, but with a bounded
+// tMax = radius so only nearby geometry occludes. Returns 1 = fully open, down to 0.2 = deep crevice.
+float ptTraceAO(vec3 wPos, vec3 wGeoNormal, uint sampleCount, float radius, float coneWidth, float coneSpread, inout uint seed)
+{
+  if(sampleCount == 0u || radius <= 0.0)
+    return 1.0;
+  uint flags = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT;
+#if !HAS_ALPHA_TEST
+  flags |= gl_RayFlagsOpaqueEXT;
+#endif
+  vec3 tx, ty;
+  computeDefaultBasis(wGeoNormal, tx, ty);
+  uint occluded = 0u;
+  for(uint i = 0u; i < sampleCount; i++)
+  {
+    float r1 = 2.0 * M_PI * rand(seed);
+    float r2 = rand(seed);
+    float sq = sqrt(1.0 - r2);
+    vec3  d  = normalize((cos(r1) * sq) * tx + (sin(r1) * sq) * ty + sqrt(r2) * wGeoNormal);
+    rayHit.hitT       = 1.0;  // occluded sentinel; miss (index 0) flips it to -1 when nothing is within radius
+    rayHit.coneWidth  = coneWidth;
+    rayHit.coneSpread = coneSpread;
+    traceRayEXT(asScene, flags, 0xFF, 0, 1, 0, offsetRay(wPos, d, wGeoNormal), 0.001, d, radius, 0);
+    if(rayHit.hitT >= 0.0)
+      occluded++;
+  }
+  float ao = float(sampleCount - occluded) / float(sampleCount);
+  return max(0.2, ao * ao);  // match RT ambientOcclusion() floor + contrast curve
+}
+
 //////////////////////////////////////////////////////////////
 
 void main()
@@ -280,6 +312,12 @@ void main()
   // first-hit outputs
   bool hitValid            = false;
   vec3 firstHitPos         = rayOrigin + rayDir * (view.farPlane * 0.99f);
+#if DEBUG_VISUALIZATION && ALLOW_SHADING
+  // primary-hit wireframe overlay, applied to the final radiance after the path loop
+  vec3 wireBary   = vec3(0);
+  vec3 wireDeltas = vec3(0);
+  bool wireFront  = true;
+#endif
   vec4 dlssAlbedo          = vec4(0);
   vec4 dlssNormalRoughness = vec4(0);
   vec3 dlssSpecular        = vec3(0);
@@ -356,7 +394,13 @@ void main()
     // ---------------------------------------------------------
     // Reconstruct hit + material
     // ---------------------------------------------------------
-    PathHit hit = getHitAttributes(rayHit.instanceID, rayHit.clusterID, rayHit.triangleID, rayHit.bary, rayOrigin, rayDir, rayHit.hitT);
+    PathHit hit = getHitAttributes(rayHit.instanceID, rayHit.clusterID, rayHit.triangleID, rayHit.bary, rayOrigin, rayDir,
+                                   rayHit.hitT,
+#if PATHTRACE_HIT_POSITIONS
+                                   rayHit.hitPos0, rayHit.hitPos1, rayHit.hitPos2);
+#else
+                                   rayHit.hitGeoNormal);
+#endif
 
     // grow the ray cone from the previous point to this hit, then derive the texture LOD for this surface
     coneWidth += coneSpread * rayHit.hitT;
@@ -375,7 +419,7 @@ void main()
       vec3  viz  = visualizeColor(hit.visData, rayHit.instanceID);
       float vl   = dot(viz, vec3(0.2126, 0.7152, 0.0722));
       mat.albedo = clamp(mix(vec3(vl), viz, 1.4), 0.0, 1.0);   // 1.4 = saturation boost
-      mat.roughness = 0.4;
+      mat.roughness = 0.3;  // glossier than the RT 0.4 so the sun gives a sharper glint that defines form
       mat.metallic  = 0.0;
       mat.emissive  = vec3(0);
       mat.occlusion = 1.0;
@@ -395,6 +439,15 @@ void main()
     {
       hitValid    = true;
       firstHitPos = hit.wPos;
+
+#if DEBUG_VISUALIZATION && ALLOW_SHADING
+      if(view.doWireframe != 0)
+      {
+        wireBary   = vec3(1.0 - rayHit.bary.x - rayHit.bary.y, rayHit.bary.x, rayHit.bary.y);
+        wireDeltas = rayHit.wireBaryDeltas;
+        wireFront  = !hit.backFacing;
+      }
+#endif
 
 #if USE_DLSS
       dlssAlbedo          = vec4(mat.albedo, 0);
@@ -417,15 +470,19 @@ void main()
     radiance += throughput * mat.emissive;
 
     // Camera flashlight: an additional light on top of the sky, applied on the first (camera-visible)
-    // surface only - a port of the raster/RT light mixer, but additive rather than blended.
-    // view.lightMixer scales it relative to the sky (1 == flashVsSky of sky brightness). The
-    // camera-visible point is unoccluded by construction, so no shadow ray is needed.
-    if(firstHit && view.lightMixer > 0.0)
+    // surface only. Matches the raster/RT light mixer: it fades out as lightMixer -> 1, so at
+    // lightMixer == 1 only the sky/sun (NEE) contributes. It is collocated with the camera, so it casts
+    // no shadow - instead we modulate it with a hemisphere AO trace so crevices still darken as the sun
+    // fades out (lightMixer -> 0), mirroring the RT path's ambientOcclusion()-weighted ambient term.
+    if(firstHit && view.lightMixer < 1.0)
     {
-      const float flashVsSky = 0.5;  // flashlight capped at 50% of the sky brightness
-      vec3  flashDir      = normalize(view.wLightPos.xyz - hit.wPos);
-      float skyBrightness = ptLuminance(evalPhysicalSky(view.skyPhysical, normalize(view.wUpDir.xyz)));
-      radiance += throughput * (view.lightMixer * skyBrightness * flashVsSky) * computeShading(mat, N, flashDir, V, NdotV);
+      const float flashVsSky   = 0.5;  // flashlight capped at 50% of the sky brightness
+      float flashIntensity     = 1.0 - view.lightMixer;
+      vec3  flashDir           = normalize(view.wLightPos.xyz - hit.wPos);
+      float skyBrightness      = ptLuminance(evalPhysicalSky(view.skyPhysical, normalize(view.wUpDir.xyz)));
+      float ao                 = ptTraceAO(hit.wPos, hit.wGeoNormal, uint(view.ambientOcclusionSamples),
+                                           view.ambientOcclusionRadius * view.sceneSize, coneWidth, coneSpread, seed);
+      radiance += throughput * (ao * flashIntensity * skyBrightness * flashVsSky) * computeShading(mat, N, flashDir, V, NdotV);
     }
 
     // material lobes
@@ -451,7 +508,14 @@ void main()
         if(misW > 0.0 && (f.x + f.y + f.z) > 0.0)
         {
           float visibility = ptTraceShadowRay(hit.wShadowPos, hit.wGeoNormal, sky.direction, coneWidth, coneSpread);
-          radiance += throughput * (sky.radiance / sky.pdf) * f * misW * visibility;
+          // Treat the direct sun disk as the "overhead" light (matching the sky sampler's sun cone,
+          // half-angle 1.5*0.00465*sunDiskScale). The sky dome stays always-on as ambient, while the sun
+          // is scaled by lightMixer so it cross-fades with the camera flashlight like the RT path
+          // (lightMixer==1 -> sun only; ->0 fades the sun out as the flashlight fades in, no overbright).
+          float sunCosThreshold = cos(1.5 * 0.00465 * view.skyPhysical.sunDiskScale);
+          bool  isSun    = dot(sky.direction, view.skyPhysical.sunDirection) >= sunCosThreshold;
+          float sunScale = isSun ? view.lightMixer : 1.0;
+          radiance += throughput * (sky.radiance / sky.pdf) * f * misW * visibility * sunScale;
         }
       }
     }
@@ -506,6 +570,16 @@ void main()
     if(max(throughput.x, max(throughput.y, throughput.z)) <= 0.0)
       break;
   }
+
+#if DEBUG_VISUALIZATION && ALLOW_SHADING
+  // ---------------------------------------------------------
+  // Primary-hit wireframe overlay (debug visualization)
+  // ---------------------------------------------------------
+  if(view.doWireframe != 0 && hitValid)
+  {
+    radiance = addWireframe(radiance, wireBary, wireFront, wireDeltas);
+  }
+#endif
 
   // ---------------------------------------------------------
   // Firefly clamp

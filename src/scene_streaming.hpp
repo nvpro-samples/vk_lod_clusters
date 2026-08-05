@@ -123,6 +123,8 @@ public:
   struct FrameSettings
   {
     bool                                 useBlasCaching        = false;
+    float                                unloadThreshold       = 0.0f;
+    bool                                 freeze                = false;
     uint32_t                             blasCacheAgeThreshold = 16;
     uint32_t                             blasCacheMaxClusters  = 0;
     uint32_t                             blasCacheMaxBuilds    = 0;
@@ -158,6 +160,9 @@ public:
 
   // statistics on streaming operations
   void getStats(StreamingStats& stats) const;
+
+  // per lod-level residency of the persistent geometries, aggregated over all geometries
+  const StreamingResidentStats& getResidentStats() const { return m_residentStats; }
 
   // scratch space is provided by renderer so it can alias/reuse the memory for other operations
   // this is the required size
@@ -241,6 +246,13 @@ private:
   std::vector<PersistentGeometry>       m_persistentGeometries;
   std::vector<shaderio::Geometry>       m_shaderGeometries;
   nvvk::BufferTyped<shaderio::Geometry> m_shaderGeometriesBuffer;
+
+  // CPU decode scratch, reused across group decompression (single-threaded)
+  std::vector<uint32_t> m_decompressScratch;
+
+  // per lod-level residency of the persistent geometries, maintained incrementally
+  // during loads/unloads (see `getResidentStats`)
+  StreamingResidentStats m_residentStats;
 
   void initGeometries(Resources& res, const Scene* scene);
   void resetGeometryGroupAddresses(Resources::BatchedUploader& uploader);

@@ -27,6 +27,25 @@ void padZeroes(std::span<T0>& previous, T1* next)
   }
 }
 
+// Number of float entries a cluster's attribute block (normals/tangents + texcoords) occupies in the
+// runtime "[attributes][positions]" vertex-region layout (positions live in a separate trailing region).
+// Texcoords are kept 8-byte (2-float) aligned relative to the block start.
+static inline uint32_t clusterSeparatedAttrFloats(uint32_t vertexCount, uint32_t attributeBits)
+{
+  uint32_t n = (attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL) ? vertexCount : 0;
+  if(attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0)
+  {
+    n = (n + 1u) & ~1u;
+    n += 2u * vertexCount;
+  }
+  if(attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1)
+  {
+    n = (n + 1u) & ~1u;
+    n += 2u * vertexCount;
+  }
+  return n;
+}
+
 void Scene::applyMaterialStateBits(uint32_t& stateBits, uint32_t clusterBits, bool isFirst)
 {
   if(!isFirst)
@@ -147,8 +166,10 @@ uint32_t Scene::storeGroup(TempContext*       context,
       assert(triangleCount);
 
       groupCluster.localMaterialID = 0;
-      groupCluster.vertices        = vertexDataOffset;
-      groupCluster.triangles       = triangleDataOffset;
+      // temp storage: store running float/byte indices; converted to packed cluster-relative
+      // offsets during the final assembly below. positions slot = vertex-data float index,
+      // triangles slot = triangle-data byte index.
+      shaderio::Cluster_setOffsets(groupCluster, vertexDataOffset, 0, triangleDataOffset);
 
 
       // start assigning first triangle's material
@@ -363,7 +384,6 @@ uint32_t Scene::storeGroup(TempContext*       context,
       groupCluster.groupChildIndex       = uint8_t(c);
       groupCluster.attributeBits         = uint8_t(geometry.attributeBits);
       groupCluster.stateBits             = uint8_t(stateBits);
-      groupCluster.reserved              = 0;
 
       applyMaterialStateBits(groupStateBits, stateBits, c == 0);
 
@@ -377,12 +397,23 @@ uint32_t Scene::storeGroup(TempContext*       context,
       triangleOffset += triangleCount;
     }
 
-    groupInfo.offsetBytes                 = 0;
-    groupInfo.clusterCount                = uint8_t(clusterCount);
-    groupInfo.triangleCount               = uint16_t(triangleOffset);
-    groupInfo.vertexCount                 = uint16_t(vertexOffset);
-    groupInfo.lodLevel                    = uint8_t(level);
-    groupInfo.vertexDataCount             = vertexDataOffset;
+    groupInfo.offsetBytes   = 0;
+    groupInfo.clusterCount  = uint8_t(clusterCount);
+    groupInfo.triangleCount = uint16_t(triangleOffset);
+    groupInfo.vertexCount   = uint16_t(vertexOffset);
+    groupInfo.lodLevel      = uint8_t(level);
+    // runtime vertex region is laid out as [attributes][positions]; compute its float count
+    {
+      uint32_t attrRunning = 0;
+      for(uint32_t c = 0; c < clusterCount; c++)
+      {
+        uint32_t v  = uint32_t(groupTempStorage.clusters[c].vertexCountMinusOne) + 1;
+        attrRunning = (attrRunning + 1u) & ~1u;  // 2-float align each cluster's attribute block
+        attrRunning += clusterSeparatedAttrFloats(v, groupTempStorage.clusters[c].attributeBits);
+      }
+      uint32_t attrTotal        = (attrRunning + 1u) & ~1u;  // positions region starts 2-float aligned
+      groupInfo.vertexDataCount = attrTotal + 3u * vertexOffset;
+    }
     groupInfo.triangleDataCount           = triangleDataOffset;
     groupInfo.uncompressedVertexDataCount = 0;
     groupInfo.uncompressedSizeBytes       = 0;
@@ -544,30 +575,102 @@ uint32_t Scene::storeGroup(TempContext*       context,
 
       memcpy(groupStorage.clusters.data(), groupTempStorage.clusters.data(), groupStorage.clusters.size_bytes());
 
-      // patch adjustments
-      for(uint32_t c = 0; c < clusterCount; c++)
-      {
-        shaderio::Cluster& groupCluster = groupStorage.clusters[c];
-
-        if(groupInfo.uncompressedSizeBytes)
-        {
-          groupCluster.vertices = groupStorage.getClusterLocalOffset(c, groupStorage.vertices.data() + groupCluster.vertices,
-                                                                     groupInfo.uncompressedSizeBytes);
-          groupCluster.triangles = groupStorage.getClusterLocalOffset(c, groupStorage.vertices.data() + groupCluster.triangles);
-        }
-        else
-        {
-          groupCluster.vertices = groupStorage.getClusterLocalOffset(c, groupStorage.vertices.data() + groupCluster.vertices);
-          groupCluster.triangles = groupStorage.getClusterLocalOffset(c, groupStorage.triangles.data() + groupCluster.triangles);
-        }
-      }
+      // shared front sections
       memcpy(groupStorage.clusterGeneratingGroups.data(), groupTempStorage.clusterGeneratingGroups.data(),
              groupStorage.clusterGeneratingGroups.size_bytes());
       padZeroes(groupStorage.clusterGeneratingGroups, groupStorage.clusterBboxes.data());
       memcpy(groupStorage.clusterBboxes.data(), groupTempStorage.clusterBboxes.data(), groupStorage.clusterBboxes.size_bytes());
       memcpy(groupStorage.triangles.data(), groupTempStorage.triangles.data(), groupStorage.triangles.size_bytes());
       padZeroes(groupStorage.triangles, groupStorage.vertices.data());
-      memcpy(groupStorage.vertices.data(), groupTempStorage.vertices.data(), groupStorage.vertices.size_bytes());
+
+      if(groupInfo.uncompressedSizeBytes)
+      {
+        // compressed: keep the compressed vertex blob as-is. The triangles slot stores the
+        // compressed-source offset (used by decompressGroup); the positions/attributes slots store
+        // the runtime (decompressed, separated) offsets so the low-detail CLAS build - which reads
+        // these headers but points at the decompressed group - gets valid vertex addresses.
+        size_t   frontBytes    = groupInfo.computeUncompressedSectionSize();
+        size_t   posRegionByte = groupInfo.positionsByteOffset();
+        uint32_t attrRunning   = 0;
+        uint32_t posRunning    = 0;  // floats
+        for(uint32_t c = 0; c < clusterCount; c++)
+        {
+          shaderio::Cluster& groupCluster = groupStorage.clusters[c];
+          uint32_t           v            = uint32_t(groupCluster.vertexCountMinusOne) + 1;
+          uint32_t           srcFloat     = shaderio::Cluster_getTrianglesOffset(groupCluster);
+          uint32_t           srcByte = groupStorage.getClusterLocalOffset(c, groupStorage.vertices.data() + srcFloat);
+
+          size_t   clusterHeaderByte = sizeof(shaderio::Group) + sizeof(shaderio::Cluster) * c;
+          uint32_t attrClusterStart  = (attrRunning + 1u) & ~1u;  // floats
+          uint32_t posByte           = uint32_t(posRegionByte + size_t(posRunning) * sizeof(float) - clusterHeaderByte);
+          uint32_t attrByte = uint32_t(frontBytes + size_t(attrClusterStart) * sizeof(float) - clusterHeaderByte);
+          shaderio::Cluster_setOffsets(groupCluster, posByte, attrByte, srcByte);
+
+          attrRunning = attrClusterStart + clusterSeparatedAttrFloats(v, groupCluster.attributeBits);
+          posRunning += 3u * v;
+        }
+        memcpy(groupStorage.vertices.data(), groupTempStorage.vertices.data(), groupStorage.vertices.size_bytes());
+      }
+      else
+      {
+        // uncompressed: re-pack the interleaved temp vertex data into the runtime [attributes][positions] layout.
+        // The temp storage holds per-cluster [pos][nrm][tex]; positions are gathered into the trailing region.
+        float*       dstV           = groupStorage.vertices.data();
+        const float* srcV           = groupTempStorage.vertices.data();
+        uint32_t     attrTotalFloat = groupInfo.attributesFloatCount();  // == vertexDataCount - 3*vertexCount
+        uint32_t     attrRunning    = 0;
+        uint32_t     posRunning     = 0;
+
+        for(uint32_t c = 0; c < clusterCount; c++)
+        {
+          shaderio::Cluster& groupCluster = groupStorage.clusters[c];
+          uint32_t           v            = uint32_t(groupCluster.vertexCountMinusOne) + 1;
+          uint32_t           bits         = groupCluster.attributeBits;
+
+          uint32_t tempPosFloat = shaderio::Cluster_getPositionsOffset(groupCluster);  // temp interleaved pos start
+          uint32_t tempTriByte  = shaderio::Cluster_getTrianglesOffset(groupCluster);  // temp triangle byte offset
+
+          uint32_t attrClusterStart = (attrRunning + 1u) & ~1u;  // 8-byte aligned attribute block start
+          uint32_t posClusterStart  = attrTotalFloat + posRunning;
+
+          // gather positions into the trailing region
+          memcpy(dstV + posClusterStart, srcV + tempPosFloat, sizeof(float) * 3u * v);
+
+          // copy attributes (normals/tangents then texcoords), mirroring the temp source alignment
+          uint32_t srcOff = tempPosFloat + 3u * v;
+          uint32_t dstOff = attrClusterStart;
+          if(bits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL)
+          {
+            memcpy(dstV + dstOff, srcV + srcOff, sizeof(float) * v);
+            srcOff += v;
+            dstOff += v;
+          }
+          if(bits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0)
+          {
+            srcOff = (srcOff + 1u) & ~1u;
+            dstOff = (dstOff + 1u) & ~1u;
+            memcpy(dstV + dstOff, srcV + srcOff, sizeof(float) * 2u * v);
+            srcOff += 2u * v;
+            dstOff += 2u * v;
+          }
+          if(bits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1)
+          {
+            srcOff = (srcOff + 1u) & ~1u;
+            dstOff = (dstOff + 1u) & ~1u;
+            memcpy(dstV + dstOff, srcV + srcOff, sizeof(float) * 2u * v);
+            srcOff += 2u * v;
+            dstOff += 2u * v;
+          }
+
+          uint32_t posByte  = groupStorage.getClusterLocalOffset(c, dstV + posClusterStart);
+          uint32_t attrByte = groupStorage.getClusterLocalOffset(c, dstV + attrClusterStart);
+          uint32_t triByte  = groupStorage.getClusterLocalOffset(c, groupStorage.triangles.data() + tempTriByte);
+          shaderio::Cluster_setOffsets(groupCluster, posByte, attrByte, triByte);
+
+          attrRunning = dstOff;
+          posRunning += 3u * v;
+        }
+      }
       padZeroes(groupStorage.vertices, (uint32_t*)(groupStorage.raw + groupInfo.sizeBytes));
     }
   }

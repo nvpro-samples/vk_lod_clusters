@@ -293,6 +293,8 @@ void Scene::closeCache()
     m_cacheFileView.deinit();
     m_cacheFileMapping.close();
   }
+  m_loadedFromCache = false;
+  m_cacheFileSize   = 0;
 }
 
 bool Scene::saveCache() const

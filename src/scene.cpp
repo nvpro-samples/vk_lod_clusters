@@ -140,18 +140,19 @@ void Scene::ProcessingInfo::deinit()
     nvutils::get_thread_pool().reset(numPoolThreadsOriginal);
 }
 
-void Scene::fillGroupRuntimeData(const GroupInfo& srcGroupInfo,
-                                 const GroupView& srcGroupView,
-                                 uint32_t         groupID,
-                                 uint32_t         groupResidentID,
-                                 uint32_t         clusterResidentID,
-                                 void*            dst,
-                                 size_t           dstSize)
+void Scene::fillGroupRuntimeData(const GroupInfo&       srcGroupInfo,
+                                 const GroupView&       srcGroupView,
+                                 uint32_t               groupID,
+                                 uint32_t               groupResidentID,
+                                 uint32_t               clusterResidentID,
+                                 void*                  dst,
+                                 size_t                 dstSize,
+                                 std::vector<uint32_t>& scratch)
 {
   GroupInfo dstGroupInfo = srcGroupInfo;
   if(srcGroupInfo.uncompressedSizeBytes)
   {
-    decompressGroup(srcGroupInfo, srcGroupView, dst, dstSize);
+    decompressGroup(srcGroupInfo, srcGroupView, dst, dstSize, scratch);
 
     dstGroupInfo.sizeBytes       = dstGroupInfo.uncompressedSizeBytes;
     dstGroupInfo.vertexDataCount = dstGroupInfo.uncompressedVertexDataCount;
@@ -204,6 +205,26 @@ Scene::Result Scene::init(const std::filesystem::path& filePath,
   {
     LOGI("Scene::init large scene or invalid cache detected\n  using dedicated preprocess pass\n");
     closeCache();
+
+    // The failed pass left this Scene half-populated (push_back accumulators,
+    // partial per-geometry storage, plus m_config which openCache overwrote
+    // from the mismatched cache). Reset to a clean slate before retrying and
+    // restore just the inputs, using the original `config` parameter rather
+    // than the clobbered m_config.
+    auto savedFilePath             = std::move(m_filePath);
+    auto savedCacheFilePath        = std::move(m_cacheFilePath);
+    auto savedCachePartialFilePath = std::move(m_cachePartialFilePath);
+    auto savedCacheSuffix          = std::move(m_cacheSuffix);
+    auto savedLoaderConfig         = m_loaderConfig;
+
+    *this = {};
+
+    m_filePath             = std::move(savedFilePath);
+    m_cacheFilePath        = std::move(savedCacheFilePath);
+    m_cachePartialFilePath = std::move(savedCachePartialFilePath);
+    m_cacheSuffix          = std::move(savedCacheSuffix);
+    m_config               = config;
+    m_loaderConfig         = savedLoaderConfig;
 
     m_loaderConfig.processingOnly = true;
     loadResult                    = loadGLTF(processingInfo, filePath);

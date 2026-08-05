@@ -136,6 +136,13 @@ void main()
       // These are built into scratch space first, and then moved to final locations.
       
       uint newBuildOffset = spatch.clasBuildOffset;
+    #if TARGETS_RAY_TRACING
+      // positions are streamed to CLAS-build scratch at a fixed per-group slot, tightly packed
+      // per cluster (runningPosByteOffset)
+      uint64_t groupPositionsBase =
+          streaming.update.clasVerticesBuffer + uint64_t(loadGroupIndex) * streaming.update.clasVerticesGroupStride;
+      uint runningPosByteOffset = 0;
+    #endif
       for (uint c = 0; c < spatch.clusterCount; c++)
       {
         uint clusterResidentID = spatch.clusterResidentID + c;
@@ -166,7 +173,7 @@ void main()
         buildInfo.geometryIndexAndFlagsBufferStride = uint16_t(0);
         buildInfo.opacityMicromapIndexBufferStride  = uint16_t(0);
         
-        buildInfo.vertexBuffer = uint64_t(Cluster_getVertexPositions(Cluster_in(clusterRef)));
+        buildInfo.vertexBuffer = groupPositionsBase + uint64_t(runningPosByteOffset);
         buildInfo.indexBuffer  = uint64_t(Cluster_getTriangleIndices(Cluster_in(clusterRef)));
         
         buildInfo.geometryIndexAndFlagsBuffer = 0;
@@ -199,6 +206,8 @@ void main()
 
         streaming.update.newClasBuilds.d[newBuildOffset + c]      = buildInfo;
         streaming.update.newClasResidentIDs.d[newBuildOffset + c] = clusterResidentID;
+
+        runningPosByteOffset += (cluster.vertexCountMinusOne + 1) * 12;
       #endif
       }
     }

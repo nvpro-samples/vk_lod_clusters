@@ -30,11 +30,11 @@ public:
   virtual void updatedFrameBuffer(Resources& res, RenderScene& rscene);
 
 private:
-  bool initShaders(Resources& res, RenderScene& scene, const RendererConfig& config);
+  bool initShaders(Resources& res, RenderScene& scene);
 
   void initRayTracingPipeline(Resources& res);
-  bool initRayTracingBlas(Resources& res, RenderScene& scene, const RendererConfig& config, VkDeviceSize& scratchSize);
-  void initRayTracingTlas(Resources& res, const RendererConfig& config, VkDeviceSize& scratchSize);
+  bool initRayTracingBlas(Resources& res, RenderScene& scene, VkDeviceSize& scratchSize);
+  void initRayTracingTlas(Resources& res, VkDeviceSize& scratchSize);
 
   void updateRayTracingTlas(VkCommandBuffer cmd, Resources& res, bool update = false);
 
@@ -128,9 +128,9 @@ private:
   float m_ptExposure = 1.0f;
 };
 
-bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscene, const RendererConfig& config)
+bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscene)
 {
-  if(!initBasicShaders(res, rscene, config, false))
+  if(!initBasicShaders(res, rscene, false))
   {
     return false;
   }
@@ -149,38 +149,38 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("GROUP_CLUSTER_COUNT", fmt::format("{}", rscene.scene->m_config.clusterGroupSize));
   options.AddMacroDefinition("TARGETS_RASTERIZATION", "0");
   options.AddMacroDefinition("USE_STREAMING", rscene.useStreaming ? "1" : "0");
-  options.AddMacroDefinition("USE_SORTING", config.useSorting ? "1" : "0");
-  options.AddMacroDefinition("USE_CULLING", config.useCulling ? "1" : "0");
+  options.AddMacroDefinition("USE_SORTING", m_config.useSorting ? "1" : "0");
+  options.AddMacroDefinition("USE_CULLING", m_config.useCulling ? "1" : "0");
   options.AddMacroDefinition("USE_TWO_PASS_CULLING", "0");
-  options.AddMacroDefinition("USE_BLAS_SHARING", config.useBlasSharing ? "1" : "0");
-  options.AddMacroDefinition("USE_BLAS_MERGING", config.useBlasSharing && config.useBlasMerging ? "1" : "0");
-  options.AddMacroDefinition("USE_BLAS_CACHING", config.useBlasSharing && config.useBlasCaching ? "1" : "0");
-  options.AddMacroDefinition("USE_RENDER_STATS", config.useRenderStats ? "1" : "0");
-  options.AddMacroDefinition("USE_DLSS", supportsDLSS && config.useDlss ? "1" : "0");
+  options.AddMacroDefinition("USE_BLAS_SHARING", m_config.useBlasSharing ? "1" : "0");
+  options.AddMacroDefinition("USE_BLAS_MERGING", m_config.useBlasSharing && m_config.useBlasMerging ? "1" : "0");
+  options.AddMacroDefinition("USE_BLAS_CACHING", m_config.useBlasSharing && m_config.useBlasCaching ? "1" : "0");
+  options.AddMacroDefinition("USE_RENDER_STATS", m_config.useRenderStats ? "1" : "0");
+  options.AddMacroDefinition("USE_DLSS", supportsDLSS && m_config.useDlss ? "1" : "0");
   options.AddMacroDefinition("ALLOW_VERTEX_NORMALS", rscene.scene->m_hasVertexNormals ? "1" : "0");
   options.AddMacroDefinition("ALLOW_VERTEX_TANGENTS", rscene.scene->m_hasVertexTangents ? "1" : "0");
   options.AddMacroDefinition("ALLOW_VERTEX_TEXCOORDS",
                              rscene.scene->m_hasVertexTexCoord0 || rscene.scene->m_hasVertexTexCoord1 ? "1" : "0");
   options.AddMacroDefinition("ALLOW_VERTEX_TEXCOORD_0", rscene.scene->m_hasVertexTexCoord0 ? "1" : "0");
   options.AddMacroDefinition("ALLOW_VERTEX_TEXCOORD_1", rscene.scene->m_hasVertexTexCoord1 ? "1" : "0");
-  options.AddMacroDefinition("ALLOW_SHADING", config.useShading ? "1" : "0");
-  options.AddMacroDefinition("USE_DEPTH_ONLY", !config.useShading && config.useDepthOnly ? "1" : "0");
-  options.AddMacroDefinition("DEBUG_VISUALIZATION", config.useDebugVisualization ? "1" : "0");
-  options.AddMacroDefinition("USE_EXT_MESH_SHADER", fmt::format("{}", config.useEXTmeshShader ? 1 : 0));
+  options.AddMacroDefinition("ALLOW_SHADING", m_config.useShading ? "1" : "0");
+  options.AddMacroDefinition("USE_DEPTH_ONLY", !m_config.useShading && m_config.useDepthOnly ? "1" : "0");
+  options.AddMacroDefinition("DEBUG_VISUALIZATION", m_config.useDebugVisualization ? "1" : "0");
+  options.AddMacroDefinition("USE_EXT_MESH_SHADER", fmt::format("{}", m_config.useEXTmeshShader ? 1 : 0));
   options.AddMacroDefinition("MESHSHADER_WORKGROUP_SIZE", fmt::format("{}", m_meshShaderWorkgroupSize));
   options.AddMacroDefinition("MESHSHADER_BBOX_COUNT", fmt::format("{}", m_meshShaderBoxes));
   options.AddMacroDefinition("USE_SW_RASTER", "0");
-  options.AddMacroDefinition("USE_TWO_SIDED", rscene.scene->m_hasTwoSided && !config.forceTwoSided ? "1" : "0");
-  options.AddMacroDefinition("USE_FORCED_TWO_SIDED", config.forceTwoSided ? "1" : "0");
-  options.AddMacroDefinition("USE_FORCED_INVISIBLE_CULLING", config.useForcedInvisibleCulling ? "1" : "0");
-  options.AddMacroDefinition("USE_PERSISTENT_TRAVERSAL_KERNEL", config.usePersistentTraversal ? "1" : "0");
+  options.AddMacroDefinition("USE_TWO_SIDED", rscene.scene->m_hasTwoSided && !m_config.forceTwoSided ? "1" : "0");
+  options.AddMacroDefinition("USE_FORCED_TWO_SIDED", m_config.forceTwoSided ? "1" : "0");
+  options.AddMacroDefinition("USE_FORCED_INVISIBLE_CULLING", m_config.useForcedInvisibleCulling ? "1" : "0");
+  options.AddMacroDefinition("USE_PERSISTENT_TRAVERSAL_KERNEL", m_config.usePersistentTraversal ? "1" : "0");
   // Ray/path tracer texture LOD mode (overrides the TARGETS_RASTERIZATION-derived default in shaderio.h).
-  options.AddMacroDefinition("TEXTURE_LOD_MODE", config.textureLodMode == 1 ? "TEXLODMODE_LOD" :
-                                                 config.textureLodMode == 2 ? "TEXLODMODE_IMPLICIT" :
-                                                                              "TEXLODMODE_GRAD");
+  options.AddMacroDefinition("TEXTURE_LOD_MODE", m_config.textureLodMode == 1 ? "TEXLODMODE_LOD" :
+                                                 m_config.textureLodMode == 2 ? "TEXLODMODE_IMPLICIT" :
+                                                                                "TEXLODMODE_GRAD");
   options.AddMacroDefinition("HAS_ALPHA_TEST", rscene.scene->m_hasAlphaMask ? "1" : "0");
   options.AddMacroDefinition("HAS_TEXTURED_MATERIALS", rscene.scene->m_hasTexturedMaterials ? "1" : "0");
-  options.AddMacroDefinition("USE_PATHTRACING", config.usePathtrace ? "1" : "0");
+  options.AddMacroDefinition("USE_PATHTRACING", m_config.usePathtrace ? "1" : "0");
 
   shaderc::CompileOptions optionsAO = options;
   options.AddMacroDefinition("RAYTRACING_PAYLOAD_INDEX", "0");
@@ -188,7 +188,7 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
 
   // The basic path tracer uses a separate shader set: the closest-hit only reports the hit
   // and all shading happens in the ray-generation shader.
-  const bool  pt        = config.usePathtrace;
+  const bool  pt        = m_config.usePathtrace;
   const char* rgenFile  = pt ? "render_pathtrace.rgen.glsl" : "render_raytrace.rgen.glsl";
   const char* rchitFile = pt ? "render_pathtrace_clusters.rchit.glsl" : "render_raytrace_clusters.rchit.glsl";
   const char* rahitFile = pt ? "render_pathtrace_clusters.rahit.glsl" : "render_raytrace_clusters.rahit.glsl";
@@ -248,8 +248,8 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
 {
   m_resourceReservedUsage = {};
   m_config                = config;
-  m_maxRenderClusters     = 1u << config.numRenderClusterBits;
-  m_maxTraversalTasks     = 1u << config.numTraversalTaskBits;
+  m_maxRenderClusters     = 1u << m_config.numRenderClusterBits;
+  m_maxTraversalTasks     = 1u << m_config.numTraversalTaskBits;
 
   if(!rscene.useStreaming)
   {
@@ -257,7 +257,13 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     m_config.useBlasCaching = false;
   }
 
-  if(!initShaders(res, rscene, m_config))
+#if USE_DLSS
+  res.setFramebufferDlss(m_config.useDlss, m_config.dlssQuality);
+  m_config.useDlss = m_config.useDlss && res.m_frameBuffer.dlssMode == Resources::DlssMode::eRayReconstruction
+                     && res.m_frameBuffer.dlssDenoiser.isActive();
+#endif
+
+  if(!initShaders(res, rscene))
   {
     LOGE("RendererRayTraceClustersLod shaders failed\n");
     return false;
@@ -274,11 +280,7 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     rscene.sceneStreaming.resetCachedBlas();
   }
 
-#if USE_DLSS
-  res.setFramebufferDlss(config.useDlss, config.dlssQuality);
-#endif
-
-  initBasics(res, rscene, config);
+  initBasics(res, rscene);
 
   m_resourceReservedUsage.geometryMemBytes   = rscene.getGeometrySize(true);
   m_resourceReservedUsage.rtClasMemBytes     = rscene.getClasSize(true);
@@ -299,7 +301,7 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
       LOGI("raytracer: CLAS scratchsize %d KiB\n", uint32_t((scratchSize + 1023) / 1024));
     }
 
-    if(!initRayTracingBlas(res, rscene, config, scratchSize))
+    if(!initRayTracingBlas(res, rscene, scratchSize))
     {
       LOGE("Resources exceeding max buffer allocation size\n");
       deinit(res);
@@ -307,7 +309,7 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     }
 
     // TLAS creation
-    initRayTracingTlas(res, config, scratchSize);
+    initRayTracingTlas(res, scratchSize);
 
     // streaming also stores newly built clas in scratch
     res.createBuffer(m_scratchBuffer, scratchSize,
@@ -335,7 +337,7 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     memset(&m_sceneBuildShaderio, 0, sizeof(m_sceneBuildShaderio));
     m_sceneBuildShaderio.numRenderInstances = uint32_t(m_renderInstances.size());
     m_sceneBuildShaderio.maxRenderClusters  = m_maxRenderClusters;
-    m_sceneBuildShaderio.maxTraversalInfos  = uint32_t(1u << config.numTraversalTaskBits);
+    m_sceneBuildShaderio.maxTraversalInfos  = uint32_t(1u << m_config.numTraversalTaskBits);
     m_sceneBuildShaderio.tlasInstances      = m_tlasInstancesBuffer.address;
     m_sceneBuildShaderio.numGeometries      = uint32_t(rscene.scene->getActiveGeometryCount());
 
@@ -353,12 +355,12 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     m_sceneBuildShaderio.blasBuildInfos = mem.append(sizeof(shaderio::BlasBuildInfo) * m_maxBlasBuilds, 16);
     m_sceneBuildShaderio.instanceBuildInfos = mem.append(sizeof(shaderio::InstanceBuildInfo) * m_renderInstances.size(), 16);
 
-    if(config.useBlasSharing)
+    if(m_config.useBlasSharing)
     {
       m_sceneBuildShaderio.geometryBuildInfos =
           mem.append(sizeof(shaderio::GeometryBuildInfo) * m_sceneBuildShaderio.numGeometries, 16);
 
-      if(config.useBlasCaching)
+      if(m_config.useBlasCaching)
       {
         m_sceneBuildShaderio.cachedBlasClusterAddressesDst =
             mem.append(sizeof(uint64_t) * rscene.sceneStreaming.getMaxCachedBlasBuilds(), 8);
@@ -367,7 +369,7 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
       }
     }
 
-    if(config.useSorting)
+    if(m_config.useSorting)
     {
       // can alias some data required for sorting, with other data used at traversal/blas time.
       mem.beginOverlap();
@@ -382,7 +384,7 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
 
     m_sceneBuildShaderio.blasClusterAddresses = mem.append(sizeof(uint64_t) * m_sceneBuildShaderio.maxRenderClusters, 8);
 
-    if(config.useSorting)
+    if(m_config.useSorting)
     {
       mem.endOverlap();
     }
@@ -402,10 +404,10 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     m_sceneBuildShaderio.instanceSortValues += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.instanceBuildInfos += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.traversalGroupInfos += m_sceneDataBuffer.address;
-    if(config.useBlasSharing)
+    if(m_config.useBlasSharing)
     {
       m_sceneBuildShaderio.geometryBuildInfos += m_sceneDataBuffer.address;
-      if(config.useBlasCaching)
+      if(m_config.useBlasCaching)
       {
         m_sceneBuildShaderio.cachedBlasClusterAddressesDst += m_sceneDataBuffer.address;
         m_sceneBuildShaderio.cachedBlasClusterAddressesSrc += m_sceneDataBuffer.address;
@@ -471,7 +473,7 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     bindings.addBinding(BINDINGS_RAYTRACING_DEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_RENDER_TARGET, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_stageFlags);
 #if USE_DLSS
-    if(config.useDlss)
+    if(m_config.useDlss)
     {
       // skip first
       for(uint32_t i = 1; i < DlssDenoiser::eDlssCount; i++)
@@ -505,7 +507,7 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
 
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_RAYTRACING_DEPTH), res.m_frameBuffer.imgRaytracingDepth);
 #if USE_DLSS
-    if(config.useDlss)
+    if(m_config.useDlss)
     {
       // apply all
       for(uint32_t i = 0; i < DlssDenoiser::eDlssCount; i++)
@@ -545,7 +547,7 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeBuildSetup);
     vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeBuildSetup);
 
-    if(config.useSorting)
+    if(m_config.useSorting)
     {
       shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeTraversalPresort);
       vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTraversalPresort);
@@ -569,19 +571,19 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeInstanceAssignBlas);
     vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeInstanceAssignBlas);
 
-    if(config.useBlasSharing)
+    if(m_config.useBlasSharing)
     {
       shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeInstanceClassifyLod);
       vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeInstanceClassifyLod);
 
       shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeGeometryBlasSharing);
       vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeGeometryBlasSharing);
-      if(config.useBlasMerging)
+      if(m_config.useBlasMerging)
       {
         shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeTraversalMerge);
         vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTraversalMerge);
       }
-      if(config.useBlasCaching)
+      if(m_config.useBlasCaching)
       {
         shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeBlasCachingSetupCopy);
         vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeBlasCachingSetupCopy);
@@ -639,6 +641,7 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
   {
     SceneStreaming::FrameSettings settings;
     settings.ageThreshold          = frame.streamingAgeThreshold;
+    settings.unloadThreshold       = frame.streamingUnloadThreshold;
     settings.useBlasCaching        = m_config.useBlasSharing && m_config.useBlasCaching;
     settings.blasCacheFlags        = m_config.clusterBlasFlags;
     settings.blasCacheMaxClusters  = m_maxRenderClusters;
@@ -1082,7 +1085,8 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
   }
 
 #if USE_DLSS
-  if(m_config.useDlss)
+  if(m_config.useDlss && res.m_frameBuffer.dlssMode == Resources::DlssMode::eRayReconstruction
+     && res.m_frameBuffer.dlssDenoiser.isActive())
   {
     auto timerSection = profiler.cmdFrameSection(cmd, "DLSS");
 
@@ -1151,7 +1155,7 @@ void RendererRayTraceClustersLod::deinit(Resources& res)
 }
 
 
-bool RendererRayTraceClustersLod::initRayTracingBlas(Resources& res, RenderScene& rscene, const RendererConfig& config, VkDeviceSize& scratchSize)
+bool RendererRayTraceClustersLod::initRayTracingBlas(Resources& res, RenderScene& rscene, VkDeviceSize& scratchSize)
 {
   // BLAS space requirement (implicit)
   // the size of the generated blas is dynamic, need to query prebuild info.
@@ -1163,7 +1167,7 @@ bool RendererRayTraceClustersLod::initRayTracingBlas(Resources& res, RenderScene
   m_blasInput.maxClusterCountPerAccelerationStructure = std::min(rscene.scene->m_maxPerGeometryClusters, m_maxRenderClusters);
   m_blasInput.maxTotalClusterCount = m_maxRenderClusters;
 
-  if(config.useBlasSharing && config.useBlasMerging)
+  if(m_config.useBlasSharing && m_config.useBlasMerging)
   {
     // we are guaranteeing only 2 BLAS per geometry that has multiple instances.
     // one through sharing, one through merging
@@ -1175,7 +1179,7 @@ bool RendererRayTraceClustersLod::initRayTracingBlas(Resources& res, RenderScene
     m_maxBlasBuilds = uint32_t(m_renderInstances.size());
   }
 
-  if(config.useBlasSharing && config.useBlasCaching)
+  if(m_config.useBlasSharing && m_config.useBlasCaching)
   {
     // With caching we might build a few extra BLAS per-frame.
     // This value is at maximum `rscene.scene->getActiveGeometryCount()` plus some rounding/alignment.
@@ -1187,7 +1191,7 @@ bool RendererRayTraceClustersLod::initRayTracingBlas(Resources& res, RenderScene
   inputs.opMode                                    = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV;
   inputs.opType                       = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV;
   inputs.opInput.pClustersBottomLevel = &m_blasInput;
-  inputs.flags                        = config.clusterBlasFlags;
+  inputs.flags                        = m_config.clusterBlasFlags;
 
   VkAccelerationStructureBuildSizesInfoKHR sizesInfo = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
   vkGetClusterAccelerationStructureBuildSizesNV(res.m_device, &inputs, &sizesInfo);
@@ -1196,7 +1200,7 @@ bool RendererRayTraceClustersLod::initRayTracingBlas(Resources& res, RenderScene
 
   m_blasDataSize = sizesInfo.accelerationStructureSize;
 
-  if(config.useBlasSharing && config.useBlasCaching)
+  if(m_config.useBlasSharing && m_config.useBlasCaching)
   {
     const StreamingConfig& streamingConfig = rscene.sceneStreaming.getStreamingConfig();
 
@@ -1360,7 +1364,7 @@ void RendererRayTraceClustersLod::initRayTracingPipeline(Resources& res)
   }
 }
 
-void RendererRayTraceClustersLod::initRayTracingTlas(Resources& res, const RendererConfig& config, VkDeviceSize& scratchSize)
+void RendererRayTraceClustersLod::initRayTracingTlas(Resources& res, VkDeviceSize& scratchSize)
 {
   std::vector<VkAccelerationStructureInstanceKHR> tlasInstances(m_renderInstances.size());
 
@@ -1374,7 +1378,7 @@ void RendererRayTraceClustersLod::initRayTracingTlas(Resources& res, const Rende
 
     // no need to use m_renderInstances[i].flipWinding, as ray tracing handles
     // negative determinants automatically
-    if(config.flipWinding)
+    if(m_config.flipWinding)
     {
       instance.flags |= VK_GEOMETRY_INSTANCE_TRIANGLE_FRONT_COUNTERCLOCKWISE_BIT_KHR;
     }
@@ -1465,7 +1469,8 @@ void RendererRayTraceClustersLod::updatedFrameBuffer(Resources& res, RenderScene
   writeSets.append(m_dsetPack.makeWrite(BINDINGS_RAYTRACING_DEPTH), res.m_frameBuffer.imgRaytracingDepth);
 
 #if USE_DLSS
-  if(m_config.useDlss)
+  if(m_config.useDlss && res.m_frameBuffer.dlssMode == Resources::DlssMode::eRayReconstruction
+     && res.m_frameBuffer.dlssDenoiser.isActive())
   {
     // apply all
     for(uint32_t i = 0; i < DlssDenoiser::eDlssCount; i++)

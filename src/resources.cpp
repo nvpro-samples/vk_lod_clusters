@@ -124,6 +124,18 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
 
   m_uploader.init(&m_allocator);
 
+  {
+    // load-time texture uploads run on the dedicated transfer queue and hand ownership
+    // to the graphics queue;
+    AsyncUploader::InitInfo asyncInfo;
+    asyncInfo.allocator      = &m_allocator;
+    asyncInfo.transferQueue  = m_queueTransfer;
+    asyncInfo.targetQueue    = m_queue;
+    asyncInfo.debugName      = "Resources::m_asyncUploader";
+    asyncInfo.keepBlockCount = 0;  // don't keep blocks, since we use this only for texture uploads
+    NVVK_CHECK(m_asyncUploader.init(asyncInfo));
+  }
+
   m_samplerPool.init(device);
   m_samplerPool.acquireSampler(m_samplerBiLinear);
 
@@ -255,6 +267,7 @@ void Resources::deinit()
   m_samplerPool.releaseSampler(m_samplerBiLinear);
   m_samplerPool.releaseSampler(m_samplerTriLinear);
   m_samplerPool.deinit();
+  m_asyncUploader.deinit();
   m_uploader.deinit();
   m_allocator.deinit();
 }
@@ -710,22 +723,46 @@ void Resources::updateFramebufferDlss(VkCommandBuffer cmd)
 {
   switch(m_frameBuffer.dlssMode)
   {
-    case DlssMode::eRayReconstruction:
+    case DlssMode::eRayReconstruction: {
       // setup resources
-      m_frameBuffer.dlssDenoiser.updateSize(cmd, m_frameBuffer.targetSize, m_frameBuffer.dlssQuality);
+      VkExtent2D renderSize = m_frameBuffer.dlssDenoiser.updateSize(cmd, m_frameBuffer.targetSize, m_frameBuffer.dlssQuality);
+
+      if(!m_frameBuffer.dlssDenoiser.isActive())
+      {
+        LOGW("DLSS-RR initialization failed; falling back to native rendering.\n");
+        m_frameBuffer.dlssDenoiser.deinitResources();
+        m_frameBuffer.dlssMode    = DlssMode::eNone;
+        m_frameBuffer.hasDenoiser = false;
+        m_frameBuffer.renderSize  = m_frameBuffer.targetSize;
+        break;
+      }
 
       m_frameBuffer.dlssDenoiser.setResource(DlssRayReconstruction::ResourceType::eColorOut, m_frameBuffer.imgColor.image,
                                              m_frameBuffer.imgColor.descriptor.imageView, m_frameBuffer.imgColor.format);
 
-      m_frameBuffer.renderSize = m_frameBuffer.dlssDenoiser.getRenderSize();
+      m_frameBuffer.renderSize = renderSize;
       break;
-    case DlssMode::eSuperResolution:
-      m_frameBuffer.renderSize = m_frameBuffer.dlssUpscaler.updateSize(cmd, m_frameBuffer.targetSize, m_frameBuffer.dlssQuality);
+    }
+    case DlssMode::eSuperResolution: {
+      VkExtent2D renderSize = m_frameBuffer.dlssUpscaler.updateSize(cmd, m_frameBuffer.targetSize, m_frameBuffer.dlssQuality);
+
+      if(!m_frameBuffer.dlssUpscaler.isActive())
+      {
+        LOGW("DLSS-SR initialization failed; falling back to native rendering.\n");
+        m_frameBuffer.dlssUpscaler.deinitResources();
+        m_frameBuffer.dlssMode    = DlssMode::eNone;
+        m_frameBuffer.hasDenoiser = false;
+        m_frameBuffer.renderSize  = m_frameBuffer.targetSize;
+        break;
+      }
+
+      m_frameBuffer.renderSize = renderSize;
       m_frameBuffer.dlssUpscaler.setOutputResource(m_frameBuffer.imgColor.image, m_frameBuffer.imgColor.descriptor.imageView,
                                                    m_frameBuffer.imgColor.format);
       m_frameBuffer.dlssSrColorLayout  = VK_IMAGE_LAYOUT_GENERAL;
       m_frameBuffer.dlssSrMotionLayout = VK_IMAGE_LAYOUT_GENERAL;
       break;
+    }
     case DlssMode::eNone:
     default:
       m_frameBuffer.renderSize = m_frameBuffer.targetSize;
@@ -754,14 +791,11 @@ void Resources::setFramebufferDlss(DlssMode mode, NVSDK_NGX_PerfQuality_Value dl
       m_frameBuffer.dlssUpscaler.deinitResources();
     }
 
-    if(mode != DlssMode::eNone)
-    {
-      updateFramebufferDlss(cmd);
-    }
-    else
-    {
-      m_frameBuffer.renderSize = m_frameBuffer.targetSize;
-    }
+    // updateFramebufferDlss handles the eNone case in its switch and always
+    // refreshes renderScale from renderSize/windowSize. Calling it in both
+    // branches keeps renderScale in sync — the previous eNone shortcut left
+    // renderScale at the last DLSS ratio, which broke mouseover picking.
+    updateFramebufferDlss(cmd);
     deinitFramebufferRenderSizeDependent();
     updateFramebufferRenderSizeDependent(cmd);
     tempSyncSubmit(cmd);

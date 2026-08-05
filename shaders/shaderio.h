@@ -280,6 +280,14 @@ struct RayPayload
 #endif
 };
 
+// Path tracer hit payload: what the closest-hit carries to the ray-gen (which has no hit builtins).
+//  0 (default): the world-space geometric normal only (1 vec3) - smaller payload; the shadow-ray
+//               origin is the hit point (no Hanika smooth-normal terminator offset).
+//  1          : the three object-space triangle positions (3 vec3) - enables the terminator offset.
+#ifndef PATHTRACE_HIT_POSITIONS
+#define PATHTRACE_HIT_POSITIONS 0
+#endif
+
 // Minimal payload for the path tracer: the closest-hit only reports the hit,
 // all shading happens in the ray-generation shader. hitT < 0 signals a miss.
 struct PathRayPayload
@@ -294,6 +302,21 @@ struct PathRayPayload
   // sampling. Width/spread are taken at the ray ORIGIN; a hit at distance t has width = coneWidth + coneSpread * t.
   float coneWidth;
   float coneSpread;
+#if PATHTRACE_HIT_POSITIONS
+  // object-space triangle positions from the CLAS (closest-hit); enable the shadow-terminator offset
+  vec3 hitPos0;
+  vec3 hitPos1;
+  vec3 hitPos2;
+#else
+  // world-space geometric normal (cross of the triangle's world edges): direction is the geometric
+  // normal, length is the triangle world area (drives the ray-cone texture LOD)
+  vec3 hitGeoNormal;
+#endif
+#if DEBUG_VISUALIZATION && ALLOW_SHADING
+  // per-pixel barycentric footprint (|d bary| for vertices 0/1/2) derived from the ray cone at the hit,
+  // so the ray-gen can draw the wireframe overlay on the primary hit (see render_pathtrace.rgen.glsl).
+  vec3 wireBaryDeltas;
+#endif
 };
 
 #endif
@@ -351,6 +374,11 @@ struct FrameConstants
   uint  frame;
   uint  doShadow;
 
+  float timeSec;
+  uint  pickedInstanceID;
+  uint  pickedClusterID;
+  uint  _pad;
+
   vec4 bgColor;
 
   uvec2 mousePosition;
@@ -365,8 +393,9 @@ struct FrameConstants
 
   float wireStippleLength;
   uint  doWireframe;
-  uint  visFilterInstanceID;
-  uint  visFilterClusterID;
+  // Rasterization-only "solo" filter driven by "Misc Settings > Advanced":
+  uint visFilterInstanceID;
+  uint visFilterClusterID;
 
   float texGradScale;
   float pixelAngle;
@@ -383,7 +412,7 @@ struct FrameConstants
   float pathtraceExposure;      // final exposure multiplier used by the shader (renderer-driven, e.g. auto-exposure)
   float pathtraceExposureBias;  // user exposure compensation in EV stops
   int   pathtraceAutoExposure;  // 0/1 toggle for grid-sampled auto-exposure
-  int   pathtraceTonemap;       // operator: 0 = Filmic, 1 = ACES, 2 = Uncharted2
+  int   pathtraceTonemap;       // operator: 0 = Filmic, 1 = ACES, 2 = Uncharted2, 3 = Clip
 };
 
 struct Readback

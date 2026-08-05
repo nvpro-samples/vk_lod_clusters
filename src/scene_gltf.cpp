@@ -387,8 +387,12 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
     bool supportTexcoords        = (m_config.enabledAttributes & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0);
     bool enableTexturedMaterials = supportTexcoords && m_loaderConfig.enableTexturedMaterials;
 
-    m_materials.resize(gltf->materials_count);
-    m_materialNames.resize(gltf->materials_count);
+    // A glTF may have primitives without materials, in which case the geometry
+    // loader falls back to defaultMaterialIndex==0. Guarantee a default-
+    // constructed slot exists even when materials_count==0, otherwise the
+    // per-cluster/triangle state bit code crashes on m_materials[0].
+    m_materials.resize(std::max<size_t>(1, gltf->materials_count));
+    m_materialNames.resize(std::max<size_t>(1, gltf->materials_count));
     for(size_t m = 0; m < gltf->materials_count; m++)
     {
       Material&             material     = m_materials[m];
@@ -537,7 +541,6 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
         meshMemoryEstimate += sizeof(uint32_t) * gltfPrim->indices->count;
 
         meshTriangleCount += gltfPrim->indices->count / 3;
-        totalTriangleCount += gltfPrim->indices->count / 3;
 
         // just serialize the pointer values as identifier for the mesh
         meshIdentifier +=
@@ -554,6 +557,8 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
         taskToGeometry.push_back(geometryIndex);
         geometryTriangleCount.push_back(meshTriangleCount);
         geometryMemoryEstimate += meshMemoryEstimate;
+        // only unique geometries are processed, so exclude duplicates from progress total
+        totalTriangleCount += meshTriangleCount;
       }
       else
       {
@@ -600,6 +605,11 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
 
   // for partial files we don't have the completed triangle information
   processingInfo.logBegin(m_processingOnlyPartialFile ? 0 : totalTriangleCount);
+  if(m_loaderConfig.progressPhase)
+  {
+    // reading pre-processed clusters from cache is "loading", building them is "processing"
+    m_loaderConfig.progressPhase->store(uint32_t(m_cacheFileView.isValid() ? LoadPhase::LoadingScene : LoadPhase::ProcessingScene));
+  }
   if(m_loaderConfig.progressPct)
   {
     m_loaderConfig.progressPct->store(0);
@@ -777,6 +787,15 @@ void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
       if(hasAlphaMasked)
       {
         m_hasAlphaMask = true;
+      }
+
+      // No primitive on this mesh had a material; fall back to the default
+      // slot [0] (m_materials is guaranteed to have at least one entry).
+      // Without this, the renderer's scene.m_materials[instance.materialID]
+      // lookup dereferences ~0U.
+      if(instance.materialID == ~0U)
+      {
+        instance.materialID = 0;
       }
 
       instance.geometryID = uint32_t(meshToGeometry[meshIndex]);

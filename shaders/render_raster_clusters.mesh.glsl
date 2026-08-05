@@ -206,6 +206,8 @@ void main()
   uint instanceID = cinfo.instanceID;
   uint clusterID  = cinfo.clusterID;
 
+  bool clusterFiltered = view.visFilterClusterID != ~0u && clusterID != view.visFilterClusterID;
+
   RenderInstance instance = instances[instanceID];
   Geometry       geometry = geometries[instance.geometryID];
 
@@ -220,17 +222,25 @@ void main()
   uint triMax  = cluster.triangleCountMinusOne;
 
 #if USE_EXT_MESH_SHADER
-  uint vertCount = isValid ? vertMax + 1 : 0;
-  uint triCount  = isValid ? triMax + 1 : 0;
+  uint vertCount = (isValid && !clusterFiltered) ? vertMax + 1 : 0;
+  uint triCount  = (isValid && !clusterFiltered) ? triMax + 1 : 0;
 
   SetMeshOutputsEXT(vertCount, triCount);
   if(triCount == 0)
     return;
-#elif !USE_PRIMITIVE_CULLING
+#else
+  if(clusterFiltered)
+  {
+    if(gl_LocalInvocationID.x == 0)
+      gl_PrimitiveCountNV = 0;
+    return;
+  }
+#if !USE_PRIMITIVE_CULLING
   if(gl_LocalInvocationID.x == 0)
   {
     gl_PrimitiveCountNV = triMax + 1;
   }
+#endif
 #endif
 
 #if USE_RENDER_STATS

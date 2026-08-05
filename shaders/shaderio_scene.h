@@ -110,35 +110,78 @@ struct Cluster
   uint8_t attributeBits;
   uint8_t localMaterialID;  // if 0xFF then a per-triangle index is used
   uint8_t stateBits;
-  uint8_t reserved;
 
-  // byte offset relative to cluster
-  uint32_t vertices;   // vec3 positions[vertexCount], followed by optional per-vertex attributes
-  uint32_t triangles;  // uint8_t triangles[triangleCount * 3], followed by optional per-triangle material index
-  // if compressed then indices stores compressed vertices offsets
+  // Three 24-bit byte offsets relative to the cluster header, packed into 72 bits.
+  // (physical layout keeps the struct at 16 bytes: uint8 at byte 7, two uint32 at bytes 8..15)
+  // Logical value V = offsetPacked0 | (offsetPacked1<<32) | (offsetPacked2<<64):
+  //   positions  = (V >>  0) & 0xFFFFFF  -> vec3 positions[vertexCount]                (trailing group region)
+  //   attributes = (V >> 24) & 0xFFFFFF  -> optional per-vertex normal/tangent + texcoords
+  //   triangles  = (V >> 48) & 0xFFFFFF  -> uint8 triangles[triangleCount*3] (+ optional per-tri material)
+  // For compressed groups these slots temporarily carry compressed-source / uncompressed-destination
+  // offsets while decoding, see scene_cluster_compression.cpp.
+  uint8_t  offsetPacked2;  // byte 7      bits [64:72)
+  uint32_t offsetPacked0;  // bytes 8..11 bits [ 0:32)
+  uint32_t offsetPacked1;  // bytes 12..15 bits [32:64)
 };
+
+#ifdef __cplusplus
+inline uint32_t Cluster_getPositionsOffset(const Cluster& c)
+{
+  return c.offsetPacked0 & 0xFFFFFFu;
+}
+inline uint32_t Cluster_getAttributesOffset(const Cluster& c)
+{
+  return ((c.offsetPacked0 >> 24) | (c.offsetPacked1 << 8)) & 0xFFFFFFu;
+}
+inline uint32_t Cluster_getTrianglesOffset(const Cluster& c)
+{
+  return ((c.offsetPacked1 >> 16) | (uint32_t(c.offsetPacked2) << 16)) & 0xFFFFFFu;
+}
+inline void Cluster_setOffsets(Cluster& c, uint32_t positions, uint32_t attributes, uint32_t triangles)
+{
+  c.offsetPacked0 = (positions & 0xFFFFFFu) | ((attributes & 0xFFu) << 24);
+  c.offsetPacked1 = ((attributes >> 8) & 0xFFFFu) | ((triangles & 0xFFFFu) << 16);
+  c.offsetPacked2 = uint8_t((triangles >> 16) & 0xFFu);
+}
+#endif
+
 BUFFER_REF_DECLARE(Cluster_in, Cluster, , 16);
 BUFFER_REF_DECLARE_ARRAY(Clusters_inout, Cluster, , 16);
 BUFFER_REF_DECLARE_SIZE(Cluster_size, Cluster, 16);
 
 #ifndef __cplusplus
+uint Cluster_getPositionsOffset(Cluster c)
+{
+  return c.offsetPacked0 & 0xFFFFFFu;
+}
+uint Cluster_getAttributesOffset(Cluster c)
+{
+  return ((c.offsetPacked0 >> 24) | (c.offsetPacked1 << 8)) & 0xFFFFFFu;
+}
+uint Cluster_getTrianglesOffset(Cluster c)
+{
+  return ((c.offsetPacked1 >> 16) | (uint(c.offsetPacked2) << 16)) & 0xFFFFFFu;
+}
+
 vec3s_in Cluster_getVertexPositions(Cluster_in cluster)
 {
-  return vec3s_in(uint64_t(cluster) + cluster.d.vertices);
+  return vec3s_in(uint64_t(cluster) + Cluster_getPositionsOffset(cluster.d));
 }
 uint32s_in Cluster_getVertexNormals(Cluster_in cluster)
 {
-  return uint32s_in(uint64_t(cluster) + (cluster.d.vertices + 4 * 3 * (cluster.d.vertexCountMinusOne + 1)));
+  // normals/tangents are stored first in the attributes region
+  return uint32s_in(uint64_t(cluster) + Cluster_getAttributesOffset(cluster.d));
 }
 vec2s_in Cluster_getVertexTexCoords(Cluster_in cluster)
 {
-  // texcoords come after position and normal & tangent
-  uint32_t elems = (cluster.d.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_NORMAL) == 0 ? 3 : 4;
-  return vec2s_in(uint64_t(cluster) + (((cluster.d.vertices + 4 * elems * (cluster.d.vertexCountMinusOne + 1)) + 7) & ~7));
+  // texcoords come after the optional normal & tangent (8-byte aligned), positions live in a separate region
+  uint32_t normalBytes =
+      (cluster.d.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_NORMAL) == 0 ? 0 : 4 * (cluster.d.vertexCountMinusOne + 1);
+  return vec2s_in(uint64_t(cluster) + ((Cluster_getAttributesOffset(cluster.d) + normalBytes + 7) & ~7));
 }
 uint8s_in Cluster_getTriangleIndices(Cluster_in cluster)
 {
-  return uint8s_in(uint64_t(cluster) + cluster.d.triangles);
+  return uint8s_in(uint64_t(cluster) + Cluster_getTrianglesOffset(cluster.d));
 }
 
 // 8 th bit encodes alphatest on/off
@@ -146,7 +189,7 @@ uint8s_in Cluster_getTriangleIndices(Cluster_in cluster)
 // lower 6 bits serve as index
 uint8s_in Cluster_getTriangleMaterials(Cluster_in cluster)
 {
-  return uint8s_in(uint64_t(cluster) + (cluster.d.triangles + 3 * (cluster.d.triangleCountMinusOne + 1)));
+  return uint8s_in(uint64_t(cluster) + (Cluster_getTrianglesOffset(cluster.d) + 3 * (cluster.d.triangleCountMinusOne + 1)));
 }
 #endif
 

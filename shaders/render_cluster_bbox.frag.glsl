@@ -28,6 +28,7 @@ layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuff
 layout(location=0) in Interpolants
 {
   flat uint clusterID;
+  flat uint isPickedHit;
 } IN;
 
 ///////////////////////////////////////////////////
@@ -38,6 +39,17 @@ layout(location=0,index=0) out vec4 out_Color;
 
 void main()
 {
-  out_Color = unpackUnorm4x8(murmurHash(IN.clusterID)) * 0.9 + 0.1;
-  out_Color.w = 1.0;
+  vec4 baseColor = unpackUnorm4x8(murmurHash(IN.clusterID)) * 0.9 + 0.1;
+  baseColor.w    = 1.0;
+
+  if(IN.isPickedHit != 0u)
+  {
+    float pulse     = 0.5 + 0.5 * sin(view.timeSec * 4.7);
+    vec4  highlight = vec4(1.0, 1.0, 0.2, 1.0);
+    out_Color       = mix(baseColor, highlight, pulse);
+  }
+  else
+  {
+    out_Color = baseColor;
+  }
 }

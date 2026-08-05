@@ -618,11 +618,13 @@ void clodBuild_iterationTask(void* iteration_context, void* output_context, size
 
 	float error = 0.f;
 	std::vector<unsigned int> simplified = simplify(config, mesh, merged, locks, target_size, &error);
-	if (simplified.size() > merged.size() * config.simplify_threshold)
+	if (simplified.empty() || simplified.size() > merged.size() * config.simplify_threshold)
 	{
+		// simplification is stuck, or yielded no triangles at all in which case there is no coarser
+		// representation to refine from and the group must not be emitted with a finite error
 		bounds.error = FLT_MAX; // terminal group, won't simplify further
 		outputGroup(config, mesh, clusters, groups[i], bounds, depth, output_context, context.output_callback, i, thread_index);
-		return; // simplification is stuck; abandon the merge
+		return; // abandon the merge
 	}
 
 	// enforce error monotonicity (with an optional hierarchical factor to separate transitions more)
@@ -746,6 +748,18 @@ size_t clodBuild(clodConfig config, clodMesh mesh, void* output_context, clodOut
 		bounds.error = FLT_MAX; // terminal group, won't simplify further
 
 		outputGroup(config, mesh, context.clusters, context.pending, bounds, context.depth, output_context, output_callback, 0, 0);
+	}
+	else if (!context.groups.empty() && context.groups.back().size() > 1)
+	{
+		// all groups in the last iteration were stuck and output as terminal groups with multiple clusters;
+		// add an artificial terminal group with a single cluster so the hierarchy has a single-cluster root
+		std::vector<int> terminal(1, context.groups.back()[0]);
+		const Cluster&   cluster = context.clusters[terminal[0]];
+
+		clodBounds bounds = cluster.bounds;
+		bounds.error = FLT_MAX; // terminal group, won't simplify further
+
+		outputGroup(config, mesh, context.clusters, terminal, bounds, context.depth, output_context, output_callback, 0, 0);
 	}
 
 	return context.clusters.size();

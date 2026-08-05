@@ -174,6 +174,12 @@ void SceneStreaming::resetGeometryGroupAddresses(Resources::BatchedUploader& upl
   // this function fills the geometry group addresses to be invalid
   // except for the persistent lowest detail group
 
+  // reset aggregate residency counters; only the persistent lowest detail (coarsest)
+  // group per geometry stays loaded, which maps to reverse lod level 0
+  memset(m_residentStats.backLodLoadedCount, 0, sizeof(m_residentStats.backLodLoadedCount));
+  m_residentStats.backLodLoadedPercentageMax = 0.f;
+  m_residentStats.backLodLoadedFractionMax   = 0.f;
+
   for(size_t geometryIndex = 0; geometryIndex < m_scene->getActiveGeometryCount(); geometryIndex++)
   {
     SceneStreaming::PersistentGeometry& persistentGeometry = m_persistentGeometries[geometryIndex];
@@ -197,6 +203,9 @@ void SceneStreaming::resetGeometryGroupAddresses(Resources::BatchedUploader& upl
       persistentGeometry.lodLoadedGroupsCount[i] = 0;
     }
     persistentGeometry.lodLoadedGroupsCount[maxLodLevel] = 1;
+
+    // the persistent coarsest group is reverse lod level 0
+    m_residentStats.backLodLoadedCount[0]++;
   }
 }
 
@@ -255,9 +264,13 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
     instancesOffset += shaderGeometry.instancesCount;
 
     persistentGeometry.lodLevelsCount = numLodLevels;
+    m_residentStats.maxLodLevelsCount = std::max(m_residentStats.maxLodLevelsCount, numLodLevels);
     for(uint32_t i = 0; i < numLodLevels; i++)
     {
       persistentGeometry.lodGroupsCount[i] = sceneGeometry.lodLevels[i].groupCount;
+      // aggregate total group count by reverse lod level (0 == coarsest, numLodLevels-1)
+      uint32_t reverseLevel = numLodLevels - 1 - i;
+      m_residentStats.backLodCount[reverseLevel] += sceneGeometry.lodLevels[i].groupCount;
     }
 
     // basic uploads
@@ -292,8 +305,8 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
     // setup and upload geometry data for the lowest detail group
     void* loGroupData = uploader.uploadBuffer(persistentGeometry.lowDetailGroupsData, (void*)nullptr);
 
-    Scene::fillGroupRuntimeData(groupInfo, groupView, geometryGroup.groupID, rgroup->groupResidentID,
-                                rgroup->clusterResidentID, loGroupData, persistentGeometry.lowDetailGroupsData.bufferSize);
+    Scene::fillGroupRuntimeData(groupInfo, groupView, geometryGroup.groupID, rgroup->groupResidentID, rgroup->clusterResidentID,
+                                loGroupData, persistentGeometry.lowDetailGroupsData.bufferSize, m_decompressScratch);
 
     const shaderio::BBox& lowDetailBBox       = groupView.clusterBboxes[0];
     const float           lowDetailBBoxExtent = std::max(glm::length(lowDetailBBox.hi - lowDetailBBox.lo), 1e-6f);
@@ -508,9 +521,45 @@ void SceneStreaming::cmdBeginFrame(VkCommandBuffer         cmd,
   }
 
   m_shaderData.frameIndex               = m_frameIndex;
-  m_shaderData.ageThreshold             = settings.ageThreshold;
+  m_shaderData.ageThreshold             = getLoadFactor() < settings.unloadThreshold ? 10000000 : settings.ageThreshold;
   m_shaderData.useBlasCaching           = settings.useBlasCaching ? 1 : 0;
   m_shaderData.clasPositionTruncateBits = m_clasTriangleInput.minPositionTruncateBitCount;
+
+  // refresh per lod-level residency stats now that this frame's loads/unloads were applied
+  uint32_t totalLoaded = 0;
+  for(uint32_t i = 0; i < m_residentStats.maxLodLevelsCount; i++)
+  {
+    totalLoaded += m_residentStats.backLodLoadedCount[i];
+  }
+
+  float maxLoadedPercentage = 0.f;
+  float maxLoadedFraction   = 0.f;
+  for(uint32_t i = 0; i < m_residentStats.maxLodLevelsCount; i++)
+  {
+    float percentage                           = m_residentStats.backLodCount[i] ?
+                                                     float(m_residentStats.backLodLoadedCount[i]) * 100.f / float(m_residentStats.backLodCount[i]) :
+                                                     0.f;
+    m_residentStats.backLodLoadedPercentage[i] = percentage;
+    // reverse lod level 0 (coarsest) is always fully resident, exclude it from the auto-scale range
+    if(i >= 1)
+    {
+      maxLoadedPercentage = std::max(maxLoadedPercentage, percentage);
+    }
+
+    // share of all currently loaded groups that reside at this reverse lod level
+    float fraction = totalLoaded ? float(m_residentStats.backLodLoadedCount[i]) * 100.f / float(totalLoaded) : 0.f;
+    m_residentStats.backLodLoadedFraction[i] = fraction;
+    maxLoadedFraction                        = std::max(maxLoadedFraction, fraction);
+  }
+  // temporal filter for the plot y-axis scale: rise instantly to a new peak, then
+  // decay slowly towards the current value so the axis tightens back over time.
+  // The stored value is kept raw (the plot snaps it up to a nice step for display).
+  auto filterMax = [](float stored, float target) {
+    const float decayRate = 0.02f;
+    return target > stored ? target : stored + (target - stored) * decayRate;
+  };
+  m_residentStats.backLodLoadedPercentageMax = filterMax(m_residentStats.backLodLoadedPercentageMax, maxLoadedPercentage);
+  m_residentStats.backLodLoadedFractionMax = filterMax(m_residentStats.backLodLoadedFractionMax, maxLoadedFraction);
 
   // upload final configurations for this frame
   vkCmdUpdateBuffer(cmd, m_shaderBuffer.buffer, 0, sizeof(m_shaderData), &m_shaderData);
@@ -623,6 +672,9 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
 
   StreamingStorage::TaskInfo& storageTask = m_storage.getNewTask(pushStorageIndex);
   StreamingUpdates::TaskInfo& updateTask  = m_updates.getNewTask(pushUpdateIndex);
+  // the ring slice is consumed by the update task's cmdPreTraversal and must stay reserved until
+  // then, therefore use the pushUpdateIndex (this index is released once the copy is done)
+  updateTask.clasVerticesRingSlot = pushUpdateIndex;
 
   bool useBlasCaching = m_requiresClas && m_config.allowBlasCaching && settings.useBlasCaching;
 
@@ -660,6 +712,7 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
 
     assert(m_persistentGeometries[geometryGroup.geometryID].lodLoadedGroupsCount[group->lodLevel] > 0);
     m_persistentGeometries[geometryGroup.geometryID].lodLoadedGroupsCount[group->lodLevel]--;
+    m_residentStats.backLodLoadedCount[m_persistentGeometries[geometryGroup.geometryID].lodLevelsCount - 1 - group->lodLevel]--;
 
     // and remove from active resident
     m_resident.removeGroup(group->groupResidentID);
@@ -752,8 +805,13 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
     uint64_t                  deviceAddress;
     nvvk::BufferSubAllocation storageHandle;
 
+    // ray tracing streams positions to per-frame CLAS-build scratch.
+    bool     splitPositions = m_requiresClas;
+    uint64_t persistentSize = splitPositions ? uint64_t(groupInfo.positionsByteOffset()) : groupDeviceSize;
+    uint64_t positionsSize  = splitPositions ? uint64_t(groupInfo.positionsByteSize()) : 0;
+
     bool canTransfer      = m_storage.canTransfer(storageTask, groupDeviceSize);
-    bool canStore         = m_storage.allocate(storageHandle, geometryGroup, groupDeviceSize, deviceAddress);
+    bool canStore         = m_storage.allocate(storageHandle, geometryGroup, persistentSize, deviceAddress);
     bool canAllocateGroup = m_resident.canAllocateGroup(clusterCount);
 
     // test if we can allocate
@@ -786,7 +844,11 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
     residentGroup->storageHandle            = storageHandle;
     residentGroup->deviceAddress            = deviceAddress;
     residentGroup->lodLevel                 = groupInfo.lodLevel;
-    void* groupData                         = m_storage.appendTransfer(storageTask, residentGroup->storageHandle);
+    uint64_t posDstOffset = splitPositions ? uint64_t(m_updates.getClasVerticesRingBase(pushUpdateIndex))
+                                                 + uint64_t(updateTask.loadCount) * m_updates.getClasVerticesGroupStride() :
+                                             0;
+    void*    groupData    = m_storage.appendTransfer(storageTask, residentGroup->storageHandle, positionsSize,
+                                               splitPositions ? m_updates.getClasVerticesBuffer() : VK_NULL_HANDLE, posDstOffset);
 
     assert(deviceAddress % 16 == 0);
 
@@ -794,7 +856,7 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
       Scene::GroupView groupView(sceneGeometry.groupData, groupInfo);
       if(groupInfo.uncompressedSizeBytes)
       {
-        Scene::decompressGroup(groupInfo, groupView, groupData, groupDeviceSize);
+        Scene::decompressGroup(groupInfo, groupView, groupData, groupDeviceSize, m_decompressScratch);
       }
       else
       {
@@ -805,6 +867,7 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
     }
 
     m_persistentGeometries[geometryGroup.geometryID].lodLoadedGroupsCount[groupInfo.lodLevel]++;
+    m_residentStats.backLodLoadedCount[m_persistentGeometries[geometryGroup.geometryID].lodLevelsCount - 1 - groupInfo.lodLevel]++;
 
     // append to geometry patch list if necessary
     if(useBlasCaching && m_persistentGeometries[geometryGroup.geometryID].cachedBlasUpdateFrame != m_frameIndex)
@@ -1616,6 +1679,14 @@ bool SceneStreaming::updateClasRequired(bool state)
     {
       deinitClas();
     }
+
+    // ray tracing streams positions to CLAS-build scratch only, while rasterization
+    // keeps the positions with the persistent group. Therefore, we need
+    // to reset the stream when switching between rasterization and ray tracing.
+    if(result)
+    {
+      reset();
+    }
   }
 
   LOGI("streaming: renderer begin frame %d\n", m_frameIndex);
@@ -2130,12 +2201,12 @@ bool SceneStreaming::initClas()
         }
         else
         {
-          buildInfo.indexBuffer = clusterVA + sceneCluster.triangles;
+          buildInfo.indexBuffer = clusterVA + shaderio::Cluster_getTrianglesOffset(sceneCluster);
         }
 
         buildInfo.vertexCount              = sceneCluster.vertexCountMinusOne + 1;
         buildInfo.vertexBufferStride       = uint16_t(sizeof(glm::vec3));
-        buildInfo.vertexBuffer             = clusterVA + sceneCluster.vertices;
+        buildInfo.vertexBuffer             = clusterVA + shaderio::Cluster_getPositionsOffset(sceneCluster);
         buildInfo.positionTruncateBitCount = m_clasTriangleInput.minPositionTruncateBitCount;
 
         if(m_scene->m_hasAlphaMask && requiresMixedGeometryBuffer)

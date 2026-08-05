@@ -35,6 +35,18 @@ public:
 
   // pointers must stay valid during lifetime
   bool init(Resources* res, const Scene* scene_, const StreamingConfig& streamingConfig_, bool useStreaming_, const SceneTexturesConfig& texturesConfig);
+
+  // Two-phase init for asynchronous loading: initTextures() is safe to call from a background
+  // loader thread (uploads go through the transfer queue), while initGeometry() does the GPU
+  // geometry setup (CLAS/BLAS build) on the primary queue and must run on the main thread.
+  // init() simply runs both.
+  bool initTextures(Resources*                 res,
+                    const Scene*               scene_,
+                    const SceneTexturesConfig& texturesConfig,
+                    std::atomic_uint32_t*      progressPct   = nullptr,
+                    std::atomic_uint32_t*      progressPhase = nullptr);
+  bool initGeometry(Resources* res, const StreamingConfig& streamingConfig_, bool useStreaming_);
+
   void deinit();
 
   void streamingReset();
@@ -139,11 +151,11 @@ public:
   inline float getLodError() const { return m_lodPixelError; }
 
 protected:
-  void initBasics(Resources& res, RenderScene& rscene, const RendererConfig& config);
+  void initBasics(Resources& res, RenderScene& rscene);
   void deinitBasics(Resources& res);
 
-  bool initBasicShaders(Resources& res, RenderScene& rscene, const RendererConfig& config, bool isRaster);
-  void initBasicPipelines(Resources& res, RenderScene& rscene, const RendererConfig& config);
+  bool initBasicShaders(Resources& res, RenderScene& rscene, bool isRaster);
+  void initBasicPipelines(Resources& res, RenderScene& rscene);
   void updateBasicDescriptors(Resources& res, RenderScene& scene, const nvvk::Buffer* sceneBuildBuffer = nullptr);
 
   void writeAtomicRaster(VkCommandBuffer cmd);

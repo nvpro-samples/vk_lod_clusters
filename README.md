@@ -157,7 +157,12 @@ The occlusion culling is kept basic, testing the footprint of the bounding box a
 
 ![image illustrating the streaming operations](docs/lod_streaming.png)
 
-Please have a look at the [Streaming Operations documentation](docs/streaming.md)
+Please have a look at the [Streaming Operations documentation](docs/streaming.md).
+
+
+![image illustrating the separated transfers for ray tracing](docs/lod_streaming_rt.png)
+
+There is one distinct difference between rasterization and ray tracing. Ray tracing will store the vertex positions into a temporary space used only during CLAS building, while rasterization will keep the positions persistently along with the group. As ray tracing allows fetching the positions at hit-time through intrinsics, there is no direct need to keep the data around.
 
 ### GPU-Driven CLAS Allocation
 
@@ -364,11 +369,8 @@ This is a glTF export of the highly detailed raw geometry from the [NVIDIA RTX K
   - 1.63 G Triangles, with instancing 18.9 G Triangles
   - Cannot be pre-loaded must be streamed
   - **7.22 GB 7z** - 2026/3/10, unpacks to **9.32 GB on disk**
-  - The render cache file will require 26 GB next to the gltf file, it can be downloaded (see next link)
-- [zorah_main_public.v2.gltf.nvsngeo.7z](https://developer.download.nvidia.com/ProGraphics/nvpro-samples/zorah_main_public.v2.gltf.nvsngeo.7z)
-  - **19.2 GB 7z** - 2026/4/29, unpacks to **25.5 GB on disk**
-  - Ensure that the `zorah_main_public.gltf.nvsngeo` is in the same directory as `zorah_main_public.gltf`.
-  - If you want to avoid this big download and do the pre-processing for the cluster lod manually, use the following command-line:
+  - The render cache file will require **26 GB on disk** next to the gltf file, it will be generated on first opening of the scene.
+  - If you want to process it separately in the background use the following command-line:
     - `vk_lod_cluster.exe "zorah_main_public.v2.gltf" --clusterconfig 4 --processingonly 1 --processingthreadpct 0.5 --processingpartial 1 --compressed 1`
     - This will use 50% of the local PC's supported concurrency to process the model and allow to abort and resume the processing. On a 16-core Ryzen 9 a value of `0.5` will yield 16 threads, requires 29 GB RAM (brief peak of 44 GB) and takes around 6-10 minutes. We recommend lower thread percentages on machines with less RAM.
   - **NOTE:** Older versions of this file were larger, this sample has changed the file format of its file cache. When loading an old version, the processing will be triggered automatically and the old cache file is overwritten. It can take a bit until the new file versions have been propagated to servers worldwide.

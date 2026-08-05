@@ -40,6 +40,7 @@ void DlssDenoiser::deinit()
     m_ngx.deinit();
     m_initialized  = false;
     m_hasResources = false;
+    m_dlssCreated  = false;
     if(m_info.samplerPool)
     {
       //m_info.samplerPool->releaseSampler(m_sampler);
@@ -54,6 +55,7 @@ void DlssDenoiser::deinitResources()
   m_dlssGBuffers.deinit();
   m_dlss.deinit();
   m_hasResources = false;
+  m_dlssCreated  = false;
 }
 
 void DlssDenoiser::initDenoiser()
@@ -97,14 +99,26 @@ bool DlssDenoiser::isAvailable() const
   return m_dlssSupported && m_initialized;
 }
 
+bool DlssDenoiser::isActive() const
+{
+  return isAvailable() && m_hasResources && m_dlssCreated;
+}
+
 VkExtent2D DlssDenoiser::updateSize(VkCommandBuffer cmd, VkExtent2D size, NVSDK_NGX_PerfQuality_Value quality)
 {
   if(!isAvailable())
     return size;
 
+  m_dlssCreated = false;
+
   // Choose the size of the DLSS buffers
   DlssRayReconstruction::SupportedSizes supportedSizes{};
-  DlssRayReconstruction::querySupportedInputSizes(m_ngx, {size, quality}, &supportedSizes);
+  NVSDK_NGX_Result ngxResult = DlssRayReconstruction::querySupportedInputSizes(m_ngx, {size, quality}, &supportedSizes);
+  if(NVSDK_NGX_FAILED(ngxResult))
+  {
+    LOGE("DLSS-RR size query failed: %d\n", ngxResult);
+    return size;
+  }
   m_renderingSize = supportedSizes.optimalSize;
 
   DlssRayReconstruction::InitInfo initInfo{
@@ -113,7 +127,14 @@ VkExtent2D DlssDenoiser::updateSize(VkCommandBuffer cmd, VkExtent2D size, NVSDK_
   };
   m_dlss.deinit();
   vkDeviceWaitIdle(m_device);
-  m_dlss.cmdInit(cmd, m_ngx, initInfo);
+  ngxResult = m_dlss.cmdInit(cmd, m_ngx, initInfo);
+  if(NVSDK_NGX_FAILED(ngxResult))
+  {
+    LOGE("DLSS-RR feature creation failed: %d\n", ngxResult);
+    return size;
+  }
+  LOGI("DLSS-RR feature created: input=%ux%u output=%ux%u quality=%d\n", m_renderingSize.width, m_renderingSize.height,
+       size.width, size.height, int(quality));
 
   if(!m_hasResources)
   {
@@ -140,6 +161,8 @@ VkExtent2D DlssDenoiser::updateSize(VkCommandBuffer cmd, VkExtent2D size, NVSDK_
   dlssResourceFromGBufTexture(DlssRayReconstruction::ResourceType::eNormalRoughness, DlssBufferType::eDlssNormalRoughness);
   dlssResourceFromGBufTexture(DlssRayReconstruction::ResourceType::eMotionVector, DlssBufferType::eDlssMotion);
 
+  m_dlssCreated = true;
+
   return m_renderingSize;
 }
 
@@ -150,12 +173,27 @@ void DlssDenoiser::setResource(DlssRayReconstruction::ResourceType resourceId, V
 
 void DlssDenoiser::denoise(VkCommandBuffer cmd, glm::vec2 jitter, const glm::mat4& modelView, const glm::mat4& projection, bool reset /*= false*/)
 {
-  m_dlss.cmdDenoise(cmd, m_ngx, {jitter, modelView, projection, reset});
+  if(!isActive())
+    return;
+
+  NVSDK_NGX_Result ngxResult = m_dlss.cmdDenoise(cmd, m_ngx, {jitter, modelView, projection, reset});
+  if(NVSDK_NGX_FAILED(ngxResult))
+  {
+    LOGE("DLSS-RR evaluation failed: %d\n", ngxResult);
+    return;
+  }
+
+  static bool s_loggedFirstEvaluation = false;
+  if(!s_loggedFirstEvaluation)
+  {
+    LOGI("DLSS-RR first evaluation succeeded.\n");
+    s_loggedFirstEvaluation = true;
+  }
 }
 
 void DlssDenoiser::onUi()
 {
-  if(!isAvailable() || !m_hasResources)
+  if(!isActive())
   {
     return;
   }

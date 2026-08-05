@@ -85,6 +85,10 @@ public:
 
     float mirrorBoxScale  = 0.2f;
     float clickSpeedScale = 0.33f;
+
+    // rasterization-only solo filters; -1 disables (default)
+    int32_t filterInstanceID = -1;
+    int32_t filterClusterID  = -1;
   };
 
 
@@ -183,10 +187,14 @@ private:
   glm::vec3              m_sceneUpVector = glm::vec3(0, 1, 0);
   SceneGridConfig        m_sceneGridConfig;
   SceneGridConfig        m_sceneGridConfigLast;
-  std::atomic_bool       m_sceneLoading        = false;
-  std::atomic_uint32_t   m_sceneProgress       = 0;
-  bool                   m_sceneLoadFromConfig = false;
-  std::thread            m_sceneLoadingThread;
+  std::atomic_bool       m_sceneLoading       = false;
+  std::atomic_uint32_t   m_sceneProgress      = 0;
+  std::atomic_uint32_t   m_sceneProgressPhase = 0;  // current LoadPhase
+  // set by the loader thread once textures are loaded into m_renderScenePending; the main thread
+  // then promotes it to m_renderScene and finishes the GPU geometry setup in handleChanges.
+  std::atomic_bool m_renderSceneGeometryPending = false;
+  bool             m_sceneLoadFromConfig        = false;
+  std::thread      m_sceneLoadingThread;
 
   std::string m_cameraString;
   std::string m_cameraStringLast;
@@ -217,6 +225,9 @@ private:
   int                   m_cameraPathEditKey  = -1;     // UI: selected keyframe
 
   std::unique_ptr<RenderScene> m_renderScene;
+  // Built on the loader thread (textures only) and promoted to m_renderScene on the main thread once
+  // loading completes. Kept separate so the UI/render path never sees a half-constructed RenderScene.
+  std::unique_ptr<RenderScene> m_renderScenePending;
   bool                         m_renderSceneCanPreload = false;
 
   StreamingConfig m_streamingConfig;
@@ -246,6 +257,7 @@ private:
   void postInitNewScene();
 
   void initRenderScene();
+  void initRenderSceneGeometry();
   void deinitRenderScene();
 
   void initRenderer(RendererType rtype);

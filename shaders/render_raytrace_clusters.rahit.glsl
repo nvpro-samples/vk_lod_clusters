@@ -151,7 +151,6 @@ void main()
 
   uint visData = clusterID;
 
-  vec3s_in  oVertices    = vec3s_in(Cluster_getVertexPositions(Cluster_in(clusterRef)));
   uint8s_in localIndices = uint8s_in(Cluster_getTriangleIndices(Cluster_in(clusterRef)));
 
   uvec3 triangleIndices =
@@ -166,9 +165,10 @@ void main()
   vec2 uv2       = oTexCoords.d[triangleIndices.z];
   vec2 oTexCoord = baryWeight.x * uv0 + baryWeight.y * uv1 + baryWeight.z * uv2;
 
-  vec3 pos0 = oVertices.d[triangleIndices.x];
-  vec3 pos1 = oVertices.d[triangleIndices.y];
-  vec3 pos2 = oVertices.d[triangleIndices.z];
+  // positions come from the CLAS via the ray-tracing position-fetch extension (no group-memory read)
+  vec3 pos0 = gl_HitTriangleVertexPositionsEXT[0];
+  vec3 pos1 = gl_HitTriangleVertexPositionsEXT[1];
+  vec3 pos2 = gl_HitTriangleVertexPositionsEXT[2];
 
   // Isotropic ray-cone TexLOD - the same helper the closest-hit material sampling uses, so the cutout honors
   // TEXTURE_LOD_MODE too. Primary/reflection rays carry the propagated cone in the payload; shadow & AO rays

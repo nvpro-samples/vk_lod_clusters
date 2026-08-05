@@ -146,6 +146,8 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
 
     uint32_t clusterOffset   = 0;
     size_t   groupDataOffset = 0;
+    // CPU decode scratch, thrown away after preloading
+    std::vector<uint32_t> decompressScratch;
     for(size_t g = 0; g < sceneGeometry.groupInfos.size(); g++)
     {
       const Scene::GroupInfo groupInfo = sceneGeometry.groupInfos[g];
@@ -155,7 +157,7 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
       groupAddresses[g] = groupVA;
 
       Scene::fillGroupRuntimeData(groupInfo, groupView, uint32_t(g), uint32_t(g), clusterOffset,
-                                  groupData + groupDataOffset, groupInfo.getDeviceSize());
+                                  groupData + groupDataOffset, groupInfo.getDeviceSize(), decompressScratch);
 
       groupDataOffset += groupInfo.getDeviceSize();
 
@@ -361,12 +363,12 @@ bool ScenePreloaded::initClas()
         }
         else
         {
-          buildInfo.indexBuffer = clusterVA + groupCluster.triangles;
+          buildInfo.indexBuffer = clusterVA + shaderio::Cluster_getTrianglesOffset(groupCluster);
         }
 
         buildInfo.vertexCount              = groupCluster.vertexCountMinusOne + 1;
         buildInfo.vertexBufferStride       = uint16_t(sizeof(glm::vec3));
-        buildInfo.vertexBuffer             = clusterVA + groupCluster.vertices;
+        buildInfo.vertexBuffer             = clusterVA + shaderio::Cluster_getPositionsOffset(groupCluster);
         buildInfo.positionTruncateBitCount = clusterTriangleInput.minPositionTruncateBitCount;
 
         if(requiresMixedGeometryBuffer)

@@ -333,8 +333,9 @@ void Scene::compressGroup(TempContext* context, GroupStorage& groupTempStorage, 
     shaderio::Cluster& cluster     = groupTempStorage.clusters[c];
     uint32_t           vertexCount = cluster.vertexCountMinusOne + 1;
 
-    // will hijack indices offset for data offset storage
-    cluster.triangles = vertexDataOffset;
+    // hijack the triangles offset slot to store the compressed vertex-data offset
+    // (positions slot keeps the uncompressed destination offset set by the LOD builder)
+    shaderio::Cluster_setOffsets(cluster, shaderio::Cluster_getPositionsOffset(cluster), 0, vertexDataOffset);
 
     {
       compression::ArithmeticCompressor<uint32_t, 3> compressor;
@@ -472,40 +473,63 @@ void Scene::compressGroup(TempContext* context, GroupStorage& groupTempStorage, 
 }
 
 
-void Scene::decompressGroup(const GroupInfo& info, const GroupView& groupSrc, void* dstWriteOnly, size_t dstSize)
+void Scene::decompressGroup(const GroupInfo& info, const GroupView& groupSrc, void* dstWriteOnly, size_t dstSize, std::vector<uint32_t>& scratch)
 {
-  // assume write-only destination (uncached write-combined memory)
+  // The destination is write-combined (uncached) staging memory: reads are extremely slow and only
+  // strictly sequential writes combine into full cache-line bursts. Decode the whole group into a
+  // cached scratch buffer (ordinary reads/writes, any order), then flush it to the destination in a
+  // single sequential memcpy.
+
+  // GroupStorage aligns its sub-sections off the absolute base address, while
+  // computeSize/computeUncompressedSectionSize size the blob assuming a 16-aligned base; both the
+  // scratch and the destination must be 16-byte aligned so their layouts match byte-for-byte.
+  assert((reinterpret_cast<size_t>(dstWriteOnly) & 15) == 0 && "group blob destination must be 16-byte aligned");
 
   GroupInfo uncompressedInfo       = info;
   uncompressedInfo.sizeBytes       = info.uncompressedSizeBytes;
   uncompressedInfo.vertexDataCount = info.uncompressedVertexDataCount;
 
-  GroupStorage groupDstWriteOnly(dstWriteOnly, uncompressedInfo);
-  memcpy(dstWriteOnly, groupSrc.raw, info.computeUncompressedSectionSize());
+  const size_t usedBytes = uncompressedInfo.positionsByteOffset() + uncompressedInfo.positionsByteSize();
+  assert(usedBytes <= dstSize);
 
-  uint32_t trianglesDataOffset = 0;
+  if(scratch.size() * sizeof(uint32_t) < usedBytes + 16)
+    scratch.resize(usedBytes / sizeof(uint32_t) + 8);
+  void* dst = reinterpret_cast<void*>(nvutils::align_up(size_t(scratch.data()), 16));
+
+  GroupStorage groupDst(dst, uncompressedInfo);
+  memcpy(dst, groupSrc.raw, info.computeUncompressedSectionSize());
+
+  // runtime layout is [attributes][positions]; positions are gathered into the trailing region
+  uint32_t  attrTotalFloat      = uncompressedInfo.attributesFloatCount();
+  uint32_t  attrRunning         = 0;
+  uint32_t  posRunning          = 0;
+  uint32_t  trianglesDataOffset = 0;
+  uint32_t* dstVerts            = (uint32_t*)groupDst.vertices.data();
   for(uint32_t c = 0; c < info.clusterCount; c++)
   {
 
-    shaderio::Cluster&       clusterDstWriteOnly = groupDstWriteOnly.clusters[c];
-    const shaderio::Cluster& clusterSrc          = groupSrc.clusters[c];
-    uint32_t                 triangleCount       = clusterSrc.triangleCountMinusOne + 1;
-    uint32_t                 vertexCount         = clusterSrc.vertexCountMinusOne + 1;
-    uint32_t                 vertexDataOffset    = clusterSrc.vertices;
+    shaderio::Cluster&       clusterDst    = groupDst.clusters[c];
+    const shaderio::Cluster& clusterSrc    = groupSrc.clusters[c];
+    uint32_t                 triangleCount = clusterSrc.triangleCountMinusOne + 1;
+    uint32_t                 vertexCount   = clusterSrc.vertexCountMinusOne + 1;
 
-    // get pointers, start at cluster destination vertex data
-    uint32_t* dstData = groupDstWriteOnly.getClusterLocalData(c, clusterSrc.vertices);
-    // `cluster.indices` actually stores the location to the compressed vertex data
+    // the triangles slot of the compressed cluster stores the location of the compressed vertex data
     const uint32_t* srcData = (const uint32_t*)groupSrc.getClusterIndices(c);
 
-    // correct indices offset
-    clusterDstWriteOnly.triangles =
-        groupDstWriteOnly.getClusterLocalOffset(c, groupDstWriteOnly.triangles.data() + trianglesDataOffset);
+    // separate runtime destinations for this cluster
+    uint32_t  attrClusterStart = (attrRunning + 1u) & ~1u;  // 8-byte aligned attribute block start
+    uint32_t  posClusterStart  = attrTotalFloat + posRunning;
+    uint32_t* dstPos           = dstVerts + posClusterStart;
+    uint32_t* dstAttr          = dstVerts + attrClusterStart;
+
+    // set the runtime cluster offsets (positions region, attributes region, real triangle indices)
+    uint32_t posByte  = groupDst.getClusterLocalOffset(c, dstPos);
+    uint32_t attrByte = groupDst.getClusterLocalOffset(c, dstAttr);
+    uint32_t triByte  = groupDst.getClusterLocalOffset(c, groupDst.triangles.data() + trianglesDataOffset);
+    shaderio::Cluster_setOffsets(clusterDst, posByte, attrByte, triByte);
     trianglesDataOffset += triangleCount * (clusterSrc.localMaterialID == SHADERIO_PER_TRIANGLE_MATERIALS ? 4 : 3);
 
-    uint32_t dstOffset = 0;
-
-    // positions
+    // positions -> trailing positions region (read from compressed source in source order)
     if(clusterSrc.attributeBits & shaderio::CLUSTER_ATTRIBUTE_COMPRESSED_VERTEX_POS)
     {
       ptrdiff_t srcSize = ptrdiff_t(groupSrc.vertices.data() + groupSrc.vertices.size()) - ptrdiff_t(srcData);
@@ -513,24 +537,24 @@ void Scene::decompressGroup(const GroupInfo& info, const GroupView& groupSrc, vo
 
       compression::ArithmeticDeCompressor<uint32_t, 3> decompressor;
       decompressor.init(size_t(srcSize), srcData);
-      srcData += decompressor.readVertices(vertexCount, dstData + dstOffset, 3) / sizeof(uint32_t);
-      dstOffset += 3 * vertexCount;
+      srcData += decompressor.readVertices(vertexCount, dstPos, 3) / sizeof(uint32_t);
     }
     else
     {
-      memcpy(dstData, srcData, sizeof(glm::vec3) * vertexCount);
+      memcpy(dstPos, srcData, sizeof(glm::vec3) * vertexCount);
       srcData += 3 * vertexCount;
-      dstOffset += 3 * vertexCount;
     }
+
+    // attributes -> attributes region
+    uint32_t attrOff = 0;
 
     // normals
     if(clusterSrc.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL)
     {
-      memcpy(dstData + dstOffset, srcData, sizeof(uint32_t) * vertexCount);
+      memcpy(dstAttr + attrOff, srcData, sizeof(uint32_t) * vertexCount);
       srcData += vertexCount;
-      dstOffset += vertexCount;
+      attrOff += vertexCount;
     }
-
 
     for(uint32_t t = 0; t < 2; t++)
     {
@@ -539,39 +563,39 @@ void Scene::decompressGroup(const GroupInfo& info, const GroupView& groupSrc, vo
       shaderio::ClusterAttributeBits compressedBit = t == 0 ? shaderio::CLUSTER_ATTRIBUTE_COMPRESSED_VERTEX_TEX_0 :
                                                               shaderio::CLUSTER_ATTRIBUTE_COMPRESSED_VERTEX_TEX_1;
 
-      // texcoords
+      // texcoords, 8-byte (2-float) aligned within the attributes block to match the shader accessor
       if((clusterSrc.attributeBits & (usedBit | compressedBit)) == (usedBit | compressedBit))
       {
-        // align to vec2: must match the uncompressed branch below and the shader's
-        // Cluster_getVertexTexCoords 8-byte alignment, otherwise clusters whose preceding
-        // attributes don't already land on an 8-byte boundary (e.g. no-normal meshes with an
-        // odd vertex count, where positions end at 12*vertexCount bytes) read their texcoords
-        // one uint32 off and the UVs break up at cluster boundaries.
-        dstOffset = (dstOffset + 1) & ~1;
+        attrOff = (attrOff + 1) & ~1;
 
         ptrdiff_t srcSize = ptrdiff_t(groupSrc.vertices.data() + groupSrc.vertices.size()) - ptrdiff_t(srcData);
         assert(srcSize >= 0);
 
         compression::ArithmeticDeCompressor<uint32_t, 2> decompressor;
         decompressor.init(size_t(srcSize), srcData);
-        srcData += decompressor.readVertices(vertexCount, dstData + dstOffset, 2) / sizeof(uint32_t);
-        dstOffset += 2 * vertexCount;
+        srcData += decompressor.readVertices(vertexCount, dstAttr + attrOff, 2) / sizeof(uint32_t);
+        attrOff += 2 * vertexCount;
       }
       else if(clusterSrc.attributeBits & usedBit)
       {
-        // align
-        dstOffset = (dstOffset + 1) & ~1;
+        attrOff = (attrOff + 1) & ~1;
 
-        memcpy(dstData + dstOffset, srcData, sizeof(glm::vec2) * vertexCount);
+        memcpy(dstAttr + attrOff, srcData, sizeof(glm::vec2) * vertexCount);
 
         srcData += 2 * vertexCount;
-        dstOffset += 2 * vertexCount;
+        attrOff += 2 * vertexCount;
       }
     }
 
+    attrRunning = attrClusterStart + attrOff;
+    posRunning += 3 * vertexCount;
 
-    assert(size_t(dstData + dstOffset) <= size_t(dstWriteOnly) + dstSize);
+    assert(size_t(dstPos + 3 * vertexCount) <= size_t(dst) + usedBytes);
+    assert(size_t(dstAttr + attrOff) <= size_t(dst) + usedBytes);
   }
+
+  // single sequential flush to the write-combined destination
+  memcpy(dstWriteOnly, dst, usedBytes);
 }
 
 }  // namespace lodclusters

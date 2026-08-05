@@ -4,6 +4,7 @@
  */
 
 #include <cinttypes>
+#include <cmath>
 #include <filesystem>
 #include <chrono>
 #include <thread>
@@ -78,8 +79,20 @@ static const ImColor   kStreamClasLineColor(0.55f, 0.85f, 1.0f, 1.0f);
 static constexpr float kMemoryPlotFillAlpha  = 0.50f;
 static constexpr float kMemoryPlotLineWeight = 1.0f;
 
+// rounds a value up to the next multiple of `step`, e.g. snapUpToStep(23.4f, 10.f) == 30.f
+static float snapUpToStep(float value, float step)
+{
+  return std::ceil(value / step) * step;
+}
+
 template <typename T, typename Tcont>
-void uiPlot(const std::string& plotName, const std::string& tooltipFormat, const Tcont& data, const T& maxValue, int offset = 0, size_t sizeOverride = 0)
+void uiPlot(const std::string& plotName,
+            const std::string& tooltipFormat,
+            const Tcont&       data,
+            const T&           maxValue,
+            int                offset       = 0,
+            size_t             sizeOverride = 0,
+            int                xStart       = 0)
 {
   ImVec2 plotSize = ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetContentRegionAvail().y / 2);
   size_t size     = sizeOverride ? sizeOverride : data.size();
@@ -94,10 +107,10 @@ void uiPlot(const std::string& plotName, const std::string& tooltipFormat, const
   {
     ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_NoButtons);
     ImPlot::SetupAxes(nullptr, "Count", axesFlags, axesFlags);
-    ImPlot::SetupAxesLimits(0, double(size), 0, static_cast<double>(maxValue), ImPlotCond_Always);
+    ImPlot::SetupAxesLimits(double(xStart), double(xStart + (int)size), 0, static_cast<double>(maxValue), ImPlotCond_Always);
 
     ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
-    ImPlot::PlotLine("", data.data(), (int)size, 1.0, 0.0,
+    ImPlot::PlotLine("", data.data(), (int)size, 1.0, double(xStart),
                      ImPlotSpec(ImPlotProp_LineColor, (ImU32)kStreamGeometryLineColor, ImPlotProp_LineWeight,
                                 kMemoryPlotLineWeight, ImPlotProp_FillColor, (ImU32)kStreamGeometryFillColor, ImPlotProp_FillAlpha,
                                 kMemoryPlotFillAlpha, ImPlotProp_Offset, offset, ImPlotProp_Flags, ImPlotLineFlags_Shaded));
@@ -105,9 +118,9 @@ void uiPlot(const std::string& plotName, const std::string& tooltipFormat, const
     if(ImPlot::IsPlotHovered())
     {
       ImPlotPoint mouse       = ImPlot::GetPlotMousePos();
-      int         mouseOffset = (int(mouse.x)) % (int)size;
+      int         mouseOffset = std::clamp((int(mouse.x)) - xStart, 0, (int)size - 1);
       ImGui::BeginTooltip();
-      ImGui::Text(tooltipFormat.c_str(), mouseOffset, data[mouseOffset]);
+      ImGui::Text(tooltipFormat.c_str(), mouseOffset + xStart, data[mouseOffset]);
       ImGui::EndTooltip();
     }
 
@@ -514,7 +527,7 @@ void LodClusters::onUIRender()
       // Center text in window
       ImGui::TextDisabled("Please wait ...");
       ImGui::NewLine();
-      ImGui::ProgressBar(float(m_sceneProgress) / 100.0f, ImVec2(-1.0f, 0.0f), "Loading Scene");
+      ImGui::ProgressBar(float(m_sceneProgress) / 100.0f, ImVec2(-1.0f, 0.0f), getLoadPhaseName(m_sceneProgressPhase));
       ImGui::EndPopup();
     }
     ImGui::PopStyleVar();
@@ -574,6 +587,26 @@ void LodClusters::onUIRender()
       glm::dvec4 win_norm = {0, 0, m_frameConfig.frameConstants.viewport.x, m_frameConfig.frameConstants.viewport.y};
       hitPosValid         = true;
       hitPos              = glm::unProjectZO({mousePos.x, mousePos.y, d}, view, proj, win_norm);
+    }
+  }
+
+  // P sets the rasterization solo filter on the currently hovered instance,
+  // Shift+P also solos its cluster. If any filter is already active, P always
+  // clears it (regardless of what's under the mouse), so you can toggle off
+  // without needing to move the pointer back over the soloed target.
+  if(viewport && nvgui::isWindowHovered(viewport) && ImGui::IsKeyPressed(ImGuiKey_P, false))
+  {
+    bool anyFilterActive = m_tweak.filterInstanceID >= 0 || m_tweak.filterClusterID >= 0;
+    if(anyFilterActive)
+    {
+      m_tweak.filterInstanceID = -1;
+      m_tweak.filterClusterID  = -1;
+    }
+    else if(pickingValid)
+    {
+      bool shift               = ImGui::GetIO().KeyShift;
+      m_tweak.filterInstanceID = int32_t(uint32_t(readback.instanceId));
+      m_tweak.filterClusterID  = shift ? int32_t(uint32_t(readback.clusterTriangleId >> 8)) : -1;
     }
   }
 
@@ -1241,6 +1274,9 @@ void LodClusters::onUIRender()
         ImGui::PopStyleColor();
       }
 
+      PE::SliderFloat("Unloading threshold pct.", &m_frameConfig.streamingUnloadThreshold, 0.0f, 0.75f, "%.3f", 0,
+                      "If memory load factor is greater than this start unloading.");
+
       ImGui::BeginDisabled(m_renderScene == nullptr);
       if(PE::entry("Streaming state", [&] { return ImGui::Button("Reset"); }, "resets the streaming state"))
       {
@@ -1636,6 +1672,36 @@ void LodClusters::onUIRender()
       }
     }
 
+    if(m_renderScene && m_renderScene->useStreaming && ImGui::CollapsingHeader("Stream Residency Stats"))
+    {
+      const StreamingResidentStats& residentStats = m_renderScene->sceneStreaming.getResidentStats();
+
+      // percentage of loaded groups over total groups per reverse lod level (0 == coarsest).
+      // reverse lod level 0 is always fully resident, so plot starting at level 1 and
+      // auto-scale the y-axis to the observed (rounded up) maximum.
+      if(residentStats.maxLodLevelsCount > 1)
+      {
+        const uint32_t         plotCount = residentStats.maxLodLevelsCount - 1;
+        const float            yMax = std::max(10.0f, snapUpToStep(residentStats.backLodLoadedPercentageMax, 10.0f));
+        std::span<const float> plotData(residentStats.backLodLoadedPercentage + 1, plotCount);
+        uiPlot(std::string("Reverse LoD Residency %"), std::string("Reverse LoD level %d: %.1f%% groups loaded"),
+               plotData, yMax, 0, plotCount, 1);
+        ImGui::TextDisabled("Coarsest LoD (Reverse 0) always loaded");
+      }
+
+      // how the currently loaded groups are distributed across reverse lod levels
+      // (per-level loaded count / total loaded count), including the always-loaded level 0.
+      if(residentStats.maxLodLevelsCount)
+      {
+        const uint32_t         plotCount = residentStats.maxLodLevelsCount;
+        const float            yMax      = std::max(10.0f, snapUpToStep(residentStats.backLodLoadedFractionMax, 10.0f));
+        std::span<const float> plotData(residentStats.backLodLoadedFraction, plotCount);
+        uiPlot(std::string("Reverse LoD Distribution %"), std::string("Reverse LoD level %d: %.1f%% of loaded groups"),
+               plotData, yMax, 0, plotCount, 0);
+        ImGui::TextDisabled("Share of all loaded groups per reverse LoD level");
+      }
+    }
+
     if(m_scene && ImGui::CollapsingHeader("Model Cluster Stats"))  //, nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {
       ImGui::Text("Cluster max triangles: %d", m_scene->m_maxClusterTriangles);
@@ -1759,6 +1825,8 @@ void LodClusters::onUIRender()
       ImGui::Text("Cluster  ID:  %d", clusterID);
       ImGui::Text("Triangle ID:  %d", triangleID);
       ImGui::Text("Position:  [%f, %f, %f]", hitPos.x, hitPos.y, hitPos.z);
+
+      ImGui::TextDisabled("P: toggle solo instance   Shift+P: toggle solo instance + cluster   (Raster only)");
     }
 
     if(ImGui::CollapsingHeader("Advanced", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
@@ -1766,6 +1834,8 @@ void LodClusters::onUIRender()
       PE::begin("misc", ImGuiTableFlags_Resizable);
       PE::SliderFloat("Texture Gradient Scale", &m_frameConfig.frameConstants.texGradScale, 0.0f, 1.0f, "%.3f", 0,
                       "Influence texture gradient in ray tracing and compute rasterization");
+      PE::SliderFloat("Wireframe Thickness", &m_frameConfig.frameConstants.wireThickness, 0.5f, 8.0f, "%.2f", 0,
+                      "Wireframe line thickness (raster, ray trace and path tracer).");
       PE::entry(
           "Ray Cone Texture LOD",
           [&]() {
@@ -1777,6 +1847,12 @@ void LodClusters::onUIRender()
       PE::InputIntClamped("Persistent Traversal Threads", (int*)&m_frameConfig.traversalPersistentThreads, 32,
                           256 * 1024, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue);
       PE::InputInt("Colorize xor", (int*)&m_frameConfig.frameConstants.colorXor);
+      PE::InputInt("Solo Instance ID", &m_tweak.filterInstanceID, 1, 100, ImGuiInputTextFlags_None,
+                   "Rasterization only: when >= 0, only this instance is drawn (invisibility tagged in "
+                   "traversal_init). -1 disables the filter.");
+      PE::InputInt("Solo Cluster ID", &m_tweak.filterClusterID, 1, 100, ImGuiInputTextFlags_None,
+                   "Rasterization only: when >= 0, cluster mesh + bbox shaders skip all but this cluster "
+                   "ID. -1 disables the filter.");
       PE::Checkbox("Auto reset timer", &m_tweak.autoResetTimers);
       if(m_resources.m_supportsMeshShaderNV)
       {

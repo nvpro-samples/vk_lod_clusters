@@ -93,6 +93,30 @@ struct StreamingStats
   uint32_t couldNotStore         = 0;
 };
 
+// Tracks the lod-level residency of the persistently managed geometry groups,
+// aggregated across all geometries. The counts are maintained incrementally while groups
+// are loaded and unloaded, and `backLodLoadedPercentage` is refreshed once per frame,
+// so it can be queried cheaply for statistics.
+// Indexed by "back" lod level, i.e. index 0 == coarsest lod level (lodLevelsCount - 1),
+// which is always resident. `maxLodLevelsCount` is the largest lodLevelsCount over all geometries.
+struct StreamingResidentStats
+{
+  uint32_t maxLodLevelsCount                           = 0;
+  uint32_t backLodLoadedCount[SHADERIO_MAX_LOD_LEVELS] = {};
+  uint32_t backLodCount[SHADERIO_MAX_LOD_LEVELS]       = {};
+  // backLodLoadedCount / backLodCount in percent, refreshed per-frame in `cmdBeginFrame`
+  float backLodLoadedPercentage[SHADERIO_MAX_LOD_LEVELS] = {};
+  // temporally filtered peak of the above over reverse lod levels >= 1 (level 0 is always 100%),
+  // used to auto-scale the residency plot: rises instantly, decays slowly (see `cmdBeginFrame`)
+  float backLodLoadedPercentageMax = 0.f;
+
+  // backLodLoadedCount / (sum of backLodLoadedCount) in percent: how the currently loaded
+  // groups are distributed across reverse lod levels. Refreshed per-frame in `cmdBeginFrame`.
+  float backLodLoadedFraction[SHADERIO_MAX_LOD_LEVELS] = {};
+  // temporally filtered peak of the above, used to auto-scale the distribution plot
+  float backLodLoadedFractionMax = 0.f;
+};
+
 union GeometryGroup
 {
   struct
@@ -231,7 +255,7 @@ public:
   // `flushRemovedGroups`, so a load within the same update task can never
   // reuse them. Otherwise the update kernel's unload and load threads would
   // write the same resident table entries without ordering guarantees.
-  bool                      canAllocateGroup(uint32_t numClusters) const;
+  bool                      canAllocateGroup(uint32_t numClusters);
   StreamingResident::Group* addGroup(GeometryGroup geometryGroup, uint32_t clusterCount, uint32_t triangleCount);
   void                      removeGroup(uint32_t groupResidentID);
   // call after all addGroup of a task were made
@@ -411,13 +435,15 @@ class StreamingUpdates
 public:
   struct TaskInfo
   {
-    uint32_t                          loadCount;
-    uint32_t                          unloadCount;
-    uint32_t                          newClusterCount;
-    uint32_t                          loadActiveGroupsOffset;
-    uint32_t                          loadActiveClustersOffset;
-    uint32_t                          geometryCachedCount;
-    uint32_t                          geometryCachedClustersCount;
+    uint32_t loadCount;
+    uint32_t unloadCount;
+    uint32_t newClusterCount;
+    uint32_t loadActiveGroupsOffset;
+    uint32_t loadActiveClustersOffset;
+    uint32_t geometryCachedCount;
+    uint32_t geometryCachedClustersCount;
+    // ray tracing: storage ring slot holding this task's streamed vertex positions
+    uint32_t                          clasVerticesRingSlot;
     shaderio::StreamingPatch*         loadPatches;
     shaderio::StreamingPatch*         unloadPatches;
     nvvk::BufferSubAllocation*        unloadHandles;
@@ -438,6 +464,14 @@ public:
   size_t   getOperationsSize() const;
   size_t   getClasOperationsSize() const;
   uint32_t getMaxCachedBlasBuilds() const;
+
+  // ray tracing: per-frame CLAS-build vertex-position scratch
+  VkBuffer getClasVerticesBuffer() const { return m_clasVerticesBuffer.buffer; }
+  uint32_t getClasVerticesGroupStride() const { return m_clasVerticesGroupStride; }
+  uint32_t getClasVerticesRingBase(uint32_t ringSlot) const
+  {
+    return m_clasVerticesRingBuffered ? ringSlot * m_clasVerticesRingStride : 0;
+  }
 
   void reset();
 
@@ -474,6 +508,12 @@ private:
 
   nvvk::BufferTyped<shaderio::StreamingPatch> m_patchesBuffer;
   nvvk::BufferTyped<shaderio::StreamingPatch> m_patchesHostBuffer;
+
+  // ray tracing: per-frame CLAS-build vertex-position scratch (positions streamed here, not resident)
+  nvvk::Buffer m_clasVerticesBuffer;
+  uint32_t     m_clasVerticesGroupStride  = 0;      // bytes per group slot (max verts/group * sizeof(vec3))
+  uint32_t     m_clasVerticesRingStride   = 0;      // bytes per task ring slice (maxLoads * group stride)
+  bool         m_clasVerticesRingBuffered = false;  // true when async transfer needs per-task slices
 
   std::vector<nvvk::BufferSubAllocation> m_unloadHandles;
   TaskInfo                               m_taskInfos[STREAMING_MAX_ACTIVE_TASKS];
@@ -532,8 +572,14 @@ public:
   bool canTransfer(const TaskInfo& operation, size_t size) const;
   // then allocate
   bool allocate(nvvk::BufferSubAllocation& handle, GeometryGroup group, size_t sz, uint64_t& deviceAddress);
-  // and get transfer space
-  void* appendTransfer(TaskInfo& operation, const nvvk::BufferSubAllocation& dstHandle);
+  // and get transfer space. staging holds the whole group blob; the persistent copy covers
+  // dstHandle. for ray tracing, positionsSize trailing bytes are split off into posBuffer at
+  // posDstOffset (the streamed CLAS-build positions) instead of the persistent blob.
+  void* appendTransfer(TaskInfo&                        operation,
+                       const nvvk::BufferSubAllocation& dstHandle,
+                       size_t                           positionsSize = 0,
+                       VkBuffer                         posBuffer     = VK_NULL_HANDLE,
+                       size_t                           posDstOffset  = 0);
   // at end of updates trigger cmd update
   // returns number of copy operations required
   uint32_t cmdUploadTask(VkCommandBuffer cmd);
@@ -559,6 +605,10 @@ private:
 
   std::vector<CopyInfo>     m_copyInfos;
   std::vector<VkBufferCopy> m_copyRegions;
+
+  // ray tracing: trailing position bytes split off to the streamed CLAS-build scratch
+  VkBuffer                  m_posCopyTarget = VK_NULL_HANDLE;
+  std::vector<VkBufferCopy> m_posCopyRegions;
 
   TaskInfo m_taskOperations[STREAMING_MAX_ACTIVE_TASKS];
 };

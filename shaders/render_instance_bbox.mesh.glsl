@@ -34,11 +34,6 @@ layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuff
   FrameConstants view;
 };
 
-layout(scalar, binding = BINDINGS_READBACK_SSBO, set = 0) buffer readbackBuffer
-{
-  Readback readback;
-};
-
 layout(scalar, binding = BINDINGS_RENDERINSTANCES_SSBO, set = 0) buffer renderInstancesBuffer
 {
   RenderInstance instances[];
@@ -59,6 +54,7 @@ layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffe
 layout(location = 0) out Interpolants
 {
   flat uint instanceID;
+  flat uint isPickedHit;
 }
 OUT[];
 
@@ -136,7 +132,10 @@ void main()
       gl_MeshVerticesNV[vert].gl_Position =
 #endif
           view.viewProjMatrixRender * vec4(instance.worldMatrix * vec4(cornerPos, 1), 1);
-      OUT[vert].instanceID = baseID + box;
+
+      // Latched from last frame's readback on the CPU side; ~0u == no valid pick.
+      OUT[vert].instanceID  = baseID + box;
+      OUT[vert].isPickedHit = (view.pickedInstanceID == baseID + box) ? 1u : 0u;
     }
   }
 

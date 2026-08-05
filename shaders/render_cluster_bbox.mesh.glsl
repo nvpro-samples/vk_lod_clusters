@@ -72,6 +72,7 @@ layout(scalar, binding = BINDINGS_STREAMING_UBO, set = 0) uniform streamingBuffe
 layout(location = 0) out Interpolants
 {
   flat uint clusterID;
+  flat uint isPickedHit;
 }
 OUT[];
 
@@ -156,13 +157,21 @@ void main()
 
     if(box < numBoxes)
     {
+      bool clusterFiltered = view.visFilterClusterID != ~0u && clusterID != view.visFilterClusterID;
+      vec4 clipPos = clusterFiltered
+                       ? vec4(2.0, 2.0, 2.0, 1.0)
+                       : view.viewProjMatrixRender * vec4(instance.worldMatrix * vec4(cornerPos, 1), 1);
 #if USE_EXT_MESH_SHADER
-      gl_MeshVerticesEXT[vert].gl_Position =
+      gl_MeshVerticesEXT[vert].gl_Position = clipPos;
 #else
-      gl_MeshVerticesNV[vert].gl_Position =
+      gl_MeshVerticesNV[vert].gl_Position  = clipPos;
 #endif
-          view.viewProjMatrixRender * vec4(instance.worldMatrix * vec4(cornerPos, 1), 1);
       OUT[vert].clusterID = clusterID;
+      // Latched from last frame's readback on the CPU side; ~0u == no valid pick.
+      // Match both instance and cluster so we don't light up every instance
+      // that happens to reference the same streamed cluster.
+      OUT[vert].isPickedHit =
+          (view.pickedInstanceID == cinfo.instanceID && view.pickedClusterID == clusterID) ? 1u : 0u;
     }
   }
 

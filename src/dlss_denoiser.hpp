@@ -68,6 +68,9 @@ public:
   // Return if DLSS can be used
   bool isAvailable() const;
 
+  // Return if the DLSS feature and its resources are ready for evaluation
+  bool isActive() const;
+
   // When the size of the rendering changes, we need to update the DLSS buffers
   // also calls setResource for all internal buffers
   VkExtent2D updateSize(VkCommandBuffer cmd, VkExtent2D size, NVSDK_NGX_PerfQuality_Value quality);
@@ -93,6 +96,7 @@ private:
   Settings m_settings{};
   bool     m_initialized  = false;
   bool     m_hasResources = false;
+  bool     m_dlssCreated  = false;
 
   // #DLSS - Wrapper for DLSS
   NgxContext            m_ngx{};

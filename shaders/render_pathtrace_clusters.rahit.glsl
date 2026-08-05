@@ -109,7 +109,6 @@ void main()
   Cluster_in clusterRef = Cluster_in(clusterAddress);
   Cluster    cluster    = clusterRef.d;
 
-  vec3s_in  oVertices    = Cluster_getVertexPositions(clusterRef);
   uint8s_in localIndices = Cluster_getTriangleIndices(clusterRef);
 
   uvec3 triangleIndices =
@@ -123,9 +122,10 @@ void main()
   vec2     uv2        = oTexCoords.d[triangleIndices.z];
   vec2     oTexCoord  = baryWeight.x * uv0 + baryWeight.y * uv1 + baryWeight.z * uv2;
 
-  vec3 pos0 = oVertices.d[triangleIndices.x];
-  vec3 pos1 = oVertices.d[triangleIndices.y];
-  vec3 pos2 = oVertices.d[triangleIndices.z];
+  // positions come from the CLAS via the ray-tracing position-fetch extension (no group-memory read)
+  vec3 pos0 = gl_HitTriangleVertexPositionsEXT[0];
+  vec3 pos1 = gl_HitTriangleVertexPositionsEXT[1];
+  vec3 pos2 = gl_HitTriangleVertexPositionsEXT[2];
 
   // Propagate the ray cone (from the payload) to this candidate hit and build the same TexLOD the ray-gen
   // uses for material sampling, so the cutout honors TEXTURE_LOD_MODE too. width(t) = coneWidth + coneSpread*t.

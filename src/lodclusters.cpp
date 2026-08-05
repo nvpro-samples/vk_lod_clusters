@@ -75,6 +75,8 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"hbaoblur"}, &m_frameConfig.hbaoSettings.blur);
   m_info.parameterRegistry->add({"claspositionbits"}, &m_streamingConfig.clasPositionTruncateBits);
   m_info.parameterRegistry->add({"maxtransfermegabytes"}, (uint32_t*)&m_streamingConfig.maxTransferMegaBytes);
+  m_info.parameterRegistry->add({"asynctransfer"}, &m_streamingConfig.useAsyncTransfer);
+  m_info.parameterRegistry->add({"decoupledtransfer"}, &m_streamingConfig.useDecoupledAsyncTransfer);
   m_info.parameterRegistry->add({"maxblascachingmegabytes"}, (uint32_t*)&m_streamingConfig.maxBlasCachingMegaBytes);
   m_info.parameterRegistry->add({"maxclasmegabytes"}, (uint32_t*)&m_streamingConfig.maxClasMegaBytes);
   m_info.parameterRegistry->add({"startclasmegabytes"}, (uint32_t*)&m_streamingConfig.startClasMegaBytes);
@@ -83,6 +85,7 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"maxresidentgroups"}, &m_streamingConfig.maxGroups);
   m_info.parameterRegistry->add({"maxframeloadrequests"}, &m_streamingConfig.maxPerFrameLoadRequests);
   m_info.parameterRegistry->add({"maxframeunloadrequests"}, &m_streamingConfig.maxPerFrameUnloadRequests);
+  m_info.parameterRegistry->add({"streamingunloadthreshold"}, &m_frameConfig.streamingUnloadThreshold);
   m_info.parameterRegistry->add({"cullederrorscale"}, &m_frameConfig.culledErrorScale);
   m_info.parameterRegistry->add({"culling"}, &m_rendererConfig.useCulling);
   m_info.parameterRegistry->add({"primitiveculling"}, &m_rendererConfig.usePrimitiveCulling);
@@ -191,7 +194,8 @@ LodClusters::LodClusters(const Info& info)
 
   m_lastAmbientOcclusionSamples = m_frameConfig.frameConstants.ambientOcclusionSamples;
 
-  m_sceneLoaderConfig.progressPct = &m_sceneProgress;
+  m_sceneLoaderConfig.progressPct   = &m_sceneProgress;
+  m_sceneLoaderConfig.progressPhase = &m_sceneProgressPhase;
 }
 
 void LodClusters::initScene(std::filesystem::path filePath, std::string cacheSuffix, bool configChange)
@@ -207,6 +211,7 @@ void LodClusters::initScene(std::filesystem::path filePath, std::string cacheSuf
     m_scene                 = nullptr;
     m_sceneLoading          = true;
     m_sceneProgress         = 0;
+    m_sceneProgressPhase    = uint32_t(LoadPhase::ProcessingScene);
     m_sceneLoaderConfigLast = m_sceneLoaderConfig;
 
 #if USE_DLSS
@@ -241,6 +246,15 @@ void LodClusters::initScene(std::filesystem::path filePath, std::string cacheSuf
           m_sceneConfigLast = m_sceneConfig;
           m_sceneConfigEdit = m_sceneConfig;
         }
+
+        // Load textures on this loader thread so the busy popup also reports their progress
+        // (Probing/Loading Textures). Uploads run on the transfer queue. Build into m_renderScenePending
+        // (not m_renderScene) so the concurrently-running UI never touches a half-constructed scene; the
+        // main thread promotes it and finishes the GPU geometry setup via initRenderSceneGeometry().
+        auto renderScene = std::make_unique<RenderScene>();
+        renderScene->initTextures(&m_resources, m_scene.get(), m_texturesConfig, &m_sceneProgress, &m_sceneProgressPhase);
+        m_renderScenePending         = std::move(renderScene);
+        m_renderSceneGeometryPending = true;
       }
       m_sceneLoading = false;
     });
@@ -257,7 +271,22 @@ void LodClusters::initRenderScene()
 
   m_renderScene = std::make_unique<RenderScene>();
 
-  bool success = m_renderScene->init(&m_resources, m_scene.get(), m_streamingConfig, m_tweak.useStreaming, m_texturesConfig);
+  // Synchronous (config-change) path: textures load on the main thread here (no busy popup, but
+  // the progress atomics are still updated), then the GPU geometry setup follows immediately.
+  m_renderScene->initTextures(&m_resources, m_scene.get(), m_texturesConfig, &m_sceneProgress, &m_sceneProgressPhase);
+  m_renderSceneGeometryPending = false;
+  initRenderSceneGeometry();
+}
+
+void LodClusters::initRenderSceneGeometry()
+{
+  assert(m_renderScene);
+
+  // Finalize the async texture uploads on the graphics queue (this always runs on the main thread,
+  // for both the async-load and config-change paths) before the geometry GPU setup.
+  m_renderScene->sceneTextures.acquireOwnership(&m_resources);
+
+  bool success = m_renderScene->initGeometry(&m_resources, m_streamingConfig, m_tweak.useStreaming);
 
   // if preload fails, try streaming
   if(!m_tweak.useStreaming && !success)
@@ -266,7 +295,7 @@ void LodClusters::initRenderScene()
     m_tweak.useStreaming     = true;
     m_tweakLast.useStreaming = true;
 
-    if(!m_renderScene->init(&m_resources, m_scene.get(), m_streamingConfig, true, m_texturesConfig))
+    if(!m_renderScene->initGeometry(&m_resources, m_streamingConfig, true))
     {
       LOGW("Init renderscene failed\n");
       deinitRenderScene();
@@ -290,6 +319,17 @@ void LodClusters::deinitRenderScene()
     m_renderScene->deinit();
     m_renderScene = nullptr;
   }
+  // a loader thread may have built a pending render scene that was never promoted (e.g. reload
+  // before the main thread finished the geometry setup). Its textures were uploaded but not yet
+  // acquired, so acquire ownership before destroying the images to avoid leaving stale async-upload
+  // barriers behind for the next load.
+  if(m_renderScenePending)
+  {
+    m_renderScenePending->sceneTextures.acquireOwnership(&m_resources);
+    m_renderScenePending->deinit();
+    m_renderScenePending = nullptr;
+  }
+  m_renderSceneGeometryPending = false;
 }
 
 void LodClusters::deinitScene()
@@ -936,10 +976,23 @@ void LodClusters::handleChanges()
     applyCameraString();
   }
 
-  bool sceneGridChanged = false;
+  bool sceneGridChanged   = false;
+  bool renderSceneChanged = false;
   if(m_scene)
   {
-    if(!m_renderScene)
+    if(m_renderScenePending && m_renderSceneGeometryPending)
+    {
+      // The async loader thread built m_renderScenePending and uploaded its textures (reported in the
+      // busy popup). Publish it now and finish the GPU geometry setup here on the main thread; the
+      // textures stay as loaded.
+      m_renderSceneGeometryPending = false;
+      m_renderScene                = std::move(m_renderScenePending);
+
+      deinitRenderer();
+      initRenderSceneGeometry();
+      renderSceneChanged = true;
+    }
+    else if(!m_renderScene)
     {
       // async loading might us get into this state
       // pretend scene grid changed to re-init renderscene
@@ -955,8 +1008,7 @@ void LodClusters::handleChanges()
       updatedSceneGrid();
     }
 
-    bool renderSceneChanged = false;
-    bool streamingChanged   = tweakChanged(m_tweak.useStreaming)
+    bool streamingChanged = tweakChanged(m_tweak.useStreaming)
                             || (memcmp(&m_streamingConfig, &m_streamingConfigLast, sizeof(m_streamingConfig)))
                             || (memcmp(&m_texturesConfig, &m_texturesConfigLast, sizeof(m_texturesConfig)));
     if(sceneGridChanged || streamingChanged)
@@ -1236,11 +1288,23 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     frameConstants.facetShading = m_tweak.facetShading ? 1 : 0;
     frameConstants.visualize    = m_frameConfig.visualize;
     frameConstants.frame        = m_frames;
+    frameConstants.timeSec      = float(time);
 
+    // Latch last frame's picking result into the UBO so debug passes
+    // (e.g. instance / cluster bbox highlight) don't have to race the
+    // current frame's readback SSBO.
     {
-      frameConstants.visFilterClusterID  = ~0;
-      frameConstants.visFilterInstanceID = ~0;
+      shaderio::Readback lastReadback;
+      m_resources.getReadbackData(lastReadback);
+      bool valid                      = isPickingValid(lastReadback);
+      frameConstants.pickedInstanceID = valid ? lastReadback.instanceId : ~0u;
+      // clusterTriangleId low 32 bits = (clusterID << 8) | triangleID,
+      // matching packedClusterTriangleId in the picking shaders.
+      frameConstants.pickedClusterID = valid ? (lastReadback.clusterTriangleId >> 8) : ~0u;
     }
+
+    frameConstants.visFilterInstanceID = m_tweak.filterInstanceID < 0 ? ~0u : uint32_t(m_tweak.filterInstanceID);
+    frameConstants.visFilterClusterID  = m_tweak.filterClusterID < 0 ? ~0u : uint32_t(m_tweak.filterClusterID);
 
     frameConstants.bgColor   = m_resources.m_bgColor;
     frameConstants.viewport  = glm::ivec2(renderWidth, renderHeight);

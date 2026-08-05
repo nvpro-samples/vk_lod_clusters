@@ -40,7 +40,7 @@ struct SceneConfig
 
   // store groups in a compressed way
   // uncompress at runtime
-  bool useCompressedData = false;
+  bool useCompressedData = true;
 
   // allow materials
   bool enableMultiMaterials = false;
@@ -66,10 +66,10 @@ struct SceneConfig
 
   // mesh simplification weights for attributes
   // zero to disable
-  float simplifyNormalWeight      = 0.0f;
+  float simplifyNormalWeight      = 0.5f;
   float simplifyTangentWeight     = 0.0f;
-  float simplifyTangentSignWeight = 0.1f;
-  float simplifyTexCoordWeight    = 0;
+  float simplifyTangentSignWeight = 0.2f;
+  float simplifyTexCoordWeight    = 0.5f;
   float simplifyMaterialWeight    = 0.1f;
 
   // used when compression is enabled
@@ -83,6 +83,33 @@ struct SceneConfig
   // safe to add new variables into this section as long as they are zeroed by default
   uint32_t reservedData[14] = {};
 };
+
+// Phases reported during asynchronous scene loading, exposed through
+// SceneLoaderConfig::progressPhase so the UI can label the progress bar.
+enum class LoadPhase : uint32_t
+{
+  ProcessingScene,  // building LOD clusters from raw geometry
+  LoadingScene,     // loading pre-processed clusters from the cache
+  ProbingTextures,  // scanning texture files for the memory budget
+  LoadingTextures,  // uploading textures to the GPU
+};
+
+inline const char* getLoadPhaseName(uint32_t phase)
+{
+  switch(LoadPhase(phase))
+  {
+    case LoadPhase::ProcessingScene:
+      return "Processing Scene";
+    case LoadPhase::LoadingScene:
+      return "Loading Scene";
+    case LoadPhase::ProbingTextures:
+      return "Probing Textures";
+    case LoadPhase::LoadingTextures:
+      return "Loading Textures";
+    default:
+      return "Loading Scene";
+  }
+}
 
 // Control the loading and processing procedure of the scene.
 // Not the results.
@@ -114,6 +141,8 @@ struct SceneLoaderConfig
 
   // optional thread-safe progress bar updates
   std::atomic_uint32_t* progressPct = nullptr;
+  // optional thread-safe current LoadPhase (stored as uint32_t)
+  std::atomic_uint32_t* progressPhase = nullptr;
 
   // regular expression strings to discard instances by property name
   std::string skipNodeNames;
@@ -260,6 +289,26 @@ public:
     // compute size of the uncompressed section in a compressed group
     // based on relevant properties
     size_t computeUncompressedSectionSize() const;
+
+    // At runtime the trailing vertex region is laid out as [attributes][positions]:
+    //   attributes = per-cluster normals/texcoords (attributesFloatCount() floats)
+    //   positions  = per-cluster vec3 positions     (positionsFloatCount() floats, group tail)
+    // number of float entries in the runtime (uncompressed) vertex region
+    uint32_t getRuntimeVertexDataCount() const
+    {
+      return uint32_t(uncompressedVertexDataCount ? uncompressedVertexDataCount : vertexDataCount);
+    }
+    // vec3 positions, one per vertex
+    uint32_t positionsFloatCount() const { return 3u * uint32_t(vertexCount); }
+    // normals/texcoords float count = everything in the vertex region except the trailing positions
+    uint32_t attributesFloatCount() const { return getRuntimeVertexDataCount() - positionsFloatCount(); }
+    // byte offset (within the runtime group blob) where the trailing positions region begins
+    size_t positionsByteOffset() const
+    {
+      return computeUncompressedSectionSize() + size_t(attributesFloatCount()) * sizeof(float);
+    }
+    // byte size of the trailing positions region
+    size_t positionsByteSize() const { return size_t(positionsFloatCount()) * sizeof(float); }
   };
 
   // read-only accessor of cluster groups used at runtime
@@ -302,12 +351,12 @@ public:
     const uint8_t* getClusterIndices(size_t clusterIndex) const
     {
       // offsets relative to cluster header
-      return (const uint8_t*)(size_t(&clusters[clusterIndex]) + clusters[clusterIndex].triangles);
+      return (const uint8_t*)(size_t(&clusters[clusterIndex]) + shaderio::Cluster_getTrianglesOffset(clusters[clusterIndex]));
     }
     const glm::vec3* getClusterVertices(size_t clusterIndex) const
     {
       // offsets relative to cluster header
-      return (const glm::vec3*)(size_t(&clusters[clusterIndex]) + clusters[clusterIndex].vertices);
+      return (const glm::vec3*)(size_t(&clusters[clusterIndex]) + shaderio::Cluster_getPositionsOffset(clusters[clusterIndex]));
     }
   };
 
@@ -364,17 +413,20 @@ public:
 
 
   // used for preloaded groups, streamed in groups are patched in shaders.
-  static void fillGroupRuntimeData(const GroupInfo& srcGroupInfo,
-                                   const GroupView& srcGroupView,
-                                   uint32_t         groupID,
-                                   uint32_t         groupResidentID,
-                                   uint32_t         clusterResidentID,
-                                   void*            dst,
-                                   size_t           dstSize);
+  // scratch decode space (see decompressGroup)
+  static void fillGroupRuntimeData(const GroupInfo&       srcGroupInfo,
+                                   const GroupView&       srcGroupView,
+                                   uint32_t               groupID,
+                                   uint32_t               groupResidentID,
+                                   uint32_t               clusterResidentID,
+                                   void*                  dst,
+                                   size_t                 dstSize,
+                                   std::vector<uint32_t>& scratch);
 
   // used to decompress group on CPU.
-  // typically write-combined memory destination
-  static void decompressGroup(const GroupInfo& info, const GroupView& groupView, void* dstWriteOnly, size_t dstSize);
+  // typically write-combined memory destination.
+  // scratch decode space, reused across calls (decompressGroup grows it as needed)
+  static void decompressGroup(const GroupInfo& info, const GroupView& groupView, void* dstWriteOnly, size_t dstSize, std::vector<uint32_t>& scratch);
 
 
   //////////////////////////////////////////////////////////////////////////
@@ -674,7 +726,7 @@ private:
     struct Header
     {
       uint64_t magic               = 0x006f65676e73766eULL;  // nvsngeo
-      uint32_t geoVersion          = 9;
+      uint32_t geoVersion          = 10;
       uint32_t geoStructSize       = uint32_t(sizeof(GeometryView));
       uint32_t configVersion       = SceneConfig::version;
       uint32_t configStructSize    = uint32_t(sizeof(SceneConfig));
@@ -692,6 +744,8 @@ private:
       // 7 compression
       // 8 triangle data
       // 9 GeometryBase.lowDetailClusterStateBits
+      // 10 cluster positions split into a trailing group region ([attributes][positions]),
+      //    shaderio::Cluster offsets packed into 3x24-bit fields
     };
 
     Header header;

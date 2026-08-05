@@ -1,4 +1,24 @@
 # Changelog for vk_lod_clusters
+* 2026-8-3:
+
+  **WARNING** Old cache files are not compatible anymore. First time loading such scenes will trigger processing and overwrite / delete them.
+
+  * **NEW Streaming Logic:** Ray tracing will use positions at stream-in only once for CLAS builds, then rely on ray-tracing position fetch to avoid the memory cost. Rasterization will continue to stream as before. As a result the `shaderio::Group` and `shaderio::Cluster` have been modified to change the order of storage, positions come now last. During streaming we still load a group as one blob from disk (and de-compress as one blob), but from the staging memory ray-tracing will copy into two separate locations: the persistent group storage, and the temporary CLAS build position buffer. Rasterization continues to copy everything into the persistent group storage. Thanks to [Calvin Hsu](https://github.com/calhsu-nvidia) for implementing this in another sample.
+  * By default we now always use disk compression for the cache (`--compressed 1`)
+* 2026-7-31:
+  * Debug visualization: bboxes of the mouseover-picked instance / cluster now pulse in yellow, with the picking result latched CPU-side into `FrameConstants` (last frame's value) so the highlight is stable across shader passes and barriers. Added `timeSec` and `pickedInstanceID` / `pickedClusterID` to `FrameConstants`.
+  * Rasterization-only "solo" filters under _Misc Settings → Advanced_: **Solo Instance ID** (applied in `traversal_init`) and **Solo Cluster ID** (applied in the raster cluster mesh shader and the cluster bbox mesh shader). Both default to disabled (`-1`). Press **P** while hovering the viewport to solo the picked instance, **Shift+P** for instance + cluster; pressing **P** again with any filter active clears both.
+* 2026-7-30:
+  * Textures now load on a background thread via new `AsyncUploader` (transfer queue with queue-family ownership transfer). The scene-load busy popup reports its current phase — _Processing Scene_, _Loading Scene_, _Probing Textures_, _Loading Textures_ — instead of a generic "Loading Scene".
+  * Added `Stream Residency Stats` panel under _Statistics_ with two histograms: **Reverse LoD Residency %** (loaded/total groups per reverse LoD level) and **Reverse LoD Distribution %** (share of currently-loaded groups per level). Aggregated across all geometries, maintained incrementally on load/unload.
+  * Added streaming unload threshold: unloading is deferred while the memory load factor is below `--streamingunloadthreshold` (UI: _Streaming → Unloading threshold pct._). Default 0 (unchanged behavior).
+  * Changed default mesh simplification weights: normal 0 → 0.5, tangent-sign 0.1 → 0.2, texcoord 0 → 0.5. Affects newly built caches only; delete existing caches to pick up the new weights.
+  * Bugfix in the cluster LoD builder (`meshopt_clusterlod.h`): if the top of the hierarchy got stuck in simplification, it could be emitted as a multi-cluster terminal group, breaking the single-root-cluster assumption. Also guards against empty simplification results.
+  * Bugfix: glTF loader double-counted triangles from deduplicated meshes in the progress-bar total, making the bar jump backwards.
+  * Path tracer visual tweaks: added `Clip` tonemap operator (mode 3), and the camera flashlight now cross-fades with the sun via `lightMixer` and is modulated by a hemisphere AO trace so crevices still darken as the sun fades out — matches the raster/RT ambient behavior.
+  * Bugfix: processing a changed glTF file that mismatches its cache.
+  * Bugfix: crashes if scene had no materials, or glTF mesh primitive had no material.
+  * Bugfix: mouseover picking coordinates were wrong after disabling DLSS — `renderScale` was left at the DLSS ratio.
 * 2026-7-22:
   * Unified texture lod handling, which was influenced from the implementation of [RTXPT](https://github.com/NVIDIA-RTX/RTXPT). There is a new `--texlodmode <int>`, with `0 gradient, 1 explicit lod, 2 mip0` and the old `--anisotropicgradient` was removed in favor of a simpler heuristic from RTXPT.
 * 2026-7-21:

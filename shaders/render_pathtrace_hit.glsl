@@ -44,7 +44,12 @@ struct PathHit
 // pointOffset() (Hanika 2021 shadow-terminator fix) lives in render_shading.glsl, which every includer
 // of this file pulls in first.
 
-PathHit getHitAttributes(uint instanceID, uint clusterID, uint triangleID, vec2 barycentrics, vec3 wRayOrigin, vec3 wRayDir, float hitT)
+PathHit getHitAttributes(uint instanceID, uint clusterID, uint triangleID, vec2 barycentrics, vec3 wRayOrigin, vec3 wRayDir, float hitT,
+#if PATHTRACE_HIT_POSITIONS
+                         vec3 pos0, vec3 pos1, vec3 pos2)
+#else
+                         vec3 wGeoNormalUnnorm)
+#endif
 {
   RenderInstance instance = instances[instanceID];
   Geometry       geometry = geometries[instance.geometryID];
@@ -58,7 +63,7 @@ PathHit getHitAttributes(uint instanceID, uint clusterID, uint triangleID, vec2 
   Cluster_in clusterRef = Cluster_in(clusterAddress);
   Cluster    cluster    = clusterRef.d;
 
-  vec3s_in  oVertices    = Cluster_getVertexPositions(clusterRef);
+  // positions (pos0/pos1/pos2) come in from the closest-hit via the ray payload (CLAS position fetch)
   uint8s_in localIndices = Cluster_getTriangleIndices(clusterRef);
 
   uvec3 triangleIndices =
@@ -66,27 +71,27 @@ PathHit getHitAttributes(uint instanceID, uint clusterID, uint triangleID, vec2 
 
   vec3 baryWeight = vec3((1.f - barycentrics[0] - barycentrics[1]), barycentrics[0], barycentrics[1]);
 
-  vec3 pos0 = oVertices.d[triangleIndices.x];
-  vec3 pos1 = oVertices.d[triangleIndices.y];
-  vec3 pos2 = oVertices.d[triangleIndices.z];
-
   mat3 worldMatrixI = mat3(instance.worldMatrixI);
 
   PathHit hit;
   // world position straight from the ray parameter (matches the depth we output)
-  hit.wPos      = wRayOrigin + wRayDir * hitT;
-  // shadow origin defaults to the hit point; overridden with the terminator offset when the hit uses
-  // smooth per-vertex normals (facet shading / no vertex normals leave it at wPos, i.e. no offset).
+  hit.wPos       = wRayOrigin + wRayDir * hitT;
+  // shadow-ray origin defaults to the hit point (overridden by the terminator offset below)
   hit.wShadowPos = hit.wPos;
   hit.materialID = instance.materialID;
 
-  // always compute geometric normal (object space) from the triangle edges
+#if PATHTRACE_HIT_POSITIONS
   vec3 oGeoNormal = cross(pos1 - pos0, pos2 - pos0);
-  // object-space ray direction (world->object uses the inverse linear part)
   vec3 oRayDir    = worldMatrixI * wRayDir;
   hit.backFacing  = dot(oGeoNormal, oRayDir) > 0;
+  vec3 wGeoNormal = normalize(oGeoNormal * worldMatrixI);
+#else
+  // world geometric normal comes in from the closest-hit; its length is the triangle world area
+  vec3 wGeoNormal = normalize(wGeoNormalUnnorm);
+  hit.backFacing  = dot(wGeoNormal, wRayDir) > 0;
+#endif
 
-  vec3 oNormal   = oGeoNormal;
+  vec3 wNormal   = wGeoNormal;  // shading normal defaults to the geometric normal
   vec4 wTangent  = vec4(1);
   vec2 oTexCoord = vec2(1);
 
@@ -106,15 +111,24 @@ PathHit getHitAttributes(uint instanceID, uint clusterID, uint triangleID, vec2 
     triNormals[1] = normal_unpack(triNormalsPacked.y);
     triNormals[2] = normal_unpack(triNormalsPacked.z);
 
-    oNormal = baryWeight.x * triNormals[0] + baryWeight.y * triNormals[1] + baryWeight.z * triNormals[2];
+    vec3 oNormal = baryWeight.x * triNormals[0] + baryWeight.y * triNormals[1] + baryWeight.z * triNormals[2];
+    wNormal      = normalize(oNormal * worldMatrixI);
 
-    // Shadow terminator offset (Hanika 2021), computed in object space and transformed to world.
-    // sideFlip keeps the offset on the visible side for back-face hits on two-sided meshes.
+    // The vertex normal is transformed by the inverse-transpose (worldMatrixI), whereas wGeoNormal in
+    // the no-positions path comes from a world-space edge cross product. For mirrored (negative
+    // determinant) instances the two conventions disagree by a sign, so snap the shading normal into
+    // the geometric hemisphere. backFacing negates both together below, keeping them consistent.
+    if(dot(wNormal, wGeoNormal) < 0.0)
+      wNormal = -wNormal;
+
+#if PATHTRACE_HIT_POSITIONS
+    // Hanika 2021 shadow-terminator offset, computed in object space and transformed to world
     float sideFlip = hit.backFacing ? -1.0 : 1.0;
     vec3  oHitPos  = baryWeight.x * pos0 + baryWeight.y * pos1 + baryWeight.z * pos2;
     vec3  oShadow  = pointOffset(oHitPos, pos0, pos1, pos2, triNormals[0] * sideFlip,
                                  triNormals[1] * sideFlip, triNormals[2] * sideFlip, baryWeight);
     hit.wShadowPos = instance.worldMatrix * vec4(oShadow, 1.0);
+#endif
 
 #if ALLOW_VERTEX_TANGENTS
     if((cluster.attributeBits & CLUSTER_ATTRIBUTE_VERTEX_TANGENT) != 0)
@@ -139,17 +153,24 @@ PathHit getHitAttributes(uint instanceID, uint clusterID, uint triangleID, vec2 
     vec2 uv1  = oTexCoords.d[triangleIndices.y];
     vec2 uv2  = oTexCoords.d[triangleIndices.z];
     oTexCoord = baryWeight.x * uv0 + baryWeight.y * uv1 + baryWeight.z * uv2;
-    // texel density (normalized-UV per world length) drives the ray-cone texture LOD in the ray-gen loop
+#if PATHTRACE_HIT_POSITIONS
     hit.texelDensity = computeTexelDensity(instance.worldMatrix, pos0, pos1, pos2, uv0, uv1, uv2);
+#else
+    // ray-cone texel density: uv area over world area (== length of the geometric normal)
+    vec2  duv1       = uv1 - uv0;
+    vec2  duv2       = uv2 - uv0;
+    float uvArea     = abs(duv1.x * duv2.y - duv1.y * duv2.x);
+    hit.texelDensity = sqrt(max(uvArea, 1e-20) / max(length(wGeoNormalUnnorm), 1e-20));
+#endif
   }
 #endif
 
-  hit.wGeoNormal = normalize(oGeoNormal * worldMatrixI);
-  hit.wNormal    = normalize(oNormal * worldMatrixI);
+  hit.wGeoNormal = wGeoNormal;
+  hit.wNormal    = wNormal;
   if(hit.backFacing)
   {
-    hit.wNormal     = -hit.wNormal;
-    hit.wGeoNormal  = -hit.wGeoNormal;
+    hit.wNormal    = -hit.wNormal;
+    hit.wGeoNormal = -hit.wGeoNormal;
   }
   hit.wTangent   = wTangent;
   hit.oTexCoord  = oTexCoord;

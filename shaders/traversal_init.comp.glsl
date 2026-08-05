@@ -131,7 +131,15 @@ void main()
   bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, geometry.bbox.lo, geometry.bbox.hi, instance.worldMatrix, clipMin, clipMax, clipValid);
   bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 0)));
 #endif
-  
+
+#if TARGETS_RASTERIZATION
+  // Solo-instance filter: ~0u disables the filter.
+  if (view.visFilterInstanceID != ~0u && instanceID != view.visFilterInstanceID)
+  {
+    isVisible = false;
+  }
+#endif
+
   uint visibilityState = isVisible ? INSTANCE_VISIBLE_BIT : 0;
   
   bool isRenderable = isValid

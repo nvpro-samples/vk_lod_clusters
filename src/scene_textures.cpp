@@ -226,23 +226,11 @@ void computeLoadPlansForBudget(const std::vector<MipSizes>& textureMipSizes, std
   }
 }
 
-struct ParallelBatchUploader;
+struct AsyncImageLoader;
 
-bool uploadDdsImage(ParallelBatchUploader& uploader,
-                    nvvk::Image&           vkImage,
-                    nv_dds::Image&         image,
-                    const char*            mapped,
-                    size_t                 mappedSize,
-                    bool                   srgb,
-                    uint32_t               baseMipLevel);
+bool uploadDdsImage(AsyncImageLoader& loader, nvvk::Image& vkImage, nv_dds::Image& image, const char* mapped, size_t mappedSize, bool srgb, uint32_t baseMipLevel);
 
-bool uploadKtxImage(ParallelBatchUploader& uploader,
-                    nvvk::Image&           vkImage,
-                    nv_ktx::KTXImage&      image,
-                    const char*            mapped,
-                    size_t                 mappedSize,
-                    bool                   srgb,
-                    uint32_t               baseMipLevel);
+bool uploadKtxImage(AsyncImageLoader& loader, nvvk::Image& vkImage, nv_ktx::KTXImage& image, const char* mapped, size_t mappedSize, bool srgb, uint32_t baseMipLevel);
 
 struct TextureBatchProgress
 {
@@ -257,6 +245,11 @@ struct TextureBatchProgress
   nvutils::PerformanceTimer clock;
   double                    startTime = 0;
 
+  // optional UI progress-bar hooks (see SceneLoaderConfig)
+  std::atomic_uint32_t* progressPct   = nullptr;
+  std::atomic_uint32_t* progressPhase = nullptr;
+  uint32_t              phase         = 0;  // LoadPhase for this pass
+
   void logBegin(const char* label_, uint32_t imageCount_, uint32_t threadCount)
   {
     label               = label_;
@@ -264,6 +257,10 @@ struct TextureBatchProgress
     completedCount      = 0;
     progressLastPercent = 0;
     startTime           = clock.getMicroseconds();
+    if(progressPhase)
+      progressPhase->store(phase);
+    if(progressPct)
+      progressPct->store(0);
     LOGI("... %s: images %u, threads %u\n", label, imageCount, threadCount);
   }
 
@@ -277,6 +274,9 @@ struct TextureBatchProgress
       return;
 
     const uint32_t percentage = uint32_t(double(completedCount * 100) / double(imageCount));
+
+    if(progressPct)
+      progressPct->store(percentage);
 
     constexpr uint32_t percentageGranularity = 5;
     const uint32_t     percentageSnapped     = (percentage / percentageGranularity) * percentageGranularity;
@@ -295,61 +295,19 @@ struct TextureBatchProgress
   }
 };
 
-struct ParallelBatchUploader
+// Loads scene textures from disk and uploads them through the async transfer-queue uploader.
+// Thread-safe: uploadImage() may be called concurrently from worker threads; the AsyncUploader
+// serializes its batches and submits internally.
+struct AsyncImageLoader
 {
-  Resources&              res;
-  std::mutex              uploaderMutex;
-  std::mutex              mappingWriteMutex;
-  std::condition_variable mappingWriteCv;
-  int                     activeMappingWrites = 0;
-  std::atomic_bool        failed              = false;
-  std::atomic_bool        missing             = false;
-  std::atomic_size_t      uploadedMemBytes    = 0;
+  Resources&         res;
+  std::atomic_bool   failed{false};
+  std::atomic_bool   missing{false};
+  std::atomic_size_t uploadedMemBytes{0};
 
-  ParallelBatchUploader(Resources& res_)
+  AsyncImageLoader(Resources& res_)
       : res(res_)
   {
-    res.m_uploader.setEnableLayoutBarriers(true);
-  }
-
-  ~ParallelBatchUploader() { res.m_uploader.setEnableLayoutBarriers(false); }
-
-  void beginMappingWrite()
-  {
-    std::lock_guard<std::mutex> lock(mappingWriteMutex);
-    ++activeMappingWrites;
-  }
-
-  void endMappingWrite()
-  {
-    std::lock_guard<std::mutex> lock(mappingWriteMutex);
-    --activeMappingWrites;
-    if(activeMappingWrites == 0)
-      mappingWriteCv.notify_all();
-  }
-
-  // GPU upload only after every in-flight texture (append + decode) has finished writing mappings.
-  // Lock order: uploaderMutex, then mappingWriteMutex. Hold uploaderMutex through GPU work so no
-  // new append/beginMappingWrite can start after the activeMappingWrites wait (closes TOCTOU).
-  void flush()
-  {
-    if(res.m_uploader.isAppendedEmpty())
-      return;
-
-    std::unique_lock<std::mutex> uploaderLock(uploaderMutex);
-
-    {
-      std::unique_lock<std::mutex> mappingLock(mappingWriteMutex);
-      mappingWriteCv.wait(mappingLock, [this] { return activeMappingWrites == 0; });
-    }
-
-    if(res.m_uploader.isAppendedEmpty())
-      return;
-
-    VkCommandBuffer cmd = res.createTempCmdBuffer();
-    res.m_uploader.cmdUploadAppended(cmd);
-    res.tempSyncSubmit(cmd);
-    res.m_uploader.releaseStaging();
   }
 
   void uploadImage(const std::string& fileName, bool sRGB, uint64_t imageID, nvvk::Image& image, uint32_t baseMipLevel)
@@ -398,7 +356,7 @@ struct ParallelBatchUploader
   }
 };
 
-bool uploadDdsImage(ParallelBatchUploader& uploader, nvvk::Image& vkImage, nv_dds::Image& image, const char* mapped, size_t mappedSize, bool srgb, uint32_t baseMipLevel)
+bool uploadDdsImage(AsyncImageLoader& loader, nvvk::Image& vkImage, nv_dds::Image& image, const char* mapped, size_t mappedSize, bool srgb, uint32_t baseMipLevel)
 {
   if(baseMipLevel >= image.getNumMips())
     return false;
@@ -427,78 +385,70 @@ bool uploadDdsImage(ParallelBatchUploader& uploader, nvvk::Image& vkImage, nv_dd
   imageCreateInfo.format            = format;
   imageCreateInfo.usage             = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
-  if(VK_SUCCESS != NVVK_FAIL_REPORT(uploader.res.m_allocator.createImage(vkImage, imageCreateInfo, DEFAULT_VkImageViewCreateInfo)))
+  if(VK_SUCCESS != NVVK_FAIL_REPORT(loader.res.m_allocator.createImage(vkImage, imageCreateInfo, DEFAULT_VkImageViewCreateInfo)))
     return false;
 
-  std::array<void*, 32>                  mipMappings{};
-  std::vector<nv_dds::SubresourceTarget> mipTargets(mipLevels);
+  AsyncUploader& uploader = loader.res.m_asyncUploader;
+
+  // Acquire one staging mapping per mip and decode the mip tail straight into staging (no extra copy).
+  std::vector<nv_dds::SubresourceTarget>        mipTargets(mipLevels);
+  std::vector<nvvk::BufferRange>                mipSpaces(mipLevels);
+  std::vector<UploaderInterface::MappingHandle> mipHandles(mipLevels, 0);
 
   size_t totalSize = 0;
+  bool   acquired  = true;
   for(uint32_t m = 0; m < mipLevels; m++)
   {
-    mipTargets[m].capacityInBytes = image.getSubresourceByteSize(baseMipLevel + m);
-    totalSize += mipTargets[m].capacityInBytes;
+    const size_t capacity         = image.getSubresourceByteSize(baseMipLevel + m);
+    mipTargets[m].capacityInBytes = capacity;
+    if(uploader.acquireMapping(capacity, mipSpaces[m], mipHandles[m]) != VK_SUCCESS)
+    {
+      acquired = false;
+      break;
+    }
+    mipTargets[m].data = mipSpaces[m].mapping;
+    totalSize += capacity;
   }
 
+  const bool decodeOk = acquired && !image.readSubresourcesFromMemory(mapped, mappedSize, range, mipTargets.data()).has_value();
+
+  if(!decodeOk)
   {
-    std::unique_lock lock(uploader.uploaderMutex);
-    // Flush the prior batch (if any) before reserving new mappings for this texture.
-    if(uploader.res.m_uploader.checkAppendedSize(128 * 1024 * 1024, totalSize))
-    {
-      lock.unlock();
-      uploader.flush();
-      lock.lock();
-    }
-
-    uploader.beginMappingWrite();
-
-    VkExtent3D uploadExtent = extent;
     for(uint32_t m = 0; m < mipLevels; m++)
-    {
-      VkImageSubresourceLayers subResource = {};
-      subResource.aspectMask               = VK_IMAGE_ASPECT_COLOR_BIT;
-      subResource.mipLevel                 = m;
-      subResource.baseArrayLayer           = 0;
-      subResource.layerCount               = 1;
-
-      vkImage.descriptor.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-      if(VK_SUCCESS
-         != NVVK_FAIL_REPORT(uploader.res.m_uploader.appendImageSubMapping(  //
-             vkImage, {0, 0, 0}, uploadExtent, subResource, mipTargets[m].capacityInBytes, mipMappings[m],
-             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)))
-      {
-        uploader.endMappingWrite();
-        return false;
-      }
-
-      mipTargets[m].data = mipMappings[m];
-
-      uploadExtent.width  = mipDimension(uploadExtent.width, 1);
-      uploadExtent.height = mipDimension(uploadExtent.height, 1);
-      uploadExtent.depth  = mipDimension(uploadExtent.depth, 1);
-    }
-
-    lock.unlock();
+      if(mipHandles[m])
+        uploader.releaseMapping(mipHandles[m]);
+    return false;
   }
 
-  const bool loadFailed = image.readSubresourcesFromMemory(mapped, mappedSize, range, mipTargets.data()).has_value();
-  uploader.endMappingWrite();
-  if(loadFailed)
-    return false;
+  VkExtent3D uploadExtent = extent;
+  for(uint32_t m = 0; m < mipLevels; m++)
+  {
+    UploaderInterface::MappedImageSubs sub{};
+    sub.offset       = {0, 0, 0};
+    sub.extent       = uploadExtent;
+    sub.subresource  = {VK_IMAGE_ASPECT_COLOR_BIT, m, 0, 1};
+    sub.mappingSpace = mipSpaces[m];
 
-  uploader.uploadedMemBytes += totalSize;
+    // each destination mip subresource starts undefined; appendImageSubMappings reads the old layout here
+    vkImage.descriptor.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    if(VK_SUCCESS != NVVK_FAIL_REPORT(uploader.appendImageSubMappings(vkImage, 1, &sub, mipHandles[m], true, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)))
+      return false;
+
+    uploadExtent.width  = mipDimension(uploadExtent.width, 1);
+    uploadExtent.height = mipDimension(uploadExtent.height, 1);
+    uploadExtent.depth  = mipDimension(uploadExtent.depth, 1);
+  }
+
+  // final layout for the descriptor write (async uploader transitions each mip to this)
+  vkImage.descriptor.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+  loader.uploadedMemBytes += totalSize;
 
   return true;
 }
 
-bool uploadKtxImage(ParallelBatchUploader& uploader,
-                    nvvk::Image&           vkImage,
-                    nv_ktx::KTXImage&      image,
-                    const char*            mapped,
-                    size_t                 mappedSize,
-                    bool                   srgb,
-                    uint32_t               baseMipLevel)
+bool uploadKtxImage(AsyncImageLoader& loader, nvvk::Image& vkImage, nv_ktx::KTXImage& image, const char* mapped, size_t mappedSize, bool srgb, uint32_t baseMipLevel)
 {
   if(baseMipLevel >= image.num_mips)
     return false;
@@ -526,66 +476,65 @@ bool uploadKtxImage(ParallelBatchUploader& uploader,
   imageViewCreateInfo.components            = ktxSwizzleToVkComponentMapping(image.swizzle);
   imageViewCreateInfo.format                = format;
 
-  if(VK_SUCCESS != NVVK_FAIL_REPORT(uploader.res.m_allocator.createImage(vkImage, imageCreateInfo, imageViewCreateInfo)))
+  if(VK_SUCCESS != NVVK_FAIL_REPORT(loader.res.m_allocator.createImage(vkImage, imageCreateInfo, imageViewCreateInfo)))
     return false;
 
-  std::array<void*, 32>                  mipMappings{};
-  std::vector<nv_ktx::SubresourceTarget> mipTargets(mipLevels);
+  AsyncUploader& uploader = loader.res.m_asyncUploader;
+
+  // Acquire one staging mapping per mip and decode the mip tail straight into staging (no extra copy).
+  std::vector<nv_ktx::SubresourceTarget>        mipTargets(mipLevels);
+  std::vector<nvvk::BufferRange>                mipSpaces(mipLevels);
+  std::vector<UploaderInterface::MappingHandle> mipHandles(mipLevels, 0);
 
   size_t totalSize = 0;
+  bool   acquired  = true;
   for(uint32_t m = 0; m < mipLevels; m++)
   {
-    mipTargets[m].capacityInBytes = image.getSubresourceByteSize(baseMipLevel + m);
-    totalSize += mipTargets[m].capacityInBytes;
+    const size_t capacity         = image.getSubresourceByteSize(baseMipLevel + m);
+    mipTargets[m].capacityInBytes = capacity;
+    if(uploader.acquireMapping(capacity, mipSpaces[m], mipHandles[m]) != VK_SUCCESS)
+    {
+      acquired = false;
+      break;
+    }
+    mipTargets[m].data = mipSpaces[m].mapping;
+    totalSize += capacity;
   }
 
+  const bool decodeOk = acquired && !image.readSubresourcesFromMemory(mapped, mappedSize, range, mipTargets.data()).has_value();
+
+  if(!decodeOk)
   {
-    std::unique_lock lock(uploader.uploaderMutex);
-    if(uploader.res.m_uploader.checkAppendedSize(128 * 1024 * 1024, totalSize))
-    {
-      lock.unlock();
-      uploader.flush();
-      lock.lock();
-    }
-
-    uploader.beginMappingWrite();
-
-    VkExtent3D uploadExtent = extent;
     for(uint32_t m = 0; m < mipLevels; m++)
-    {
-      VkImageSubresourceLayers subResource = {};
-      subResource.aspectMask               = VK_IMAGE_ASPECT_COLOR_BIT;
-      subResource.mipLevel                 = m;
-      subResource.baseArrayLayer           = 0;
-      subResource.layerCount               = 1;
-
-      vkImage.descriptor.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-      if(VK_SUCCESS
-         != NVVK_FAIL_REPORT(uploader.res.m_uploader.appendImageSubMapping(  //
-             vkImage, {0, 0, 0}, uploadExtent, subResource, mipTargets[m].capacityInBytes, mipMappings[m],
-             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)))
-      {
-        uploader.endMappingWrite();
-        return false;
-      }
-
-      mipTargets[m].data = mipMappings[m];
-
-      uploadExtent.width  = mipDimension(uploadExtent.width, 1);
-      uploadExtent.height = mipDimension(uploadExtent.height, 1);
-      uploadExtent.depth  = mipDimension(uploadExtent.depth, 1);
-    }
-
-    lock.unlock();
+      if(mipHandles[m])
+        uploader.releaseMapping(mipHandles[m]);
+    return false;
   }
 
-  const bool loadFailed = image.readSubresourcesFromMemory(mapped, mappedSize, range, mipTargets.data()).has_value();
-  uploader.endMappingWrite();
-  if(loadFailed)
-    return false;
+  VkExtent3D uploadExtent = extent;
+  for(uint32_t m = 0; m < mipLevels; m++)
+  {
+    UploaderInterface::MappedImageSubs sub{};
+    sub.offset       = {0, 0, 0};
+    sub.extent       = uploadExtent;
+    sub.subresource  = {VK_IMAGE_ASPECT_COLOR_BIT, m, 0, 1};
+    sub.mappingSpace = mipSpaces[m];
 
-  uploader.uploadedMemBytes += totalSize;
+    // each destination mip subresource starts undefined; appendImageSubMappings reads the old layout here
+    vkImage.descriptor.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    if(VK_SUCCESS != NVVK_FAIL_REPORT(uploader.appendImageSubMappings(vkImage, 1, &sub, mipHandles[m], true, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)))
+      return false;
+
+    uploadExtent.width  = mipDimension(uploadExtent.width, 1);
+    uploadExtent.height = mipDimension(uploadExtent.height, 1);
+    uploadExtent.depth  = mipDimension(uploadExtent.depth, 1);
+  }
+
+  // final layout for the descriptor write (async uploader transitions each mip to this)
+  vkImage.descriptor.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+  loader.uploadedMemBytes += totalSize;
 
   return true;
 }
@@ -593,7 +542,11 @@ bool uploadKtxImage(ParallelBatchUploader& uploader,
 }  // namespace
 
 
-bool SceneTextures::init(Resources* res, const Scene& scene, const SceneTexturesConfig& config)
+bool SceneTextures::init(Resources*                 res,
+                         const Scene&               scene,
+                         const SceneTexturesConfig& config,
+                         std::atomic_uint32_t*      progressPct,
+                         std::atomic_uint32_t*      progressPhase)
 {
   m_res = res;
 
@@ -637,6 +590,9 @@ bool SceneTextures::init(Resources* res, const Scene& scene, const SceneTextures
     std::vector<MipSizes> textureMipSizes(imageCount);
 
     TextureBatchProgress probeProgress;
+    probeProgress.progressPct   = progressPct;
+    probeProgress.progressPhase = progressPhase;
+    probeProgress.phase         = uint32_t(LoadPhase::ProbingTextures);
     probeProgress.logBegin("texture budget probing", imageCount, config.maxThreads);
 
     nvutils::parallel_batches<1>(
@@ -683,43 +639,57 @@ bool SceneTextures::init(Resources* res, const Scene& scene, const SceneTextures
   }
 
   {
-    ParallelBatchUploader uploader = ParallelBatchUploader(*res);
+    AsyncImageLoader loader(*res);
 
-    // Upload m_defaultImage with a simple RGBA of 0xFFFFFFFF value using the existing uploader class
+    // Upload the 1x1 default images (white / black / normal) through the async uploader.
     {
-      uint32_t defaultWhitePixel = 0xFFFFFFFFu;
-      res->m_uploader.appendImage(m_defaultWhiteImage, sizeof(uint32_t), &defaultWhitePixel, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-      uint32_t defaultBlackPixel = 0xFF000000u;
-      res->m_uploader.appendImage(m_defaultBlackImage, sizeof(uint32_t), &defaultBlackPixel, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-      uint32_t defaultNormalPixel = 0xFFFF8080;  // R=128, G=128, B=255, A=255
-      res->m_uploader.appendImage(m_defaultNormalImage, sizeof(uint32_t), &defaultNormalPixel, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-      uploader.flush();
+      const VkExtent3D               extent1     = {1, 1, 1};
+      const VkImageSubresourceLayers subResource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+
+      uint32_t defaultWhitePixel  = 0xFFFFFFFFu;
+      uint32_t defaultBlackPixel  = 0xFF000000u;
+      uint32_t defaultNormalPixel = 0xFFFF8080u;  // R=128, G=128, B=255, A=255
+
+      auto uploadDefault = [&](nvvk::Image& img, uint32_t& pixel) {
+        img.descriptor.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        res->m_asyncUploader.appendImageSub(img, {0, 0, 0}, extent1, subResource, sizeof(uint32_t), &pixel,
+                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        img.descriptor.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      };
+      uploadDefault(m_defaultWhiteImage, defaultWhitePixel);
+      uploadDefault(m_defaultBlackImage, defaultBlackPixel);
+      uploadDefault(m_defaultNormalImage, defaultNormalPixel);
     }
 
     TextureBatchProgress uploadProgress;
     if(imageCount)
     {
+      uploadProgress.progressPct   = progressPct;
+      uploadProgress.progressPhase = progressPhase;
+      uploadProgress.phase         = uint32_t(LoadPhase::LoadingTextures);
       uploadProgress.logBegin("texture upload", imageCount, config.maxThreads);
 
       nvutils::parallel_batches<1>(
           imageCount,
           [&](uint64_t idx) {
-            uploader.uploadImage(scene.m_images[idx].filename, scene.m_images[idx].sRGB, idx, m_images[idx],
-                                 textureBaseMipLevels[idx]);
+            loader.uploadImage(scene.m_images[idx].filename, scene.m_images[idx].sRGB, idx, m_images[idx],
+                               textureBaseMipLevels[idx]);
             uploadProgress.logCompleted();
           },
           config.maxThreads);
+
+      uploadProgress.logEnd();
     }
 
-    uploader.flush();
+    // Submit any pending copies and wait for all transfer-queue uploads to finish. The graphics-queue
+    // ownership acquisition happens later per-frame in onRender via cmdDrainOwnershipBarriers().
+    res->m_asyncUploader.flushPending();
+    res->m_asyncUploader.waitForCompletion();
 
-    if(imageCount)
-      uploadProgress.logEnd();
-
-    if(uploader.failed)
+    if(loader.failed)
       return false;
 
-    m_textureMemBytes = uploader.uploadedMemBytes;
+    m_textureMemBytes = loader.uploadedMemBytes;
   }
 
   std::vector<VkSampler> immutableSamplers;
@@ -769,6 +739,20 @@ bool SceneTextures::init(Resources* res, const Scene& scene, const SceneTextures
   vkUpdateDescriptorSets(res->m_device, writeSet.size(), writeSet.data(), 0, nullptr);
 
   return true;
+}
+
+void SceneTextures::acquireOwnership(Resources* res)
+{
+  // init() uploaded the images on the transfer queue and released their queue-family ownership.
+  // Perform the matching graphics-queue acquisition here (main thread) via a one-off temp submit,
+  // and free the upload staging. No-op if init() ran without the async uploader having pending work.
+  if(!res->m_asyncUploader.hasOwnershipBarriers())
+    return;
+
+  VkCommandBuffer cmd = res->createTempCmdBuffer();
+  res->m_asyncUploader.cmdDrainOwnershipBarriers(cmd);
+  res->tempSyncSubmit(cmd);
+  res->m_asyncUploader.releaseCompletedAllocations();
 }
 
 void SceneTextures::deinit()

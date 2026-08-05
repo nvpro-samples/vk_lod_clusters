@@ -172,6 +172,11 @@ struct StreamingUpdate
   // loaded come first, then unloaded
   BUFFER_REF(StreamingPatchs_in) patches;
 
+  // ray tracing: per-frame CLAS-build vertex-positions.
+  // Positions are streamed here instead of being kept in the persistent group blob.
+  uint64_t clasVerticesBuffer;
+  uint32_t clasVerticesGroupStride;  // bytes reserved per group slot (max verts/group * sizeof(vec3))
+
   // newly loaded group clusters fill these
   BUFFER_REF(ClasBuildInfos_inout) newClasBuilds;
   BUFFER_REF(uint32s_inout) newClasResidentIDs;
