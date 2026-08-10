@@ -85,7 +85,7 @@ struct SceneConfig
 };
 
 // Phases reported during asynchronous scene loading, exposed through
-// SceneLoaderConfig::progressPhase so the UI can label the progress bar.
+// SceneLoadState::phase so the UI can label the progress bar.
 enum class LoadPhase : uint32_t
 {
   ProcessingScene,  // building LOD clusters from raw geometry
@@ -110,6 +110,36 @@ inline const char* getLoadPhaseName(uint32_t phase)
       return "Loading Scene";
   }
 }
+
+// Cross-thread signals shared between the background scene/texture loader and the
+// UI. Holds pointers to atomics owned by the app; embedded in SceneLoaderConfig and
+// passed to the texture loader separately. All pointers are optional (may be null).
+struct SceneProgressInfo
+{
+  // items completed / total in the current phase. The loader only reports the raw
+  // counts; the UI derives the percentage and shows "Completed: N of T".
+  std::atomic_uint32_t* completedCount = nullptr;
+  std::atomic_uint32_t* totalCount     = nullptr;
+  // current LoadPhase (stored as uint32_t)
+  std::atomic_uint32_t* progressPhase = nullptr;
+
+  // start a new phase: label it and reset the completed/total counters
+  void beginPhase(LoadPhase phase, uint32_t total) const
+  {
+    if(progressPhase)
+      progressPhase->store(uint32_t(phase));
+    if(totalCount)
+      totalCount->store(total);
+    if(completedCount)
+      completedCount->store(0);
+  }
+
+  void setCompleted(uint32_t completed) const
+  {
+    if(completedCount)
+      completedCount->store(completed);
+  }
+};
 
 // Control the loading and processing procedure of the scene.
 // Not the results.
@@ -139,10 +169,7 @@ struct SceneLoaderConfig
   // and use the cache file afterwards
   size_t forcePreprocessMiB = size_t(2) * 1024;
 
-  // optional thread-safe progress bar updates
-  std::atomic_uint32_t* progressPct = nullptr;
-  // optional thread-safe current LoadPhase (stored as uint32_t)
-  std::atomic_uint32_t* progressPhase = nullptr;
+  SceneProgressInfo progressInfo;
 
   // regular expression strings to discard instances by property name
   std::string skipNodeNames;
@@ -157,7 +184,7 @@ struct SceneLoaderConfig
 
   bool operator==(const SceneLoaderConfig& other) const
   {
-    // ignore progressPct
+    // ignore progressInfo (runtime pointers, not configuration)
     return processingThreadsPct == other.processingThreadsPct && processingOnly == other.processingOnly
            && processingAllowPartial == other.processingAllowPartial && processingMode == other.processingMode
            && autoSaveCache == other.autoSaveCache && autoLoadCache == other.autoLoadCache

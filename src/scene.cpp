@@ -100,7 +100,8 @@ uint32_t Scene::ProcessingInfo::logCompletedGeometry(uint64_t geometryTriangleCo
     LOGI("... geometry load & processing: %3d%%\n", percentageSnapped);
   }
 
-  return percentage;
+  // the UI derives its own percentage from completed / total geometries
+  return progressGeometriesCompleted;
 }
 
 void Scene::ProcessingInfo::logEnd()

@@ -29,14 +29,10 @@ bool RenderScene::init(Resources* res, const Scene* scene_, const StreamingConfi
   return initGeometry(res, streamingConfig_, useStreaming_);
 }
 
-bool RenderScene::initTextures(Resources*                 res,
-                               const Scene*               scene_,
-                               const SceneTexturesConfig& texturesConfig,
-                               std::atomic_uint32_t*      progressPct,
-                               std::atomic_uint32_t*      progressPhase)
+bool RenderScene::initTextures(Resources* res, const Scene* scene_, const SceneTexturesConfig& texturesConfig, const SceneProgressInfo& progressInfo)
 {
   scene = scene_;
-  return sceneTextures.init(res, *scene_, texturesConfig, progressPct, progressPhase);
+  return sceneTextures.init(res, *scene_, texturesConfig, progressInfo);
 }
 
 bool RenderScene::initGeometry(Resources* res, const StreamingConfig& streamingConfig_, bool useStreaming_)

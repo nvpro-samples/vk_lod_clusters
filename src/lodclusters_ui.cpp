@@ -236,12 +236,21 @@ struct UsagePercentages
   }
 };
 
-void LodClusters::viewportUI(ImVec2 corner)
+void LodClusters::viewportUI(ImVec2 corner, ImVec2 imageSize)
 {
-  ImVec2     mouseAbsPos = ImGui::GetMousePos();
-  glm::uvec2 mousePos    = {mouseAbsPos.x - corner.x, mouseAbsPos.y - corner.y};
+  ImVec2 mouseAbsPos = ImGui::GetMousePos();
+  ImVec2 localPos    = {mouseAbsPos.x - corner.x, mouseAbsPos.y - corner.y};
 
-  m_frameConfig.frameConstants.mousePosition = glm::uvec2(glm::vec2(mousePos) * m_resources.getFramebufferWindow2RenderScale());
+  // reject positions outside the image rect; ~0u never matches a launch id
+  if(localPos.x < 0.0f || localPos.y < 0.0f || localPos.x >= imageSize.x || localPos.y >= imageSize.y)
+  {
+    m_frameConfig.frameConstants.mousePosition = glm::uvec2(~0u, ~0u);
+  }
+  else
+  {
+    glm::uvec2 mousePos = {uint32_t(localPos.x), uint32_t(localPos.y)};
+    m_frameConfig.frameConstants.mousePosition = glm::uvec2(glm::vec2(mousePos) * m_resources.getFramebufferWindow2RenderScale());
+  }
 
   if(m_renderer)
   {
@@ -515,7 +524,7 @@ void LodClusters::onUIRender()
     ImGui::OpenPopup("Busy Info");
 
     // Position in the center of the main window when appearing
-    const ImVec2 win_size(300, 100);
+    const ImVec2 win_size(300, 130);
     ImGui::SetNextWindowSize(win_size);
     const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5F, 0.5F));
@@ -524,10 +533,15 @@ void LodClusters::onUIRender()
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 15.0);
     if(ImGui::BeginPopupModal("Busy Info", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDecoration))
     {
+      uint32_t completed = m_sceneCompletedCount.load();
+      uint32_t total     = m_sceneTotalCount.load();
+      float    fraction  = total ? float(completed) / float(total) : 0.0f;
+
       // Center text in window
       ImGui::TextDisabled("Please wait ...");
+      ImGui::TextDisabled("Completed: %u of %u", completed, total);
       ImGui::NewLine();
-      ImGui::ProgressBar(float(m_sceneProgress) / 100.0f, ImVec2(-1.0f, 0.0f), getLoadPhaseName(m_sceneProgressPhase));
+      ImGui::ProgressBar(fraction, ImVec2(-1.0f, 0.0f), getLoadPhaseName(m_sceneProgressPhase));
       ImGui::EndPopup();
     }
     ImGui::PopStyleVar();
@@ -1945,9 +1959,22 @@ void LodClusters::onUIRender()
   // Rendered image displayed fully in 'Viewport' window
   if(ImGui::Begin("Viewport"))
   {
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+
+    // draw at the framebuffer's native size, not stretched to fill (avoids upscaling
+    // while the framebuffer lags a live resize)
+    const auto& fb        = m_resources.m_frameBuffer;
+    const auto& displayed = fb.useResolved ? fb.imgColorResolved : fb.imgColor;
+    ImVec2      imageSize = avail;
+    if(displayed.extent.width && displayed.extent.height)
+    {
+      imageSize.x = std::min(avail.x, float(displayed.extent.width));
+      imageSize.y = std::min(avail.y, float(displayed.extent.height));
+    }
+
     ImVec2 corner = ImGui::GetCursorScreenPos();  // Corner of the viewport
-    ImGui::Image((ImTextureID)m_imguiTexture, ImGui::GetContentRegionAvail());
-    viewportUI(corner);
+    ImGui::Image((ImTextureID)m_imguiTexture, imageSize);
+    viewportUI(corner, imageSize);
   }
   ImGui::End();
 }

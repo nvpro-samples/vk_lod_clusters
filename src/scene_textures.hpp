@@ -29,12 +29,8 @@ struct SceneTexturesConfig
 class SceneTextures
 {
 public:
-  // progressPct/progressPhase are optional thread-safe hooks for the loading UI (see SceneLoaderConfig).
-  bool init(Resources*                 res,
-            const Scene&               scene,
-            const SceneTexturesConfig& config,
-            std::atomic_uint32_t*      progressPct   = nullptr,
-            std::atomic_uint32_t*      progressPhase = nullptr);
+  // progressInfo carries optional thread-safe hooks for the loading UI (see SceneProgressInfo).
+  bool init(Resources* res, const Scene& scene, const SceneTexturesConfig& config, const SceneProgressInfo& progressInfo);
 
   // Acquire transfer->graphics queue-family ownership of the images uploaded by init() through the
   // async uploader. Does a one-off temp submit on the graphics queue (+ wait idle), so it must run on

@@ -605,23 +605,13 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
 
   // for partial files we don't have the completed triangle information
   processingInfo.logBegin(m_processingOnlyPartialFile ? 0 : totalTriangleCount);
-  if(m_loaderConfig.progressPhase)
-  {
-    // reading pre-processed clusters from cache is "loading", building them is "processing"
-    m_loaderConfig.progressPhase->store(uint32_t(m_cacheFileView.isValid() ? LoadPhase::LoadingScene : LoadPhase::ProcessingScene));
-  }
-  if(m_loaderConfig.progressPct)
-  {
-    m_loaderConfig.progressPct->store(0);
-  }
+  // reading pre-processed clusters from cache is "loading", building them is "processing"
+  m_loaderConfig.progressInfo.beginPhase(m_cacheFileView.isValid() ? LoadPhase::LoadingScene : LoadPhase::ProcessingScene,
+                                         uint32_t(geometryToMesh.size()));
 
   nvutils::parallel_batches_pooled<1>(geometryToMesh.size(), fnLoadAndProcessGeometry, processingInfo.numOuterThreads);
 
   processingInfo.logEnd();
-  if(m_loaderConfig.progressPct)
-  {
-    m_loaderConfig.progressPct->store(100);
-  }
 
   bool notCompleted = processingInfo.progressGeometriesCompleted != geometryToMesh.size();
   if(notCompleted)
@@ -1046,11 +1036,7 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
   // second entry is dataSize
   if(m_processingOnlyPartialFile && m_processingOnlyGeometryOffsets[geometryIndex * 2 + 1])
   {
-    uint32_t percentage = processingInfo.logCompletedGeometry();
-    if(m_loaderConfig.progressPct)
-    {
-      m_loaderConfig.progressPct->store(percentage);
-    }
+    m_loaderConfig.progressInfo.setCompleted(processingInfo.logCompletedGeometry());
 
     return;
   }
@@ -1396,10 +1382,6 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
     unloadCompressedViewsGLTF(processingInfo, compressedViews, gltf);
   }
 
-  uint32_t percentage = processingInfo.logCompletedGeometry(triangleCount);
-  if(m_loaderConfig.progressPct)
-  {
-    m_loaderConfig.progressPct->store(percentage);
-  }
+  m_loaderConfig.progressInfo.setCompleted(processingInfo.logCompletedGeometry(triangleCount));
 }
 }  // namespace lodclusters

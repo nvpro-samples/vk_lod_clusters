@@ -245,10 +245,9 @@ struct TextureBatchProgress
   nvutils::PerformanceTimer clock;
   double                    startTime = 0;
 
-  // optional UI progress-bar hooks (see SceneLoaderConfig)
-  std::atomic_uint32_t* progressPct   = nullptr;
-  std::atomic_uint32_t* progressPhase = nullptr;
-  uint32_t              phase         = 0;  // LoadPhase for this pass
+  // optional UI progress hooks (see SceneProgressInfo)
+  SceneProgressInfo progressInfo;
+  LoadPhase         phase = LoadPhase::LoadingTextures;  // LoadPhase for this pass
 
   void logBegin(const char* label_, uint32_t imageCount_, uint32_t threadCount)
   {
@@ -257,10 +256,7 @@ struct TextureBatchProgress
     completedCount      = 0;
     progressLastPercent = 0;
     startTime           = clock.getMicroseconds();
-    if(progressPhase)
-      progressPhase->store(phase);
-    if(progressPct)
-      progressPct->store(0);
+    progressInfo.beginPhase(phase, imageCount);
     LOGI("... %s: images %u, threads %u\n", label, imageCount, threadCount);
   }
 
@@ -269,14 +265,12 @@ struct TextureBatchProgress
     std::lock_guard lock(progressMutex);
 
     completedCount++;
+    progressInfo.setCompleted(completedCount);
 
     if(imageCount == 0)
       return;
 
     const uint32_t percentage = uint32_t(double(completedCount * 100) / double(imageCount));
-
-    if(progressPct)
-      progressPct->store(percentage);
 
     constexpr uint32_t percentageGranularity = 5;
     const uint32_t     percentageSnapped     = (percentage / percentageGranularity) * percentageGranularity;
@@ -542,11 +536,7 @@ bool uploadKtxImage(AsyncImageLoader& loader, nvvk::Image& vkImage, nv_ktx::KTXI
 }  // namespace
 
 
-bool SceneTextures::init(Resources*                 res,
-                         const Scene&               scene,
-                         const SceneTexturesConfig& config,
-                         std::atomic_uint32_t*      progressPct,
-                         std::atomic_uint32_t*      progressPhase)
+bool SceneTextures::init(Resources* res, const Scene& scene, const SceneTexturesConfig& config, const SceneProgressInfo& progressInfo)
 {
   m_res = res;
 
@@ -590,9 +580,8 @@ bool SceneTextures::init(Resources*                 res,
     std::vector<MipSizes> textureMipSizes(imageCount);
 
     TextureBatchProgress probeProgress;
-    probeProgress.progressPct   = progressPct;
-    probeProgress.progressPhase = progressPhase;
-    probeProgress.phase         = uint32_t(LoadPhase::ProbingTextures);
+    probeProgress.progressInfo = progressInfo;
+    probeProgress.phase        = LoadPhase::ProbingTextures;
     probeProgress.logBegin("texture budget probing", imageCount, config.maxThreads);
 
     nvutils::parallel_batches<1>(
@@ -664,9 +653,8 @@ bool SceneTextures::init(Resources*                 res,
     TextureBatchProgress uploadProgress;
     if(imageCount)
     {
-      uploadProgress.progressPct   = progressPct;
-      uploadProgress.progressPhase = progressPhase;
-      uploadProgress.phase         = uint32_t(LoadPhase::LoadingTextures);
+      uploadProgress.progressInfo = progressInfo;
+      uploadProgress.phase        = LoadPhase::LoadingTextures;
       uploadProgress.logBegin("texture upload", imageCount, config.maxThreads);
 
       nvutils::parallel_batches<1>(

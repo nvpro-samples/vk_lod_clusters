@@ -40,11 +40,7 @@ public:
   // loader thread (uploads go through the transfer queue), while initGeometry() does the GPU
   // geometry setup (CLAS/BLAS build) on the primary queue and must run on the main thread.
   // init() simply runs both.
-  bool initTextures(Resources*                 res,
-                    const Scene*               scene_,
-                    const SceneTexturesConfig& texturesConfig,
-                    std::atomic_uint32_t*      progressPct   = nullptr,
-                    std::atomic_uint32_t*      progressPhase = nullptr);
+  bool initTextures(Resources* res, const Scene* scene_, const SceneTexturesConfig& texturesConfig, const SceneProgressInfo& progressInfo = {});
   bool initGeometry(Resources* res, const StreamingConfig& streamingConfig_, bool useStreaming_);
 
   void deinit();

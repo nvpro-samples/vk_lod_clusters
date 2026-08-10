@@ -187,9 +187,11 @@ private:
   glm::vec3              m_sceneUpVector = glm::vec3(0, 1, 0);
   SceneGridConfig        m_sceneGridConfig;
   SceneGridConfig        m_sceneGridConfigLast;
-  std::atomic_bool       m_sceneLoading       = false;
-  std::atomic_uint32_t   m_sceneProgress      = 0;
-  std::atomic_uint32_t   m_sceneProgressPhase = 0;  // current LoadPhase
+  std::atomic_bool       m_sceneLoading = false;
+  // progress signals shared with the background loader via m_sceneLoaderConfig.progressInfo
+  std::atomic_uint32_t m_sceneCompletedCount = 0;  // items done in the current phase
+  std::atomic_uint32_t m_sceneTotalCount     = 0;  // items total in the current phase
+  std::atomic_uint32_t m_sceneProgressPhase  = 0;  // current LoadPhase
   // set by the loader thread once textures are loaded into m_renderScenePending; the main thread
   // then promotes it to m_renderScene and finishes the GPU geometry setup in handleChanges.
   std::atomic_bool m_renderSceneGeometryPending = false;
@@ -284,7 +286,7 @@ private:
   float decodePickingDepth(const shaderio::Readback& readback);
   bool  isPickingValid(const shaderio::Readback& readback);
 
-  void viewportUI(ImVec2 corner);
+  void viewportUI(ImVec2 corner, ImVec2 imageSize);
 
   void loadingUI();
 

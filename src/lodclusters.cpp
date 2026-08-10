@@ -4,6 +4,7 @@
  */
 
 #include <thread>
+#include <cstdlib>
 #include <cmath>
 #include <span>
 
@@ -194,8 +195,9 @@ LodClusters::LodClusters(const Info& info)
 
   m_lastAmbientOcclusionSamples = m_frameConfig.frameConstants.ambientOcclusionSamples;
 
-  m_sceneLoaderConfig.progressPct   = &m_sceneProgress;
-  m_sceneLoaderConfig.progressPhase = &m_sceneProgressPhase;
+  m_sceneLoaderConfig.progressInfo.completedCount = &m_sceneCompletedCount;
+  m_sceneLoaderConfig.progressInfo.totalCount     = &m_sceneTotalCount;
+  m_sceneLoaderConfig.progressInfo.progressPhase  = &m_sceneProgressPhase;
 }
 
 void LodClusters::initScene(std::filesystem::path filePath, std::string cacheSuffix, bool configChange)
@@ -210,7 +212,8 @@ void LodClusters::initScene(std::filesystem::path filePath, std::string cacheSuf
 
     m_scene                 = nullptr;
     m_sceneLoading          = true;
-    m_sceneProgress         = 0;
+    m_sceneCompletedCount   = 0;
+    m_sceneTotalCount       = 0;
     m_sceneProgressPhase    = uint32_t(LoadPhase::ProcessingScene);
     m_sceneLoaderConfigLast = m_sceneLoaderConfig;
 
@@ -252,9 +255,15 @@ void LodClusters::initScene(std::filesystem::path filePath, std::string cacheSuf
         // (not m_renderScene) so the concurrently-running UI never touches a half-constructed scene; the
         // main thread promotes it and finishes the GPU geometry setup via initRenderSceneGeometry().
         auto renderScene = std::make_unique<RenderScene>();
-        renderScene->initTextures(&m_resources, m_scene.get(), m_texturesConfig, &m_sceneProgress, &m_sceneProgressPhase);
-        m_renderScenePending         = std::move(renderScene);
-        m_renderSceneGeometryPending = true;
+        if(renderScene->initTextures(&m_resources, m_scene.get(), m_texturesConfig, m_sceneLoaderConfig.progressInfo))
+        {
+          m_renderScenePending         = std::move(renderScene);
+          m_renderSceneGeometryPending = true;
+        }
+        else
+        {
+          LOGW("Loading scene textures failed\n");
+        }
       }
       m_sceneLoading = false;
     });
@@ -273,7 +282,12 @@ void LodClusters::initRenderScene()
 
   // Synchronous (config-change) path: textures load on the main thread here (no busy popup, but
   // the progress atomics are still updated), then the GPU geometry setup follows immediately.
-  m_renderScene->initTextures(&m_resources, m_scene.get(), m_texturesConfig, &m_sceneProgress, &m_sceneProgressPhase);
+  if(!m_renderScene->initTextures(&m_resources, m_scene.get(), m_texturesConfig, m_sceneLoaderConfig.progressInfo))
+  {
+    LOGW("Loading scene textures failed\n");
+    deinitRenderScene();
+    return;
+  }
   m_renderSceneGeometryPending = false;
   initRenderSceneGeometry();
 }
@@ -334,8 +348,7 @@ void LodClusters::deinitRenderScene()
 
 void LodClusters::deinitScene()
 {
-  // scene loading is asynchronous, it must complete before any teardown
-  // (headless runs can otherwise shut down mid-load and crash)
+  // async loading must complete before teardown
   if(m_sceneLoadingThread.joinable())
   {
     m_sceneLoadingThread.join();
@@ -619,6 +632,13 @@ void LodClusters::onAttach(nvapp::Application* app)
 
 void LodClusters::onDetach()
 {
+  // don't block the close on a running background load; let the OS reclaim everything
+  if(m_sceneLoading.load())
+  {
+    LOGI("Scene load still in progress on window close, exiting immediately\n");
+    std::_Exit(0);
+  }
+
   NVVK_CHECK(vkDeviceWaitIdle(m_app->getDevice()));
 
   deinitRenderer();
