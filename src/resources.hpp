@@ -219,27 +219,24 @@ public:
     // 4096: fix render resolution to square
     int supersample = 0;
 
-    bool  useResolved = false;
-    float pixelScale  = 1;
+    bool  useResolved      = false;
+    bool  useRasterization = false;
+    float pixelScale       = 1;
 
-    VkFormat colorFormat = VK_FORMAT_R8G8B8A8_UNORM;
+    VkFormat colorFormat           = VK_FORMAT_R8G8B8A8_UNORM;
+    VkFormat raytracingDepthFormat = VK_FORMAT_R32_SFLOAT;
     VkFormat depthStencilFormat;
 
-    VkViewport viewport;
-    VkRect2D   scissor;
-
-    nvvk::Image imgColor         = {};
-    nvvk::Image imgColorResolved = {};
-    nvvk::Image imgDepthStencil  = {};
-
+    VkViewport  viewport;
+    VkRect2D    scissor;
     VkImageView viewDepth = VK_NULL_HANDLE;
 
-    VkFormat    raytracingDepthFormat = VK_FORMAT_R32_SFLOAT;
-    nvvk::Image imgRaytracingDepth    = {};
-
-    nvvk::Image imgRasterAtomic = {};
-
-    nvvk::Image imgHizFar[2] = {};
+    nvvk::Image imgColor           = {};
+    nvvk::Image imgColorResolved   = {};
+    nvvk::Image imgDepthStencil    = {};
+    nvvk::Image imgRaytracingDepth = {};
+    nvvk::Image imgRasterAtomic    = {};
+    nvvk::Image imgHizFar[2]       = {};
 
     VkPipelineRenderingCreateInfo pipelineRenderingInfo = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
 
@@ -259,6 +256,9 @@ public:
 
   bool initFramebuffer(const VkExtent2D& windowSize, int supersample);
   void updateFramebufferRenderSizeDependent(VkCommandBuffer cmd);
+  // rebuilds render-size dependent resources so rasterization-only targets (HBAO, raster atomic)
+  // are only allocated while a rasterization renderer is active
+  void setFramebufferUseRasterization(bool enabled);
 #if USE_DLSS
   void updateFramebufferDlss(VkCommandBuffer cmd);
   void setFramebufferDlss(DlssMode mode, NVSDK_NGX_PerfQuality_Value dlssQuality);
@@ -266,6 +266,8 @@ public:
 #endif
   void deinitFramebufferRenderSizeDependent();
   void deinitFramebuffer();
+
+  void updateFramebufferMemBytes();
 
   glm::vec2 getFramebufferWindow2RenderScale() const;
 
@@ -409,6 +411,8 @@ public:
   }
 
   VkDeviceSize getDeviceLocalHeapSize() const;
+
+  VkDeviceSize getFramebufferMemBytes() const { return m_frameBufferMemBytes; }
 
   bool isBufferSizeValid(VkDeviceSize size) const;
 
@@ -565,12 +569,13 @@ public:
     nvvk::BufferTyped<shaderio::Readback>       readBackHost;
   } m_commonBuffers;
 
-  nvvk::PhysicalDeviceInfo         m_physicalDeviceInfo = {};
-  VkPhysicalDeviceMemoryProperties m_memoryProperties   = {};
-  nvvk::GraphicsPipelineState      m_basicGraphicsState = {};
-  uint32_t                         m_cycleIndex         = 0;
-  size_t                           m_fboChangeID        = ~0;
-  glm::vec4                        m_bgColor            = {0, 0, 0, 1.0};
+  nvvk::PhysicalDeviceInfo         m_physicalDeviceInfo  = {};
+  VkPhysicalDeviceMemoryProperties m_memoryProperties    = {};
+  nvvk::GraphicsPipelineState      m_basicGraphicsState  = {};
+  uint32_t                         m_cycleIndex          = 0;
+  size_t                           m_fboChangeID         = ~0;
+  glm::vec4                        m_bgColor             = {0, 0, 0, 1.0};
+  VkDeviceSize                     m_frameBufferMemBytes = 0;
 
   VkPhysicalDeviceMeshShaderPropertiesEXT m_meshShaderPropsEXT = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT};
   VkPhysicalDeviceMeshShaderPropertiesNV m_meshShaderPropsNV = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_NV};

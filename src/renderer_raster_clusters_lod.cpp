@@ -154,6 +154,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
 {
   m_resourceReservedUsage = {};
   m_config                = config;
+  res.setFramebufferUseRasterization(true);
 #if USE_DLSS
   m_config.useDlss = m_config.useDlss && res.m_frameBuffer.dlssUpscaler.isAvailable();
   res.setFramebufferDlss(m_config.useDlss ? Resources::DlssMode::eSuperResolution : Resources::DlssMode::eNone, m_config.dlssQuality);

@@ -9,6 +9,7 @@
 #include <inttypes.h>
 #include <mutex>
 #include <span>
+#include <vulkan/utility/vk_format_utils.h>
 #include <nvimageformats/texture_formats.h>
 #include <nvimageformats/nv_dds.h>
 #include <nvimageformats/nv_ktx.h>
@@ -32,28 +33,28 @@ uint32_t mipDimension(uint32_t dim, uint32_t mipLevel)
   return std::max(1u, dim >> mipLevel);
 }
 
-VkComponentSwizzle ktxSwizzleToVk(nv_ktx::KTX_SWIZZLE swizzle)
+VkComponentSwizzle ktxSwizzleToVk(nv_ktx::Swizzle swizzle)
 {
   switch(swizzle)
   {
-    case nv_ktx::KTX_SWIZZLE::ZERO:
+    case nv_ktx::Swizzle::ZERO:
       return VK_COMPONENT_SWIZZLE_ZERO;
-    case nv_ktx::KTX_SWIZZLE::ONE:
+    case nv_ktx::Swizzle::ONE:
       return VK_COMPONENT_SWIZZLE_ONE;
-    case nv_ktx::KTX_SWIZZLE::R:
+    case nv_ktx::Swizzle::R:
       return VK_COMPONENT_SWIZZLE_R;
-    case nv_ktx::KTX_SWIZZLE::G:
+    case nv_ktx::Swizzle::G:
       return VK_COMPONENT_SWIZZLE_G;
-    case nv_ktx::KTX_SWIZZLE::B:
+    case nv_ktx::Swizzle::B:
       return VK_COMPONENT_SWIZZLE_B;
-    case nv_ktx::KTX_SWIZZLE::A:
+    case nv_ktx::Swizzle::A:
       return VK_COMPONENT_SWIZZLE_A;
     default:
       return VK_COMPONENT_SWIZZLE_IDENTITY;
   }
 }
 
-VkComponentMapping ktxSwizzleToVkComponentMapping(const std::array<nv_ktx::KTX_SWIZZLE, 4>& swizzle)
+VkComponentMapping ktxSwizzleToVkComponentMapping(const std::array<nv_ktx::Swizzle, 4>& swizzle)
 {
   return {ktxSwizzleToVk(swizzle[0]), ktxSwizzleToVk(swizzle[1]), ktxSwizzleToVk(swizzle[2]), ktxSwizzleToVk(swizzle[3])};
 }
@@ -92,23 +93,23 @@ bool validateDdsImage(const nv_dds::Image& image, uint64_t imageIDForLog)
   return true;
 }
 
-bool validateKtxImage(const nv_ktx::KTXImage& image, uint64_t imageIDForLog)
+bool validateKtxImage(const nv_ktx::Image& image, uint64_t imageIDForLog)
 {
-  if(image.mip_0_depth > 1)
+  if(image.mip0Depth > 1)
   {
     LOGW("Image %" PRIu64 " had a depth of %u, but scene textures cannot handle volume textures.\n", imageIDForLog,
-         image.mip_0_depth);
+         image.mip0Depth);
     return false;
   }
-  if(image.num_faces > 1)
+  if(image.numFaces > 1)
   {
-    LOGW("Image %" PRIu64 " had %u faces, but scene textures cannot handle cubemaps.\n", imageIDForLog, image.num_faces);
+    LOGW("Image %" PRIu64 " had %u faces, but scene textures cannot handle cubemaps.\n", imageIDForLog, image.numFaces);
     return false;
   }
-  if(image.num_layers_possibly_0 > 1)
+  if(image.numLayersPossibly0 > 1)
   {
     LOGW("Image %" PRIu64 " had %u array elements, but scene textures cannot handle array textures.\n", imageIDForLog,
-         image.num_layers_possibly_0);
+         image.numLayersPossibly0);
     return false;
   }
   return true;
@@ -123,10 +124,10 @@ bool mipSizesFromDds(MipSizes& out, const nv_dds::Image& image)
   return out.mipCount > 0;
 }
 
-bool mipSizesFromKtx(MipSizes& out, const nv_ktx::KTXImage& image)
+bool mipSizesFromKtx(MipSizes& out, const nv_ktx::Image& image)
 {
   out          = {};
-  out.mipCount = std::min(image.num_mips, 16u);
+  out.mipCount = std::min(image.numMips, 16u);
   for(uint32_t mip = 0; mip < out.mipCount; mip++)
     out.mipSizes[mip] = image.getMipByteSizeSum(mip);
   return out.mipCount > 0;
@@ -139,17 +140,15 @@ bool probeMipSizesFromMapped(MipSizes& out, const char* mapped, size_t mappedSiz
   if(isDdsFile(mapped, mappedSize))
   {
     nv_dds::Image        image;
-    nv_dds::ReadSettings readSettings{};
-    readSettings.validateInputSize = false;
+    nv_dds::ReadSettings readSettings{.validateInputSize = false};
     if(!image.readHeaderFromMemory(mapped, mappedSize, readSettings).has_value() && validateDdsImage(image, imageIDForLog))
       return mipSizesFromDds(out, image);
   }
 
   if(isKtxFile(mapped, mappedSize))
   {
-    nv_ktx::KTXImage     image;
-    nv_ktx::ReadSettings readSettings{};
-    readSettings.validate_input_size = false;
+    nv_ktx::Image        image;
+    nv_ktx::ReadSettings readSettings{.validateInputSize = false};
     if(!image.readHeaderFromMemory(mapped, mappedSize, readSettings).has_value() && validateKtxImage(image, imageIDForLog))
       return mipSizesFromKtx(out, image);
   }
@@ -228,9 +227,21 @@ void computeLoadPlansForBudget(const std::vector<MipSizes>& textureMipSizes, std
 
 struct AsyncImageLoader;
 
-bool uploadDdsImage(AsyncImageLoader& loader, nvvk::Image& vkImage, nv_dds::Image& image, const char* mapped, size_t mappedSize, bool srgb, uint32_t baseMipLevel);
+bool uploadDdsImage(AsyncImageLoader&   loader,
+                    nvvk::Image&        vkImage,
+                    nv_dds::Image&      image,
+                    const char*         mapped,
+                    size_t              mappedSize,
+                    const Scene::Image& sceneImage,
+                    uint32_t            baseMipLevel);
 
-bool uploadKtxImage(AsyncImageLoader& loader, nvvk::Image& vkImage, nv_ktx::KTXImage& image, const char* mapped, size_t mappedSize, bool srgb, uint32_t baseMipLevel);
+bool uploadKtxImage(AsyncImageLoader&   loader,
+                    nvvk::Image&        vkImage,
+                    nv_ktx::Image&      image,
+                    const char*         mapped,
+                    size_t              mappedSize,
+                    const Scene::Image& sceneImage,
+                    uint32_t            baseMipLevel);
 
 struct TextureBatchProgress
 {
@@ -294,23 +305,25 @@ struct TextureBatchProgress
 // serializes its batches and submits internally.
 struct AsyncImageLoader
 {
-  Resources&         res;
-  std::atomic_bool   failed{false};
-  std::atomic_bool   missing{false};
-  std::atomic_size_t uploadedMemBytes{0};
+  Resources&           res;
+  std::atomic_size_t   uploadedMemBytes{0};
+  std::atomic_uint32_t remappedCount{0};
+  // indexed by imageID, distinct per worker. Failed images are dropped so they fall back to defaults.
+  std::vector<uint8_t> imageFailed;
 
-  AsyncImageLoader(Resources& res_)
+  AsyncImageLoader(Resources& res_, size_t imageCount)
       : res(res_)
+      , imageFailed(imageCount, 0)
   {
   }
 
-  void uploadImage(const std::string& fileName, bool sRGB, uint64_t imageID, nvvk::Image& image, uint32_t baseMipLevel)
+  void uploadImage(const Scene::Image& sceneImage, uint64_t imageID, nvvk::Image& image, uint32_t baseMipLevel)
   {
     nvutils::FileReadMapping readMapping;
-    if(!readMapping.open(fileName))
+    if(!readMapping.open(sceneImage.filename))
     {
-      LOGW("image loader: file not found %s\n", fileName.c_str());
-      missing = true;
+      LOGW("image loader: file not found %s\n", sceneImage.filename.c_str());
+      imageFailed[imageID] = 1;
       return;
     }
 
@@ -322,41 +335,76 @@ struct AsyncImageLoader
     if(isDdsFile(mapped, mappedSize))
     {
       nv_dds::Image        ddsImage;
-      nv_dds::ReadSettings readSettings{};
-      readSettings.validateInputSize = false;
+      nv_dds::ReadSettings readSettings{.validateInputSize = false};
       if(!ddsImage.readHeaderFromMemory(mapped, mappedSize, readSettings).has_value()
          && validateDdsImage(ddsImage, imageID) && baseMipLevel < ddsImage.getNumMips())
       {
-        uploaded = uploadDdsImage(*this, image, ddsImage, mapped, mappedSize, sRGB, baseMipLevel);
+        uploaded = uploadDdsImage(*this, image, ddsImage, mapped, mappedSize, sceneImage, baseMipLevel);
       }
     }
     else if(isKtxFile(mapped, mappedSize))
     {
-      nv_ktx::KTXImage     ktxImage;
-      nv_ktx::ReadSettings readSettings{};
-      readSettings.validate_input_size = false;
+      nv_ktx::Image        ktxImage;
+      nv_ktx::ReadSettings readSettings{.validateInputSize = false};
       if(!ktxImage.readHeaderFromMemory(mapped, mappedSize, readSettings).has_value()
-         && validateKtxImage(ktxImage, imageID) && baseMipLevel < ktxImage.num_mips)
+         && validateKtxImage(ktxImage, imageID) && baseMipLevel < ktxImage.numMips)
       {
-        uploaded = uploadKtxImage(*this, image, ktxImage, mapped, mappedSize, sRGB, baseMipLevel);
+        uploaded = uploadKtxImage(*this, image, ktxImage, mapped, mappedSize, sceneImage, baseMipLevel);
       }
     }
 
     if(!uploaded)
     {
-      LOGW("image loader: failed to load %s\n", fileName.c_str());
-      failed = true;
+      LOGW("image loader: failed to load %s\n", sceneImage.filename.c_str());
+      imageFailed[imageID] = 1;
     }
   }
 };
 
-bool uploadDdsImage(AsyncImageLoader& loader, nvvk::Image& vkImage, nv_dds::Image& image, const char* mapped, size_t mappedSize, bool srgb, uint32_t baseMipLevel)
+// Route reduced-channel textures (BC5/RG metallic-roughness, BC4/R specular) to the channels the shader
+// reads, so it stays format agnostic. Leaves `mapping` alone and returns false if the format has them.
+bool channelLayoutSwizzle(VkComponentMapping& mapping, Scene::ImageChannelLayout channelLayout, VkFormat format)
+{
+  const uint32_t componentCount = vkuFormatComponentCount(format);
+
+  switch(channelLayout)
+  {
+    case Scene::IMAGE_CHANNELS_METALLIC_ROUGHNESS:
+      // glTF has roughness in G and metalness in B, a two-channel texture has them in R,G -> 1GB
+      if(componentCount == 2)
+      {
+        mapping = {VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_ONE};
+        return true;
+      }
+      break;
+    case Scene::IMAGE_CHANNELS_SPECULAR:
+      // KHR_materials_specular has strength in A, a single-channel texture has it in R -> 111A
+      if(componentCount == 1)
+      {
+        mapping = {VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_ONE, VK_COMPONENT_SWIZZLE_R};
+        return true;
+      }
+      break;
+    case Scene::IMAGE_CHANNELS_DEFAULT:
+      break;
+  }
+
+  return false;
+}
+
+bool uploadDdsImage(AsyncImageLoader&   loader,
+                    nvvk::Image&        vkImage,
+                    nv_dds::Image&      image,
+                    const char*         mapped,
+                    size_t              mappedSize,
+                    const Scene::Image& sceneImage,
+                    uint32_t            baseMipLevel)
 {
   if(baseMipLevel >= image.getNumMips())
     return false;
 
   const VkFormat format =
-      texture_formats::tryForceVkFormatTransferFunction(texture_formats::dxgiToVulkan(image.dxgiFormat), srgb);
+      texture_formats::tryForceVkFormatTransferFunction(texture_formats::dxgiToVulkan(image.dxgiFormat), sceneImage.sRGB);
   if(format == VK_FORMAT_UNDEFINED)
   {
     LOGW("Could not determine a VkFormat for DXGI format %u (%s).\n", image.dxgiFormat,
@@ -379,7 +427,14 @@ bool uploadDdsImage(AsyncImageLoader& loader, nvvk::Image& vkImage, nv_dds::Imag
   imageCreateInfo.format            = format;
   imageCreateInfo.usage             = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
-  if(VK_SUCCESS != NVVK_FAIL_REPORT(loader.res.m_allocator.createImage(vkImage, imageCreateInfo, DEFAULT_VkImageViewCreateInfo)))
+  // DDS has no swizzle metadata, the channel layout is all we have
+  VkImageViewCreateInfo imageViewCreateInfo = DEFAULT_VkImageViewCreateInfo;
+  if(channelLayoutSwizzle(imageViewCreateInfo.components, sceneImage.channelLayout, format))
+  {
+    loader.remappedCount++;
+  }
+
+  if(VK_SUCCESS != NVVK_FAIL_REPORT(loader.res.m_allocator.createImage(vkImage, imageCreateInfo, imageViewCreateInfo)))
     return false;
 
   AsyncUploader& uploader = loader.res.m_asyncUploader;
@@ -442,19 +497,25 @@ bool uploadDdsImage(AsyncImageLoader& loader, nvvk::Image& vkImage, nv_dds::Imag
   return true;
 }
 
-bool uploadKtxImage(AsyncImageLoader& loader, nvvk::Image& vkImage, nv_ktx::KTXImage& image, const char* mapped, size_t mappedSize, bool srgb, uint32_t baseMipLevel)
+bool uploadKtxImage(AsyncImageLoader&   loader,
+                    nvvk::Image&        vkImage,
+                    nv_ktx::Image&      image,
+                    const char*         mapped,
+                    size_t              mappedSize,
+                    const Scene::Image& sceneImage,
+                    uint32_t            baseMipLevel)
 {
-  if(baseMipLevel >= image.num_mips)
+  if(baseMipLevel >= image.numMips)
     return false;
 
-  const VkFormat format = texture_formats::tryForceVkFormatTransferFunction(image.format, srgb);
+  const VkFormat format = texture_formats::tryForceVkFormatTransferFunction(image.format, sceneImage.sRGB);
   if(format == VK_FORMAT_UNDEFINED)
     return false;
 
-  const uint32_t   mipLevels = image.num_mips - baseMipLevel;
-  const VkExtent3D extent    = {mipDimension(image.mip_0_width, baseMipLevel),   //
-                                mipDimension(image.mip_0_height, baseMipLevel),  //
-                                mipDimension(image.mip_0_depth, baseMipLevel)};
+  const uint32_t   mipLevels = image.numMips - baseMipLevel;
+  const VkExtent3D extent    = {mipDimension(image.mip0Width, baseMipLevel),   //
+                                mipDimension(image.mip0Height, baseMipLevel),  //
+                                mipDimension(image.mip0Depth, baseMipLevel)};
 
   // Read every mip of the tail, not just the first. numMips defaults to 1, so leaving it unset would
   // read only mip `baseMipLevel` and leave the remaining mip levels (still allocated + sampled) black.
@@ -466,9 +527,30 @@ bool uploadKtxImage(AsyncImageLoader& loader, nvvk::Image& vkImage, nv_ktx::KTXI
   imageCreateInfo.format            = format;
   imageCreateInfo.usage             = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
+  const std::array<nv_ktx::Swizzle, 4> identitySwizzle = {nv_ktx::Swizzle::R, nv_ktx::Swizzle::G, nv_ktx::Swizzle::B,
+                                                          nv_ktx::Swizzle::A};
+
   VkImageViewCreateInfo imageViewCreateInfo = DEFAULT_VkImageViewCreateInfo;
-  imageViewCreateInfo.components            = ktxSwizzleToVkComponentMapping(image.swizzle);
   imageViewCreateInfo.format                = format;
+
+  if(image.swizzle != identitySwizzle)
+  {
+    // the file's swizzle wins, it may already place the channels where glTF wants them. Not composable,
+    // nothing in the file tells us which of the two intents it carries.
+    imageViewCreateInfo.components = ktxSwizzleToVkComponentMapping(image.swizzle);
+
+    VkComponentMapping wouldRemap{};
+    if(channelLayoutSwizzle(wouldRemap, sceneImage.channelLayout, format)
+       && memcmp(&wouldRemap, &imageViewCreateInfo.components, sizeof(VkComponentMapping)) != 0)
+    {
+      LOGW("image loader: %s declares a swizzle and is also channel reduced, trusting the file's swizzle\n",
+           sceneImage.filename.c_str());
+    }
+  }
+  else if(channelLayoutSwizzle(imageViewCreateInfo.components, sceneImage.channelLayout, format))
+  {
+    loader.remappedCount++;
+  }
 
   if(VK_SUCCESS != NVVK_FAIL_REPORT(loader.res.m_allocator.createImage(vkImage, imageCreateInfo, imageViewCreateInfo)))
     return false;
@@ -628,7 +710,7 @@ bool SceneTextures::init(Resources* res, const Scene& scene, const SceneTextures
   }
 
   {
-    AsyncImageLoader loader(*res);
+    AsyncImageLoader loader(*res, imageCount);
 
     // Upload the 1x1 default images (white / black / normal) through the async uploader.
     {
@@ -660,8 +742,7 @@ bool SceneTextures::init(Resources* res, const Scene& scene, const SceneTextures
       nvutils::parallel_batches<1>(
           imageCount,
           [&](uint64_t idx) {
-            loader.uploadImage(scene.m_images[idx].filename, scene.m_images[idx].sRGB, idx, m_images[idx],
-                               textureBaseMipLevels[idx]);
+            loader.uploadImage(scene.m_images[idx], idx, m_images[idx], textureBaseMipLevels[idx]);
             uploadProgress.logCompleted();
           },
           config.maxThreads);
@@ -674,8 +755,26 @@ bool SceneTextures::init(Resources* res, const Scene& scene, const SceneTextures
     res->m_asyncUploader.flushPending();
     res->m_asyncUploader.waitForCompletion();
 
-    if(loader.failed)
-      return false;
+    // Drop failed (possibly half-initialized) images so the descriptor write below falls back to the
+    // default 1x1 texture. Not done in the worker, the uploader may still reference the image there.
+    uint32_t failedCount = 0;
+    for(uint32_t i = 0; i < imageCount; i++)
+    {
+      if(!loader.imageFailed[i])
+        continue;
+
+      res->m_allocator.destroyImage(m_images[i]);
+      failedCount++;
+    }
+    if(failedCount)
+    {
+      LOGW("image loader: %u of %u textures unavailable, using default textures for those\n", failedCount, imageCount);
+    }
+    if(loader.remappedCount)
+    {
+      LOGI("image loader: %u textures carried fewer channels than glTF specifies, swizzled into place\n",
+           loader.remappedCount.load());
+    }
 
     m_textureMemBytes = loader.uploadedMemBytes;
   }

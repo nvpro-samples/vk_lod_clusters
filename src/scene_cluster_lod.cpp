@@ -10,6 +10,7 @@
 #include <meshoptimizer.h>
 
 #include "scene.hpp"
+#include "threadlocal_arena.hpp"
 #include "../shaders/attribute_encoding.h"
 
 namespace lodclusters {
@@ -733,6 +734,9 @@ void Scene::buildGeometryLod(ProcessingInfo& processingInfo, GeometryStorage& ge
   // this only reorders triangles within cluster
   clodInfo.optimize_clusters = true;
 
+  // sizes the cluster index pool's per-thread free lists
+  clodInfo.thread_count = processingInfo.numInnerThreads;
+
   // account for meshopt_partitionClusters's using a target value with a higher worst case
   while((clodInfo.partition_size + clodInfo.partition_size / 3) > m_config.clusterGroupSize)
   {
@@ -808,23 +812,10 @@ void Scene::buildGeometryLod(ProcessingInfo& processingInfo, GeometryStorage& ge
                             + sizeof(uint32_t) * m_config.clusterGroupSize * m_config.clusterVertices;
   context.threadGroupDatas.resize(context.threadGroupSize * processingInfo.numInnerThreads);
 
-  size_t reservedClusters  = (geometry.triangles.size() + m_config.clusterTriangles - 1) / m_config.clusterTriangles;
-  size_t reservedGroups    = (reservedClusters + m_config.clusterGroupSize - 1) / m_config.clusterGroupSize;
-  size_t reservedTriangles = geometry.triangles.size();
+  size_t reservedClusters = (geometry.triangles.size() + m_config.clusterTriangles - 1) / m_config.clusterTriangles;
+  // the lod chain roughly triples the group count of the highest detail level
+  size_t reservedGroups = ((reservedClusters + m_config.clusterGroupSize - 1) / m_config.clusterGroupSize) * 3;
 
-  reservedClusters  = size_t(double(reservedClusters) * 2.0);
-  reservedGroups    = size_t(double(reservedGroups) * 3.0);
-  reservedTriangles = size_t(double(reservedTriangles) * 2.0);
-
-  size_t reservedData = 0;
-  reservedData += sizeof(shaderio::Group) * reservedGroups;
-  reservedData += sizeof(shaderio::Cluster) * reservedClusters;
-  reservedData += sizeof(shaderio::BBox) * reservedClusters;
-  reservedData += sizeof(uint32_t) * reservedClusters;
-  reservedData += sizeof(uint8_t) * reservedTriangles;
-  reservedData += sizeof(glm::vec3) * reservedClusters * m_config.clusterVertices;
-
-  geometry.groupData.reserve(reservedData);
   geometry.groupInfos.reserve(reservedGroups);
   geometry.lodLevels.reserve(32);
 
@@ -867,6 +858,14 @@ void Scene::buildGeometryLod(ProcessingInfo& processingInfo, GeometryStorage& ge
   computeLodBboxes_recursive(geometry, 0);
 
   ((std::atomic_uint32_t&)m_histograms.lodLevels[geometry.lodLevelsCount])++;
+
+  // geometry sizes vary a lot, don't let one large one pin its high-water buffers
+  // on this thread for the rest of the run
+  if(size_t leaked = threadLocalArenaThreadLiveBytes())
+  {
+    LOGW("meshopt arena: %zu bytes still live after geometry build, trim skipped (out-of-order free?)\n", leaked);
+  }
+  threadLocalArenaTrimThread();
 }
 
 void Scene::buildGeometryLodHierarchy(ProcessingInfo& processingInfo, GeometryStorage& geometry)

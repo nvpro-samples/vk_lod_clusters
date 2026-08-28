@@ -15,6 +15,7 @@
 // and was modified by NVIDIA CORPORATION
 //
 // - multi-threading support through the `clodIteration` callback and `clodBuild_iterationTask`
+// - `Cluster::indices` served from a fixed-size slot pool rather than a std::vector each
 
 #pragma once
 
@@ -22,6 +23,12 @@
 
 struct clodConfig
 {
+	// number of threads that may run `clodBuild_iterationTask` concurrently; sizes the
+	// per-thread free lists of the cluster index pool. 0 is treated as 1.
+	// the `thread_index` handed to `clodBuild_iterationTask` must be a dense 0-based worker
+	// index below max(thread_count, 1), not an opaque thread id.
+	size_t thread_count;
+
 	// configuration of each cluster; maps to meshopt_buildMeshlets* parameters
 	size_t max_vertices;
 	size_t min_triangles;
@@ -165,6 +172,8 @@ size_t clodBuild(clodConfig config, clodMesh mesh, void* output_context, clodOut
 // If `iteration_callback` is used, it must pass through the `iteration_context` unaltered
 // and call this function `task_count` many times.
 // The provided `output_context` is passed to `clodOutput`.
+// `thread_index` must be a dense 0-based worker index below max(clodConfig::thread_count, 1);
+// it indexes per-thread state, so an opaque thread id is not valid here.
 // Is thread-safe as long as the output callback is thread-safe or null.
 void clodBuild_iterationTask(void* iteration_context, void* output_context, size_t task_index, unsigned int thread_index);
 
@@ -201,14 +210,139 @@ size_t clodBuild(clodConfig config, clodMesh mesh, Output output)
 #include <algorithm>
 #include <vector>
 #include <atomic>
+#include <mutex>
+#include <stdio.h>
+#include <stdlib.h>
 
 namespace clod
 {
 
+// View onto a pool slot; mirrors enough of std::vector to keep the read sites unchanged.
+struct ClusterIndices
+{
+	unsigned int* ptr = nullptr;
+	unsigned int  count = 0;
+	unsigned int  slot = ~0u;
+
+	size_t        size() const { return count; }
+	bool          empty() const { return count == 0; }
+	unsigned int* data() const { return ptr; }
+	unsigned int* begin() const { return ptr; }
+	unsigned int* end() const { return ptr + count; }
+	unsigned int& operator[](size_t i) const { return ptr[i]; }
+};
+
+// Every cluster's index list fits max_triangles * 3 and clusters run close to full, so
+// uniform slots cost little over exact sizing and make allocation a free-list pop. This
+// replaces the single highest-count allocation site in the builder: one std::vector per
+// cluster, churned once per lod level.
+//
+// Slots are interchangeable, so a slot allocated on one thread and released on another
+// simply lands in the releasing thread's free list; no ownership tracking is needed.
+struct ClusterIndexPool
+{
+	// Fixed so that slotData() can read chunks[] without locking while another thread grows
+	// the pool; a std::vector would move the pointers underneath those readers. This lives on
+	// the stack via IterationContext, so it is kept small.
+	//
+	// Capacity is MAX_CHUNKS * chunk_slots. At 128 triangles per cluster a saturated chunk is
+	// 96 MiB, so 256 of them is ~16.8M clusters, i.e. a single geometry of roughly 1.3 billion
+	// triangles needing 24 GiB of index storage on one thread. Memory runs out long first.
+	static const size_t MAX_CHUNKS = 256;
+
+	size_t slot_size = 0;   // uints per slot
+	size_t chunk_slots = 0; // slots per chunk
+
+	unsigned int*       chunks[MAX_CHUNKS] = {};
+	std::atomic<size_t> chunk_count = {};
+	std::atomic<size_t> next_slot = {}; // bump index for slots never yet handed out
+
+	std::vector<std::vector<unsigned int>> free_slots; // one free list per thread
+	std::mutex                             growth_mutex;
+
+	~ClusterIndexPool()
+	{
+		for (size_t i = 0, n = chunk_count.load(); i < n; ++i)
+			delete[] chunks[i];
+	}
+
+	void init(size_t max_triangles, size_t thread_count, size_t expected_slots)
+	{
+		slot_size = max_triangles * 3;
+		// chunk large enough that growth is rare, but not so large that small meshes overpay
+		chunk_slots = expected_slots < 1024 ? 1024 : (expected_slots > 65536 ? 65536 : expected_slots);
+		free_slots.resize(thread_count);
+	}
+
+	unsigned int* slotData(size_t slot) const
+	{
+		return chunks[slot / chunk_slots] + (slot % chunk_slots) * slot_size;
+	}
+
+	void reserveSlot(size_t slot)
+	{
+		size_t needed = slot / chunk_slots + 1;
+		if (needed <= chunk_count.load(std::memory_order_acquire))
+			return;
+
+		std::lock_guard<std::mutex> lock(growth_mutex);
+		size_t have = chunk_count.load(std::memory_order_relaxed);
+		while (have < needed)
+		{
+			// checked in release too; overflowing the array would corrupt memory silently
+			if (have >= MAX_CHUNKS)
+			{
+				fprintf(stderr, "clodBuild: cluster index pool exceeded %d chunks\n", int(MAX_CHUNKS));
+				exit(EXIT_FAILURE);
+			}
+
+			chunks[have] = new unsigned int[chunk_slots * slot_size];
+			chunk_count.store(++have, std::memory_order_release);
+		}
+	}
+
+	ClusterIndices allocate(unsigned int thread_index, size_t count)
+	{
+		assert(count <= slot_size);
+		assert(thread_index < free_slots.size());
+
+		std::vector<unsigned int>& free_list = free_slots[thread_index];
+
+		size_t slot;
+		if (!free_list.empty())
+		{
+			slot = free_list.back();
+			free_list.pop_back();
+		}
+		else
+		{
+			slot = next_slot.fetch_add(1);
+			reserveSlot(slot);
+		}
+
+		ClusterIndices result;
+		result.ptr = slotData(slot);
+		result.count = unsigned(count);
+		result.slot = unsigned(slot);
+		return result;
+	}
+
+	void release(unsigned int thread_index, ClusterIndices& indices)
+	{
+		assert(thread_index < free_slots.size());
+
+		if (indices.slot == ~0u)
+			return;
+
+		free_slots[thread_index].push_back(indices.slot);
+		indices = ClusterIndices();
+	}
+};
+
 struct Cluster
 {
 	size_t vertices;
-	std::vector<unsigned int> indices;
+	ClusterIndices indices;
 
 	int group;
 	int refined;
@@ -216,7 +350,7 @@ struct Cluster
 	clodBounds bounds;
 };
 
-static clodBounds boundsCompute(const clodMesh& mesh, const std::vector<unsigned int>& indices, float error)
+static clodBounds boundsCompute(const clodMesh& mesh, const ClusterIndices& indices, float error)
 {
 	meshopt_Bounds bounds = meshopt_computeClusterBounds(&indices[0], indices.size(), mesh.vertex_positions, mesh.vertex_count, mesh.vertex_positions_stride);
 
@@ -251,7 +385,7 @@ static clodBounds boundsMerge(const std::vector<Cluster>& clusters, const std::v
 	return result;
 }
 
-static std::vector<Cluster> clusterize(const clodConfig& config, const clodMesh& mesh, const unsigned int* indices, size_t index_count)
+static std::vector<Cluster> clusterize(const clodConfig& config, const clodMesh& mesh, const unsigned int* indices, size_t index_count, ClusterIndexPool& pool, unsigned int thread_index)
 {
 	size_t max_meshlets = meshopt_buildMeshletsBound(index_count, config.max_vertices, config.min_triangles);
 
@@ -285,7 +419,7 @@ static std::vector<Cluster> clusterize(const clodConfig& config, const clodMesh&
 		clusters[i].vertices = meshlet.vertex_count;
 
 		// note: we discard meshlet-local indices; they can be recovered by the caller using clodLocalIndices
-		clusters[i].indices.resize(meshlet.triangle_count * 3);
+		clusters[i].indices = pool.allocate(thread_index, meshlet.triangle_count * 3);
 		for (size_t j = 0; j < meshlet.triangle_count * 3; ++j)
 			clusters[i].indices[j] = meshlet_vertices[meshlet.vertex_offset + meshlet_triangles[meshlet.triangle_offset + j]];
 
@@ -532,6 +666,9 @@ struct IterationContext
 
 	int depth = 0;
 
+	// backing store for Cluster::indices
+	ClusterIndexPool index_pool;
+
 	// grows over all iterations
 	std::vector<Cluster> clusters;
 	std::atomic<size_t>  next_cluster = {}; // lock free allocation index into above
@@ -635,9 +772,9 @@ void clodBuild_iterationTask(void* iteration_context, void* output_context, size
 
 	// discard clusters from the group - they won't be used anymore
 	for (size_t j = 0; j < groups[i].size(); ++j)
-		clusters[groups[i][j]].indices = std::vector<unsigned int>();
+		context.index_pool.release(thread_index, clusters[groups[i][j]].indices);
 
-	std::vector<Cluster> split = clusterize(config, mesh, simplified.data(), simplified.size());
+	std::vector<Cluster> split = clusterize(config, mesh, simplified.data(), simplified.size(), context.index_pool, thread_index);
 
 	// warning these adds are unordered and may cause indeterministic results when threaded
 	size_t cluster_index = context.next_cluster.fetch_add(split.size());
@@ -693,7 +830,9 @@ size_t clodBuild(clodConfig config, clodMesh mesh, void* output_context, clodOut
 	}
 
 	// initial clusterization splits the original mesh
-	context.clusters = clusterize(config, mesh, mesh.indices, mesh.index_count);
+	context.index_pool.init(config.max_triangles, config.thread_count ? config.thread_count : 1,
+	                        mesh.index_count / (config.max_triangles * 3) + 1);
+	context.clusters = clusterize(config, mesh, mesh.indices, mesh.index_count, context.index_pool, 0);
 	context.next_cluster = context.clusters.size();
 
 	// compute initial precise bounds; subsequent bounds will be using group-merged bounds

@@ -42,6 +42,7 @@ layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssAlbedo, rgba8) 
 layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssSpecAlbedo, rgba16f)       uniform image2D imgDlssSpecAlbedo;
 layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssNormalRoughness, rgba16f)  uniform image2D imgDlssNormalRoughness;
 layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssMotion, rg16f)             uniform image2D imgDlssMotion;
+layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssSpecHitDist, r16f)         uniform image2D imgDlssSpecHitDist;
 #endif
 
 //////////////////////////////////////////////////////////////
@@ -104,6 +105,10 @@ void main()
       computeViewRayDirection(((differentialPixel + vec2(0.0, 1.0)) / vec2(gl_LaunchSizeEXT.xy)) * 2.0 - 1.0);
 #endif
 
+#if USE_DLSS
+  float dlssSpecularHitDist = 0.0;
+#endif
+
 #if ALLOW_SHADING
   vec3  mirrorCenter = view.wMirrorBox.xyz;
   float mirrorSize   = view.wMirrorBox.w;
@@ -161,6 +166,12 @@ void main()
                   0  // rayPayloadNV location qualifier
       );
 
+#if USE_DLSS
+      // rayHit.hitT here is the reflected ray's own hit distance (0 = miss into sky), captured before
+      // it's overwritten below with the box's own distance (used for depth/motion instead).
+      dlssSpecularHitDist = (rayHit.hitT != 0) ? rayHit.hitT : 65504.0;
+#endif
+
       rayHit.color.xyz *= max(0, dot(mirrorNormal, -direction.xyz)) * 0.5 + 0.5;
       rayHit.hitT = mirrorT;
     }
@@ -188,6 +199,7 @@ void main()
   motionVec = calculateMotionVector(hitPos, view.viewProjMatrixPrev, view.viewProjMatrix, view.viewportf);
 
   imageStore(imgDlssMotion, screen, vec4(motionVec.x, motionVec.y, 0, 0));
+  imageStore(imgDlssSpecHitDist, screen, vec4(dlssSpecularHitDist, 0, 0, 0));
 #if ALLOW_SHADING
   imageStore(imgDlssAlbedo, screen, rayHit.dlssAlbedo);
   imageStore(imgDlssSpecAlbedo, screen, vec4(rayHit.dlssSpecular, 1.0f));

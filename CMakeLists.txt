@@ -22,10 +22,12 @@ download_files(FILENAMES bunny_v2.zip EXTRACT)
 #####################################################################################
 # Source files for this project
 #
-file(GLOB SOURCE_FILES src/*.*)
+# CONFIGURE_DEPENDS re-checks the glob at build time, so switching branches that
+# add or remove files does not leave a stale project referencing missing sources.
+file(GLOB SOURCE_FILES CONFIGURE_DEPENDS src/*.*)
 list(FILTER SOURCE_FILES EXCLUDE REGEX "dlss*")
 
-file(GLOB SHADER_FILES shaders/*.glsl shaders/*.h)
+file(GLOB SHADER_FILES CONFIGURE_DEPENDS shaders/*.glsl shaders/*.h)
 file(GLOB VK_RADIX_SORT_FILES thirdparty/vulkan_radix_sort/src/vk_radix_sort.cc)
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/thirdparty)
@@ -86,6 +88,8 @@ copy_to_runtime_and_install( ${PROJECT_NAME}
                     "${NVSHADERS_DIR}/nvshaders/functions.h.slang"
                     "${NVSHADERS_DIR}/nvshaders/pbr_material_types.h.slang"
                     "${NVSHADERS_DIR}/nvshaders/pbr_ggx_microfacet.h.slang"
+                    "${NVSHADERS_DIR}/nvshaders/tonemap_io.h.slang"
+                    "${NVSHADERS_DIR}/nvshaders/tonemap_functions.h.slang"
     LOCAL_DIRS "${CMAKE_CURRENT_LIST_DIR}/shaders"
     AUTO
 )

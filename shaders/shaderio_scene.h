@@ -362,12 +362,18 @@ struct RenderMaterial
   uint16_t emissiveTexture;
   uint16_t metallicRoughnessTexture;
 
+  // KHR_materials_specular
+  uint16_t specularTexture;
+  uint16_t specularColorTexture;
+
   uint8_t  twoSided;
   uint8_t  occlussion;
   uint16_t originalID;
 
   uint32_t packedAlbedo;
   uint32_t packedEmissive;
+  // KHR_materials_specular: rgb = specularColorFactor, a = specularFactor
+  uint32_t packedSpecular;
   float    roughness;
   float    metallic;
 };

@@ -1,10 +1,34 @@
 # Changelog for vk_lod_clusters
+* 2026-8-28:
+
+  **WARNING** Old cache files are not compatible anymore. First time loading such scenes will trigger processing and overwrite / delete them.
+
+  **WARNING** We changed the LoD pixel error computation. A value of `1.0` in previous versions would be `0.5` now. This is closer to what other engines are doing (error diameter vs radius).
+
+  * **NEW Asset:** We have released the textured version of the Zorah scene. Look for details in the `README.md`. Thanks to [Calvin Hsu](https://github.com/calhsu-nvidia) for a lot of work on this, try it with the new [RTXMG](https://github.com/NVIDIA-RTX/RTXMG) release.
+  * New `--processingmemorygigabytes <GiB>` throttles how many geometries are processed in parallel by their estimated memory, rather than by thread count, so the large ones no longer all end up in-flight at once. `0` (default) is 60 % of installed memory, negative is a percentage of it (`-50` == 50 %), clamped to what is available. On the textured Zorah scene a 16 GiB budget lowered peak memory from 71 GB to 20 GB, costing ~10 % processing time.
+  * All megabyte budgets (`--maxgeomegabytes`, `--maxclasmegabytes`, `--startclasmegabytes`, `--clasgrowmegabytes`, `--maxblascachingmegabytes`, `--maxtransfermegabytes`, `--maxtexturemegabytes`) also accept a **negative** value, which is interpreted as a percentage of the device local heap. For example `--maxgeomegabytes -10 --maxclasmegabytes -10` reserves 10 % of VRAM each, independent of the GPU in use. Bugfix: `--maxgeomegabytes` and `--maxclasmegabytes` from the command line were previously overwritten by the heap-size heuristic at startup.
+  * The path tracer now uses `nvpro_core2`'s tonemapper: `shaderio::TonemapperData` settings edited with `nvgui::tonemapperWidget` ("Misc Settings > Tonemapper"), and `applyTonemap()` applied inline at the end of the ray-gen shader (no extra post-process pass). Adds the AgX and Khronos PBR operators, color grading, white balance and dither; `--pathtracetonemap` values changed (`0` Filmic, `1` Uncharted2, `2` Clip, `3` ACES, `4` AgX, `5` Khronos PBR) and `--pathtraceexposurebias` (EV stops) was replaced by `--pathtraceexposure` (multiplier). Auto-exposure still comes from the grid-sampled readback, now honoring the widget's speed, EV range and center metering (mean only, there is no histogram pass). Only the path tracer tonemaps, raster and ray tracing write sRGB directly.
+  * Added support for the [`KHR_materials_specular`](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_specular) glTF extension, which tints and scales the dielectric F0 of the metallic-roughness BRDF. Materials without the extension render unchanged.
+  * New `--screenshotframegap <n>` saves a screenshot every n frames, plus one after the last headless frame, to grab content without a window. Files are named `screenshot_<session start time>_<frame>.jpg`. `--screenshotmode` picks full window (1) or rendered viewport (2, default), headless always uses the viewport.
+  * `--headless` now waits for the scene loading thread, rather than loading in the background. Otherwise `--headlessframes` would render (and end the run) while the scene is still loading.
+  * A texture that cannot be loaded no longer aborts the whole scene load. Only DDS and KTX2 are supported, so a glTF referencing e.g. PNGs used to fail before the renderer initialized. Such textures now warn and fall back to the default 1x1 texture.
+  * Bugfix: textures carrying fewer channels than glTF specifies are detected by component count and swizzled into place via the image view: two-channel metallic-roughness (e.g. `BC5`) to `1GB`, single-channel specular (e.g. `BC4`) to `111A`. A `KTXswizzle` declared by a KTX2 file still takes precedence.
+  * New "Skip normal maps" option ("Scene Modifiers", `--skipnormalmaps`) skips loading normal map textures when textured materials are enabled. Triggers a scene reload like the other Scene Modifiers.
+  * Cluster LoD processing now serves `meshoptimizer`'s temporary allocations from a per-thread stack arena ([threadlocal_arena.hpp](src/threadlocal_arena.hpp)), installed through `meshopt_setAllocator`. Suggested by [Arseny Kapoulkine](https://github.com/zeux) / `meshoptimizer`, who documented these allocations as temporary and freed in stack order, and pointed out the contention on the global allocator. Use `--meshoptarena 0` to disable, and `--meshoptarenabudget <MiB>` (default 8) to cap what each thread retains between calls.
+  * Bugfix: deduplicated glTF geometries took their materials from whichever mesh created them. Instances now carry their own material set (`Scene::Instance::materialSetID`), so one geometry can be instanced under different materials. The renderer allocates a render material range per distinct set; shaders are unchanged. Thanks to [Mathias Heyer](https://github.com/nvmheyer)
+  * The dedup key now also covers the local material slot partition, and the `twoSided` / `alphaMasked` properties baked into the cluster/triangle state bits. Meshes differing only in colors or textures still share a geometry. New `GeometryLodInput::inputMaterialSetHash` invalidates the cache when materials change.
+  * Bugfix: the single-material path took the material of primitive `0` instead of the first *supported* primitive. If primitive `0` was skipped, `localMaterialIDs` stayed empty and was read out of bounds.
+  * Bugfix: out of bounds read in the renderer's per-geometry material offsets when grid copies used unique geometries.
+  * Meshes with more than `SHADERIO_MAX_LOCAL_MATERIALS` distinct primitive materials now warn and merge the excess, instead of truncating the slot index.
+
 * 2026-8-3:
 
   **WARNING** Old cache files are not compatible anymore. First time loading such scenes will trigger processing and overwrite / delete them.
 
   * **NEW Streaming Logic:** Ray tracing will use positions at stream-in only once for CLAS builds, then rely on ray-tracing position fetch to avoid the memory cost. Rasterization will continue to stream as before. As a result the `shaderio::Group` and `shaderio::Cluster` have been modified to change the order of storage, positions come now last. During streaming we still load a group as one blob from disk (and de-compress as one blob), but from the staging memory ray-tracing will copy into two separate locations: the persistent group storage, and the temporary CLAS build position buffer. Rasterization continues to copy everything into the persistent group storage. Thanks to [Calvin Hsu](https://github.com/calhsu-nvidia) for implementing this in another sample.
   * By default we now always use disk compression for the cache (`--compressed 1`)
+
 * 2026-7-31:
   * Debug visualization: bboxes of the mouseover-picked instance / cluster now pulse in yellow, with the picking result latched CPU-side into `FrameConstants` (last frame's value) so the highlight is stable across shader passes and barriers. Added `timeSec` and `pickedInstanceID` / `pickedClusterID` to `FrameConstants`.
   * Rasterization-only "solo" filters under _Misc Settings → Advanced_: **Solo Instance ID** (applied in `traversal_init`) and **Solo Cluster ID** (applied in the raster cluster mesh shader and the cluster bbox mesh shader). Both default to disabled (`-1`). Press **P** while hovering the viewport to solo the picked instance, **Shift+P** for instance + cluster; pressing **P** again with any filter active clears both.
@@ -19,8 +43,9 @@
   * Bugfix: processing a changed glTF file that mismatches its cache.
   * Bugfix: crashes if scene had no materials, or glTF mesh primitive had no material.
   * Bugfix: mouseover picking coordinates were wrong after disabling DLSS — `renderScale` was left at the DLSS ratio.
+
 * 2026-7-22:
-  * Unified texture lod handling, which was influenced from the implementation of [RTXPT](https://github.com/NVIDIA-RTX/RTXPT). There is a new `--texlodmode <int>`, with `0 gradient, 1 explicit lod, 2 mip0` and the old `--anisotropicgradient` was removed in favor of a simpler heuristic from RTXPT.
+  * Unified texture LoD handling, which was influenced from the implementation of [RTXPT](https://github.com/NVIDIA-RTX/RTXPT). There is a new `--texlodmode <int>`, with `0 gradient, 1 explicit LoD, 2 mip0` and the old `--anisotropicgradient` was removed in favor of a simpler heuristic from RTXPT.
 * 2026-7-21:
   * Added keyframed **camera paths** for scripted fly-throughs, defined within the sample and copy/paste friendly. Thanks to Pyarelal Knowles for providing a reference implementation.
     Author them under _Misc Settings → Camera Paths_, or provide them on the command line with 
@@ -150,8 +175,8 @@
 
   **WARNING** Old cache files are not compatible anymore. First time loading such scenes will trigger processing and overwrite / delete them.
 
-  * Removed `nv_cluster_lod_library` usage and dependency, `meshoptimizer`'s cluster lod builder is now the only implementation and enabled the removal of some abstractions.
-  * Added [documentation](docs/lod_generation.md) about cluster lod generation, that originated from the nv library.
+  * Removed `nv_cluster_lod_library` usage and dependency, `meshoptimizer`'s cluster LoD builder is now the only implementation and enabled the removal of some abstractions.
+  * Added [documentation](docs/lod_generation.md) about cluster LoD generation, that originated from the nv library.
   * Combined vertex normal and tangent to single 32-bit value.
   * Revised UI around cluster settings
   * Revised progress bar for processing/loading to be based on triangle count, not geometry count
@@ -169,7 +194,7 @@
     and not relying on 64-bit VAs.
 
     Further work is being done on compressed representations for the disk cache that are decoded by compute shaders, and will be the next bigger update.
-  * Spatial sorting of cluster groups within a lod level to help with streaming locality. Thanks to
+  * Spatial sorting of cluster groups within a LoD level to help with streaming locality. Thanks to
     Arseny Kapoulkine for the `partition_sort` option that was added to `meshopt_clusterlod.h`
   * Preparations for enhanced materials have been done. UV and tangent space vertex attributes were added.
     All attributes are taken into account during mesh simplification according to meshoptimizers weight handling. The weights can be set by command-line, for example `--simplifynormalweight 1.0`. To ignore all attribute loading use `--attributes 0`. Default value is `1` which means only vertex normals are enabled (see `shaderio::ClusterAttributeBits`). Later versions will add more material features, such as texture loading etc.
@@ -184,10 +209,10 @@
   * Updated meshoptimizer to use its [improved partitioner](https://github.com/zeux/meshoptimizer/pull/964) that supports spatial partitioning. As a result removed the `partition_spatial_average` logic from our local version.
 * 2025-9-30:
   * Improved processing of large scenes through the ordering of the processing of geometries by descending triangle counts. This yields better work distribution across threads. Thanks to Arseny Kapoulkine for this suggestion. As result the zorah scene can be processed in around 6 minutes on a 16-core AMD Ryzen 9.
-  * added `partition_spatial_average` to the local [modified meshoptimizer clusterlod builder](src/meshopt_clusterlod.h). Improves number of clusters per group, which is better for streaming in this sample and also increases the chance that the last lod level is a single cluster, which is mandatory for this sample.
+  * added `partition_spatial_average` to the local [modified meshoptimizer clusterlod builder](src/meshopt_clusterlod.h). Improves number of clusters per group, which is better for streaming in this sample and also increases the chance that the last LoD level is a single cluster, which is mandatory for this sample.
 * 2025-9-25:
-  * All new cluster lod hierarchy builder based on [meshoptimizer's clusterlod.h](https://github.com/zeux/meshoptimizer/blob/master/demo/clusterlod.h). It is about 5x faster and 20x less memory during processing, also deterministic and the new default. Special thanks to Arseny Kapoulkine. This sample still uses a slightly [modified version](src/meshopt_clusterlod.h) of his work, to allow optional parallel processing. At the moment of writing `nv_cluster_lod_library` does perform better on meshes made of topology with little connectivity (leaves, rubble).
-  * Moved cluster lod building into [scene_cluster_lod.cpp](src/scene_cluster_lod.cpp).
+  * All new cluster LoD hierarchy builder based on [meshoptimizer's clusterlod.h](https://github.com/zeux/meshoptimizer/blob/master/demo/clusterlod.h). It is about 5x faster and 20x less memory during processing, also deterministic and the new default. Special thanks to Arseny Kapoulkine. This sample still uses a slightly [modified version](src/meshopt_clusterlod.h) of his work, to allow optional parallel processing. At the moment of writing `nv_cluster_lod_library` does perform better on meshes made of topology with little connectivity (leaves, rubble).
+  * Moved cluster LoD building into [scene_cluster_lod.cpp](src/scene_cluster_lod.cpp).
   * New version of `nv_cluster_lod_library` that no longer has `meshoptimizer` as git sub module, as result the `meshoptimizer` library is now a git sub module of this sample and was updated to a newer commit as well.
   * Larger scenes are preprocessed automatically with a dedicated pass during loading. Use `--forcepreprocessmegabytes 2048` to control this behavior. If a scene's raw geometry (vertex & indices) is greater than this cutoff, loading uses a dedicated preprocess pass. Can be quicker and allows using memory mapped cache file. Default is 2048 for 2 GiB.
 * 2025-9-17:
@@ -200,15 +225,15 @@
   * Removed unnecessary `VK_NV_SHADER_SUBGROUP_PARTITIONED` requirements
   * Split README a bit.
 * 2025-9-10:
-  * Added ["BLAS Caching"](docs/blas_caching.md). This option enhances "BLAS Sharing" so that fully resident lod levels
-    are kept in a dedicated BLAS that can be re-used many frames. Any instance whose minimum lod level is higher or 
-    equal than this BLAS's lod level can use it. Therefore we can further reduce the number of BLAS built per frame.
+  * Added ["BLAS Caching"](docs/blas_caching.md). This option enhances "BLAS Sharing" so that fully resident LoD levels
+    are kept in a dedicated BLAS that can be re-used many frames. Any instance whose minimum LoD level is higher or 
+    equal than this BLAS's LoD level can use it. Therefore we can further reduce the number of BLAS built per frame.
   * Added ["BLAS Merging"](docs/blas_merging.md). This option enhances "BLAS Sharing" such that we build a single BLAS for 
-    all instances that overlap in near lod range. The instances still make streaming requests, however, only a 
+    all instances that overlap in near LoD range. The instances still make streaming requests, however, only a 
     single BLAS is built based on the highest available detail that is already streamed in. This technique therefore
     guarantees that at most only two BLAS are built per unique geometry in the scene. Which significantly helps
     reduce worst-case memory reservations and further reduces BLAS builds. Special thanks to Pyarelal Knowles for
-    the idea to drive lod picking based on streaming state.
+    the idea to drive LoD picking based on streaming state.
   * Enforce facet shading when scene has no vertex normals (compile shaders `ALLOW_VERTEX_NORMALS` accordingly)
   * Bugfix "CLAS position drop bits" option being ignored.
   * Bugfix detection when pre-loading is likely to overshoot device memory
@@ -224,7 +249,7 @@
 * 2025-8-5:
   * DLSS-RR denoiser support in ray tracing. Activate `USE_DLSS` in `cmake` to download and enable support within the application. 
 * 2025-7-31:
-  * Bugfix for objects with single lod level appearing black in lod visualization.
+  * Bugfix for objects with single LoD level appearing black in LoD visualization.
   * Filter out instances whose material uses BLENDED transparency.
   * Double-Click/SPACE also changes walk speed (percentage of distance to hit point).
 * 2025-7-30:
@@ -233,9 +258,9 @@
 * 2025-7-24:
   * Major feature update.
   * Added ["BLAS Sharing"](docs/blas_sharing.md) under "Traversal" to drastically reduce BLAS builds when geometries are instanced a lot. It is automatically enabled (`--autosharing 0/1`) for scene configurations that may benefit.
-  * Added ""Culled error scale" under "Traversal" to allow more control over the lod error allowed in indirectly visible instances (`--cullederrorscale <float>`).
+  * Added "Culled error scale" under "Traversal" to allow more control over the LoD error allowed in indirectly visible instances (`--cullederrorscale <float>`).
   * Added "Rendered Statistics" option to enable/disable computation of rendering statistics under "Traversal", this was always on before but had quite the performance impact and is now disabled.
-  * Allow changing of cluster & lod settings for files that were loaded with a cache, triggers processing again.
+  * Allow changing of cluster & LoD settings for files that were loaded with a cache, triggers processing again.
   * Auto enable storing the cache file.
 * 2025-7-18:
   * Mirror Box: Double right-click or M key to investigate out of frustum / occluded object behavior. Under the "Settings" tab this box can be adjusted manually as well.
@@ -255,7 +280,7 @@
   * Reduce number of BLAS builds by introducing a per-geometry `lowDetailBlas` that is built once at scene preparation time.
     A new compute shader step was added [shaders/tlas_instances_blas.comp.glsl](/shaders/tlas_instances_blas.comp.glsl) and
     the number of BLAS build operations is now sourced indirectly from the GPU.
-  * Reduce system memory consumption greatly after building the cluster and lod data.
+  * Reduce system memory consumption greatly after building the cluster and LoD data.
 * 2025-7-9:
   * Fix regression of `nvpro_core2` port: culling parameter was not properly hooked up
 * 2025-7-7:
@@ -274,10 +299,10 @@
 * 2025-6-26:
   * Ported to use `nvpro_core2`, as result command-line arguments are now prefixed with `--` rather than just `-`. It is recommended to delete existing /_build or the CMake cache prior building or generating new solutions.
 * 2025-6-2:
-  * Scale traversal lod error internally based on super-sampling. Significantly speeds things up compared to old defaults which caused much more geometry to be loaded and rendered.
-  * Skip traversal and directly enqueue lowest detail cluster in `traversal_init.comp.glsl` when only lowest lod is used.
+  * Scale traversal LoD error internally based on super-sampling. Significantly speeds things up compared to old defaults which caused much more geometry to be loaded and rendered.
+  * Skip traversal and directly enqueue lowest detail cluster in `traversal_init.comp.glsl` when only lowest LoD is used.
 * 2025-5-30:
-  * Added early detection if only last lod level is required in `traversal_init.comp.glsl`
+  * Added early detection if only last LoD level is required in `traversal_init.comp.glsl`
   * Changed persistent kernel thread count heuristic. Works much better on larger scenes.
 * 2025-4-26:
   * Added "Disable back-face culling" to "Scene Complexity" UI.
@@ -299,7 +324,7 @@
   * Added `--autoloadcache 0/1` option to disable loading from a cache file.
   * Some basic preparation to allow working from memory mapped cache files without loading into system memory.
 * 2025-2-7:
-  * Added _"File > Save Cache"_ menu entry, as well as `--autosavecache 1` option. This allows to store the results of the lod cluster mesh processing into a file next to the original model.
+  * Added _"File > Save Cache"_ menu entry, as well as `--autosavecache 1` option. This allows to store the results of the LoD cluster mesh processing into a file next to the original model.
     This allows speeding up future load times of the model a lot. See new notes in **Model processing** section of README
   * Improved warnings and some memory statistics.
   * Streaming geometry memory now guaranteed to stay within limit.

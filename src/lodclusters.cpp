@@ -4,12 +4,14 @@
  */
 
 #include <thread>
+#include <chrono>
 #include <cstdlib>
 #include <cmath>
 #include <span>
 
 #include <volk.h>
 #include <fmt/format.h>
+#include <fmt/chrono.h>
 #include <nvutils/file_operations.hpp>
 #include <nvgui/camera.hpp>
 
@@ -30,97 +32,175 @@ LodClusters::LodClusters(const Info& info)
 
   m_profilerTimeline = m_info.profilerManager->createTimeline(createInfo);
 
-  m_info.parameterRegistry->add({"scene"}, {".gltf", ".glb", ".cfg"}, &m_sceneFilePathDropNew);
-  m_info.parameterRegistry->add({"renderer"}, (int*)&m_tweak.renderer);
-  m_info.parameterRegistry->add({"verbose"}, &g_verbose, true);
-  m_info.parameterRegistry->add({"resetstats"}, &m_tweak.autoResetTimers);
-  m_info.parameterRegistry->add({"supersample"}, &m_tweak.supersample);
-  m_info.parameterRegistry->add({"debugui"}, &m_showDebugUI);
+  m_screenshotTimeStamp =
+      fmt::format("{:%Y_%m_%d_%H_%M_%S}", std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now()));
+
+  m_info.parameterRegistry->add({"scene", "scene file to load (.gltf, .glb, .cfg)"}, {".gltf", ".glb", ".cfg"}, &m_sceneFilePathDropNew);
+  m_info.parameterRegistry->add({"renderer", "0 rasterization, 1 ray tracing. default 1"}, (int*)&m_tweak.renderer);
+  m_info.parameterRegistry->add({"verbose", "verbose logging"}, &g_verbose, true);
+  m_info.parameterRegistry->add({"resetstats", "reset the timer statistics automatically. default false"}, &m_tweak.autoResetTimers);
+  m_info.parameterRegistry->add({"supersample", "render resolution: 1 none, 2 doubles each dimension, or a target height like 1080. default 2"},
+                                &m_tweak.supersample);
+  m_info.parameterRegistry->add({"debugui", "show the debug window with shader readback values"}, &m_showDebugUI);
   m_info.parameterRegistry->add({"sequencescreenshot", "save screenshot at end of each sequence. 0 disabled (default), 1 full window, 2 rendered viewport"},
                                 (int*)&m_sequenceScreenshotMode, true);
+  m_info.parameterRegistry->add({"screenshotframegap", "save a screenshot every n frames, and after the last headless frame. 0 disabled (default)"},
+                                &m_screenshotFrameInterval);
+  m_info.parameterRegistry->add({"screenshotmode", "screenshot content of screenshotframegap: 1 full window, 2 rendered viewport (default)"},
+                                (int*)&m_screenshotMode);
 
   m_info.parameterRegistry->add({"dumpspirv", "dumps compiled spirv into working directory"}, &m_resources.m_dumpSpirv);
-  m_info.parameterRegistry->add({"camerastring"}, &m_cameraString);
-  m_info.parameterRegistry->add({"cameraspeed"}, &m_cameraSpeed);
+  m_info.parameterRegistry->add({"camerastring", "initial camera, copy/paste from the Misc Settings -> Camera widget"}, &m_cameraString);
+  m_info.parameterRegistry->add({"cameraspeed", "camera movement speed, 0 derives it from the scene size"}, &m_cameraSpeed);
   registerCameraPathParameters();
-  m_info.parameterRegistry->addVector({"sundirection"}, &m_frameConfig.frameConstants.skyParams.sunDirection);
-  m_info.parameterRegistry->addVector({"suncolor"}, &m_frameConfig.frameConstants.skyParams.sunColor);
+  m_info.parameterRegistry->addVector({"sundirection", "sun direction, shared by the simple and physical sky"},
+                                      &m_frameConfig.frameConstants.skyParams.sunDirection);
+  m_info.parameterRegistry->addVector({"suncolor", "sun color of the simple sky"},
+                                      &m_frameConfig.frameConstants.skyParams.sunColor);
 
-  m_info.parameterRegistry->add({"streaming"}, &m_tweak.useStreaming);
-  m_info.parameterRegistry->add({"clasallocator"}, &m_streamingConfig.usePersistentClasAllocator);
-  m_info.parameterRegistry->add({"gridcopies"}, &m_sceneGridConfig.numCopies);
-  m_info.parameterRegistry->add({"gridconfig"}, &m_sceneGridConfig.gridBits);
-  m_info.parameterRegistry->add({"gridunique"}, &m_sceneGridConfig.uniqueGeometriesForCopies);
-  m_info.parameterRegistry->add({"clusterconfig"}, (int*)&m_tweak.clusterConfig);
-  m_info.parameterRegistry->add({"clustergroupsize"}, &m_sceneConfig.clusterGroupSize);
-  m_info.parameterRegistry->add({"simplifymaterialweight"}, &m_sceneConfig.simplifyMaterialWeight);
-  m_info.parameterRegistry->add({"simplifyuvweight"}, &m_sceneConfig.simplifyTexCoordWeight);
-  m_info.parameterRegistry->add({"simplifynormalweight"}, &m_sceneConfig.simplifyNormalWeight);
-  m_info.parameterRegistry->add({"simplifytangentweight"}, &m_sceneConfig.simplifyTangentWeight);
-  m_info.parameterRegistry->add({"simplifytangentsignweight"}, &m_sceneConfig.simplifyTangentSignWeight);
-  m_info.parameterRegistry->add({"attributes"}, &m_sceneConfig.enabledAttributes);
-  m_info.parameterRegistry->add({"multimaterials"}, &m_sceneConfig.enableMultiMaterials);
-  m_info.parameterRegistry->add({"loderrormergeprevious"}, &m_sceneConfig.lodErrorMergePrevious);
-  m_info.parameterRegistry->add({"loderrormergeadditive"}, &m_sceneConfig.lodErrorMergeAdditive);
-  m_info.parameterRegistry->add({"loderroredgelimit"}, &m_sceneConfig.lodErrorEdgeLimit);
-  m_info.parameterRegistry->add({"lodnodewidth"}, &m_sceneConfig.preferredNodeWidth);
-  m_info.parameterRegistry->add({"loddecimationfactor"}, &m_sceneConfig.lodLevelDecimationFactor);
-  m_info.parameterRegistry->add({"meshoptpreferrt"}, &m_sceneConfig.meshoptPreferRayTracing);
-  m_info.parameterRegistry->add({"meshoptfillweight"}, &m_sceneConfig.meshoptFillWeight);
-  m_info.parameterRegistry->add({"loderror"}, &m_frameConfig.lodPixelError);
-  m_info.parameterRegistry->add({"shadowray"}, &m_frameConfig.frameConstants.doShadow);
-  m_info.parameterRegistry->add({"ao"}, &m_tweak.hbaoActive);  // use same as hbao
-  m_info.parameterRegistry->add({"aoradius"}, &m_frameConfig.frameConstants.ambientOcclusionRadius);
-  m_info.parameterRegistry->add({"hbao"}, &m_tweak.hbaoActive);
-  m_info.parameterRegistry->add({"hbaoradius"}, &m_tweak.hbaoRadius);
-  m_info.parameterRegistry->add({"hbaoblur"}, &m_frameConfig.hbaoSettings.blur);
-  m_info.parameterRegistry->add({"claspositionbits"}, &m_streamingConfig.clasPositionTruncateBits);
-  m_info.parameterRegistry->add({"maxtransfermegabytes"}, (uint32_t*)&m_streamingConfig.maxTransferMegaBytes);
-  m_info.parameterRegistry->add({"asynctransfer"}, &m_streamingConfig.useAsyncTransfer);
-  m_info.parameterRegistry->add({"decoupledtransfer"}, &m_streamingConfig.useDecoupledAsyncTransfer);
-  m_info.parameterRegistry->add({"maxblascachingmegabytes"}, (uint32_t*)&m_streamingConfig.maxBlasCachingMegaBytes);
-  m_info.parameterRegistry->add({"maxclasmegabytes"}, (uint32_t*)&m_streamingConfig.maxClasMegaBytes);
-  m_info.parameterRegistry->add({"startclasmegabytes"}, (uint32_t*)&m_streamingConfig.startClasMegaBytes);
-  m_info.parameterRegistry->add({"clasgrowmegabytes"}, (uint32_t*)&m_streamingConfig.clasGrowMegaBytes);
-  m_info.parameterRegistry->add({"maxgeomegabytes"}, (uint32_t*)&m_streamingConfig.maxGeometryMegaBytes);
-  m_info.parameterRegistry->add({"maxresidentgroups"}, &m_streamingConfig.maxGroups);
-  m_info.parameterRegistry->add({"maxframeloadrequests"}, &m_streamingConfig.maxPerFrameLoadRequests);
-  m_info.parameterRegistry->add({"maxframeunloadrequests"}, &m_streamingConfig.maxPerFrameUnloadRequests);
-  m_info.parameterRegistry->add({"streamingunloadthreshold"}, &m_frameConfig.streamingUnloadThreshold);
-  m_info.parameterRegistry->add({"cullederrorscale"}, &m_frameConfig.culledErrorScale);
-  m_info.parameterRegistry->add({"culling"}, &m_rendererConfig.useCulling);
-  m_info.parameterRegistry->add({"primitiveculling"}, &m_rendererConfig.usePrimitiveCulling);
-  m_info.parameterRegistry->add({"twopassculling"}, &m_rendererConfig.useTwoPassCulling);
-  m_info.parameterRegistry->add({"forcedinvisculling"}, &m_rendererConfig.useForcedInvisibleCulling);
-  m_info.parameterRegistry->add({"dlss"}, &m_rendererConfig.useDlss);
-  m_info.parameterRegistry->add({"dlssquality"}, (int*)&m_rendererConfig.dlssQuality);
+  m_info.parameterRegistry->add({"streaming", "stream geometry on demand, 0 preloads the whole scene and can need a lot of memory. default true"},
+                                &m_tweak.useStreaming);
+  m_info.parameterRegistry->add({"clasallocator", "persistent device-side CLAS allocator, otherwise move based compaction. default true"},
+                                &m_streamingConfig.usePersistentClasAllocator);
+  m_info.parameterRegistry->add({"gridcopies", "instance the entire scene on a grid this many times. default 1"},
+                                &m_sceneGridConfig.numCopies);
+  m_info.parameterRegistry->add({"gridconfig", "grid config in 6 bits: 0..2 enabled axis, 3..5 enabled rotation. default 13"},
+                                &m_sceneGridConfig.gridBits);
+  m_info.parameterRegistry->add({"gridunique", "give each grid copy its own geometries, stresses streaming and memory. default false"},
+                                &m_sceneGridConfig.uniqueGeometriesForCopies);
+  m_info.parameterRegistry->add({"clusterconfig", "cluster size: 0 64T_64V, 1 64T_128V, 2 64T_192V, 3 96T_96V, 4 128T_128V, 5 128T_256V, 6 256T_256V. default 4"},
+                                (int*)&m_tweak.clusterConfig);
+  m_info.parameterRegistry->add({"clustergroupsize", "clusters per lod group, decimated together and sharing one error. default 32"},
+                                &m_sceneConfig.clusterGroupSize);
+  m_info.parameterRegistry->add({"simplifymaterialweight", "weight of the material in the simplification error metric, 0 disables. default 0.1"},
+                                &m_sceneConfig.simplifyMaterialWeight);
+  m_info.parameterRegistry->add({"simplifyuvweight", "weight of texcoords in the simplification error metric, 0 disables. default 0.5"},
+                                &m_sceneConfig.simplifyTexCoordWeight);
+  m_info.parameterRegistry->add({"simplifynormalweight", "weight of normals in the simplification error metric, 0 disables. default 0.5"},
+                                &m_sceneConfig.simplifyNormalWeight);
+  m_info.parameterRegistry->add({"simplifytangentweight", "weight of tangents in the simplification error metric, 0 disables. default 0"},
+                                &m_sceneConfig.simplifyTangentWeight);
+  m_info.parameterRegistry->add({"simplifytangentsignweight",
+                                 "weight of the tangent sign in the simplification error metric, 0 disables. default 0.2"},
+                                &m_sceneConfig.simplifyTangentSignWeight);
+  m_info.parameterRegistry->add({"attributes", "vertex attribute bitmask: 1 normal, 2 tangent, 4 texcoord 0, 8 texcoord 1. default 1"},
+                                &m_sceneConfig.enabledAttributes);
+  m_info.parameterRegistry->add({"multimaterials", "allow a mesh to have multiple materials. default false"},
+                                &m_sceneConfig.enableMultiMaterials);
+  m_info.parameterRegistry->add({"loderrormergeprevious", "lod error propagation: scales the previous error in max(previous * factor, error). >= 1, default 1.5"},
+                                &m_sceneConfig.lodErrorMergePrevious);
+  m_info.parameterRegistry->add({"loderrormergeadditive", "lod error propagation: adds this much of the current error after the maximum. default 0"},
+                                &m_sceneConfig.lodErrorMergeAdditive);
+  m_info.parameterRegistry->add({"loderroredgelimit", "limit the lod error by edge length, to drop subpixel triangles despite high attribute error. default 1"},
+                                &m_sceneConfig.lodErrorEdgeLimit);
+  m_info.parameterRegistry->add({"lodnodewidth", "preferred children per lod node, the maximum is always 32. default 8"},
+                                &m_sceneConfig.preferredNodeWidth);
+  m_info.parameterRegistry->add({"loddecimationfactor", "triangle reduction factor per lod step. default 0.5"},
+                                &m_sceneConfig.lodLevelDecimationFactor);
+  m_info.parameterRegistry->add({"meshoptpreferrt", "build lod clusters preferring ray tracing over rasterization. default true"},
+                                &m_sceneConfig.meshoptPreferRayTracing);
+  m_info.parameterRegistry->add({"meshoptfillweight", "when preferring ray tracing, 0 is SAH optimized, higher fills clusters. default 0.5"},
+                                &m_sceneConfig.meshoptFillWeight);
+  m_info.parameterRegistry->add({"loderror", "lod pixel error threshold. default 1"}, &m_frameConfig.lodPixelError);
+  m_info.parameterRegistry->add({"adaptiveerror", "scale the pixel error by the streaming load factor. default false"},
+                                &m_frameConfig.adaptiveError);
+  m_info.parameterRegistry->add({"shadowray", "cast shadow rays in ray tracing. default 1"},
+                                &m_frameConfig.frameConstants.doShadow);
+  m_info.parameterRegistry->add({"ao", "ambient occlusion, same setting as hbao. default true"}, &m_tweak.hbaoActive);  // use same as hbao
+  m_info.parameterRegistry->add({"aoradius", "ray traced ambient occlusion radius as percentage to scene bounding radius. default 0.1"},
+                                &m_frameConfig.frameConstants.ambientOcclusionRadius);
+  m_info.parameterRegistry->add({"hbao", "ambient occlusion in rasterization (HBAO). default true"}, &m_tweak.hbaoActive);
+  m_info.parameterRegistry->add({"hbaoradius", "HBAO radius as percentage to scene bounding radius. default 0.05"},
+                                &m_tweak.hbaoRadius);
+  m_info.parameterRegistry->add({"hbaoblur", "blur the HBAO result. default true"}, &m_frameConfig.hbaoSettings.blur);
+  m_info.parameterRegistry->add({"claspositionbits", "CLAS position mantissa bits to drop to save memory, 0 to 22. default 0"},
+                                &m_streamingConfig.clasPositionTruncateBits);
+  m_info.parameterRegistry->add({"maxtransfermegabytes", "per-frame transfer budget in MiB, negative is percentage of device local heap (-25 == 25 %)"},
+                                &m_memoryBudgetArgs.maxTransferMegaBytes);
+  m_info.parameterRegistry->add({"asynctransfer", "use the asynchronous transfer queue for streaming uploads. default false"},
+                                &m_streamingConfig.useAsyncTransfer);
+  m_info.parameterRegistry->add({"decoupledtransfer", "let asynchronous transfers span multiple frames, needs asynctransfer. default false"},
+                                &m_streamingConfig.useDecoupledAsyncTransfer);
+  m_info.parameterRegistry->add({"maxblascachingmegabytes",
+                                 "blas cache budget in MiB, negative is percentage of device local heap (-25 == 25 %)"},
+                                &m_memoryBudgetArgs.maxBlasCachingMegaBytes);
+  m_info.parameterRegistry->add({"maxclasmegabytes", "clas budget in MiB, negative is percentage of device local heap (-25 == 25 %)"},
+                                &m_memoryBudgetArgs.maxClasMegaBytes);
+  m_info.parameterRegistry->add({"startclasmegabytes", "initial clas allocation in MiB, negative is percentage of device local heap (-25 == 25 %)"},
+                                &m_memoryBudgetArgs.startClasMegaBytes);
+  m_info.parameterRegistry->add({"clasgrowmegabytes", "clas growth step in MiB, negative is percentage of device local heap (-25 == 25 %)"},
+                                &m_memoryBudgetArgs.clasGrowMegaBytes);
+  m_info.parameterRegistry->add({"maxgeomegabytes", "streamed geometry budget in MiB, negative is percentage of device local heap (-25 == 25 %)"},
+                                &m_memoryBudgetArgs.maxGeometryMegaBytes);
+  m_info.parameterRegistry->add({"maxresidentgroups", "maximum resident cluster groups. default 65536"},
+                                &m_streamingConfig.maxGroups);
+  m_info.parameterRegistry->add({"maxframeloadrequests", "maximum group loads per frame. default 128"},
+                                &m_streamingConfig.maxPerFrameLoadRequests);
+  m_info.parameterRegistry->add({"maxframeunloadrequests", "maximum group unloads per frame. default 1024"},
+                                &m_streamingConfig.maxPerFrameUnloadRequests);
+  m_info.parameterRegistry->add({"streamingunloadthreshold", "only unload above this memory load factor, 0 to 0.75. default 0"},
+                                &m_frameConfig.streamingUnloadThreshold);
+  m_info.parameterRegistry->add({"cullederrorscale", "scale the pixel error for instances without primary visibility in ray tracing. >= 1, default 2"},
+                                &m_frameConfig.culledErrorScale);
+  m_info.parameterRegistry->add({"culling", "occlusion and frustum culling. default true"}, &m_rendererConfig.useCulling);
+  m_info.parameterRegistry->add({"primitiveculling", "primitive culling in the NV mesh shader, rasterization only. default false"},
+                                &m_rendererConfig.usePrimitiveCulling);
+  m_info.parameterRegistry->add({"twopassculling", "two pass culling in rasterization, otherwise only last frame's hiz. default false"},
+                                &m_rendererConfig.useTwoPassCulling);
+  m_info.parameterRegistry->add({"forcedinvisculling", "let ray tracing cull on primary visibility alone, may cause BLAS sharing artifacts. default false"},
+                                &m_rendererConfig.useForcedInvisibleCulling);
+  m_info.parameterRegistry->add({"dlss", "enable DLSS, super resolution in rasterization and denoising in ray tracing. default false"},
+                                &m_rendererConfig.useDlss);
+  m_info.parameterRegistry->add({"dlssquality", "0 max performance, 1 balanced, 2 max quality, 3 ultra performance, 4 ultra quality, 5 DLAA. default 2"},
+                                (int*)&m_rendererConfig.dlssQuality);
   m_info.parameterRegistry->add({"pathtrace", "basic path tracing (shading in ray-gen). default false"},
                                 &m_rendererConfig.usePathtrace);
-  m_info.parameterRegistry->add({"pathtracebounces"}, &m_frameConfig.frameConstants.pathtraceNumBounces);
-  m_info.parameterRegistry->add({"pathtracetonemap", "0 Filmic, 1 ACES, 2 Uncharted2"}, &m_frameConfig.frameConstants.pathtraceTonemap);
-  m_info.parameterRegistry->add({"pathtraceautoexposure"}, &m_frameConfig.frameConstants.pathtraceAutoExposure);
-  m_info.parameterRegistry->add({"pathtraceexposurebias"}, &m_frameConfig.frameConstants.pathtraceExposureBias);
-  m_info.parameterRegistry->add({"pathtracefireflyclamp"}, &m_frameConfig.frameConstants.pathtraceFireflyClamp);
-  m_info.parameterRegistry->add({"lightmixer"}, &m_frameConfig.frameConstants.lightMixer);
-  m_info.parameterRegistry->add({"blassharing"}, &m_rendererConfig.useBlasSharing);
-  m_info.parameterRegistry->add({"blasmerging"}, &m_rendererConfig.useBlasMerging);
-  m_info.parameterRegistry->add({"blascaching"}, &m_rendererConfig.useBlasCaching);
-  m_info.parameterRegistry->add({"sharingpushculled"}, &m_frameConfig.sharingPushCulled);
-  m_info.parameterRegistry->add({"sharingenabledlevels"}, &m_frameConfig.sharingEnabledLevels);
-  m_info.parameterRegistry->add({"sharingtolerantlevels"}, &m_frameConfig.sharingTolerantLevels);
-  m_info.parameterRegistry->add({"cachingenabledlevels"}, &m_frameConfig.cachingEnabledLevels);
-  m_info.parameterRegistry->add({"instancesorting"}, &m_rendererConfig.useSorting);
-  m_info.parameterRegistry->add({"renderclusterbits"}, &m_rendererConfig.numRenderClusterBits);
-  m_info.parameterRegistry->add({"rendertraversalbits"}, &m_rendererConfig.numTraversalTaskBits);
-  m_info.parameterRegistry->add({"visualize"}, &m_frameConfig.visualize);
-  m_info.parameterRegistry->add({"swraster"}, &m_rendererConfig.useComputeRaster);
-  m_info.parameterRegistry->add({"swrasterthreshold"}, &m_frameConfig.swRasterThreshold);
-  m_info.parameterRegistry->add({"renderstats"}, &m_rendererConfig.useRenderStats);
-  m_info.parameterRegistry->add({"extmeshshader"}, &m_rendererConfig.useEXTmeshShader);
-  m_info.parameterRegistry->add({"forcepreprocessmegabytes"}, (uint32_t*)&m_sceneLoaderConfig.forcePreprocessMiB);
-  m_info.parameterRegistry->add({"facetshading"}, &m_tweak.facetShading);
-  m_info.parameterRegistry->add({"flipwinding"}, &m_rendererConfig.flipWinding);
-  m_info.parameterRegistry->add({"forcetwosided"}, &m_rendererConfig.forceTwoSided);
+  m_info.parameterRegistry->add({"pathtracebounces", "1 to 8, default 3"}, &m_frameConfig.frameConstants.pathtraceNumBounces);
+  m_info.parameterRegistry->add({"pathtracetonemap", "0 Filmic, 1 Uncharted2, 2 Clip (no curve), 3 ACES, 4 AgX, 5 Khronos PBR"},
+                                &m_frameConfig.frameConstants.pathtraceTonemapper.method);
+  m_info.parameterRegistry->add({"pathtraceautoexposure", "adapt exposure to scene luminance, default 1. Disable for deterministic captures"},
+                                &m_frameConfig.frameConstants.pathtraceTonemapper.autoExposure);
+  m_info.parameterRegistry->add({"pathtraceexposure", "exposure multiplier, scaled by auto-exposure when enabled. default 1"},
+                                &m_frameConfig.frameConstants.pathtraceTonemapper.exposure);
+  m_info.parameterRegistry->add({"pathtracefireflyclamp", "clamp per-bounce radiance, 0 disables. default 20"},
+                                &m_frameConfig.frameConstants.pathtraceFireflyClamp);
+  m_info.parameterRegistry->add({"lightmixer", "raster/ray tracing: mix of flashlight and sun. path tracer: flashlight brightness over the sky. default 0.5"},
+                                &m_frameConfig.frameConstants.lightMixer);
+  m_info.parameterRegistry->add({"blassharing", "share BLAS between distant instances, see autosharing. default true"},
+                                &m_rendererConfig.useBlasSharing);
+  m_info.parameterRegistry->add({"blasmerging", "merged BLAS for close instances when streaming, caps dynamic blas at 2 per geometry. default true"},
+                                &m_rendererConfig.useBlasMerging);
+  m_info.parameterRegistry->add({"blascaching", "cached BLAS from the highest fully resident lod level, when streaming. default false"},
+                                &m_rendererConfig.useBlasCaching);
+  m_info.parameterRegistry->add({"sharingpushculled", "push culled instances by one lod level for sharing. default true"},
+                                &m_frameConfig.sharingPushCulled);
+  m_info.parameterRegistry->add({"sharingenabledlevels", "allow BLAS sharing in the last N lod levels, 0 to 32. default 8"},
+                                &m_frameConfig.sharingEnabledLevels);
+  m_info.parameterRegistry->add({"sharingtolerantlevels", "share BLAS despite a lod level mismatch in the last N levels, 0 to 32. default 7"},
+                                &m_frameConfig.sharingTolerantLevels);
+  m_info.parameterRegistry->add({"cachingenabledlevels", "allow BLAS caching in the last N lod levels, 0 to 32. default 8"},
+                                &m_frameConfig.cachingEnabledLevels);
+  m_info.parameterRegistry->add({"instancesorting", "sort instances before traversal. default false"}, &m_rendererConfig.useSorting);
+  m_info.parameterRegistry->add({"renderclusterbits", "clusters enqueued per frame in bits (1 << N), BLAS input for ray tracing. 8 to 25, default 20"},
+                                &m_rendererConfig.numRenderClusterBits);
+  m_info.parameterRegistry->add({"rendertraversalbits", "intermediate traversal tasks in bits (1 << N). 8 to 25, default 20"},
+                                &m_rendererConfig.numTraversalTaskBits);
+  m_info.parameterRegistry->add({"visualize", "0 shaded, 1 grey, 2 visibility buffer, 3 material, 4 clusters, 5 groups, 6 lod levels, 7 triangles, 8 blas, 9 blas cached, 10 depth only. default 6"},
+                                &m_frameConfig.visualize);
+  m_info.parameterRegistry->add({"swraster", "allow compute-shader rasterization, needs visualize 2 or 10. default false"},
+                                &m_rendererConfig.useComputeRaster);
+  m_info.parameterRegistry->add({"swrasterthreshold", "use SW raster when a cluster's longest edge covers fewer projected pixels. default 8"},
+                                &m_frameConfig.swRasterThreshold);
+  m_info.parameterRegistry->add({"renderstats", "extra atomic counters for statistics, costs performance. default false"},
+                                &m_rendererConfig.useRenderStats);
+  m_info.parameterRegistry->add({"extmeshshader", "use EXT instead of NV mesh shader, forced on without NV mesh shader support"},
+                                &m_rendererConfig.useEXTmeshShader);
+  m_info.parameterRegistry->add({"forcepreprocessmegabytes", "always preprocess into a cache file above this geometry size in MiB. default 2048"},
+                                (uint32_t*)&m_sceneLoaderConfig.forcePreprocessMiB);
+  m_info.parameterRegistry->add({"facetshading", "shade from the geometric (faceted) normal. default true"}, &m_tweak.facetShading);
+  m_info.parameterRegistry->add({"flipwinding", "flip the triangle winding. default false"}, &m_rendererConfig.flipWinding);
+  m_info.parameterRegistry->add({"forcetwosided", "disable back-face culling for all materials. default false"},
+                                &m_rendererConfig.forceTwoSided);
   m_info.parameterRegistry->add({"autosharing", "automatically set blas sharing based on scene's instancing usage. default true"},
                                 &m_tweak.autoSharing);
   m_info.parameterRegistry->add({"autosavecache", "automatically store cache file for loaded scene. default true"},
@@ -135,11 +215,19 @@ LodClusters::LodClusters(const Info& info)
                                 &m_sceneLoaderConfig.processingAllowPartial);
   m_info.parameterRegistry->add({"processingmode", "0 auto, -1 inner (within geometry), +1 outer (over geometries) parallelism. default 0"},
                                 &m_sceneLoaderConfig.processingMode);
+  m_info.parameterRegistry->add({"processingmemorygigabytes",
+                                 "upper budget in GiB for the estimated memory of geometries processed in parallel; "
+                                 "0 is automatic (60 % of installed memory), negative is percentage of installed "
+                                 "memory (-50 == 50 %), clamped to what is available. default 0"},
+                                &m_sceneLoaderConfig.processingMemoryGiB);
   m_info.parameterRegistry->add({"processingthreadpct", "float percentage of threads during initial file load and processing into lod clusters, default 0.5 == 50 %"},
                                 &m_sceneLoaderConfig.processingThreadsPct);
-  m_info.parameterRegistry->add({"compressed"}, &m_sceneConfig.useCompressedData);
-  m_info.parameterRegistry->add({"compressedpositionbits"}, &m_sceneConfig.compressionPosDropBits);
-  m_info.parameterRegistry->add({"compressedtexcoordbits"}, &m_sceneConfig.compressionTexDropBits);
+  m_info.parameterRegistry->add({"compressed", "store groups compressed, smaller cache file and can speed up streaming. default true"},
+                                &m_sceneConfig.useCompressedData);
+  m_info.parameterRegistry->add({"compressedpositionbits", "position mantissa bits to drop for better compression, 0 to 22. default 7"},
+                                &m_sceneConfig.compressionPosDropBits);
+  m_info.parameterRegistry->add({"compressedtexcoordbits", "texcoord mantissa bits to drop for better compression, 0 to 22. default 7"},
+                                &m_sceneConfig.compressionTexDropBits);
   m_info.parameterRegistry->add({"cachesuffix", "default is .nvsngeo"}, &m_sceneCacheSuffix);
   m_info.parameterRegistry->add({"skipnodes", "c++ regular expression string to skip adding instances whose name matches"},
                                 &m_sceneLoaderConfig.skipNodeNames);
@@ -147,21 +235,30 @@ LodClusters::LodClusters(const Info& info)
                                 &m_sceneLoaderConfig.skipMeshNames);
   m_info.parameterRegistry->add({"skipmaterials", "c++ regular expression string to skip adding instances whose first mesh material name matches"},
                                 &m_sceneLoaderConfig.skipMaterialNames);
-  m_info.parameterRegistry->add({"skipalphablended"}, &m_sceneLoaderConfig.skipAlphaBlended);
-  m_info.parameterRegistry->add({"skipalphamasked"}, &m_sceneLoaderConfig.skipAlphaMasked);
-  m_info.parameterRegistry->add({"persistenttraversal"}, &m_rendererConfig.usePersistentTraversal);
+  m_info.parameterRegistry->add({"skipalphablended", "skip instances with alpha blended materials. default true"},
+                                &m_sceneLoaderConfig.skipAlphaBlended);
+  m_info.parameterRegistry->add({"skipalphamasked", "skip instances with alpha masked materials. default false"},
+                                &m_sceneLoaderConfig.skipAlphaMasked);
+  m_info.parameterRegistry->add({"persistenttraversal", "use the persistent traversal kernel. default true"},
+                                &m_rendererConfig.usePersistentTraversal);
   m_info.parameterRegistry->add({"texlodmode", "ray/path tracer texture LOD: 0 gradient, 1 explicit lod, 2 mip0"},
                                 &m_rendererConfig.textureLodMode);
-  m_info.parameterRegistry->add({"texturegradientscale"}, &m_frameConfig.frameConstants.texGradScale);
+  m_info.parameterRegistry->add({"texturegradientscale", "scale the texture gradient in ray tracing and compute rasterization, 0 to 1. default 1"},
+                                &m_frameConfig.frameConstants.texGradScale);
   m_info.parameterRegistry->add({"texturedmaterials", "enable textured materials"}, &m_sceneLoaderConfig.enableTexturedMaterials);
-  m_info.parameterRegistry->add({"maxtexturemegabytes", "upper VRAM budget for material textures in MiB; 0 disables limit (default 4096)"},
-                                &m_texturesConfig.maxBudgetMiB);
+  m_info.parameterRegistry->add({"skipnormalmaps", "skip loading normal maps when textured materials are enabled"},
+                                &m_sceneLoaderConfig.skipNormalMaps);
+  m_info.parameterRegistry->add({"maxtexturemegabytes",
+                                 "upper VRAM budget for material textures in MiB; 0 disables limit, negative is "
+                                 "percentage of device local heap (-25 == 25 %). default 4096"},
+                                &m_memoryBudgetArgs.maxTextureMegaBytes);
   {
     // HACK as zorah.cfg ships with some deprecated settings
     static bool dummy;
     m_info.parameterRegistry->add({"twosided", "deprecated - now detecting doubleSided materials - there is a new forcetwosided"},
                                   &dummy);
     m_info.parameterRegistry->add({"hbaofullres", "deprecated - now always using full resolution"}, &dummy);
+    m_info.parameterRegistry->add({"pathtraceexposurebias", "deprecated - use pathtraceexposure"}, &dummy);
   }
 
   m_frameConfig.frameConstants                         = {};
@@ -188,10 +285,10 @@ LodClusters::LodClusters(const Info& info)
   m_frameConfig.frameConstants.skyPhysical           = {};
   m_frameConfig.frameConstants.pathtraceNumBounces   = 3;
   m_frameConfig.frameConstants.pathtraceFireflyClamp = 20.0f;
-  m_frameConfig.frameConstants.pathtraceExposure     = 1.0f;
-  m_frameConfig.frameConstants.pathtraceExposureBias = 0.0f;
-  m_frameConfig.frameConstants.pathtraceAutoExposure = 1;
-  m_frameConfig.frameConstants.pathtraceTonemap      = 0;  // Filmic
+  // nvpro_core2 tonemapper defaults, auto-exposure on and mean averaging (no histogram pass)
+  m_frameConfig.frameConstants.pathtraceTonemapper              = {};
+  m_frameConfig.frameConstants.pathtraceTonemapper.autoExposure = 1;
+  m_frameConfig.frameConstants.pathtraceTonemapper.averageMode  = 0;
 
   m_lastAmbientOcclusionSamples = m_frameConfig.frameConstants.ambientOcclusionSamples;
 
@@ -210,12 +307,13 @@ void LodClusters::initScene(std::filesystem::path filePath, std::string cacheSuf
   {
     LOGI("Loading scene %s\n", fileName.c_str());
 
-    m_scene                 = nullptr;
-    m_sceneLoading          = true;
-    m_sceneCompletedCount   = 0;
-    m_sceneTotalCount       = 0;
-    m_sceneProgressPhase    = uint32_t(LoadPhase::ProcessingScene);
-    m_sceneLoaderConfigLast = m_sceneLoaderConfig;
+    m_scene                  = nullptr;
+    m_sceneLoading           = true;
+    m_renderSceneInitAllowed = true;
+    m_sceneCompletedCount    = 0;
+    m_sceneTotalCount        = 0;
+    m_sceneProgressPhase     = uint32_t(LoadPhase::ProcessingScene);
+    m_sceneLoaderConfigLast  = m_sceneLoaderConfig;
 
 #if USE_DLSS
     // disable when inactive
@@ -268,6 +366,11 @@ void LodClusters::initScene(std::filesystem::path filePath, std::string cacheSuf
       m_sceneLoading = false;
     });
 
+    if(m_app->isHeadless())
+    {
+      m_sceneLoadingThread.join();
+    }
+
     return;
   }
 
@@ -278,7 +381,8 @@ void LodClusters::initRenderScene()
 {
   assert(m_scene);
 
-  m_renderScene = std::make_unique<RenderScene>();
+  m_renderSceneInitAllowed = true;
+  m_renderScene            = std::make_unique<RenderScene>();
 
   // Synchronous (config-change) path: textures load on the main thread here (no busy popup, but
   // the progress atomics are still updated), then the GPU geometry setup follows immediately.
@@ -286,6 +390,8 @@ void LodClusters::initRenderScene()
   {
     LOGW("Loading scene textures failed\n");
     deinitRenderScene();
+    m_renderSceneInitAllowed = false;
+
     return;
   }
   m_renderSceneGeometryPending = false;
@@ -295,6 +401,8 @@ void LodClusters::initRenderScene()
 void LodClusters::initRenderSceneGeometry()
 {
   assert(m_renderScene);
+
+  m_renderSceneInitAllowed = true;
 
   // Finalize the async texture uploads on the graphics queue (this always runs on the main thread,
   // for both the async-load and config-change paths) before the geometry GPU setup.
@@ -313,12 +421,14 @@ void LodClusters::initRenderSceneGeometry()
     {
       LOGW("Init renderscene failed\n");
       deinitRenderScene();
+      m_renderSceneInitAllowed = false;
     }
   }
   else if(!success && m_tweak.useStreaming)
   {
     LOGW("Init renderscene failed\n");
     deinitRenderScene();
+    m_renderSceneInitAllowed = false;
   }
 
   m_streamingConfigLast = m_streamingConfig;
@@ -394,6 +504,20 @@ void LodClusters::updateImguiImage()
 void LodClusters::onPreRender()
 {
   m_profilerTimeline->frameAdvance();
+
+  if(m_screenshotFrameInterval > 0 && m_frames > 0 && (m_frames % m_screenshotFrameInterval) == 0)
+  {
+    saveScreenshot(m_screenshotMode, fmt::format("screenshot_{}_{:08}.jpg", m_screenshotTimeStamp, m_frames - 1));
+  }
+}
+
+void LodClusters::onLastHeadlessFrame()
+{
+  // the interval never covers the final frame, which is typically the one of interest
+  if(m_screenshotFrameInterval > 0 && m_frames > 0)
+  {
+    saveScreenshot(m_screenshotMode, fmt::format("screenshot_{}_{:08}.jpg", m_screenshotTimeStamp, m_frames - 1));
+  }
 }
 
 
@@ -410,10 +534,11 @@ void LodClusters::deinitRenderer()
 
 void LodClusters::initRenderer(RendererType rtype)
 {
-  LOGI("Initializing renderer and compiling shaders\n");
   deinitRenderer();
   if(!m_renderScene)
     return;
+
+  LOGI("Initializing renderer and compiling shaders\n");
 
   printf("init renderer %d\n", rtype);
 
@@ -616,6 +741,9 @@ void LodClusters::onAttach(nvapp::Application* app)
     m_streamingConfig.maxGeometryMegaBytes = 1 * 1024;
   }
 
+  // command line / config overrides win over the heuristic above
+  applyMemoryBudgetArgs();
+
   m_cameraStringCommandLine = m_cameraString;
   // camera-path provenance is tracked by m_cameraPathsExternal, which the
   // --addcamerapath/--loadcamerapaths handlers set (also for config/sequence
@@ -650,6 +778,53 @@ void LodClusters::onDetach()
   m_resources.deinit();
 
   m_profilerGpuTimer.deinit();
+}
+
+void LodClusters::applyMemoryBudgetArgs()
+{
+  if(memcmp(&m_memoryBudgetArgs, &m_memoryBudgetArgsLast, sizeof(MemoryBudgetArgs)) == 0)
+    return;
+  m_memoryBudgetArgsLast = m_memoryBudgetArgs;
+
+  const size_t heapMegaBytes = size_t(m_resources.getDeviceLocalHeapSize() / (1024 * 1024));
+
+  // > 0 absolute MiB, < 0 percentage of the device local heap, 0 keeps the current value
+  auto resolve = [&heapMegaBytes](int32_t arg, size_t& target) {
+    if(arg > 0)
+      target = size_t(arg);
+    else if(arg < 0 && heapMegaBytes > 0)
+      target = std::max(size_t(1), (heapMegaBytes * size_t(-arg)) / 100);
+  };
+
+  resolve(m_memoryBudgetArgs.maxTransferMegaBytes, m_streamingConfig.maxTransferMegaBytes);
+  resolve(m_memoryBudgetArgs.maxGeometryMegaBytes, m_streamingConfig.maxGeometryMegaBytes);
+  resolve(m_memoryBudgetArgs.maxClasMegaBytes, m_streamingConfig.maxClasMegaBytes);
+  resolve(m_memoryBudgetArgs.startClasMegaBytes, m_streamingConfig.startClasMegaBytes);
+  resolve(m_memoryBudgetArgs.clasGrowMegaBytes, m_streamingConfig.clasGrowMegaBytes);
+  resolve(m_memoryBudgetArgs.maxBlasCachingMegaBytes, m_streamingConfig.maxBlasCachingMegaBytes);
+
+  // textures: 0 is a valid value that disables the limit
+  size_t textureMegaBytes = size_t(std::max(0, m_memoryBudgetArgs.maxTextureMegaBytes));
+  resolve(m_memoryBudgetArgs.maxTextureMegaBytes, textureMegaBytes);
+  m_texturesConfig.maxBudgetMiB = uint32_t(textureMegaBytes);
+
+  // the allocator requires the initial clas allocation to fit the budget
+  m_streamingConfig.startClasMegaBytes = std::min(m_streamingConfig.startClasMegaBytes, m_streamingConfig.maxClasMegaBytes);
+
+  const MemoryBudgetArgs defaultArgs;
+  if(memcmp(&m_memoryBudgetArgs, &defaultArgs, sizeof(MemoryBudgetArgs)) != 0)
+  {
+    LOGI(
+        "Memory budgets (device local heap %zu MiB):\n"
+        "  geometry    %zu MiB\n"
+        "  clas        %zu MiB (start %zu, grow %zu)\n"
+        "  blas cache  %zu MiB\n"
+        "  transfer    %zu MiB\n"
+        "  textures    %u MiB\n",
+        heapMegaBytes, m_streamingConfig.maxGeometryMegaBytes, m_streamingConfig.maxClasMegaBytes,
+        m_streamingConfig.startClasMegaBytes, m_streamingConfig.clasGrowMegaBytes,
+        m_streamingConfig.maxBlasCachingMegaBytes, m_streamingConfig.maxTransferMegaBytes, m_texturesConfig.maxBudgetMiB);
+  }
 }
 
 void LodClusters::saveCacheFile()
@@ -698,6 +873,9 @@ void LodClusters::onFileDrop(const std::filesystem::path& filePath)
     // config parsing might change m_sceneFilePathDropNew
     // and m_cameraString
     m_info.parameterParser->parse(std::span(args), false, {}, {}, true);
+
+    // budgets from the config may be relative to the device local heap
+    applyMemoryBudgetArgs();
 
     if(!m_cameraStringCommandLine.empty())
     {
@@ -760,7 +938,14 @@ void LodClusters::parameterSequenceCallback(const nvutils::ParameterSequencer::S
   {
     Renderer::ResourceUsageInfo resourceActual   = m_renderer->getResourceUsage(false);
     Renderer::ResourceUsageInfo resourceReserved = m_renderer->getResourceUsage(true);
+    bool                        hasTextures      = m_renderScene && m_renderScene->sceneTextures.hasTextures();
+    size_t                      textureMemBytes  = hasTextures ? m_renderScene->sceneTextures.getTextureMemBytes() : 0;
+    VkDeviceSize                renderTargetMemBytes = m_resources.getFramebufferMemBytes();
     message += fmt::format("Memory; Actual; Reserved;\n");
+    if(hasTextures)
+    {
+      message += fmt::format("Textures; {}; {};\n", textureMemBytes, textureMemBytes);
+    }
     message += fmt::format("Geometry; {}; {};\n", resourceActual.geometryMemBytes, resourceReserved.geometryMemBytes);
     if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
     {
@@ -770,7 +955,9 @@ void LodClusters::parameterSequenceCallback(const nvutils::ParameterSequencer::S
     }
 
     message += fmt::format("Operations; {}; {};\n", resourceActual.operationsMemBytes, resourceReserved.operationsMemBytes);
-    message += fmt::format("Total; {}; {};\n", resourceActual.getTotalSum(), resourceReserved.getTotalSum());
+    message += fmt::format("Render Targets; {}; {};\n", renderTargetMemBytes, renderTargetMemBytes);
+    message += fmt::format("Total; {}; {};\n", resourceActual.getTotalSum() + textureMemBytes + renderTargetMemBytes,
+                           resourceReserved.getTotalSum() + textureMemBytes + renderTargetMemBytes);
     if(m_renderScene->useStreaming)
     {
       StreamingStats stats;
@@ -808,25 +995,29 @@ void LodClusters::parameterSequenceCallback(const nvutils::ParameterSequencer::S
 
   nvutils::Logger::getInstance().log(nvutils::Logger::eSTATS, "%s", message.c_str());
 
-  if(m_sequenceScreenshotMode != SCREENSHOT_OFF)
-  {
-    ScreenshotMode screenshotMode = m_sequenceScreenshotMode;
-    if(m_app->isHeadless())
-    {
-      screenshotMode = SCREENSHOT_VIEWPORT;
-    }
+  saveScreenshot(m_sequenceScreenshotMode, fmt::format("screenshot_{}_{}.jpg", state.index, state.description));
+}
 
-    std::string filename = fmt::format("screenshot_{}_{}.jpg", state.index, state.description);
-    if(screenshotMode == SCREENSHOT_WINDOW)
-    {
-      m_app->saveScreenShot(std::filesystem::path(filename), 100);
-    }
-    else if(screenshotMode == SCREENSHOT_VIEWPORT)
-    {
-      m_app->saveImageToFile(m_resources.m_frameBuffer.useResolved ? m_resources.m_frameBuffer.imgColorResolved.image :
-                                                                     m_resources.m_frameBuffer.imgColor.image,
-                             m_resources.m_frameBuffer.windowSize, filename, 100, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    }
+void LodClusters::saveScreenshot(ScreenshotMode mode, const std::string& filename)
+{
+  if(mode == SCREENSHOT_OFF)
+    return;
+
+  // headless has no window content
+  if(m_app->isHeadless())
+  {
+    mode = SCREENSHOT_VIEWPORT;
+  }
+
+  if(mode == SCREENSHOT_WINDOW)
+  {
+    m_app->saveScreenShot(std::filesystem::path(filename), 100);
+  }
+  else if(mode == SCREENSHOT_VIEWPORT)
+  {
+    m_app->saveImageToFile(m_resources.m_frameBuffer.useResolved ? m_resources.m_frameBuffer.imgColorResolved.image :
+                                                                   m_resources.m_frameBuffer.imgColor.image,
+                           m_resources.m_frameBuffer.windowSize, filename, 100, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
   }
 }
 
@@ -980,6 +1171,9 @@ void LodClusters::handleChanges()
   {
     shaderChanged   = true;
     m_reloadShaders = false;
+    // shader compile errors are a common cause of a failed render-scene init, so a reload is the
+    // way to retry after fixing them
+    m_renderSceneInitAllowed = true;
   }
 
   bool sceneChanged = false;
@@ -1012,7 +1206,7 @@ void LodClusters::handleChanges()
       initRenderSceneGeometry();
       renderSceneChanged = true;
     }
-    else if(!m_renderScene)
+    else if(!m_renderScene && m_renderSceneInitAllowed)
     {
       // async loading might us get into this state
       // pretend scene grid changed to re-init renderscene
@@ -1064,7 +1258,7 @@ void LodClusters::handleChanges()
        || rendererCfgChanged(m_rendererConfig.usePersistentTraversal)
        || rendererCfgChanged(m_rendererConfig.textureLodMode) || rendererCfgChanged(m_rendererConfig.usePathtrace))
     {
-      if(rendererCfgChanged(m_rendererConfig.useBlasCaching))
+      if(m_renderScene && rendererCfgChanged(m_rendererConfig.useBlasCaching))
       {
         m_renderScene->streamingReset();
       }

@@ -127,6 +127,7 @@ public:
   void onRender(VkCommandBuffer cmd) override;
   void onResize(VkCommandBuffer cmd, const VkExtent2D& size) override;
   void onFileDrop(const std::filesystem::path& filename) override;
+  void onLastHeadlessFrame() override;
 
   void setSupportsClusterRaytracing(bool supported) { m_resources.m_supportsClusterRaytracing = supported; }
   void setSupportsBarycentrics(bool supported) { m_resources.m_supportsBarycentrics = supported; }
@@ -140,6 +141,9 @@ public:
   void parameterSequenceCallback(const nvutils::ParameterSequencer::State& state);
 
 private:
+  // saves the window or the rendered viewport, headless always uses the viewport
+  void saveScreenshot(ScreenshotMode mode, const std::string& filename);
+
   VkExtent2D                 m_windowSize;
   Info                       m_info;
   nvutils::ProfilerTimeline* m_profilerTimeline{};
@@ -158,15 +162,19 @@ private:
   nvgui::EnumRegistry       m_ui;
   nvutils::PerformanceTimer m_clock;
 
-  bool m_reloadShaders = false;
+  bool m_reloadShaders    = false;
+  bool m_revealTonemapper = false;
 #ifndef NDEBUG
   bool m_showDebugUI = true;
 #else
   bool m_showDebugUI = false;
 #endif
-  int            m_frames                 = 0;
-  double         m_animTime               = 0;
-  ScreenshotMode m_sequenceScreenshotMode = SCREENSHOT_OFF;
+  int            m_frames                  = 0;
+  double         m_animTime                = 0;
+  ScreenshotMode m_sequenceScreenshotMode  = SCREENSHOT_OFF;
+  ScreenshotMode m_screenshotMode          = SCREENSHOT_VIEWPORT;
+  int            m_screenshotFrameInterval = 0;  // save a screenshot every n frames, 0 disables
+  std::string    m_screenshotTimeStamp;          // session startup time, keeps screenshots of multiple runs apart
 
   Tweak m_tweak;
   Tweak m_tweakLast;
@@ -231,12 +239,33 @@ private:
   // loading completes. Kept separate so the UI/render path never sees a half-constructed RenderScene.
   std::unique_ptr<RenderScene> m_renderScenePending;
   bool                         m_renderSceneCanPreload = false;
+  // Can be used to withdraw the permission for handleChanges to implicitly re-attempt the init every frame after an
+  // attempt failed. Granted again by the next explicit attempt (config change, scene reload) or by a
+  // shader reload.
+  bool m_renderSceneInitAllowed = true;
 
   StreamingConfig m_streamingConfig;
   StreamingConfig m_streamingConfigLast;
 
   SceneTexturesConfig m_texturesConfig;
   SceneTexturesConfig m_texturesConfigLast;
+
+  // Memory budgets as provided on the command line or via config file.
+  // > 0 is an absolute MiB value, < 0 a percentage of the device local
+  // heap (-25 == 25 %), 0 keeps the built-in default.
+  struct MemoryBudgetArgs
+  {
+    int32_t maxTransferMegaBytes    = 0;
+    int32_t maxGeometryMegaBytes    = 0;
+    int32_t maxClasMegaBytes        = 0;
+    int32_t startClasMegaBytes      = 0;
+    int32_t clasGrowMegaBytes       = 0;
+    int32_t maxBlasCachingMegaBytes = 0;
+    // textures differ: 0 is a valid value that disables the limit
+    int32_t maxTextureMegaBytes = 4096;
+  };
+  MemoryBudgetArgs m_memoryBudgetArgs;
+  MemoryBudgetArgs m_memoryBudgetArgsLast;
 
   std::unique_ptr<Renderer> m_renderer;
   uint64_t                  m_rendererFboChangeID{};
@@ -255,6 +284,8 @@ private:
 
   void setSceneCamera(const std::filesystem::path& filePath);
   void saveCacheFile();
+  void applyMemoryBudgetArgs();
+
   void deinitScene();
   void postInitNewScene();
 

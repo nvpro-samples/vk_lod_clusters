@@ -242,7 +242,7 @@ public:
     numDeltaBits *= m_count;
 
     // shift + precision + base + deltas
-    return sizeof(uint32_t) * ((16 + 16 + 32 * 3 + numDeltaBits + 31) / 32);
+    return sizeof(uint32_t) * ((16 + 16 + 32 * DIM + numDeltaBits + 31) / 32);
   }
 
   void beginOutput(size_t byteSize, uint32_t* out)

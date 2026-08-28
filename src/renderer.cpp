@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <algorithm>
 #include <random>
 #include <vector>
 
@@ -197,6 +198,7 @@ static void setupRenderMaterial(shaderio::RenderMaterial& renderMaterial, const 
   renderMaterial.roughness      = sceneMaterial.roughnessFactor;
   renderMaterial.packedAlbedo   = glm::packUnorm4x8(sceneMaterial.color);
   renderMaterial.packedEmissive = glm::packUnorm4x8(sceneMaterial.emissive);
+  renderMaterial.packedSpecular = glm::packUnorm4x8(glm::vec4(sceneMaterial.specularColorFactor, sceneMaterial.specularFactor));
 
   renderMaterial.alphaMaskTexture = sceneMaterial.alphaMasked && sceneMaterial.alphaMaskImageID != ~0U ?
                                         uint16_t(sceneMaterial.alphaMaskImageID + Scene::NUM_IMAGE_DEFAULTS) :
@@ -220,6 +222,14 @@ static void setupRenderMaterial(shaderio::RenderMaterial& renderMaterial, const 
   renderMaterial.emissiveTexture = sceneMaterial.emissiveImageID != ~0U ?
                                        uint16_t(sceneMaterial.emissiveImageID + Scene::NUM_IMAGE_DEFAULTS) :
                                        uint16_t(Scene::IMAGE_DEFAULT_BLACK);
+
+  renderMaterial.specularTexture = sceneMaterial.specularImageID != ~0U ?
+                                       uint16_t(sceneMaterial.specularImageID + Scene::NUM_IMAGE_DEFAULTS) :
+                                       uint16_t(Scene::IMAGE_DEFAULT_WHITE);
+
+  renderMaterial.specularColorTexture = sceneMaterial.specularColorImageID != ~0U ?
+                                            uint16_t(sceneMaterial.specularColorImageID + Scene::NUM_IMAGE_DEFAULTS) :
+                                            uint16_t(Scene::IMAGE_DEFAULT_WHITE);
 }
 
 void Renderer::initBasics(Resources& res, RenderScene& rscene)
@@ -230,68 +240,64 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene)
 
   m_renderInstances.resize(scene.m_instances.size());
 
-  std::vector<uint32_t> sceneMaterialMapping(scene.m_materials.size(), ~0);
-  std::vector<uint32_t> geometryMaterialOffsets(scene.m_originalGeometryCount, 0);
-  std::vector<uint8_t>  geometryOpaqueStatus(scene.m_originalGeometryCount, 0);
+  // Geometries are deduplicated across glTF meshes that share the vertex data but not the
+  // materials, so the materials for a geometry's local slots come from the instance's
+  // material set, not from the geometry. Each distinct set gets its own contiguous range of
+  // render materials, which the shaders index as `instance.materialID + localMaterialID`.
+  const size_t          numSets = scene.m_instanceMaterialSets.size();
+  std::vector<uint32_t> setMaterialOffsets(numSets, 0);
+  std::vector<uint8_t>  setOpaqueStatus(numSets, SHADERIO_OPAQUE_STATUS_OPAQUE);
 
   uint32_t numMaterials = 0;
-  m_renderMaterials.resize(scene.m_materials.size() + scene.m_geometryMultiMaterialCount);
+  m_renderMaterials.resize(std::max<size_t>(1, scene.m_instanceMaterialSetData.size()));
 
   {
-    // for every geometry that has multiple local materials, create a render material for each local material
-    for(size_t g = 0; g < scene.m_originalGeometryCount; g++)
+    // meshes that were filtered out or never referenced by a node still have a set,
+    // skip those so they don't consume the limited render material range
+    std::vector<uint8_t> setUsed(numSets, 0);
+    for(const Scene::Instance& sceneInstance : scene.m_instances)
     {
-      const Scene::GeometryView& geometry         = scene.getActiveGeometry(g);
-      size_t                     alphaMaskedCount = 0;
-      if(geometry.localMaterialIDs.size() > 1)
+      setUsed[sceneInstance.materialSetID] = 1;
+    }
+
+    for(size_t s = 0; s < numSets; s++)
+    {
+      if(!setUsed[s])
+        continue;
+
+      const Scene::MaterialSetRange& setRange         = scene.m_instanceMaterialSets[s];
+      size_t                         alphaMaskedCount = 0;
+
+      setMaterialOffsets[s] = numMaterials;
+
+      for(uint32_t m = 0; m < setRange.count; m++)
       {
-        uint32_t renderMaterialID = numMaterials;
+        uint32_t                  sceneMaterialID = scene.m_instanceMaterialSetData[setRange.offset + m];
+        const Scene::Material&    sceneMaterial   = scene.m_materials[sceneMaterialID];
+        shaderio::RenderMaterial& renderMaterial  = m_renderMaterials[numMaterials + m];
+        setupRenderMaterial(renderMaterial, sceneMaterial, sceneMaterialID);
 
-        geometryMaterialOffsets[g] = renderMaterialID;
-        numMaterials += uint32_t(geometry.localMaterialIDs.size());
-
-        for(size_t m = 0; m < geometry.localMaterialIDs.size(); m++)
-        {
-          const Scene::Material&    sceneMaterial  = scene.m_materials[geometry.localMaterialIDs[m]];
-          shaderio::RenderMaterial& renderMaterial = m_renderMaterials[renderMaterialID + m];
-          setupRenderMaterial(renderMaterial, sceneMaterial, uint32_t(geometry.localMaterialIDs[m]));
-
-          if(sceneMaterial.alphaMasked && sceneMaterial.alphaMaskImageID != ~0U)
-          {
-            alphaMaskedCount++;
-          }
-        }
-      }
-      else
-      {
-        uint32_t               sceneMaterialID = geometry.localMaterialIDs[0];
-        const Scene::Material& sceneMaterial   = scene.m_materials[sceneMaterialID];
         if(sceneMaterial.alphaMasked && sceneMaterial.alphaMaskImageID != ~0U)
         {
           alphaMaskedCount++;
         }
-
-        if(sceneMaterialMapping[sceneMaterialID] == ~0)
-        {
-          uint32_t renderMaterialID = numMaterials;
-
-          sceneMaterialMapping[sceneMaterialID] = renderMaterialID;
-          numMaterials += 1;
-
-          shaderio::RenderMaterial& renderMaterial = m_renderMaterials[renderMaterialID];
-          setupRenderMaterial(renderMaterial, sceneMaterial, sceneMaterialID);
-        }
       }
 
-      uint8_t opaqueStatus;
-      if(alphaMaskedCount == 0)
-        opaqueStatus = SHADERIO_OPAQUE_STATUS_OPAQUE;
-      else if(alphaMaskedCount == geometry.localMaterialIDs.size())
-        opaqueStatus = SHADERIO_OPAQUE_STATUS_ALPHAMASKED;
-      else
-        opaqueStatus = SHADERIO_OPAQUE_STATUS_MIXED;
+      numMaterials += setRange.count;
 
-      geometryOpaqueStatus[g] = opaqueStatus;
+      if(alphaMaskedCount == 0)
+        setOpaqueStatus[s] = SHADERIO_OPAQUE_STATUS_OPAQUE;
+      else if(alphaMaskedCount == setRange.count)
+        setOpaqueStatus[s] = SHADERIO_OPAQUE_STATUS_ALPHAMASKED;
+      else
+        setOpaqueStatus[s] = SHADERIO_OPAQUE_STATUS_MIXED;
+    }
+
+    // `shaderio::RenderInstance::materialID` is 16-bit
+    if(numMaterials > 0xFFFF)
+    {
+      LOGE("Scene needs %d render materials, only %d are addressable. Materials will be wrong.\n", numMaterials, 0xFFFF);
+      std::fill(setMaterialOffsets.begin(), setMaterialOffsets.end(), 0);
     }
 
     if(numMaterials == 0)
@@ -313,18 +319,18 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene)
     renderInstance.worldMatrixI = glm::mat4x3(glm::inverse(sceneInstance.matrix));
     renderInstance.geometryID   = sceneInstance.geometryID;
 
+    // base of this instance's render material range, the local slot is added in the shader
+    renderInstance.materialID = uint16_t(setMaterialOffsets[sceneInstance.materialSetID]);
+
     if(geometry.localMaterialIDs.size() > 1)
     {
-      renderInstance.materialID       = uint16_t(geometryMaterialOffsets[sceneInstance.geometryID]);
       renderInstance.multiMaterial    = 1;
       renderInstance.twoSided         = 0;
       renderInstance.alphaMaskTexture = 0xFFFF;
-      // geometryID may reference duplicated geometry; map back to original
-      renderInstance.opaqueStatus = geometryOpaqueStatus[sceneInstance.geometryID % scene.m_originalGeometryCount];
+      renderInstance.opaqueStatus     = setOpaqueStatus[sceneInstance.materialSetID];
     }
     else
     {
-      renderInstance.materialID       = uint16_t(sceneMaterialMapping[sceneInstance.materialID]);
       renderInstance.multiMaterial    = 0;
       renderInstance.twoSided         = material.twoSided ? 1 : 0;
       renderInstance.alphaMaskTexture = material.alphaMasked && material.alphaMaskImageID != ~0 ?
@@ -380,11 +386,14 @@ void Renderer::updateBasicDescriptors(Resources& res, RenderScene& rscene, const
   nvvk::WriteSetContainer writeSets;
   writeSets.append(m_basicDset.makeWrite(BINDINGS_FRAME_UBO), res.m_commonBuffers.frameConstants);
   writeSets.append(m_basicDset.makeWrite(BINDINGS_READBACK_SSBO), res.m_commonBuffers.readBack);
-  if(res.m_supportsClusterRaytracing)
+  if(res.m_supportsClusterRaytracing && !m_isRaster)
   {
     writeSets.append(m_basicDset.makeWrite(BINDINGS_RAYTRACING_DEPTH), res.m_frameBuffer.imgRaytracingDepth.descriptor);
   }
-  writeSets.append(m_basicDset.makeWrite(BINDINGS_RASTER_ATOMIC), res.m_frameBuffer.imgRasterAtomic.descriptor);
+  if(m_isRaster)
+  {
+    writeSets.append(m_basicDset.makeWrite(BINDINGS_RASTER_ATOMIC), res.m_frameBuffer.imgRasterAtomic.descriptor);
+  }
   writeSets.append(m_basicDset.makeWrite(BINDINGS_GEOMETRIES_SSBO), rscene.getShaderGeometriesBuffer());
   writeSets.append(m_basicDset.makeWrite(BINDINGS_RENDERINSTANCES_SSBO), m_renderInstanceBuffer);
   writeSets.append(m_basicDset.makeWrite(BINDINGS_RENDERMATERIALS_SSBO), m_renderMaterialBuffer);
@@ -407,11 +416,14 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene)
   nvvk::DescriptorBindings bindings;
   bindings.addBinding(BINDINGS_FRAME_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_basicShaderFlags);
   bindings.addBinding(BINDINGS_READBACK_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
-  if(res.m_supportsClusterRaytracing)
+  if(res.m_supportsClusterRaytracing && !m_isRaster)
   {
     bindings.addBinding(BINDINGS_RAYTRACING_DEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_basicShaderFlags);
   }
-  bindings.addBinding(BINDINGS_RASTER_ATOMIC, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_basicShaderFlags);
+  if(m_isRaster)
+  {
+    bindings.addBinding(BINDINGS_RASTER_ATOMIC, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_basicShaderFlags);
+  }
   bindings.addBinding(BINDINGS_GEOMETRIES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
   bindings.addBinding(BINDINGS_RENDERINSTANCES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
   bindings.addBinding(BINDINGS_RENDERMATERIALS_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
@@ -497,13 +509,16 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene)
   }
 #endif
 
-  graphicsGen.clearShaders();
-  graphicsGen.addShader(VK_SHADER_STAGE_VERTEX_BIT, "main",
-                        nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullScreenVertexShader));
-  graphicsGen.addShader(VK_SHADER_STAGE_FRAGMENT_BIT, "main",
-                        nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullscreenAtomicRasterFragmentShader));
+  if(m_isRaster)
+  {
+    graphicsGen.clearShaders();
+    graphicsGen.addShader(VK_SHADER_STAGE_VERTEX_BIT, "main",
+                          nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullScreenVertexShader));
+    graphicsGen.addShader(VK_SHADER_STAGE_FRAGMENT_BIT, "main",
+                          nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullscreenAtomicRasterFragmentShader));
 
-  graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_basicPipelines.atomicRaster);
+    graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_basicPipelines.atomicRaster);
+  }
 
   if(!m_isRaster)
   {
@@ -633,9 +648,9 @@ float Renderer::updateLodPixelError(Resources& res, RenderScene& rscene, const F
   float     pixelScale        = std::min(renderScale.x, renderScale.y);
   float     errorSizeInPixels = lodPixelError * pixelScale;
 
-  // note we use half-pixel sizes: error taken as radius, not as diameter.
-  // otherwise there was more LoD popping.
-  return (tanf(frame.traversalFov * 0.5f) * errorSizeInPixels / frame.traversalViewHeight);
+  // we used to omit the 2.0 in favor of a more conservative error (radius vs diameter),
+  // but the industry standard seems to treat as diameter.
+  return (2.0f * tanf(frame.traversalFov * 0.5f) * errorSizeInPixels / frame.traversalViewHeight);
 }
 
 }  // namespace lodclusters

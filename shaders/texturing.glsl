@@ -112,7 +112,7 @@ bool resolveTriangleTwoSided(RenderInstance instance, Cluster_in clusterRef, uin
 
   if(clusterRef.d.localMaterialID != SHADERIO_PER_TRIANGLE_MATERIALS)
   {
-    return (clusterRef.d.stateBits & SHADERIO_CLUSTER_TRIANGLE_TWOSIDED) != 0;
+    return (clusterRef.d.stateBits & CLUSTER_STATE_TWOSIDED) != 0;
   }
 
   uint8s_in triMaterials = Cluster_getTriangleMaterials(clusterRef);

@@ -11,6 +11,7 @@
 #include "shaderio_streaming.h"
 #include "shaderio_building.h"
 #include "nvshaders/sky_io.h.slang"
+#include "nvshaders/tonemap_io.h.slang"
 
 /////////////////////////////////////////
 
@@ -409,10 +410,8 @@ struct FrameConstants
   // basic path tracing
   int   pathtraceNumBounces;
   float pathtraceFireflyClamp;
-  float pathtraceExposure;      // final exposure multiplier used by the shader (renderer-driven, e.g. auto-exposure)
-  float pathtraceExposureBias;  // user exposure compensation in EV stops
-  int   pathtraceAutoExposure;  // 0/1 toggle for grid-sampled auto-exposure
-  int   pathtraceTonemap;       // operator: 0 = Filmic, 1 = ACES, 2 = Uncharted2, 3 = Clip
+
+  TonemapperData pathtraceTonemapper;
 };
 
 struct Readback

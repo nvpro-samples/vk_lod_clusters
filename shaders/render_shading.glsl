@@ -7,6 +7,7 @@
 #extension GL_EXT_fragment_shader_barycentric : enable
 
 #include "nvshaders/pbr_ggx_microfacet.h.slang"
+#include "nvshaders/tonemap_functions.h.slang"
 
 // Approximates the batlow color ramp from the scientific color ramps package.
 // Input will be clamped to [0, 1]; output is sRGB.
@@ -50,20 +51,6 @@ vec3 lodMix(float v)
   }
 }
 
-vec3 toSrgb(vec3 rgb)
-{
-  vec3 low  = rgb * 12.92f;
-  vec3 high = fma(pow(rgb, vec3(1.0F / 2.4F)), vec3(1.055F), vec3(-0.055F));
-  return lerp(low, high, vec3(greaterThan(rgb, vec3(0.0031308F))));
-}
-
-// Converts a color from sRGB to linear RGB.
-vec3 toLinear(vec3 srgb)
-{
-  vec3 low  = srgb / 12.92F;
-  vec3 high = pow((srgb + vec3(0.055F)) / 1.055F, vec3(2.4F));
-  return lerp(low, high, vec3(greaterThan(srgb, vec3(0.04045F))));
-}
 
 vec3 colorizeID(uint clusterID)
 {
@@ -121,22 +108,43 @@ struct ShadingMaterial
   float metallic;
   vec3  emissive;
   float occlusion;
+  vec3  specularColor;
+  float specular;
 };
+
+// KHR_materials_specular tints and scales the dielectric F0/F90 only, metals keep albedo/1.0
+vec3 materialF0(ShadingMaterial material)
+{
+  const float c_min_reflectance = 0.04f;
+  vec3        f0Dielectric      = min(vec3(c_min_reflectance) * material.specularColor, vec3(1.0f)) * material.specular;
+  return mix(f0Dielectric, material.albedo, material.metallic);
+}
+
+vec3 materialF90(ShadingMaterial material)
+{
+  return mix(vec3(material.specular), vec3(1.0f), material.metallic);
+}
 
 ShadingMaterial loadMaterial(uint materialID, vec2 oTexCoord, inout vec3 wNormal, vec4 wTangent, TexLOD texLod)
 {
   RenderMaterial material = materials[materialID];
   ShadingMaterial shadingMaterial;
-  shadingMaterial.roughness = material.roughness;
-  shadingMaterial.metallic  = material.metallic;
-  shadingMaterial.albedo    = unpackUnorm4x8(material.packedAlbedo).xyz;
-  shadingMaterial.emissive  = unpackUnorm4x8(material.packedEmissive).xyz;
+  vec4 packedSpecular           = unpackUnorm4x8(material.packedSpecular);
+  shadingMaterial.roughness     = material.roughness;
+  shadingMaterial.metallic      = material.metallic;
+  shadingMaterial.albedo        = unpackUnorm4x8(material.packedAlbedo).xyz;
+  shadingMaterial.emissive      = unpackUnorm4x8(material.packedEmissive).xyz;
+  shadingMaterial.specularColor = packedSpecular.xyz;
+  shadingMaterial.specular      = packedSpecular.w;
 #if HAS_TEXTURED_MATERIALS
   // glTF packs roughness in the G channel and metalness in the B channel of the metallic-roughness texture.
   vec3 metallicRoughness    = sampleBindless(material.metallicRoughnessTexture, oTexCoord, texLod).xyz;
   shadingMaterial.roughness = metallicRoughness.y * shadingMaterial.roughness;
   shadingMaterial.metallic  = metallicRoughness.z * shadingMaterial.metallic;
   shadingMaterial.albedo    *= sampleBindless(material.baseTexture, oTexCoord, texLod).xyz;
+  // KHR_materials_specular: strength lives in the A channel, the tint in the RGB of a second texture.
+  shadingMaterial.specular      *= sampleBindless(material.specularTexture, oTexCoord, texLod).w;
+  shadingMaterial.specularColor *= sampleBindless(material.specularColorTexture, oTexCoord, texLod).xyz;
   shadingMaterial.occlusion = sampleBindless(material.occlusionTexture, oTexCoord, texLod).x;
   shadingMaterial.emissive  *= sampleBindless(material.emissiveTexture, oTexCoord, texLod).xyz;
 
@@ -175,9 +183,7 @@ vec3 computeShading(ShadingMaterial material, vec3 N, vec3 L, vec3 V, float Ndot
   float VdotH = clamp(dot(V, H), 0.0f, 1.0f);
   float NdotH = clamp(dot(N, H), 0.0f, 1.0f);
 
-  float c_min_reflectance = 0.04f;
-  vec3  f0                = mix(vec3(c_min_reflectance), material.albedo, material.metallic);
-  vec3  F                 = schlickFresnel(f0, vec3(1.0f), VdotH);
+  vec3 F = schlickFresnel(materialF0(material), materialF90(material), VdotH);
 
   float D   = D_GGX(NdotH, alphaRoughness);
   float Vis = V_GGX(NdotL, NdotV, alphaRoughness);
@@ -194,14 +200,16 @@ vec4 shading(uint instanceID, uint materialID, vec3 wPos, vec3 wNormal, vec4 wTa
 #endif
 )
 {
-  const vec3 skyColor           = (view.skyParams.skyColor);
-  const vec3 groundColor        = (view.skyParams.groundColor);
+  const vec3 skyColor    = (view.skyParams.skyColor);
+  const vec3 groundColor = (view.skyParams.groundColor);
   ShadingMaterial shadingMaterial;
   shadingMaterial.roughness = 0.4f;
   shadingMaterial.metallic = 0.0f;
   shadingMaterial.albedo = vec3(0);
   shadingMaterial.emissive = vec3(0);
   shadingMaterial.occlusion = 1;
+  shadingMaterial.specularColor = vec3(1.0f);
+  shadingMaterial.specular = 1.0f;
 
   if (view.visualize == VISUALIZE_SHADED) 
   {

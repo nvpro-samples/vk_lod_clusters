@@ -66,14 +66,13 @@ In the UI you can influence the size of clusters and the LoD grouping of them in
 > The processing of larger scenes can take a while, even on CPUs with many cores. Therefore the application will save
 > an uncompressed cache file of the results automatically. This file is a simple memory mappable binary file that can take a lot of space
 > and is placed next to the original file with a `.nvsngeo` file ending. During processing existing cache files will be overwritten without warning.
-> If disk space is a concern use `--autosavecache 0` to avoid the automatic storage, however it is not recommended.
 >
 > With the `--processingonly 1` command-line option one can reduce peak memory consumption during processing of scenes with many geometries.
 > In this mode saving to the cache file is interleaved with the processing and resources are deallocated immediately once saved.
 > At the end of the processing the app closes automatically.
 > In combination with the `--processingpartial 1` command-line option, the processing only mode can resume partial results. So one can terminate the app during processing and continue at a later time.
 > There is no consistency checking of settings or input meshes for this.
-> To reduce system memory usage during processing one may lower the percentage of system threads that are used via `--processingthreadpct <float 0.0 - 1.0>` (default is 0.5, half the systems supported concurrency).
+> To reduce system resource usage during processing use: `--processingthreadpct <float 0.0 - 1.0>` (default is 0.5, half the systems supported concurrency) and `--processingmemorygigabytes < ==0 is default of 60%, <0 is percentage (-60 means 60%), >0 is absolute >`
 >
 > If system memory usage after loading a cached file is a concern, then `--mappedcache 1` can be used to load data through memory mapping directly (forced for caches that are >= 2 GiB). However, we still have to improve the streaming logic a bit to avoid IO related hitches.
 >
@@ -155,10 +154,11 @@ The occlusion culling is kept basic, testing the footprint of the bounding box a
 
 ### Streaming Operations
 
+There are a few settings in the UI to throttle the streaming traffic that is allowed per-frame.
+
 ![image illustrating the streaming operations](docs/lod_streaming.png)
 
 Please have a look at the [Streaming Operations documentation](docs/streaming.md).
-
 
 ![image illustrating the separated transfers for ray tracing](docs/lod_streaming_rt.png)
 
@@ -181,7 +181,7 @@ Please have a look at the [GPU-Driven CLAS Allocation documentation](docs/clas_a
 ## Problem-Solving
 
 The sample uses a lot of technologies and has many configurations. We don't have a lot of test coverage for it. If you experience instabilities, please let us know through GitHub Issues.
-You can use the commandline to change some defaults:
+You can use the commandline to change some defaults, some examples:
 
 * `--renderer 0` starts with rasterization.
 * `--supersample 0` disables the super sampling that otherwise doubles rendering resolution in each dimension. 
@@ -193,10 +193,11 @@ You can use the commandline to change some defaults:
 * `--autoloadcache 0` disables loading scenes from cache file.
 * `--mappedcache 1` keeps memory mapped cache file persistently, otherwise loads cache to system memory. Useful to save RAM on very large scenes.
 * `--autosavecache 0` disables saving the cache file.
-* `--processingonly 1 --processingthreadpct 0.25 --processingpartial 1` when processing big scenes, the dedicated processing only mode is better and one can reduce the memory consumption by lowering the amount of threads used.
+* `--meshoptarena 0` disables the per-thread stack arena that serves `meshoptimizer`'s temporary allocations during cluster building. The arena is on by default; it removes most of the global allocator contention that otherwise limits how well lod processing scales with thread count. `--meshoptarenabudget <MiB>` caps how much each thread keeps between calls (default **8**), below which the arena starts thrashing on chunk churn.
 * `--forcepreprocessmegabytes 1024` if a scene's raw geometry (vertex & indices) is greater than this cutoff, use a dedicated preprocess pass. Can be quicker and allows using memory mapped cache file. Default is 2048 for 2 GiB.
 * `--multimaterials 1 --attributes 7 --texturedmaterials 1` enables textured PBR materials (see [Materials](#materials) below).
 * `--maxtexturemegabytes <MiB>` sets an upper VRAM budget for material textures (default **4096**; **0** = no limit). See [Materials](#materials).
+* All megabyte budgets (`--maxgeomegabytes`, `--maxclasmegabytes`, `--startclasmegabytes`, `--clasgrowmegabytes`, `--maxblascachingmegabytes`, `--maxtransfermegabytes`, `--maxtexturemegabytes`) also accept a **negative** value, which is interpreted as a percentage of the device local heap. For example `--maxgeomegabytes -10 --maxclasmegabytes -10` reserves 10 % of VRAM each, independent of the GPU in use.
 * `--dlss 1` enables DLSS when built with `USE_DLSS` (Super Resolution in rasterization, denoising in ray tracing). Use `--dlssquality <0-3>` to set quality (max performance through ultra performance).
 * `--camerastring "..."` sets the initial camera (copy/paste from the _Misc Settings → Camera_ widget).
 * `--addcamerapath "..."` defines a camera fly-through path (repeatable, see [Camera Path](#camera-path)).
@@ -256,6 +257,7 @@ vk_lod_clusters --sequenceframes 256 --loadcamerapaths flythrough.camerapaths.tx
 The sample supports simple colored materials, alpha-masked materials, and (optionally) textured PBR shading.
 However, the shading quality is kept rather basic given the focus was geometry in this sample. For higher quality
 shading with a lot more features please refer to [vk_gltf_renderer](https://github.com/nvpro-samples/vk_gltf_renderer)
+or [RTXMG SDK](https://github.com/NVIDIA-RTX/RTXMG).
 
 ### Textured PBR (metallic-roughness)
 
@@ -295,9 +297,9 @@ Alpha-masked materials work independently of textured PBR and remain enabled by 
 ## Limitations
 
 * The `ClusterID` can only be accessed in shaders using  `gl_ClusterIDNV` after enabling `VkRayTracingPipelineClusterAccelerationStructureCreateInfoNV::allowClusterAccelerationStructure` for that pipeline.
-  We use `GL_EXT_spirv_intrinsics` rather than dedicated GLSL extension support that may come at a later time.
+  We use `GL_EXT_spirv_intrinsics` rather than the dedicated GLSL extension support.
 * Few error checks are performed on out of memory situations, which can happen on higher _"render copies"_ values, or the complexity of the loaded scene
-* The number of threads used in the persistent kernel is based on a crude heuristic for now and was not evaluated to be the optimal amount.
+* The number of threads used in the persistent kernel is based on a crude heuristic for now and was not evaluated to be the optimal amount. The Persistent kernel is deactivated for non-NVIDIA hardware.
 * The bounding box visualizations don't show for ray tracing when DLSS denoising is active, and they will only show clusters that are part of BLAS builds in the current frame. Prefer using rasterization to see them.
 * DLSS Super Resolution (rasterization): motion-vector render target is always bound; only shaded HW raster writes it. HBAO is disabled while DLSS-SR is active.
 * Material textures (PBR and alpha-mask) are loaded at scene init and are not streamed, even when geometry streaming is enabled. Use `--maxtexturemegabytes` (default 4096) to cap total texture VRAM; see [Materials](#materials).
@@ -313,13 +315,14 @@ Alpha-masked materials work independently of textured PBR and remain enabled by 
 
 ## Future Improvements
 
-* Improve streaming performance
-* Reduce memory consumption
+* Partitioned TLAS support for scenes with many instances.
+* Further techniques to reduce memory consumption.
+* Improve streaming performance.
 * Add texture streaming for material textures (long term).
 
 ## Building and Running
 
-Requires at least Vulkan SDK 1.4.309.0
+Requires at least Vulkan SDK 1.4.341.0
 
 The `VK_NV_cluster_acceleration_structure` extension is available since driver version `572.16` from 1/30/2025.
 The sample should run on older drivers with just rasterization available.
@@ -347,7 +350,8 @@ It will also look for [`nvpro_core2`](https://github.com/nvpro-samples/nvpro_cor
 * `SPACE` or `double left click` to get a surface hit point that the camera will orient itself to. This also adjusts the walking speed based on a percentage of the distance to the point. Meaning close by hit points will cause slower walk than points further in the distance.
 * `M` or `double right click` to on a surface hit point to generate the reflective mirror box in ray tracing. Trigger this on the sky to make it disappear.
 * `R` to reload the shaders (meant for debugging).
-
+* `P` to isolate an object and `SHIFT+P` to isolate the cluster (both raster only).
+  
 ## Further Samples about NVIDIA RTX Mega Geometry
 
 Other Vulkan samples using the new extensions are:
@@ -355,7 +359,7 @@ Other Vulkan samples using the new extensions are:
 - https://github.com/nvpro-samples/vk_lod_clusters - provides a sample implementation of a basic cluster-LoD based rendering and streaming system.
 - https://github.com/nvpro-samples/vk_partitioned_tlas - New extension to manage incremental TLAS updates.
 
-We also recommend having a look at [RTX Mega Geometry](https://github.com/NVIDIA-RTX/RTXMG), which demonstrates tessellation of subdivision surfaces in DirectX 12.
+We also recommend having a look at [RTX Mega Geometry](https://github.com/NVIDIA-RTX/RTXMG), which demonstrates tessellation of subdivision surfaces as well as a continuous LoD system ported from this sample.
 
 ## Additional Scenes
 
@@ -363,22 +367,51 @@ We also recommend having a look at [RTX Mega Geometry](https://github.com/NVIDIA
 
 This is a glTF export of the highly detailed raw geometry from the [NVIDIA RTX Kit - Zorah Sample](https://developer.nvidia.com/rtx-kit?sortBy=developer_learning_library) as [presented at GDC 2025](https://developer.nvidia.com/blog/nvidia-rtx-advances-with-neural-rendering-and-digital-human-technologies-at-gdc-2025/).
 
+Store these files on an SSD (ideally NVMe). A large render cache file is required next to them.
+
+We provide two versions:
+- with textures (`zorah_textured_public` ~ 130 GB on disk with render cache)
+- geometry-only (`zorah_main_public` ~ 35 GB on disk with render cache)
+
+You only need to download one of them.
+
+![screenshot showing a highly detailed classical building with intricate ornaments with appropriate texture details](/docs/zorah_textured_scene.jpg)
+
+> [!IMPORTANT]
+> Open or Drag & Drop the `zorah_textured_public.v1.cfg` file within the vk_lod_clusters application and _NOT_ the `.gltf` directly.
+> Opening the glTF directly causes additional visual artifacts.
+
+- [zorah_textured_public.v1.7z](https://developer.download.nvidia.com/ProGraphics/nvpro-samples/zorah_textured_public.v1.7z)
+  - We recommend GPUs with at least 12 GB VRAM. 
+  - Textures default to a ~4 GiB budget, but the source supports much higher detail - raise it with `--maxtexturemegabytes <MB>`. (Texture streaming is planned.)
+  - Vertex Attributes: Positions, normals, tangents and texcoords.
+  - 1.63 G Triangles, with instancing 18.9 G Triangles
+  - 4418 Textures
+  - Cannot be pre-loaded must be streamed
+  - ** 70 GB 7z** - 2026/8/25, unpacks to **78 GB on disk**
+  - The render cache file will require **50 GB on disk** next to the gltf file, it will be generated on first opening of the scene.
+  - If you want to process it separately in the background use the following command-line:
+    - `vk_lod_clusters.exe "zorah_textured_public.v1.cfg" --processingonly 1 --processingthreadpct 0.5 --processingpartial 1 --processingmemorygigabytes -60`
+    - This will use 50% of the local PC's supported concurrency and around 60% of its RAM to process the model and allow to abort and resume the processing. On a 16-core Ryzen 9 a value of `0.5` will yield 16 threads, and takes around 5-7 minutes.
+  - For more advanced shading use this asset with the [RTXMG SDK](https://github.com/NVIDIA-RTX/RTXMG) which includes a lod system ported from this codebase.
+
+
 ![screenshot showing a highly detailed classical building with intricate ornaments](/docs/zorah_scene.jpg)
 
+> [!IMPORTANT]
+> Open or Drag & Drop the `zorah_main_public.v2.cfg` or `zorah_main_public.v2.no_mountains.cfg` file within the vk_lod_clusters application and _NOT_ the `.gltf` directly. Opening the glTF directly causes additional visual artifacts.
+
 - [zorah_main_public.v2.gltf.7z](https://developer.download.nvidia.com/ProGraphics/nvpro-samples/zorah_main_public.v2.gltf.7z)
+  - We recommend GPUs with at least 8 GB VRAM
+  - Vertex Attributes: Positions and normals.
   - 1.63 G Triangles, with instancing 18.9 G Triangles
   - Cannot be pre-loaded must be streamed
   - **7.22 GB 7z** - 2026/3/10, unpacks to **9.32 GB on disk**
   - The render cache file will require **26 GB on disk** next to the gltf file, it will be generated on first opening of the scene.
   - If you want to process it separately in the background use the following command-line:
-    - `vk_lod_cluster.exe "zorah_main_public.v2.gltf" --clusterconfig 4 --processingonly 1 --processingthreadpct 0.5 --processingpartial 1 --compressed 1`
-    - This will use 50% of the local PC's supported concurrency to process the model and allow to abort and resume the processing. On a 16-core Ryzen 9 a value of `0.5` will yield 16 threads, requires 29 GB RAM (brief peak of 44 GB) and takes around 6-10 minutes. We recommend lower thread percentages on machines with less RAM.
+    - `vk_lod_clusters.exe "zorah_main_public.v2.gltf" --processingonly 1 --processingthreadpct 0.5 --processingpartial 1 --processingmemorygigabytes -60`
+    - This will use 50% of the local PC's supported concurrency and around 60% of its RAM to process the model and allow to abort and resume the processing. On a 16-core Ryzen 9 a value of `0.5` will yield 16 threads.
   - **NOTE:** Older versions of this file were larger, this sample has changed the file format of its file cache. When loading an old version, the processing will be triggered automatically and the old cache file is overwritten. It can take a bit until the new file versions have been propagated to servers worldwide.
-
-Make sure to use an NVME or SSD drive for storing these files. We recommend GPUs with at least 8 GB VRAM.
-
-> [!IMPORTANT]
-> Open or Drag & Drop the `zorah_main_public.v2.cfg` or `zorah_main_public.v2.no_mountains.cfg` file within the vk_lod_clusters application and _NOT_ the `.glTF` directly.
 
 Known Issues:
 * Compared to the original demo some of the vegetation had to be removed to make the sharing of the glTF possible (the asset itself is licensed under MIT License).

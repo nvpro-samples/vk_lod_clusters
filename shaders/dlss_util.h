@@ -12,6 +12,7 @@
 #define SHADERIO_eDlssSpecAlbedo 2
 #define SHADERIO_eDlssNormalRoughness 3
 #define SHADERIO_eDlssMotion 4
+#define SHADERIO_eDlssSpecHitDist 5
 
 #ifdef __cplusplus
 namespace shaderio {

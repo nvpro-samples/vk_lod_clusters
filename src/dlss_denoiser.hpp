@@ -34,6 +34,7 @@ public:
     eDlssSpecAlbedo      = SHADERIO_eDlssSpecAlbedo,
     eDlssNormalRoughness = SHADERIO_eDlssNormalRoughness,
     eDlssMotion          = SHADERIO_eDlssMotion,
+    eDlssSpecHitDist     = SHADERIO_eDlssSpecHitDist,
     eDlssCount,
   };
 
@@ -87,7 +88,7 @@ public:
   // Return the render size
   VkExtent2D getRenderSize() const { return m_dlssGBuffers.getSize(); }
 
-  const nvvk::GBuffer& getGBuffers() { return m_dlssGBuffers; }
+  const nvvk::GBuffer& getGBuffers() const { return m_dlssGBuffers; }
 
   bool ensureInitialized();
 
@@ -108,6 +109,7 @@ private:
       {VK_FORMAT_R16G16B16A16_SFLOAT},  // #DLSS - SpecAlbedo           : eDlssSpecAlbedo
       {VK_FORMAT_R16G16B16A16_SFLOAT},  // #DLSS - Normal / Roughness   : eDlssNormalRoughness
       {VK_FORMAT_R16G16_SFLOAT},        // #DLSS - Motion vectors       : eDlssMotion
+      {VK_FORMAT_R16_SFLOAT},           // #DLSS - Specular hit distance: eDlssSpecHitDist
   };
 
   nvvk::GBuffer m_dlssGBuffers{};  // G-Buffers: for denoising

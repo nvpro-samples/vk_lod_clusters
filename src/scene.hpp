@@ -10,6 +10,7 @@
 #include <string>
 #include <atomic>
 #include <mutex>
+#include <condition_variable>
 #include <unordered_set>
 #include <functional>
 
@@ -23,6 +24,18 @@
 #include "../shaders/shaderio_scene.h"
 
 namespace lodclusters {
+
+// current process memory usage, all in bytes, zero if unsupported.
+// `privateCommit` excludes memory mapped file pages, unlike `workingSet`.
+struct ProcessMemoryUsage
+{
+  uint64_t workingSet        = 0;
+  uint64_t peakWorkingSet    = 0;
+  uint64_t privateCommit     = 0;
+  uint64_t peakPrivateCommit = 0;
+};
+
+ProcessMemoryUsage getProcessMemoryUsage();
 
 // Controls the scene's data generation during loading and processing.
 struct SceneConfig
@@ -156,6 +169,11 @@ struct SceneLoaderConfig
   bool processingAllowPartial = false;
   // -1 inner, +1 outer, 0 auto
   int processingMode = 0;
+  // upper budget in GiB for the estimated memory of all geometries processed in parallel.
+  // Prevents many large geometries from being in-flight at once, which is what drives
+  // peak memory. 0 is automatic (60 % of installed memory), negative is a percentage
+  // of installed memory (-50 == 50 %). Always clamped to what is currently available.
+  int processingMemoryGiB = 0;
 
   // save cache file after load automatically
   bool autoSaveCache = true;
@@ -181,17 +199,20 @@ struct SceneLoaderConfig
   bool skipAlphaBlended = true;
 
   bool enableTexturedMaterials = false;
+  // skip normal map textures when textured materials are enabled
+  bool skipNormalMaps = false;
 
   bool operator==(const SceneLoaderConfig& other) const
   {
     // ignore progressInfo (runtime pointers, not configuration)
     return processingThreadsPct == other.processingThreadsPct && processingOnly == other.processingOnly
            && processingAllowPartial == other.processingAllowPartial && processingMode == other.processingMode
-           && autoSaveCache == other.autoSaveCache && autoLoadCache == other.autoLoadCache
-           && memoryMappedCache == other.memoryMappedCache && forcePreprocessMiB == other.forcePreprocessMiB
-           && skipNodeNames == other.skipNodeNames && skipMaterialNames == other.skipMaterialNames
-           && skipMeshNames == other.skipMeshNames && skipAlphaMasked == other.skipAlphaMasked
-           && skipAlphaBlended == other.skipAlphaBlended && enableTexturedMaterials == other.enableTexturedMaterials;
+           && processingMemoryGiB == other.processingMemoryGiB && autoSaveCache == other.autoSaveCache
+           && autoLoadCache == other.autoLoadCache && memoryMappedCache == other.memoryMappedCache
+           && forcePreprocessMiB == other.forcePreprocessMiB && skipNodeNames == other.skipNodeNames
+           && skipMaterialNames == other.skipMaterialNames && skipMeshNames == other.skipMeshNames
+           && skipAlphaMasked == other.skipAlphaMasked && skipAlphaBlended == other.skipAlphaBlended
+           && enableTexturedMaterials == other.enableTexturedMaterials && skipNormalMaps == other.skipNormalMaps;
   }
 
   bool operator!=(const SceneLoaderConfig& other) const { return !(*this == other); }
@@ -466,6 +487,9 @@ public:
     uint64_t inputVertexCount         = 0;
     uint64_t inputTriangleIndicesHash = 0;
     uint64_t inputVerticesHash        = 0;
+    // local material slot partition and the material properties baked into the
+    // cluster/triangle state bits. Invalidates the cache when materials change.
+    uint64_t inputMaterialSetHash = 0;
   };
 
   struct GeometryBase
@@ -548,9 +572,19 @@ public:
     glm::mat4      matrix;
     shaderio::BBox bbox;
     uint32_t       geometryID = ~0U;
-    uint32_t       materialID = ~0U;
-    bool           twoSided   = false;
-    glm::vec4      color{0.8, 0.8, 0.8, 1.0f};
+    // slot 0 of the material set, kept for the single-material fast path
+    uint32_t materialID = ~0U;
+    // index into m_instanceMaterialSets, provides the materials for all local slots
+    uint32_t  materialSetID = ~0U;
+    glm::vec4 color{0.8, 0.8, 0.8, 1.0f};
+  };
+
+  // geometries are deduplicated across glTF meshes that only differ in materials,
+  // so the actual material per local slot comes from the instance, not the geometry.
+  struct MaterialSetRange
+  {
+    uint32_t offset = 0;
+    uint32_t count  = 0;
   };
 
   struct Camera
@@ -570,11 +604,20 @@ public:
     NUM_IMAGE_DEFAULTS,
   };
 
+  // what the shader reads the image as; formats missing those channels get an image view swizzle
+  enum ImageChannelLayout
+  {
+    IMAGE_CHANNELS_DEFAULT,             // sampled as stored
+    IMAGE_CHANNELS_METALLIC_ROUGHNESS,  // glTF: roughness in G, metalness in B
+    IMAGE_CHANNELS_SPECULAR,            // KHR_materials_specular: strength in A
+  };
+
   struct Image
   {
-    std::string      filename;
-    bool             sRGB        = false;
-    ImageDefaultType defaultType = IMAGE_DEFAULT_NORMAL;
+    std::string        filename;
+    bool               sRGB          = false;
+    ImageDefaultType   defaultType   = IMAGE_DEFAULT_NORMAL;
+    ImageChannelLayout channelLayout = IMAGE_CHANNELS_DEFAULT;
   };
 
   struct Material
@@ -593,6 +636,10 @@ public:
     uint32_t  metallicRoughnessImageID = ~0u;
     uint32_t  emissiveImageID          = ~0u;
     uint32_t  alphaMaskImageID         = ~0u;
+    float     specularFactor           = 1.0f;
+    glm::vec3 specularColorFactor{1, 1, 1};
+    uint32_t  specularImageID      = ~0u;
+    uint32_t  specularColorImageID = ~0u;
   };
 
   //////////////////////////////////////////////////////////////////////////
@@ -626,7 +673,11 @@ public:
   shaderio::BBox m_bbox;
   shaderio::BBox m_gridBbox;
 
-  std::vector<Instance>    m_instances;
+  std::vector<Instance> m_instances;
+  // deduplicated material sets, one entry per distinct set (bounded by mesh count)
+  std::vector<MaterialSetRange> m_instanceMaterialSets;
+  // flat pool of scene material IDs the ranges above point into
+  std::vector<uint32_t>    m_instanceMaterialSetData;
   std::vector<Camera>      m_cameras;
   std::vector<Material>    m_materials;
   std::vector<std::string> m_geometryNames;
@@ -637,8 +688,6 @@ public:
   bool m_hasTwoSided          = false;
   bool m_hasAlphaMask         = false;
   bool m_hasTexturedMaterials = false;
-
-  uint32_t m_geometryMultiMaterialCount = 0;
 
   // maxima across lod levels
   uint32_t m_maxPerGeometryClusters  = 0;
@@ -753,7 +802,7 @@ private:
     struct Header
     {
       uint64_t magic               = 0x006f65676e73766eULL;  // nvsngeo
-      uint32_t geoVersion          = 10;
+      uint32_t geoVersion          = 12;
       uint32_t geoStructSize       = uint32_t(sizeof(GeometryView));
       uint32_t configVersion       = SceneConfig::version;
       uint32_t configStructSize    = uint32_t(sizeof(SceneConfig));
@@ -773,6 +822,8 @@ private:
       // 9 GeometryBase.lowDetailClusterStateBits
       // 10 cluster positions split into a trailing group region ([attributes][positions]),
       //    shaderio::Cluster offsets packed into 3x24-bit fields
+      // 11 GeometryLodInput.inputMaterialSetHash, geometry dedup keyed by material partition
+      // 12 bugfix texcoord compressor header size (was hardcoded 32*3, now 32*DIM)
     };
 
     Header header;
@@ -889,6 +940,32 @@ private:
 
     std::mutex processOnlySaveMutex;
 
+    // Admission control over the outer threads. Geometry sizes are heavily skewed and
+    // the large-first ordering puts the biggest ones in-flight together, which is what
+    // sets the peak. This throttles on estimated memory rather than thread count, so
+    // small geometries still saturate the threads.
+    struct MemoryBudget
+    {
+      std::mutex              mutex;
+      std::condition_variable condition;
+      // 0 disables throttling
+      uint64_t budgetBytes   = 0;
+      uint64_t inFlightBytes = 0;
+      uint32_t inFlightCount = 0;
+      // stats
+      uint64_t peakInFlightBytes = 0;
+      uint32_t peakInFlightCount = 0;
+      uint32_t waitCount         = 0;
+
+      void acquire(uint64_t bytes);
+      void release(uint64_t bytes);
+    } memoryBudget;
+
+    // estimated peak memory for processing a geometry of this size
+    static uint64_t estimateGeometryProcessingBytes(uint64_t triangleCount);
+    // resolves `SceneLoaderConfig::processingMemoryGiB` against system memory
+    void setupMemoryBudget(int budgetGiB);
+
     // bufferview compression
 
     std::vector<uint32_t> bufferViewUsers;
@@ -940,12 +1017,17 @@ private:
   Result loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path& filePath);
 
 private:
-  void loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIndex, size_t meshIndex, const struct cgltf_data* gltf);
-  void addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
-                                const struct cgltf_data*   data,
-                                const struct cgltf_node*   node,
-                                const glm::mat4            parentObjToWorldTransform,
-                                struct Filters*            filters = nullptr);
+  void loadGeometryGLTF(ProcessingInfo&          processingInfo,
+                        uint64_t                 geometryIndex,
+                        size_t                   meshIndex,
+                        uint64_t                 materialSetHash,
+                        const struct cgltf_data* gltf);
+  void addInstancesFromNodeGLTF(const std::vector<size_t>&   meshToGeometry,
+                                const std::vector<uint32_t>& meshToMaterialSet,
+                                const struct cgltf_data*     data,
+                                const struct cgltf_node*     node,
+                                const glm::mat4              parentObjToWorldTransform,
+                                struct Filters*              filters = nullptr);
 
   // to handle glTF EXT_meshopt_compression
   bool loadCompressedViewsGLTF(ProcessingInfo&                                processingInfo,
@@ -967,7 +1049,7 @@ private:
   void computeInstanceBBoxes();
 
   // these modes always output to the cache directly
-  void beginProcessingOnly(size_t geometryCount);
+  bool beginProcessingOnly(size_t geometryCount);
   void saveProcessingOnly(ProcessingInfo& processingInfo, size_t geometryIndex);
   bool endProcessingOnly(bool hadError);
 

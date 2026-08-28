@@ -100,6 +100,7 @@ layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssAlbedo, rgba8) 
 layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssSpecAlbedo, rgba16f)       uniform image2D imgDlssSpecAlbedo;
 layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssNormalRoughness, rgba16f)  uniform image2D imgDlssNormalRoughness;
 layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssMotion, rg16f)             uniform image2D imgDlssMotion;
+layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssSpecHitDist, r16f)         uniform image2D imgDlssSpecHitDist;
 #endif
 
 layout(set = 1, binding = 0) uniform sampler2D bindlessTextures[];
@@ -133,41 +134,6 @@ float ptPowerHeuristic(float a, float b)
 {
   float a2 = a * a;
   return a2 / max(a2 + b * b, 1e-8);
-}
-
-// Basic tone-map operators (from nvshaders/tonemap_functions.h.slang, inlined to avoid the
-// tonemap_io enum header). tonemapFilmic/tonemapUncharted2 bake in sRGB; ACES stays linear.
-vec3 ptTonemapFilmic(vec3 color)
-{
-  vec3 temp = max(vec3(0.0), color - vec3(0.004));
-  return (temp * (vec3(6.2) * temp + vec3(0.5))) / (temp * (vec3(6.2) * temp + vec3(1.7)) + vec3(0.06));
-}
-
-vec3 ptTonemapACES(vec3 color)
-{
-  const mat3 ACESInputMat  = mat3(0.59719, 0.07600, 0.02840, 0.35458, 0.90834, 0.13383, 0.04823, 0.01566, 0.83777);
-  const mat3 ACESOutputMat = mat3(1.60475, -0.10208, -0.00327, -0.53108, 1.10813, -0.07276, -0.07367, -0.00605, 1.07602);
-  color    = ACESInputMat * color;
-  vec3 a   = color * (color + vec3(0.0245786)) - vec3(0.000090537);
-  vec3 b   = color * (vec3(0.983729) * color + vec3(0.4329510)) + vec3(0.238081);
-  color    = a / b;
-  color    = ACESOutputMat * color;
-  return clamp(color, vec3(0.0), vec3(1.0));
-}
-
-vec3 ptTonemapUncharted2Impl(vec3 color)
-{
-  const float a = 0.15, b = 0.50, c = 0.10, d = 0.20, e = 0.02, f = 0.30;
-  return ((color * (a * color + c * b) + d * e) / (color * (a * color + b) + d * f)) - e / f;
-}
-
-vec3 ptTonemapUncharted2(vec3 color)
-{
-  const float W             = 11.2;
-  const float exposure_bias = 2.0;
-  color                     = ptTonemapUncharted2Impl(color * exposure_bias);
-  vec3 white_scale          = vec3(1.0) / ptTonemapUncharted2Impl(vec3(W));
-  return pow(color * white_scale, vec3(1.0 / 2.2));
 }
 
 // probability of choosing the specular lobe, from the Fresnel-at-normal reflectance
@@ -312,6 +278,11 @@ void main()
   // first-hit outputs
   bool hitValid            = false;
   vec3 firstHitPos         = rayOrigin + rayDir * (view.farPlane * 0.99f);
+  // True once the mirror-box redirect below fires: firstHitPos then tracks the box's own (static)
+  // surface point instead of the reflected content, so screen-space reprojection stays valid - the
+  // virtual mirror image doesn't move rigidly in screen space and would otherwise poison DLSS-RR's
+  // temporal history for the reflection (matches render_raytrace.rgen.glsl's box-depth behavior).
+  bool mirrorRedirected     = false;
 #if DEBUG_VISUALIZATION && ALLOW_SHADING
   // primary-hit wireframe overlay, applied to the final radiance after the path loop
   vec3 wireBary   = vec3(0);
@@ -321,6 +292,11 @@ void main()
   vec4 dlssAlbedo          = vec4(0);
   vec4 dlssNormalRoughness = vec4(0);
   vec3 dlssSpecular        = vec3(0);
+
+  // Specular hit distance (DLSS-RR guide): armed when the primary hit picks the specular/GGX lobe,
+  // resolved to the ray length of the very next hit (or fp16-max on a miss into the sky).
+  bool  captureSpecularHit = false;
+  float dlssSpecularHitDist = 0.0;
 
   float tMin = view.nearPlane;
   float tMax = view.farPlane;
@@ -362,7 +338,15 @@ void main()
         rayOrigin   = mirrorHitPoint;
         rayDir      = reflect(rayDir, mirrorNormal);
         tMin        = 1e-4;
-        firstHitPos = rayOrigin + rayDir * (view.farPlane * 0.99f);  // miss fallback along the reflected ray
+        firstHitPos = mirrorHitPoint;  // stable box surface point, not the (non-rigidly reprojecting) reflected content
+        mirrorRedirected = true;
+
+#if USE_DLSS
+        // This redirect is itself a perfect-mirror reflection event, bypassing the BSDF-lobe capture
+        // below (bounce 0 is now the reflected surface, not the box) - arm it here instead so the guide
+        // buffer gets the mirror-to-reflected-content distance rather than staying unset.
+        captureSpecularHit = true;
+#endif
       }
     }
   }
@@ -380,6 +364,14 @@ void main()
     // ---------------------------------------------------------
     if(rayHit.hitT < 0.0)
     {
+#if USE_DLSS
+      if(captureSpecularHit)
+      {
+        dlssSpecularHitDist = 65504.0;  // fp16 max: reflection bounced straight into the sky
+        captureSpecularHit  = false;
+      }
+#endif
+
       vec3  envColor = evalPhysicalSky(view.skyPhysical, rayDir);
       float misW     = 1.0;
       if(bounce > 0)
@@ -408,6 +400,14 @@ void main()
 
     bool firstHit = (bounce == 0);
 
+#if USE_DLSS
+    if(captureSpecularHit)
+    {
+      dlssSpecularHitDist = rayHit.hitT;
+      captureSpecularHit  = false;
+    }
+#endif
+
     vec3            N = hit.wNormal;
     ShadingMaterial mat;
     if(view.visualize == VISUALIZE_SHADED)
@@ -423,6 +423,8 @@ void main()
       mat.metallic  = 0.0;
       mat.emissive  = vec3(0);
       mat.occlusion = 1.0;
+      mat.specularColor = vec3(1.0f);
+      mat.specular      = 1.0f;
     }
 
     // For low-tessellated geometry the interpolated (or normal-mapped) shading normal can tilt far
@@ -437,8 +439,9 @@ void main()
 
     if(firstHit)
     {
-      hitValid    = true;
-      firstHitPos = hit.wPos;
+      hitValid = true;
+      if(!mirrorRedirected)
+        firstHitPos = hit.wPos;
 
 #if DEBUG_VISUALIZATION && ALLOW_SHADING
       if(view.doWireframe != 0)
@@ -489,7 +492,8 @@ void main()
     float perceptualRoughness = max(mat.roughness, 0.04f);
     float alphaRoughness      = perceptualRoughness * perceptualRoughness;
     vec3  diffuseAlbedo       = mat.albedo * (1.0 - mat.metallic);
-    vec3  f0                  = mix(vec3(0.04), mat.albedo, mat.metallic);
+    // same F0 the BRDF uses (incl. KHR_materials_specular), so lobe selection tracks the actual lobe weights
+    vec3  f0                  = materialF0(mat);
     float pSpec               = specularLobeProbability(diffuseAlbedo, f0);
 
     vec3 tx, ty;
@@ -524,7 +528,8 @@ void main()
     // BSDF sampling: choose the next direction (diffuse or specular lobe)
     // ---------------------------------------------------------
     vec3 L;
-    if(rand(seed) < pSpec)
+    bool isSpecularLobe = rand(seed) < pSpec;
+    if(isSpecularLobe)
     {
       L = sampleGgxDirection(N, tx, ty, rayDir, alphaRoughness, rand(seed), rand(seed));
     }
@@ -532,6 +537,13 @@ void main()
     {
       L = sampleCosineDirection(N, tx, ty, rand(seed), rand(seed));
     }
+
+#if USE_DLSS
+    // Arm hit-distance capture for the reflection off the primary surface; resolved at the next
+    // trace (hit or miss, above). Mirrors vk_gltf_renderer's specular hit-distance guide capture.
+    if(firstHit && isSpecularLobe)
+      captureSpecularHit = true;
+#endif
 
     if(dot(N, L) <= 0.0)
       break;
@@ -571,6 +583,12 @@ void main()
       break;
   }
 
+#if USE_DLSS
+  // Path terminated (Russian roulette, absorb, grazing sample) before the armed capture resolved.
+  if(captureSpecularHit)
+    dlssSpecularHitDist = 65504.0;
+#endif
+
 #if DEBUG_VISUALIZATION && ALLOW_SHADING
   // ---------------------------------------------------------
   // Primary-hit wireframe overlay (debug visualization)
@@ -597,30 +615,33 @@ void main()
   // Accumulate log-luminance for a geometric-mean auto-exposure (the CPU converts back with exp2).
   if((gl_LaunchIDEXT.x & 15u) == 0u && (gl_LaunchIDEXT.y & 15u) == 0u)
   {
-    atomicAdd(readback.autoExposureLumaSum, log2(max(ptLuminance(radiance), 1e-3)));
-    atomicAdd(readback.autoExposureSampleCount, 1u);
+    bool metered = true;
+    if(view.pathtraceTonemapper.enableCenterMetering != 0)
+    {
+      // only sample a centered box of the given relative size
+      vec2 centered = abs(vec2(gl_LaunchIDEXT.xy) / view.viewportf * 2.0 - 1.0);
+      metered       = max(centered.x, centered.y) <= view.pathtraceTonemapper.centerMeteringSize;
+    }
+    if(metered)
+    {
+      atomicAdd(readback.autoExposureLumaSum, log2(max(ptLuminance(radiance), 1e-3)));
+      atomicAdd(readback.autoExposureSampleCount, 1u);
+    }
   }
 
   // ---------------------------------------------------------
-  // Tone map (basic) + store
+  // Tone map + store
   // ---------------------------------------------------------
-  vec3 mapped = radiance * view.pathtraceExposure;
-  if(view.pathtraceTonemap == 1)
+  // nvpro_core2's tonemapper, applied inline rather than as a post-process pass.
+  // Exposure and white balance come in through the host-computed inputMatrix.
+  vec3 mapped;
+  if(view.pathtraceTonemapper.isActive != 0)
   {
-    mapped = toSrgb(ptTonemapACES(mapped));
-  }
-  else if(view.pathtraceTonemap == 2)
-  {
-    mapped = ptTonemapUncharted2(mapped);
-  }
-  else if(view.pathtraceTonemap == 3)
-  {
-    // Clip: no tone curve, just clamp + sRGB (matches the raster / RT shading look)
-    mapped = toSrgb(clamp(mapped, vec3(0.0), vec3(1.0)));
+    mapped = applyTonemap(view.pathtraceTonemapper, radiance, vec2(gl_LaunchIDEXT.xy), view.viewportf);
   }
   else
   {
-    mapped = ptTonemapFilmic(mapped);
+    mapped = toSrgb(clamp(radiance, vec3(0.0), vec3(1.0)));
   }
 
   float hitDepth = 1.0;
@@ -644,12 +665,14 @@ void main()
     imageStore(imgDlssAlbedo, screen, dlssAlbedo);
     imageStore(imgDlssSpecAlbedo, screen, vec4(dlssSpecular, 1.0f));
     imageStore(imgDlssNormalRoughness, screen, dlssNormalRoughness);
+    imageStore(imgDlssSpecHitDist, screen, vec4(dlssSpecularHitDist, 0, 0, 0));
   }
   else
   {
     imageStore(imgDlssAlbedo, screen, vec4(mapped, 1));
     imageStore(imgDlssSpecAlbedo, screen, vec4(vec3(0), 1.0f));
     imageStore(imgDlssNormalRoughness, screen, vec4(0));
+    imageStore(imgDlssSpecHitDist, screen, vec4(0));
   }
 #endif
 }

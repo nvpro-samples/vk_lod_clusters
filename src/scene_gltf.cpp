@@ -18,6 +18,7 @@
 #include <nvutils/parallel_work.hpp>
 
 #include "scene.hpp"
+#include "threadlocal_arena.hpp"
 
 namespace {
 class SpinLock
@@ -245,6 +246,108 @@ static void combine_paths(std::string& path, const std::string& base, const char
   }
 }
 
+// A glTF mesh is only accepted as geometry input when it is made of indexed triangles.
+// Kept in one place because the dedup pass and the actual load must agree on the
+// primitive order that drives the local material slots.
+static bool isSupportedPrimitiveGLTF(const cgltf_primitive* gltfPrim)
+{
+  return gltfPrim->type == cgltf_primitive_type_triangles && gltfPrim->attributes_count != 0 && gltfPrim->indices != nullptr;
+}
+
+static const uint64_t FNV_OFFSET_BASIS = 0xcbf29ce484222325ULL;
+static const uint64_t FNV_PRIME        = 0x100000001b3ULL;
+
+static uint64_t hashByteFNV(uint64_t hash, uint8_t value)
+{
+  return (hash ^ uint64_t(value)) * FNV_PRIME;
+}
+
+// The material of a mesh's primitive, glTF's "no material" maps to the default slot 0.
+static uint32_t getPrimitiveMaterialGLTF(const cgltf_data* gltf, const cgltf_primitive* gltfPrim)
+{
+  return gltfPrim->material ? uint32_t(gltfPrim->material - gltf->materials) : 0u;
+}
+
+// Local material slots of a glTF mesh. Geometries are deduplicated across meshes that
+// share the accessors but not the materials, so this describes the *structure* the
+// geometry bakes in (how many slots, which primitive goes into which slot, and the
+// material properties that end up in the cluster/triangle state bits), while the actual
+// material IDs travel with the instance.
+struct MeshMaterialSetGLTF
+{
+  std::vector<uint32_t> localSlots;  // scene material ID per local slot
+  std::vector<uint8_t>  primSlots;   // local slot per supported primitive, in primitive order
+  uint64_t              hash = 0;    // over primSlots + baked material bits + slot count
+};
+
+static void buildMeshMaterialSetGLTF(const cgltf_data*                   gltf,
+                                     const cgltf_mesh&                   gltfMesh,
+                                     const std::vector<Scene::Material>& materials,
+                                     bool                                enableMultiMaterials,
+                                     MeshMaterialSetGLTF&                out,
+                                     bool&                               exceededMaxLocals)
+{
+  std::unordered_map<uint32_t, uint32_t> slotOfMaterial;
+
+  for(size_t primIdx = 0; primIdx < gltfMesh.primitives_count; primIdx++)
+  {
+    const cgltf_primitive* gltfPrim = &gltfMesh.primitives[primIdx];
+
+    if(!isSupportedPrimitiveGLTF(gltfPrim))
+    {
+      continue;
+    }
+
+    uint32_t materialIndex = getPrimitiveMaterialGLTF(gltf, gltfPrim);
+    uint32_t slot          = 0;
+
+    // without multi-material support everything folds onto the first primitive's material
+    if(out.primSlots.empty() || enableMultiMaterials)
+    {
+      auto it = slotOfMaterial.try_emplace(materialIndex, uint32_t(out.localSlots.size()));
+      if(it.second)
+      {
+        if(out.localSlots.size() < SHADERIO_MAX_LOCAL_MATERIALS)
+        {
+          out.localSlots.push_back(materialIndex);
+        }
+        else
+        {
+          // more distinct materials than the per-cluster slot index can encode
+          it.first->second  = 0;
+          exceededMaxLocals = true;
+        }
+      }
+      slot = it.first->second;
+    }
+
+    out.primSlots.push_back(uint8_t(slot));
+  }
+
+  // meshes without any usable primitive still need a valid slot so that downstream
+  // `localMaterialIDs[0]` accesses stay in bounds
+  if(out.localSlots.empty())
+  {
+    out.localSlots.push_back(0);
+  }
+
+  // FNV-1a over the partition and the material properties that get baked into the geometry
+  uint64_t hash = FNV_OFFSET_BASIS;
+
+  hash = hashByteFNV(hash, uint8_t(out.localSlots.size()));
+  for(uint8_t slot : out.primSlots)
+  {
+    hash = hashByteFNV(hash, slot);
+  }
+  for(uint32_t materialIndex : out.localSlots)
+  {
+    const Scene::Material& material = materials[materialIndex];
+    hash = hashByteFNV(hash, uint8_t((material.alphaMasked ? 1 : 0) | (material.twoSided ? 2 : 0)));
+  }
+
+  out.hash = hash;
+}
+
 Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path& filePath)
 {
   std::string fileName = nvutils::utf8FromPath(filePath);
@@ -359,11 +462,15 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
   {
     std::unordered_map<std::string, uint32_t> uniqueImagesMap;
 
-    auto assignTexture = [&](const cgltf_texture* texture, bool sRGB, ImageDefaultType type, uint32_t& outImageID) {
+    auto assignTexture = [&](const cgltf_texture* texture, bool sRGB, ImageDefaultType type, uint32_t& outImageID,
+                             ImageChannelLayout channelLayout = IMAGE_CHANNELS_DEFAULT) {
       if(!texture || !texture->image)
         return false;
 
       const cgltf_image* image = texture->image;
+
+      if(!image->uri)
+        return false;
 
       std::string imageFileName;
       combine_paths(imageFileName, fileName, image->uri);
@@ -372,13 +479,19 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
       if(it == uniqueImagesMap.end())
       {
         uint32_t imageIndex = static_cast<uint32_t>(m_images.size());
-        m_images.push_back({imageFileName, sRGB, type});
+        m_images.push_back({imageFileName, sRGB, type, channelLayout});
         uniqueImagesMap[imageFileName] = imageIndex;
         outImageID                     = imageIndex;
       }
       else
       {
         outImageID = it->second;
+
+        // sRGB wins: the KHR_materials_specular pair may share a file in either order and across
+        // materials, and the transfer function does not touch the alpha the strength lives in.
+        m_images[outImageID].sRGB = m_images[outImageID].sRGB || sRGB;
+
+        // first assignment wins the layout; ORM files shared with occlusion have all channels anyway
       }
 
       return true;
@@ -387,8 +500,8 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
     bool supportTexcoords        = (m_config.enabledAttributes & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0);
     bool enableTexturedMaterials = supportTexcoords && m_loaderConfig.enableTexturedMaterials;
 
-    // A glTF may have primitives without materials, in which case the geometry
-    // loader falls back to defaultMaterialIndex==0. Guarantee a default-
+    // A glTF may have primitives without materials, in which case
+    // `getPrimitiveMaterialGLTF` falls back to index 0. Guarantee a default-
     // constructed slot exists even when materials_count==0, otherwise the
     // per-cluster/triangle state bit code crashes on m_materials[0].
     m_materials.resize(std::max<size_t>(1, gltf->materials_count));
@@ -419,11 +532,21 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
       }
       material.emissive = glm::vec4(glm::make_vec3(gltfMaterial.emissive_factor), 1.0f);
 
+      if(gltfMaterial.has_specular)
+      {
+        // the spec leaves the color factor unbounded, but we pack it as unorm
+        material.specularFactor = gltfMaterial.specular.specular_factor;
+        material.specularColorFactor = glm::min(glm::make_vec3(gltfMaterial.specular.specular_color_factor), glm::vec3(1.0f));
+      }
+
       if(enableTexturedMaterials)
       {
         // if we enabled textured materials assign them
 
-        assignTexture(gltfMaterial.normal_texture.texture, false, IMAGE_DEFAULT_NORMAL, material.normalImageID);
+        if(!m_loaderConfig.skipNormalMaps)
+        {
+          assignTexture(gltfMaterial.normal_texture.texture, false, IMAGE_DEFAULT_NORMAL, material.normalImageID);
+        }
         if(gltfMaterial.has_pbr_metallic_roughness)
         {
           if(assignTexture(gltfMaterial.pbr_metallic_roughness.base_color_texture.texture, true, IMAGE_DEFAULT_WHITE,
@@ -433,7 +556,7 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
           }
 
           assignTexture(gltfMaterial.pbr_metallic_roughness.metallic_roughness_texture.texture, false,
-                        IMAGE_DEFAULT_WHITE, material.metallicRoughnessImageID);
+                        IMAGE_DEFAULT_WHITE, material.metallicRoughnessImageID, IMAGE_CHANNELS_METALLIC_ROUGHNESS);
         }
         else if(gltfMaterial.has_pbr_specular_glossiness)
         {
@@ -442,6 +565,13 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
         }
         assignTexture(gltfMaterial.occlusion_texture.texture, false, IMAGE_DEFAULT_WHITE, material.occlusionImageID);
         assignTexture(gltfMaterial.emissive_texture.texture, true, IMAGE_DEFAULT_BLACK, material.emissiveImageID);
+        if(gltfMaterial.has_specular)
+        {
+          // may be the same file, rgb = color (sRGB), a = strength (unaffected by the transfer function)
+          assignTexture(gltfMaterial.specular.specular_color_texture.texture, true, IMAGE_DEFAULT_WHITE, material.specularColorImageID);
+          assignTexture(gltfMaterial.specular.specular_texture.texture, false, IMAGE_DEFAULT_WHITE,
+                        material.specularImageID, IMAGE_CHANNELS_SPECULAR);
+        }
       }
       else if(material.alphaMasked && supportTexcoords)
       {
@@ -475,17 +605,25 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
   // these become our unique geometries that we can then instance under different
   // materials as well.
 
-  std::vector<size_t> geometryToMesh;
-  std::vector<size_t> geometryTriangleCount;
-  std::vector<size_t> taskToGeometry;
-  std::vector<size_t> meshToGeometry(gltf->meshes_count, -1);
+  std::vector<size_t>   geometryToMesh;
+  std::vector<size_t>   geometryTriangleCount;
+  std::vector<size_t>   taskToGeometry;
+  std::vector<size_t>   meshToGeometry(gltf->meshes_count, -1);
+  std::vector<uint32_t> meshToMaterialSet(gltf->meshes_count, 0);
+  std::vector<uint64_t> geometryMaterialSetHash;
 
   uint64_t totalTriangleCount = 0;
 
   {
     size_t geometryMemoryEstimate = 0;
 
-    std::unordered_map<std::string, size_t> mapMeshToGeometry;
+    std::unordered_map<std::string, size_t>   mapMeshToGeometry;
+    std::unordered_map<std::string, uint32_t> mapMaterialSetToID;
+    bool                                      exceededMaxLocals = false;
+
+    // loadGLTF can run twice on the same Scene (preprocess pass, then the real load)
+    m_instanceMaterialSets.clear();
+    m_instanceMaterialSetData.clear();
 
     for(size_t meshIndex = 0; meshIndex < gltf->meshes_count; meshIndex++)
     {
@@ -495,16 +633,14 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
       size_t      meshTriangleCount  = 0;
       std::string meshIdentifier;
 
+      MeshMaterialSetGLTF materialSet;
+      buildMeshMaterialSetGLTF(gltf.get(), gltfMesh, m_materials, m_config.enableMultiMaterials, materialSet, exceededMaxLocals);
+
       for(size_t primIdx = 0; primIdx < gltfMesh.primitives_count; primIdx++)
       {
         cgltf_primitive* gltfPrim = &gltfMesh.primitives[primIdx];
 
-        if(gltfPrim->type != cgltf_primitive_type_triangles)
-        {
-          continue;
-        }
-
-        if(gltfPrim->attributes_count == 0)
+        if(!isSupportedPrimitiveGLTF(gltfPrim))
         {
           continue;
         }
@@ -547,6 +683,12 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
             fmt::format("{},{},{},{},", meshAccessors.pos, meshAccessors.normal, meshAccessors.index, meshAccessors.tex);
       }
 
+      // The material set hash covers everything about the materials that the geometry
+      // bakes in: the local slot count, which primitive uses which slot, and the material
+      // properties that end up in the cluster/triangle state bits. Material identity is
+      // deliberately not part of it, that is what the instance provides.
+      meshIdentifier += fmt::format("|{}", materialSet.hash);
+
       // find canonical string in map
       auto pair = mapMeshToGeometry.try_emplace(meshIdentifier, geometryToMesh.size());
       if(pair.second)
@@ -556,6 +698,7 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
         geometryToMesh.push_back(meshIndex);
         taskToGeometry.push_back(geometryIndex);
         geometryTriangleCount.push_back(meshTriangleCount);
+        geometryMaterialSetHash.push_back(materialSet.hash);
         geometryMemoryEstimate += meshMemoryEstimate;
         // only unique geometries are processed, so exclude duplicates from progress total
         totalTriangleCount += meshTriangleCount;
@@ -564,6 +707,25 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
       {
         meshToGeometry[meshIndex] = pair.first->second;
       }
+
+      // every mesh needs its own material set, whether or not it created a new geometry.
+      // Deduplicated on content, so the set ID is a 1:1 handle for the renderer.
+      std::string materialSetKey(reinterpret_cast<const char*>(materialSet.localSlots.data()),
+                                 materialSet.localSlots.size() * sizeof(uint32_t));
+
+      auto setPair = mapMaterialSetToID.try_emplace(materialSetKey, uint32_t(m_instanceMaterialSets.size()));
+      if(setPair.second)
+      {
+        m_instanceMaterialSets.push_back({uint32_t(m_instanceMaterialSetData.size()), uint32_t(materialSet.localSlots.size())});
+        m_instanceMaterialSetData.insert(m_instanceMaterialSetData.end(), materialSet.localSlots.begin(),
+                                         materialSet.localSlots.end());
+      }
+      meshToMaterialSet[meshIndex] = setPair.first->second;
+    }
+
+    if(exceededMaxLocals)
+    {
+      LOGW("Meshes with more than %d distinct primitive materials found, excess materials were merged.\n", SHADERIO_MAX_LOCAL_MATERIALS);
     }
 
     // if there is too much geometry memory in the scene and we are not in processing only mode, early out
@@ -578,9 +740,31 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
   m_geometryViews.resize(geometryToMesh.size());
   m_geometryNames.resize(geometryToMesh.size());
 
-  beginProcessingOnly(geometryToMesh.size());
+  if(!beginProcessingOnly(geometryToMesh.size()))
+  {
+    // failed to open the processing-only cache file; abort rather than silently
+    // falling back to building & retaining the full scene in memory
+    return SCENE_RESULT_ERROR;
+  }
 
   processingInfo.setupCompressedGltf(gltf->buffer_views_count);
+
+  {
+    // meshopt compressed views are decompressed into heap memory (see `loadCompressedViewsGLTF`),
+    // everything else is read straight from the memory mapped file
+    size_t   compressedViewCount = 0;
+    uint64_t decompressedBytes   = 0;
+    for(size_t i = 0; i < gltf->buffer_views_count; i++)
+    {
+      if(gltf->buffer_views[i].has_meshopt_compression)
+      {
+        compressedViewCount++;
+        decompressedBytes += gltf->buffer_views[i].meshopt_compression.count * gltf->buffer_views[i].meshopt_compression.stride;
+      }
+    }
+    LOGI("... gltf buffer views: %zu total, %zu meshopt compressed (%.1f MB decompressed)\n", gltf->buffer_views_count,
+         compressedViewCount, double(decompressedBytes) / (1024.0 * 1024.0));
+  }
 
   // when we are resuming in processingOnly mode, we might have completed several geometries already,
   // which is passed to influence the decision about the parallelism mode.
@@ -595,12 +779,21 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
               [&](size_t l, size_t r) { return geometryTriangleCount[l] > geometryTriangleCount[r]; });
   }
 
+  // only throttle when we actually run geometries in parallel
+  processingInfo.setupMemoryBudget(processingInfo.numOuterThreads > 1 ? m_loaderConfig.processingMemoryGiB : 0);
+
   auto fnLoadAndProcessGeometry = [&](uint64_t taskIndex, uint32_t threadOuterIdx) {
     uint64_t geometryIndex = taskToGeometry[taskIndex];
     // map back from unique geometry to gltf mesh
     size_t meshIndex = geometryToMesh[geometryIndex];
 
-    loadGeometryGLTF(processingInfo, geometryIndex, meshIndex, gltf.get());
+    // throttle so we don't have too many large geometries in-flight at once
+    uint64_t estimatedBytes = ProcessingInfo::estimateGeometryProcessingBytes(geometryTriangleCount[geometryIndex]);
+    processingInfo.memoryBudget.acquire(estimatedBytes);
+
+    loadGeometryGLTF(processingInfo, geometryIndex, meshIndex, geometryMaterialSetHash[geometryIndex], gltf.get());
+
+    processingInfo.memoryBudget.release(estimatedBytes);
   };
 
   // for partial files we don't have the completed triangle information
@@ -610,6 +803,10 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
                                          uint32_t(geometryToMesh.size()));
 
   nvutils::parallel_batches_pooled<1>(geometryToMesh.size(), fnLoadAndProcessGeometry, processingInfo.numOuterThreads);
+
+  // workers are joined here, so it is safe to reach the arenas they retained; with inner
+  // parallelism the per-geometry trim only ever covered the calling thread
+  threadLocalArenaTrimAll();
 
   processingInfo.logEnd();
 
@@ -658,7 +855,7 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
     const cgltf_scene scene = (gltf->scene != nullptr) ? (*(gltf->scene)) : (gltf->scenes[0]);
     for(size_t nodeIdx = 0; nodeIdx < scene.nodes_count; nodeIdx++)
     {
-      addInstancesFromNodeGLTF(meshToGeometry, gltf.get(), scene.nodes[nodeIdx], glm::mat4(1), usedFilters);
+      addInstancesFromNodeGLTF(meshToGeometry, meshToMaterialSet, gltf.get(), scene.nodes[nodeIdx], glm::mat4(1), usedFilters);
     }
   }
   else
@@ -667,7 +864,7 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
     {
       if(gltf->nodes[nodeIdx].parent == nullptr)
       {
-        addInstancesFromNodeGLTF(meshToGeometry, gltf.get(), &(gltf->nodes[nodeIdx]), glm::mat4(1), usedFilters);
+        addInstancesFromNodeGLTF(meshToGeometry, meshToMaterialSet, gltf.get(), &(gltf->nodes[nodeIdx]), glm::mat4(1), usedFilters);
       }
     }
   }
@@ -696,11 +893,12 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
 
 // Traverses the glTF node and any of its children, adding a MeshInstance to
 // the meshSet for each referenced glTF primitive.
-void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
-                                     const struct cgltf_data*   data,
-                                     const struct cgltf_node*   node,
-                                     const glm::mat4            parentObjToWorldTransform,
-                                     struct Filters*            filters)
+void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>&   meshToGeometry,
+                                     const std::vector<uint32_t>& meshToMaterialSet,
+                                     const struct cgltf_data*     data,
+                                     const struct cgltf_node*     node,
+                                     const glm::mat4              parentObjToWorldTransform,
+                                     struct Filters*              filters)
 {
   if(node == nullptr)
     return;
@@ -726,16 +924,26 @@ void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
     if(filters && node->name && std::regex_match(node->name, filters->nodeNames))
       addInstance = false;
 
-    bool hasAlphaMasked = false;
-    bool hasTwoSided    = false;
+    bool hasAlphaMasked        = false;
+    bool hasTwoSided           = false;
+    bool hasSupportedPrimitive = false;
 
     if(addInstance)
     {
-      // iterate all primitive materials
+      // iterate the materials of the primitives that actually become geometry.
+      // Unsupported primitives contribute nothing, so they must not influence the filters.
       for(size_t primitiveIdx = 0; primitiveIdx < node->mesh->primitives_count; primitiveIdx++)
       {
         const cgltf_primitive* primitive = &node->mesh->primitives[primitiveIdx];
-        const cgltf_material*  material  = primitive->material;
+
+        if(!isSupportedPrimitiveGLTF(primitive))
+        {
+          continue;
+        }
+
+        hasSupportedPrimitive = true;
+
+        const cgltf_material* material = primitive->material;
         if(material)
         {
           const ptrdiff_t materialIndex = (material)-data->materials;
@@ -745,8 +953,6 @@ void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
           {
             addInstance = false;
           }
-          instance.materialID = uint32_t(materialIndex);
-          instance.color      = sceneMaterial.color;
           if(sceneMaterial.alphaMaskImageID != ~0)
           {
             hasAlphaMasked = true;
@@ -765,6 +971,11 @@ void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
           }
         }
       }
+
+      if(!hasSupportedPrimitive)
+      {
+        addInstance = false;
+      }
     }
 
     if(addInstance)
@@ -779,16 +990,15 @@ void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
         m_hasAlphaMask = true;
       }
 
-      // No primitive on this mesh had a material; fall back to the default
-      // slot [0] (m_materials is guaranteed to have at least one entry).
-      // Without this, the renderer's scene.m_materials[instance.materialID]
-      // lookup dereferences ~0U.
-      if(instance.materialID == ~0U)
-      {
-        instance.materialID = 0;
-      }
-
       instance.geometryID = uint32_t(meshToGeometry[meshIndex]);
+
+      // The geometry may be shared with meshes that use other materials, so the actual
+      // materials for its local slots come from the instance. `materialID` mirrors slot 0
+      // for the single-material fast path.
+      instance.materialSetID           = meshToMaterialSet[meshIndex];
+      const MaterialSetRange& matRange = m_instanceMaterialSets[instance.materialSetID];
+      instance.materialID              = m_instanceMaterialSetData[matRange.offset];
+      instance.color                   = m_materials[instance.materialID].color;
 
       if(node->has_mesh_gpu_instancing)
       {
@@ -865,7 +1075,7 @@ void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>& meshToGeometry,
   const size_t numChildren = node->children_count;
   for(size_t childIdx = 0; childIdx < numChildren; childIdx++)
   {
-    addInstancesFromNodeGLTF(meshToGeometry, data, node->children[childIdx], nodeObjToWorldTransform, filters);
+    addInstancesFromNodeGLTF(meshToGeometry, meshToMaterialSet, data, node->children[childIdx], nodeObjToWorldTransform, filters);
   }
 }
 
@@ -968,11 +1178,15 @@ void Scene::unloadCompressedViewsGLTF(ProcessingInfo&                           
 
     SpinLock lock((std::atomic_uint32_t&)processingInfo.bufferViewLocks[bufferViewIndex]);
 
-    uint32_t users = processingInfo.bufferViewUsers[bufferViewIndex]--;
+    assert(processingInfo.bufferViewUsers[bufferViewIndex] && "unload without matching load");
+
+    uint32_t users = --processingInfo.bufferViewUsers[bufferViewIndex];
 
     if(users == 0)
     {
       free(bufferView->data);
+      // cgltf_free would free this again at the end of loading
+      bufferView->data = nullptr;
     }
   }
 }
@@ -1030,7 +1244,11 @@ inline void readAttributesGLTF(const cgltf_accessor* accessor,
   }
 }
 
-void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIndex, size_t meshIndex, const struct cgltf_data* gltf)
+void Scene::loadGeometryGLTF(ProcessingInfo&          processingInfo,
+                             uint64_t                 geometryIndex,
+                             size_t                   meshIndex,
+                             uint64_t                 materialSetHash,
+                             const struct cgltf_data* gltf)
 {
   // when resuming a partial processing, early out if it was already processed
   // second entry is dataSize
@@ -1052,9 +1270,12 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
     m_geometryNames[geometryIndex] = std::move(std::string(gltfMesh.name));
   }
 
-  const uint32_t defaultMaterialIndex = 0;
-
-  std::unordered_map<uint32_t, uint32_t> localMaterialMap;
+  // this mesh is the representative of the deduplicated geometry, so its local slots
+  // define the slot layout that all instances of the geometry remap their materials into
+  bool                exceededMaxLocals = false;
+  MeshMaterialSetGLTF materialSet;
+  buildMeshMaterialSetGLTF(gltf, gltfMesh, m_materials, m_config.enableMultiMaterials, materialSet, exceededMaxLocals);
+  geometry.localMaterialIDs = materialSet.localSlots;
 
   // count triangle and vertices pass
   uint32_t triangleCount = 0;
@@ -1063,26 +1284,9 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
   {
     cgltf_primitive* gltfPrim = &gltfMesh.primitives[primIdx];
 
-    if(gltfPrim->type != cgltf_primitive_type_triangles)
+    if(!isSupportedPrimitiveGLTF(gltfPrim))
     {
       continue;
-    }
-
-    // If the mesh has no attributes, there's nothing we can do
-    if(gltfPrim->attributes_count == 0)
-    {
-      continue;
-    }
-
-    // add local materials
-    uint32_t materialIndex = gltfPrim->material ? uint32_t(gltfPrim->material - gltf->materials) : defaultMaterialIndex;
-    if(primIdx == 0 || m_config.enableMultiMaterials)
-    {
-      auto it = localMaterialMap.try_emplace(materialIndex, uint32_t(geometry.localMaterialIDs.size()));
-      if(it.second)
-      {
-        geometry.localMaterialIDs.push_back(materialIndex);
-      }
     }
 
     for(size_t attribIdx = 0; attribIdx < gltfPrim->attributes_count; attribIdx++)
@@ -1128,11 +1332,14 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
 
   // use memset 0 to avoid issues with padding within struct
   memset(&geometry.lodInfo, 0, sizeof(geometry.lodInfo));
-  geometry.lodInfo.inputTriangleCount = triangleCount;
-  geometry.lodInfo.inputVertexCount   = verticesCount;
+  geometry.lodInfo.inputTriangleCount   = triangleCount;
+  geometry.lodInfo.inputVertexCount     = verticesCount;
+  geometry.lodInfo.inputMaterialSetHash = materialSetHash;
 
   // test if this mesh exists in the cache
   bool isCached = checkCache(geometry.lodInfo, geometryIndex);
+
+  bool loadedCompressedViews = false;
 
   // invalid cache
   if(m_cacheFileView.isValid() && !isCached)
@@ -1258,23 +1465,19 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
         LOGW("Error decompressing GLTF\n");
         return;
       }
+      loadedCompressedViews = true;
     }
 
     // fill pass
-    uint32_t offsetVertices  = 0;
-    uint32_t offsetTriangles = 0;
+    uint32_t offsetVertices   = 0;
+    uint32_t offsetTriangles  = 0;
+    uint32_t supportedPrimIdx = 0;
 
     for(size_t primIdx = 0; primIdx < gltfMesh.primitives_count; primIdx++)
     {
       cgltf_primitive* gltfPrim = &gltfMesh.primitives[primIdx];
 
-      if(gltfPrim->type != cgltf_primitive_type_triangles)
-      {
-        continue;
-      }
-
-      // If the mesh has no attributes, there's nothing we can do
-      if(gltfPrim->attributes_count == 0)
+      if(!isSupportedPrimitiveGLTF(gltfPrim))
       {
         continue;
       }
@@ -1335,9 +1538,8 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
 
       if(hasMultiMaterial)
       {
-        // inject material index as per-vertex attribute
-        uint32_t materialIndex = gltfPrim->material ? uint32_t(gltfPrim->material - gltf->materials) : defaultMaterialIndex;
-        uint32_t localIndex = localMaterialMap.find(materialIndex)->second;
+        // inject local material slot as per-vertex attribute
+        uint32_t localIndex = materialSet.primSlots[supportedPrimIdx];
 
         float* writeAttributes = geometry.vertexAttributes.data() + (offsetVertices * attributeStride);
         writeAttributes += geometry.attributeMaterialOffset;
@@ -1372,12 +1574,13 @@ void Scene::loadGeometryGLTF(ProcessingInfo& processingInfo, uint64_t geometryIn
       }
 
       offsetVertices += numVertices;
+      supportedPrimIdx++;
     }
   }
 
   processGeometry(processingInfo, geometryIndex, isCached);
 
-  if(!compressedViews.empty())
+  if(loadedCompressedViews)
   {
     unloadCompressedViewsGLTF(processingInfo, compressedViews, gltf);
   }

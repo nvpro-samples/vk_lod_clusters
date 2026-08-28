@@ -476,6 +476,8 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
     m_frameBuffer.pipelineRenderingInfo = pipelineRenderingInfo;
   }
 
+  updateFramebufferMemBytes();
+
   return true;
 }
 
@@ -533,6 +535,7 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
 #endif
   }
 
+  if(m_frameBuffer.useRasterization)
   {
     // compute rasterization
     VkImageCreateInfo imageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -569,7 +572,7 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
   }
 
 
-  if(m_supportsClusterRaytracing)
+  if(m_supportsClusterRaytracing && !m_frameBuffer.useRasterization)
   {
     // ray tracing depth
     VkImageCreateInfo imageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -648,6 +651,7 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
     m_hiz.updateDescriptorSet(m_hizUpdate[i], i);
   }
 
+  if(m_frameBuffer.useRasterization)
   {
     HbaoPass::FrameConfig config;
     config.targetWidth             = m_frameBuffer.renderSize.width;
@@ -715,6 +719,21 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
 
     m_frameBuffer.viewport = vp;
     m_frameBuffer.scissor  = sc;
+  }
+}
+
+void Resources::setFramebufferUseRasterization(bool enabled)
+{
+  if(m_frameBuffer.useRasterization != enabled)
+  {
+    m_frameBuffer.useRasterization = enabled;
+    VkCommandBuffer cmd            = createTempCmdBuffer();
+
+    deinitFramebufferRenderSizeDependent();
+    updateFramebufferRenderSizeDependent(cmd);
+    tempSyncSubmit(cmd);
+
+    updateFramebufferMemBytes();
   }
 }
 
@@ -799,6 +818,8 @@ void Resources::setFramebufferDlss(DlssMode mode, NVSDK_NGX_PerfQuality_Value dl
     deinitFramebufferRenderSizeDependent();
     updateFramebufferRenderSizeDependent(cmd);
     tempSyncSubmit(cmd);
+
+    updateFramebufferMemBytes();
   }
 }
 
@@ -832,6 +853,8 @@ void Resources::deinitFramebuffer()
   m_allocator.destroyImage(m_frameBuffer.imgColorResolved);
 
   deinitFramebufferRenderSizeDependent();
+
+  m_frameBufferMemBytes = 0;
 }
 
 glm::vec2 Resources::getFramebufferWindow2RenderScale() const
@@ -1184,6 +1207,56 @@ VkDeviceSize Resources::getDeviceLocalHeapSize() const
   }
   assert(0);
   return 0;
+}
+
+static VkDeviceSize getImageMemBytes(const nvvk::ResourceAllocator& allocator, const nvvk::Image& img)
+{
+  if(img.allocation == nullptr)
+    return 0;
+  VmaAllocationInfo info{};
+  vmaGetAllocationInfo(allocator, img.allocation, &info);
+  return info.size;
+}
+
+static VkDeviceSize getGBufferMemBytes(const nvvk::ResourceAllocator& allocator, const nvvk::GBuffer& gBuffer, uint32_t colorCount)
+{
+  VkDeviceSize bytes = 0;
+  for(uint32_t i = 0; i < colorCount; i++)
+  {
+    bytes += getImageMemBytes(allocator, gBuffer.getColorNvvkImage(i));
+  }
+  bytes += getImageMemBytes(allocator, gBuffer.getDepthNvvkImage());
+  return bytes;
+}
+
+void Resources::updateFramebufferMemBytes()
+{
+  VkDeviceSize bytes = 0;
+
+  bytes += getImageMemBytes(m_allocator, m_frameBuffer.imgColor);
+  bytes += getImageMemBytes(m_allocator, m_frameBuffer.imgColorResolved);
+  bytes += getImageMemBytes(m_allocator, m_frameBuffer.imgDepthStencil);
+  bytes += getImageMemBytes(m_allocator, m_frameBuffer.imgRaytracingDepth);
+  bytes += getImageMemBytes(m_allocator, m_frameBuffer.imgRasterAtomic);
+  bytes += getImageMemBytes(m_allocator, m_frameBuffer.imgHizFar[0]);
+  bytes += getImageMemBytes(m_allocator, m_frameBuffer.imgHizFar[1]);
+
+  bytes += getImageMemBytes(m_allocator, m_hbaoFrame.images.resultArray);
+  bytes += getImageMemBytes(m_allocator, m_hbaoFrame.images.linearDepthArray);
+  bytes += getImageMemBytes(m_allocator, m_hbaoFrame.images.viewNormal);
+
+#if USE_DLSS
+  if(m_frameBuffer.dlssMode == DlssMode::eRayReconstruction)
+  {
+    bytes += getGBufferMemBytes(m_allocator, m_frameBuffer.dlssDenoiser.getGBuffers(), DlssDenoiser::eDlssCount);
+  }
+  else if(m_frameBuffer.dlssMode == DlssMode::eSuperResolution)
+  {
+    bytes += getGBufferMemBytes(m_allocator, m_frameBuffer.dlssUpscaler.getGBuffer(), DlssUpscaler::eDlssCount);
+  }
+#endif
+
+  m_frameBufferMemBytes = bytes;
 }
 
 bool Resources::isBufferSizeValid(VkDeviceSize size) const

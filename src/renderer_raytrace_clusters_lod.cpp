@@ -8,6 +8,8 @@
 #include <nvutils/parallel_work.hpp>
 #include <nvutils/alignment.hpp>
 #include <nvutils/logger.hpp>
+#include <nvutils/timers.hpp>
+#include <nvshaders/tonemap_functions.h.slang>
 #include <fmt/format.h>
 
 #include <algorithm>
@@ -125,7 +127,8 @@ private:
   nvvk::Buffer m_scratchBuffer;
 
   // path tracer auto-exposure: smoothed exposure derived from the grid-sampled scene luminance readback
-  float m_ptExposure = 1.0f;
+  float                     m_ptExposure = 1.0f;
+  nvutils::PerformanceTimer m_ptExposureTimer;
 };
 
 bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscene)
@@ -250,6 +253,7 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
   m_config                = config;
   m_maxRenderClusters     = 1u << m_config.numRenderClusterBits;
   m_maxTraversalTasks     = 1u << m_config.numTraversalTaskBits;
+  res.setFramebufferUseRasterization(false);
 
   if(!rscene.useStreaming)
   {
@@ -621,10 +625,9 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
   shaderio::FrameConstants frameConstants = frame.frameConstants;
   if(m_config.usePathtrace)
   {
-    // Drive the tone-map exposure from the (auto-)exposure computed from last frame's readback,
-    // combined with the user exposure-compensation bias.
-    float autoScale                  = frameConstants.pathtraceAutoExposure != 0 ? m_ptExposure : 1.0f;
-    frameConstants.pathtraceExposure = autoScale * std::exp2(frameConstants.pathtraceExposureBias);
+    shaderio::TonemapperData& tm        = frameConstants.pathtraceTonemapper;
+    float                     autoScale = tm.autoExposure != 0 ? m_ptExposure : 1.0f;
+    tm.inputMatrix = shaderio::getColorCorrectionMatrix(tm.exposure * autoScale, tm.temperature, tm.tint);
   }
 
   vkCmdUpdateBuffer(cmd, res.m_commonBuffers.frameConstants.buffer, 0, sizeof(shaderio::FrameConstants),
@@ -1115,14 +1118,20 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     // the grid-sampled average scene luminance (accumulated with float atomics in the ray-gen shader).
     if(m_config.usePathtrace && readback.autoExposureSampleCount > 0)
     {
-      // geometric-mean (log-average) luminance -> exposure that maps it to the middle-grey key
-      float       avgLogLuma = readback.autoExposureLumaSum / float(readback.autoExposureSampleCount);
-      float       avgLuma    = std::exp2(avgLogLuma);
-      const float key        = 0.18f;
-      const float adaptRate  = 0.1f;
-      float       target     = std::clamp(key / std::max(avgLuma, 1e-4f), 0.01f, 100.0f);
+      const shaderio::TonemapperData& tm = frame.frameConstants.pathtraceTonemapper;
+
+      // geometric-mean (log-average) luminance -> exposure that maps it to the middle-grey key,
+      // with the measured luminance restricted to the tonemapper's EV100 window
+      float avgLogLuma = readback.autoExposureLumaSum / float(readback.autoExposureSampleCount);
+      float ev100      = std::clamp(shaderio::luminanceEv100(std::exp2(avgLogLuma)), tm.evMinValue, tm.evMaxValue);
+      float avgLuma    = shaderio::ev100Luminance(ev100);
+
+      const float key       = 0.18f;
+      float       target    = std::clamp(key / std::max(avgLuma, 1e-4f), 0.01f, 100.0f);
+      float       adaptRate = std::clamp(tm.autoExposureSpeed * float(m_ptExposureTimer.getSeconds()), 0.0f, 1.0f);
       m_ptExposure += (target - m_ptExposure) * adaptRate;
     }
+    m_ptExposureTimer.reset();
   }
 
   m_frameIndex++;

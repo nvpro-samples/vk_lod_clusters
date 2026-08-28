@@ -33,6 +33,7 @@
 #include <nvutils/parameter_parser.hpp>
 
 #include "lodclusters.hpp"
+#include "threadlocal_arena.hpp"
 
 using namespace lodclusters;
 
@@ -107,12 +108,21 @@ int main(int argc, char** argv)
 
   nvvk::ValidationSettings::LayerPresets validationPreset = nvvk::ValidationSettings::LayerPresets::eStandard;
 
-  parameterRegistry.add({"validation"}, &vkSetup.enableValidationLayers);
-  parameterRegistry.add({"validationpreset"}, (int*)&validationPreset);
-  parameterRegistry.add({"vsync"}, &appInfo.vSync);
+  parameterRegistry.add({"validation", "enable the Vulkan validation layers. default on in debug builds"},
+                        &vkSetup.enableValidationLayers);
+  parameterRegistry.add({"validationpreset", "0 default, 1 standard, 2 reduced overhead, 3 best practices, 4 synchronization, 5 gpu assisted, 6 debug printf. default 1"},
+                        (int*)&validationPreset);
+  parameterRegistry.add({"vsync", "default true"}, &appInfo.vSync);
   parameterRegistry.add({"device", "force a vulkan device via index into the device list"}, &vkSetup.forceGPU);
-  parameterRegistry.add({"headless"}, &appInfo.headless, true);
-  parameterRegistry.add({"headlessframes"}, &appInfo.headlessFrameCount);
+  parameterRegistry.add({"headless", "run without a window"}, &appInfo.headless, true);
+  parameterRegistry.add({"headlessframes", "frames to render in headless mode. default 1"}, &appInfo.headlessFrameCount);
+
+  bool     useThreadLocalArena       = true;
+  uint32_t threadLocalArenaBudgetMbs = uint32_t(lodclusters::ThreadLocalArena::DEFAULT_RETAIN_BUDGET / (1024 * 1024));
+  parameterRegistry.add({"meshoptarena", "route meshoptimizer's temporary allocations through a per-thread stack arena. default true"},
+                        &useThreadLocalArena);
+  parameterRegistry.add({"meshoptarenabudget", "megabytes of arena each thread may retain between meshopt calls. default 8"},
+                        &threadLocalArenaBudgetMbs);
 
   LodClusters::Info sampleInfo;
   sampleInfo.cameraManipulator               = cameraManipulator;
@@ -131,6 +141,12 @@ int main(int argc, char** argv)
   parameterParser.add(parameterRegistry);
   parameterParser.setVerbose(true);
   parameterParser.parse(argc, argv);
+
+  // must happen before any meshopt_ call, the setter is not thread safe
+  if(useThreadLocalArena)
+  {
+    lodclusters::threadLocalArenaInstall(size_t(threadLocalArenaBudgetMbs) * 1024 * 1024);
+  }
 
   // this element requires sequencerInfo that is potentially updated by parameterParser
   auto elemSequencer = std::make_shared<nvapp::ElementSequencer>(sequencerInfo);

@@ -364,12 +364,12 @@ bool Scene::saveCache() const
 }
 
 
-void Scene::beginProcessingOnly(size_t geometryCount)
+bool Scene::beginProcessingOnly(size_t geometryCount)
 {
   // don't trigger this code path if not valid
   if(!m_loaderConfig.processingOnly || m_cacheFileView.isValid())
   {
-    return;
+    return true;
   }
 
   std::string outFilename        = nvutils::utf8FromPath(m_cacheFilePath);
@@ -429,7 +429,7 @@ void Scene::beginProcessingOnly(size_t geometryCount)
   if(!result)
   {
     LOGE("Scene::beginProcessOnlySave failed to save file:\n   %s\n", outFilename.c_str());
-    return;
+    return false;
   }
 
   if(!partialExists)
@@ -448,7 +448,7 @@ void Scene::beginProcessingOnly(size_t geometryCount)
     result = fopen_s(&m_processingOnlyPartialFile, outPartialFilename.c_str(), mode) == 0;
 #else
     m_processingOnlyPartialFile = fopen(outPartialFilename.c_str(), mode);
-    result                      = (m_processingOnlyFile) != nullptr;
+    result                      = (m_processingOnlyPartialFile) != nullptr;
 #endif
 
     if(!result)
@@ -457,11 +457,12 @@ void Scene::beginProcessingOnly(size_t geometryCount)
       m_processingOnlyFile = nullptr;
 
       LOGE("Scene::beginProcessOnlySave failed to save file:\n  %s\n", outPartialFilename.c_str());
-      return;
+      return false;
     }
   }
 
   LOGI("Scene::beginProcessOnlySave started save file:\n  %s\n", outFilename.c_str());
+  return true;
 }
 
 

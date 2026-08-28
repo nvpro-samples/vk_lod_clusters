@@ -160,6 +160,7 @@ VkExtent2D DlssDenoiser::updateSize(VkCommandBuffer cmd, VkExtent2D size, NVSDK_
   dlssResourceFromGBufTexture(DlssRayReconstruction::ResourceType::eSpecularAlbedo, DlssBufferType::eDlssSpecAlbedo);
   dlssResourceFromGBufTexture(DlssRayReconstruction::ResourceType::eNormalRoughness, DlssBufferType::eDlssNormalRoughness);
   dlssResourceFromGBufTexture(DlssRayReconstruction::ResourceType::eMotionVector, DlssBufferType::eDlssMotion);
+  dlssResourceFromGBufTexture(DlssRayReconstruction::ResourceType::eSpecularHitDistance, DlssBufferType::eDlssSpecHitDist);
 
   m_dlssCreated = true;
 

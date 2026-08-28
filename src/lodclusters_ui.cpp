@@ -16,6 +16,7 @@
 #include <nvgui/fonts.hpp>
 #include <nvgui/camera.hpp>
 #include <nvgui/sky.hpp>
+#include <nvgui/tonemapper.hpp>
 #include <nvgui/property_editor.hpp>
 #include <nvgui/window.hpp>
 #include <nvgui/file_dialog.hpp>
@@ -249,7 +250,8 @@ void LodClusters::viewportUI(ImVec2 corner, ImVec2 imageSize)
   else
   {
     glm::uvec2 mousePos = {uint32_t(localPos.x), uint32_t(localPos.y)};
-    m_frameConfig.frameConstants.mousePosition = glm::uvec2(glm::vec2(mousePos) * m_resources.getFramebufferWindow2RenderScale());
+    m_frameConfig.frameConstants.mousePosition =
+        glm::uvec2(glm::vec2(mousePos) * m_resources.getFramebufferWindow2RenderScale());
   }
 
   if(m_renderer)
@@ -608,7 +610,9 @@ void LodClusters::onUIRender()
   // Shift+P also solos its cluster. If any filter is already active, P always
   // clears it (regardless of what's under the mouse), so you can toggle off
   // without needing to move the pointer back over the soloed target.
-  if(viewport && nvgui::isWindowHovered(viewport) && ImGui::IsKeyPressed(ImGuiKey_P, false))
+  // Only the rasterizer honors the filter, so the key does nothing elsewhere.
+  const bool soloFilterUsable = m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD;
+  if(soloFilterUsable && viewport && nvgui::isWindowHovered(viewport) && ImGui::IsKeyPressed(ImGuiKey_P, false))
   {
     bool anyFilterActive = m_tweak.filterInstanceID >= 0 || m_tweak.filterClusterID >= 0;
     if(anyFilterActive)
@@ -690,6 +694,9 @@ void LodClusters::onUIRender()
     {
       PE::begin("##Scene Complexity", ImGuiTableFlags_Resizable);
       PE::Checkbox("Allow textured materials", &m_sceneLoaderConfig.enableTexturedMaterials);
+      ImGui::BeginDisabled(!m_sceneLoaderConfig.enableTexturedMaterials);
+      PE::Checkbox("Skip normal maps", &m_sceneLoaderConfig.skipNormalMaps, "Don't load normal map textures.");
+      ImGui::EndDisabled();
       PE::InputIntClamped("Max texture MiB", (int*)&m_texturesConfig.maxBudgetMiB, 0, 1024 * 48, 128, 128,
                           ImGuiInputTextFlags_EnterReturnsTrue,
                           "VRAM budget for material textures. 0 disables the limit. Textures reload when changed.");
@@ -827,12 +834,17 @@ void LodClusters::onUIRender()
         {
           PE::SliderInt("Bounces", &m_frameConfig.frameConstants.pathtraceNumBounces, 1, 8);
           PE::SliderFloat("Firefly clamp", &m_frameConfig.frameConstants.pathtraceFireflyClamp, 0.0f, 100.0f, "%.1f");
-          PE::Checkbox("Auto-exposure", (bool*)&m_frameConfig.frameConstants.pathtraceAutoExposure);
-          PE::SliderFloat("Exposure (EV)", &m_frameConfig.frameConstants.pathtraceExposureBias, -6.0f, 6.0f, "%.2f");
-          PE::entry("Tonemap", [&]() {
-            const char* items[] = {"Filmic", "ACES", "Uncharted2", "Clip (no curve)"};
-            return ImGui::Combo("##pttonemap", &m_frameConfig.frameConstants.pathtraceTonemap, items, IM_ARRAYSIZE(items));
-          });
+          PE::entry(
+              "Tonemapper",
+              [&]() {
+                if(ImGui::Button("Misc Settings > Tonemapper"))
+                {
+                  m_revealTonemapper = true;
+                  ImGui::SetWindowFocus("Misc Settings");
+                }
+                return false;
+              },
+              "The tone map operator, exposure and color grading live in the \"Misc Settings\" window.");
         }
         else
         {
@@ -1675,11 +1687,19 @@ void LodClusters::onUIRender()
         ImGui::Text("==");
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
+        size_t renderTargetMemBytes = m_resources.getFramebufferMemBytes();
+        ImGui::Text("Render Targets");
+        ImGui::TableNextColumn();
+        ImGui::Text("%s", formatMemorySize(renderTargetMemBytes).c_str());
+        ImGui::TableNextColumn();
+        ImGui::Text("==");
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
         ImGui::Text("Total");
         ImGui::TableNextColumn();
-        ImGui::Text("%s", formatMemorySize(resourceActual.getTotalSum() + textureMemBytes).c_str());
+        ImGui::Text("%s", formatMemorySize(resourceActual.getTotalSum() + textureMemBytes + renderTargetMemBytes).c_str());
         ImGui::TableNextColumn();
-        ImGui::Text("%s", formatMemorySize(resourceReserved.getTotalSum() + textureMemBytes).c_str());
+        ImGui::Text("%s", formatMemorySize(resourceReserved.getTotalSum() + textureMemBytes + renderTargetMemBytes).c_str());
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         ImGui::EndTable();
@@ -1787,6 +1807,24 @@ void LodClusters::onUIRender()
       }
     }
 
+    const float tonemapperPosY = ImGui::GetCursorScreenPos().y - ImGui::GetWindowPos().y;
+    if(m_revealTonemapper)
+    {
+      ImGui::SetNextItemOpen(true);
+      ImGui::SetScrollFromPosY(tonemapperPosY, 0.0f);
+    }
+    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD && m_rendererConfig.usePathtrace
+       && ImGui::CollapsingHeader("Tonemapper", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
+    {
+      shaderio::TonemapperData& tonemapper = m_frameConfig.frameConstants.pathtraceTonemapper;
+      nvgui::tonemapperWidget(tonemapper);
+      // Auto-exposure is driven by the grid-sampled log luminance from the readback, not by a
+      // histogram pass, so only the mean is available and metering is limited to that grid.
+      tonemapper.averageMode = 0;
+      ImGui::TextDisabled("Auto exposure: mean of grid samples, no histogram.");
+    }
+    m_revealTonemapper = false;
+
     if(ImGui::CollapsingHeader("Mirror Box", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {
       namespace PE = nvgui::PropertyEditor;
@@ -1840,7 +1878,7 @@ void LodClusters::onUIRender()
       ImGui::Text("Triangle ID:  %d", triangleID);
       ImGui::Text("Position:  [%f, %f, %f]", hitPos.x, hitPos.y, hitPos.z);
 
-      ImGui::TextDisabled("P: toggle solo instance   Shift+P: toggle solo instance + cluster   (Raster only)");
+      ImGui::TextDisabled("Raster only:\nP: toggle solo instance Shift+P: toggle solo instance + cluster");
     }
 
     if(ImGui::CollapsingHeader("Advanced", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
@@ -1861,12 +1899,14 @@ void LodClusters::onUIRender()
       PE::InputIntClamped("Persistent Traversal Threads", (int*)&m_frameConfig.traversalPersistentThreads, 32,
                           256 * 1024, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue);
       PE::InputInt("Colorize xor", (int*)&m_frameConfig.frameConstants.colorXor);
+      ImGui::BeginDisabled(m_tweak.renderer != RENDERER_RASTER_CLUSTERS_LOD);
       PE::InputInt("Solo Instance ID", &m_tweak.filterInstanceID, 1, 100, ImGuiInputTextFlags_None,
                    "Rasterization only: when >= 0, only this instance is drawn (invisibility tagged in "
                    "traversal_init). -1 disables the filter.");
       PE::InputInt("Solo Cluster ID", &m_tweak.filterClusterID, 1, 100, ImGuiInputTextFlags_None,
                    "Rasterization only: when >= 0, cluster mesh + bbox shaders skip all but this cluster "
                    "ID. -1 disables the filter.");
+      ImGui::EndDisabled();
       PE::Checkbox("Auto reset timer", &m_tweak.autoResetTimers);
       if(m_resources.m_supportsMeshShaderNV)
       {
@@ -1954,6 +1994,10 @@ void LodClusters::onUIRender()
     ImGui::End();
   }
 
+  // resolve any --max*megabytes overrides written into m_memoryBudgetArgs since the last frame
+  // (e.g. by the parameter sequencer's onPreRender, which runs before this onUIRender) before
+  // handleChanges() compares the resolved configs against their last-seen state
+  applyMemoryBudgetArgs();
   handleChanges();
 
   // Rendered image displayed fully in 'Viewport' window

@@ -16,10 +16,175 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/ext/scalar_constants.hpp>
 
+#if defined(_WIN32)
+#include <windows.h>
+#include <psapi.h>
+#elif defined(__linux__)
+#include <sys/resource.h>
+#include <unistd.h>
+#endif
+
 #include "scene.hpp"
+#include "threadlocal_arena.hpp"
 
 
 namespace lodclusters {
+
+ProcessMemoryUsage getProcessMemoryUsage()
+{
+  ProcessMemoryUsage usage;
+
+#if defined(_WIN32)
+  PROCESS_MEMORY_COUNTERS counters{};
+  if(GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters)))
+  {
+    usage.workingSet     = counters.WorkingSetSize;
+    usage.peakWorkingSet = counters.PeakWorkingSetSize;
+    // pagefile/commit charge excludes read-only mapped file pages (e.g. mmap'd gltf buffers),
+    // so it better reflects actual heap/arena allocations than the working set does
+    usage.privateCommit     = counters.PagefileUsage;
+    usage.peakPrivateCommit = counters.PeakPagefileUsage;
+  }
+#elif defined(__linux__)
+  struct rusage ru{};
+  if(getrusage(RUSAGE_SELF, &ru) == 0)
+  {
+    // ru_maxrss is in KB on Linux
+    usage.peakWorkingSet = uint64_t(ru.ru_maxrss) * 1024;
+  }
+  // resident and shared are in pages, private is what commit charge is on windows
+  if(FILE* f = fopen("/proc/self/statm", "r"))
+  {
+    uint64_t total = 0, resident = 0, shared = 0;
+    if(fscanf(f, "%" SCNu64 " %" SCNu64 " %" SCNu64, &total, &resident, &shared) == 3)
+    {
+      uint64_t pageSize   = uint64_t(sysconf(_SC_PAGESIZE));
+      usage.workingSet    = resident * pageSize;
+      usage.privateCommit = (resident - std::min(resident, shared)) * pageSize;
+    }
+    fclose(f);
+  }
+#endif
+
+  return usage;
+}
+
+// total and currently available physical memory in bytes, zero if unsupported
+static void getSystemMemory(uint64_t& total, uint64_t& available)
+{
+  total     = 0;
+  available = 0;
+
+#if defined(_WIN32)
+  MEMORYSTATUSEX status{};
+  status.dwLength = sizeof(status);
+  if(GlobalMemoryStatusEx(&status))
+  {
+    total     = status.ullTotalPhys;
+    available = status.ullAvailPhys;
+  }
+#elif defined(__linux__)
+  // MemAvailable accounts for reclaimable page cache, unlike _SC_AVPHYS_PAGES
+  if(FILE* f = fopen("/proc/meminfo", "r"))
+  {
+    char     line[256];
+    uint64_t valueKB = 0;
+    while(fgets(line, sizeof(line), f))
+    {
+      if(sscanf(line, "MemTotal: %" SCNu64 " kB", &valueKB) == 1)
+        total = valueKB * 1024;
+      else if(sscanf(line, "MemAvailable: %" SCNu64 " kB", &valueKB) == 1)
+        available = valueKB * 1024;
+    }
+    fclose(f);
+  }
+#endif
+}
+
+uint64_t Scene::ProcessingInfo::estimateGeometryProcessingBytes(uint64_t triangleCount)
+{
+  // Rough model of the transient peak of `loadGeometryGLTF` + `buildGeometryLod`:
+  // the input positions/attributes/indices, the resulting groupData, and the
+  // clodBuild scratch (which dominates and is several times the input).
+  // Measured across test scenes this lands around 128 bytes per input triangle.
+  const uint64_t bytesPerTriangle = 128;
+  return triangleCount * bytesPerTriangle;
+}
+
+void Scene::ProcessingInfo::setupMemoryBudget(int budgetGiB)
+{
+  uint64_t total     = 0;
+  uint64_t available = 0;
+  getSystemMemory(total, available);
+
+  uint64_t budget = 0;
+
+  if(budgetGiB > 0)
+  {
+    budget = uint64_t(budgetGiB) * 1024 * 1024 * 1024;
+  }
+  else if(total)
+  {
+    // 0 is automatic, negative is an explicit percentage.
+    // Percentage is of installed memory, so the budget doesn't silently vary with
+    // whatever else currently runs, matching how the VRAM budgets treat the heap size.
+    double percentage = budgetGiB < 0 ? double(-budgetGiB) : 60.0;
+    budget            = uint64_t(double(total) * percentage / 100.0);
+
+    // but never plan beyond what is actually there right now
+    if(available)
+    {
+      budget = std::min(budget, uint64_t(double(available) * 0.9));
+    }
+  }
+
+  memoryBudget.budgetBytes = budget;
+
+  if(budget)
+  {
+    LOGI("... processing memory budget: %.1f MB (%.1f MB installed, %.1f MB available)\n",
+         double(budget) / (1024.0 * 1024.0), double(total) / (1024.0 * 1024.0), double(available) / (1024.0 * 1024.0));
+  }
+  else
+  {
+    LOGI("... processing memory budget: unlimited\n");
+  }
+}
+
+void Scene::ProcessingInfo::MemoryBudget::acquire(uint64_t bytes)
+{
+  if(!budgetBytes)
+    return;
+
+  std::unique_lock lock(mutex);
+
+  // always let at least one geometry through, otherwise a geometry bigger than the
+  // entire budget would deadlock
+  if(inFlightCount && inFlightBytes + bytes > budgetBytes)
+  {
+    waitCount++;
+    condition.wait(lock, [&]() { return !inFlightCount || inFlightBytes + bytes <= budgetBytes; });
+  }
+
+  inFlightBytes += bytes;
+  inFlightCount++;
+
+  peakInFlightBytes = std::max(peakInFlightBytes, inFlightBytes);
+  peakInFlightCount = std::max(peakInFlightCount, inFlightCount);
+}
+
+void Scene::ProcessingInfo::MemoryBudget::release(uint64_t bytes)
+{
+  if(!budgetBytes)
+    return;
+
+  {
+    std::lock_guard lock(mutex);
+    inFlightBytes -= bytes;
+    inFlightCount--;
+  }
+  condition.notify_all();
+}
 
 void Scene::ProcessingInfo::init(float processingThreadsPct)
 {
@@ -65,6 +230,12 @@ void Scene::ProcessingInfo::logBegin(uint64_t totalTriangleCount)
   LOGI("... geometry load & processing: geometries %" PRIu64 ", threads outer %d inner %d\n", geometryCount,
        numOuterThreads, numInnerThreads);
 
+  // baseline before any geometry work, so the processing cost can be told apart
+  // from what parsing / buffer loading already committed
+  ProcessMemoryUsage usage = getProcessMemoryUsage();
+  LOGI("... memory at start: %.1f MB commit, %.1f MB working set\n", double(usage.privateCommit) / (1024.0 * 1024.0),
+       double(usage.workingSet) / (1024.0 * 1024.0));
+
   startTime = clock.getMicroseconds();
 
   triangleCount               = totalTriangleCount;
@@ -97,7 +268,13 @@ uint32_t Scene::ProcessingInfo::logCompletedGeometry(uint64_t geometryTriangleCo
   if(percentageSnapped > progressLastPercentage)
   {
     progressLastPercentage = percentageSnapped;
-    LOGI("... geometry load & processing: %3d%%\n", percentageSnapped);
+
+    // logging commit alongside the arena shows whether the peak is in-flight data
+    // (sawtooth) or something that accumulates and is never given back (monotonic)
+    ProcessMemoryUsage usage = getProcessMemoryUsage();
+    LOGI("... geometry load & processing: %3d%%, meshopt arena %.1f MB reserved, %.1f MB commit, %.1f MB working set\n",
+         percentageSnapped, double(threadLocalArenaReservedBytes()) / (1024.0 * 1024.0),
+         double(usage.privateCommit) / (1024.0 * 1024.0), double(usage.workingSet) / (1024.0 * 1024.0));
   }
 
   // the UI derives its own percentage from completed / total geometries
@@ -109,6 +286,28 @@ void Scene::ProcessingInfo::logEnd()
   double endTime = clock.getMicroseconds();
 
   LOGI("... geometry load & processing: %f milliseconds\n", (endTime - startTime) / 1000.0f);
+  LOGI("... meshopt arena: %.1f MB reserved peak, %.1f MB retained\n",
+       double(threadLocalArenaPeakReservedBytes()) / (1024.0 * 1024.0),
+       double(threadLocalArenaReservedBytes()) / (1024.0 * 1024.0));
+  ProcessMemoryUsage usage = getProcessMemoryUsage();
+  LOGI("... peak working set: %.1f MB (now %.1f MB)\n", double(usage.peakWorkingSet) / (1024.0 * 1024.0),
+       double(usage.workingSet) / (1024.0 * 1024.0));
+  if(usage.peakPrivateCommit)
+  {
+    LOGI("... peak commit (private): %.1f MB (now %.1f MB)\n", double(usage.peakPrivateCommit) / (1024.0 * 1024.0),
+         double(usage.privateCommit) / (1024.0 * 1024.0));
+  }
+  else
+  {
+    // linux has no peak equivalent to the commit charge
+    LOGI("... peak commit (private): n/a (now %.1f MB)\n", double(usage.privateCommit) / (1024.0 * 1024.0));
+  }
+
+  if(memoryBudget.budgetBytes)
+  {
+    LOGI("... processing memory budget: %.1f MB peak in-flight, %u geometries peak, %u throttled\n",
+         double(memoryBudget.peakInFlightBytes) / (1024.0 * 1024.0), memoryBudget.peakInFlightCount, memoryBudget.waitCount);
+  }
 
   // can be zero if loaded from cache
   if(stats.groups)
@@ -280,11 +479,6 @@ Scene::Result Scene::init(const std::filesystem::path& filePath,
     m_totalClustersCount += geometry.totalClustersCount;
     m_totalTrianglesCount += geometry.totalTriangleCount;
     m_totalVerticesCount += geometry.totalVerticesCount;
-
-    if(geometry.localMaterialIDs.size() > 1)
-    {
-      m_geometryMultiMaterialCount += uint32_t(geometry.localMaterialIDs.size());
-    }
   }
   for(size_t i = 0; i < m_instances.size(); i++)
   {
@@ -312,6 +506,8 @@ Scene::Result Scene::init(const std::filesystem::path& filePath,
   }
 
 
+  LOGI("geometries: %zu (instances: %zu)\n", m_originalGeometryCount, m_originalInstanceCount);
+  LOGI("material sets: %zu (render materials: %zu)\n", m_instanceMaterialSets.size(), m_instanceMaterialSetData.size());
   LOGI("cluster triangles: %d\n", m_config.clusterTriangles);
   LOGI("cluster vertices: %d\n", m_config.clusterTriangles);
   LOGI("cluster group: %d\n", m_config.clusterGroupSize);
