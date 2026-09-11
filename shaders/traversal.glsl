@@ -226,9 +226,13 @@ bool testForTraversal(vec3 wViewPos, float uniformScale, TraversalMetric metric,
   return errorOverDistance >= build.errorOverDistanceThreshold * errorScale;
 }
 
+// Whether a geometry takes part in the sharing election, which needs at least two
+// instances. Caching does not depend on this, it only needs `lodLevelMin`.
 bool testForBlasSharing(Geometry geometry)
 {
-#if USE_BLAS_CACHING
+#if !USE_BLAS_SHARING
+  return false;
+#elif USE_BLAS_CACHING
   return geometry.instancesCount >= 1;
 #else
   return geometry.instancesCount >= 2;

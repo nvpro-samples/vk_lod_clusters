@@ -186,6 +186,51 @@ void uiPlotStreamingMemory(const std::string&           yAxisLabel,
   }
 }
 
+// resident cluster groups by the size they occupy in the clas allocator,
+// `binBytes` is the allocation size one bin spans
+void uiPlotAllocatorHistogram(const uint32_t* counts, size_t binCount, uint64_t binBytes)
+{
+  uint32_t maxValue = 1;
+  for(size_t i = 0; i < binCount; i++)
+  {
+    maxValue = std::max(maxValue, counts[i]);
+  }
+
+  // single series, the legend would only cover the plot
+  const ImPlotFlags plotFlags = ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText | ImPlotFlags_Crosshairs | ImPlotFlags_NoLegend;
+  const ImPlotAxisFlags axesFlags = ImPlotAxisFlags_Lock;
+
+  const ImVec2 plotSize = ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetTextLineHeight() * 10);
+
+  // plot over the allocation size rather than over the bin index
+  const double binKiloBytes = double(binBytes) / 1024.0;
+
+  if(ImPlot::BeginPlot("Group allocations", plotSize, plotFlags))
+  {
+    ImPlot::SetupAxes("allocation size (KiB)", "groups", axesFlags, axesFlags | ImPlotAxisFlags_NoLabel);
+    ImPlot::SetupAxesLimits(0, double(binCount) * binKiloBytes, 0, double(maxValue) * 1.05, ImPlotCond_Always);
+    ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
+
+    ImPlot::PlotLine("groups", counts, int(binCount), binKiloBytes, 0.0,
+                     ImPlotSpec(ImPlotProp_LineColor, (ImU32)kStreamGeometryLineColor, ImPlotProp_LineWeight,
+                                kMemoryPlotLineWeight, ImPlotProp_FillColor, (ImU32)kStreamGeometryFillColor,
+                                ImPlotProp_FillAlpha, kMemoryPlotFillAlpha, ImPlotProp_Flags, ImPlotLineFlags_Shaded));
+
+    if(ImPlot::IsPlotHovered())
+    {
+      ImPlotPoint mouse = ImPlot::GetPlotMousePos();
+      int         bin   = std::clamp(int(mouse.x / std::max(binKiloBytes, 1e-6)), 0, int(binCount) - 1);
+      ImGui::BeginTooltip();
+      ImGui::Text("%s .. %s", formatMemorySize(size_t(uint64_t(bin) * binBytes)).c_str(),
+                  formatMemorySize(size_t(uint64_t(bin + 1) * binBytes)).c_str());
+      ImGui::Text("groups: %u", counts[bin]);
+      ImGui::EndTooltip();
+    }
+
+    ImPlot::EndPlot();
+  }
+}
+
 static uint32_t getUsagePct(uint64_t requested, uint64_t reserved)
 {
   bool     exceeds = requested > reserved;
@@ -513,170 +558,250 @@ void LodClusters::cameraPathUI()
     ImGui::TextDisabled("cmd: --runcamerapath %d %d", m_cameraPathActive, m_cameraPathFrames);
 }
 
-void LodClusters::onUIRender()
+// "Settings" panel: scene modifiers, renderer and streaming configuration.
+// "Settings > Scene Modifiers": scene loading and instance grid options,
+// changing any of these triggers a scene reload.
+void LodClusters::uiSettingsSceneModifiers()
 {
-  ImGuiWindow* viewport = ImGui::FindWindowByName("Viewport");
+  namespace PE = nvgui::PropertyEditor;
 
-  bool requestCameraRecenter = false;
-  bool requestMirrorBox      = false;
-
-  if(m_sceneLoading)
+  if(ImGui::CollapsingHeader("Scene Modifiers"))  //, nullptr, ImGuiTreeNodeFlags_DefaultOpen ))
   {
-    // Display a modal window when loading assets or other long operation on separated thread
-    ImGui::OpenPopup("Busy Info");
+    PE::begin("##Scene Complexity", ImGuiTableFlags_Resizable);
+    PE::Checkbox("Allow textured materials", &m_sceneLoaderConfig.enableTexturedMaterials);
+    ImGui::BeginDisabled(!m_sceneLoaderConfig.enableTexturedMaterials);
+    PE::Checkbox("Skip normal maps", &m_sceneLoaderConfig.skipNormalMaps, "Don't load normal map textures.");
+    ImGui::EndDisabled();
+    PE::InputIntClamped("Max texture MiB", (int*)&m_texturesConfig.maxBudgetMiB, 0, 1024 * 48, 128, 128,
+                        ImGuiInputTextFlags_EnterReturnsTrue,
+                        "VRAM budget for material textures. 0 disables the limit. Textures reload when changed.");
+    PE::Checkbox("Flip faces winding", &m_rendererConfig.flipWinding);
+    PE::Checkbox("Disable back-face culling", &m_rendererConfig.forceTwoSided);
 
-    // Position in the center of the main window when appearing
-    const ImVec2 win_size(300, 130);
-    ImGui::SetNextWindowSize(win_size);
-    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5F, 0.5F));
-
-    // Window without any decoration
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 15.0);
-    if(ImGui::BeginPopupModal("Busy Info", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDecoration))
+    if(PE::treeNode("Render grid settings", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanFullWidth))
     {
-      uint32_t completed = m_sceneCompletedCount.load();
-      uint32_t total     = m_sceneTotalCount.load();
-      float    fraction  = total ? float(completed) / float(total) : 0.0f;
+      PE::InputInt("Copies", (int*)&m_sceneGridConfig.numCopies, 1, 16, ImGuiInputTextFlags_EnterReturnsTrue,
+                   "Instances the entire scene on a grid");
+      PE::entry("Position Axis", [&] {
+        for(uint32_t i = 0; i < 3; i++)
+        {
+          ImGui::PushID(i);
+          bool used = (m_sceneGridConfig.gridBits & (1 << i)) != 0;
 
-      // Center text in window
-      ImGui::TextDisabled("Please wait ...");
-      ImGui::TextDisabled("Completed: %u of %u", completed, total);
-      ImGui::NewLine();
-      ImGui::ProgressBar(fraction, ImVec2(-1.0f, 0.0f), getLoadPhaseName(m_sceneProgressPhase));
-      ImGui::EndPopup();
+          ImGui::Checkbox("##hidden", &used);
+          if(i < 2)
+            ImGui::SameLine();
+          if(used)
+            m_sceneGridConfig.gridBits |= (1 << i);
+          else
+            m_sceneGridConfig.gridBits &= ~(1 << i);
+          ImGui::PopID();
+        }
+        return false;
+      });
+
+      PE::entry("Rotation Axis", [&] {
+        for(uint32_t i = 3; i < 6; i++)
+        {
+          ImGui::PushID(i);
+          bool used = (m_sceneGridConfig.gridBits & (1 << i)) != 0;
+
+          ImGui::Checkbox("##hidden", &used);
+          if((i % 3) < 2)
+            ImGui::SameLine();
+          if(used)
+            m_sceneGridConfig.gridBits |= (1 << i);
+          else
+            m_sceneGridConfig.gridBits &= ~(1 << i);
+          ImGui::PopID();
+        }
+        return false;
+      });
+
+      PE::Checkbox("Unique geometries", &m_sceneGridConfig.uniqueGeometriesForCopies,
+                   "New Instances of the grid also get their own set of geometries, stresses streaming & memory consumption");
+
+      PE::InputFloat("X gap", &m_sceneGridConfig.refShift.x, 0.1f, 0.1f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
+                     "Instance grid config encoded in 6 bits: 0..2 bit enabled axis, 3..5 bit enabled rotation");
+      PE::InputFloat("Y gap", &m_sceneGridConfig.refShift.y, 0.1f, 0.1f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
+                     "Instance grid config encoded in 6 bits: 0..2 bit enabled axis, 3..5 bit enabled rotation");
+      PE::InputFloat("Z gap", &m_sceneGridConfig.refShift.z, 0.1f, 0.1f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
+                     "Instance grid config encoded in 6 bits: 0..2 bit enabled axis, 3..5 bit enabled rotation");
+      PE::InputFloat("Snap angle", &m_sceneGridConfig.snapAngle, 5.0f, 10.f, "%.3f",
+                     ImGuiInputTextFlags_EnterReturnsTrue, "If rotation is active snaps angle");
+      PE::InputFloat("Min scale", &m_sceneGridConfig.minScale, 0.1f, 1.f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue, "Scale object");
+      PE::InputFloat("Max scale", &m_sceneGridConfig.maxScale, 0.1f, 1.f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue, "Scale object");
+      PE::treePop();
     }
-    ImGui::PopStyleVar();
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    PE::end();
   }
+}
 
-  if(viewport)
-  {
-    if(nvgui::isWindowHovered(viewport))
-    {
-      if(ImGui::IsKeyPressed(ImGuiKey_R, false))
-      {
-        m_reloadShaders = true;
-      }
-      if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) || ImGui::IsKeyPressed(ImGuiKey_Space))
-      {
-        requestCameraRecenter = true;
-      }
-      if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Right) || ImGui::IsKeyPressed(ImGuiKey_M))
-      {
-        requestMirrorBox = true;
-      }
-
-      bool screenShotJpg = ImGui::IsKeyPressed(ImGuiKey_F11, false);
-      bool screenShotPng = ImGui::IsKeyPressed(ImGuiKey_F12, false);
-      if(screenShotJpg || screenShotPng)
-      {
-        auto        now      = std::chrono::system_clock::now();
-        std::string filename = fmt::format("screenshot_{:%Y_%m_%d_%H_%M_%S}.{}", now, screenShotJpg ? "jpg" : "png");
-
-        VkExtent2D extent = {m_resources.m_frameBuffer.imgColor.extent.width, m_resources.m_frameBuffer.imgColor.extent.height};
-
-        m_app->saveImageToFile(m_resources.m_frameBuffer.imgColor.image, extent, filename, screenShotJpg ? 90 : 100,
-                               m_resources.m_frameBuffer.useResolved ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL :
-                                                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-      }
-    }
-  }
-
-  shaderio::Readback readback;
-  m_resources.getReadbackData(readback);
-
-  bool       pickingValid = isPickingValid(readback);
-  glm::dvec3 hitPos       = {};
-  bool       hitPosValid  = false;
-  if(pickingValid)
-  {
-    float d = decodePickingDepth(readback);
-    // reject far plane and beyond (reversed-Z: 0 = far)
-    if(d > 0.0f)
-    {
-      glm::uvec2 mousePos = {m_frameConfig.frameConstants.mousePosition.x, m_frameConfig.frameConstants.mousePosition.y};
-
-      const glm::dmat4 view = m_info.cameraManipulator->getViewMatrix();
-      const glm::dmat4 proj = m_frameConfig.frameConstants.projMatrix;
-
-      glm::dvec4 win_norm = {0, 0, m_frameConfig.frameConstants.viewport.x, m_frameConfig.frameConstants.viewport.y};
-      hitPosValid         = true;
-      hitPos              = glm::unProjectZO({mousePos.x, mousePos.y, d}, view, proj, win_norm);
-    }
-  }
-
-  // P sets the rasterization solo filter on the currently hovered instance,
-  // Shift+P also solos its cluster. If any filter is already active, P always
-  // clears it (regardless of what's under the mouse), so you can toggle off
-  // without needing to move the pointer back over the soloed target.
-  // Only the rasterizer honors the filter, so the key does nothing elsewhere.
-  const bool soloFilterUsable = m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD;
-  if(soloFilterUsable && viewport && nvgui::isWindowHovered(viewport) && ImGui::IsKeyPressed(ImGuiKey_P, false))
-  {
-    bool anyFilterActive = m_tweak.filterInstanceID >= 0 || m_tweak.filterClusterID >= 0;
-    if(anyFilterActive)
-    {
-      m_tweak.filterInstanceID = -1;
-      m_tweak.filterClusterID  = -1;
-    }
-    else if(pickingValid)
-    {
-      bool shift               = ImGui::GetIO().KeyShift;
-      m_tweak.filterInstanceID = int32_t(uint32_t(readback.instanceId));
-      m_tweak.filterClusterID  = shift ? int32_t(uint32_t(readback.clusterTriangleId >> 8)) : -1;
-    }
-  }
-
-  // camera control, recenter
-  if((requestCameraRecenter || requestMirrorBox) && pickingValid)
-  {
-    if(hitPosValid)
-    {
-      glm::dvec3 eye, center, up;
-      m_info.cameraManipulator->getLookat(eye, center, up);
-
-      if(requestCameraRecenter)
-      {
-        // Set the interest position
-        m_info.cameraManipulator->setLookat(eye, hitPos, up, false);
-        m_info.cameraManipulator->setSpeed(glm::length(eye - hitPos) * m_tweak.clickSpeedScale);
-      }
-
-      if(requestMirrorBox)
-      {
-        m_frameConfig.frameConstants.useMirrorBox = 1;
-        m_frameConfig.frameConstants.wMirrorBox = glm::vec4(hitPos, glm::distance(eye, hitPos) * m_tweak.mirrorBoxScale);
-      }
-    }
-    else
-    {
-      if(requestMirrorBox)
-      {
-        m_frameConfig.frameConstants.useMirrorBox = 0;
-      }
-    }
-  }
-  else if(requestMirrorBox && !pickingValid)
-  {
-    m_frameConfig.frameConstants.useMirrorBox = 0;
-  }
-
-  ImVec4 text_color = ImGui::GetStyleColorVec4(ImGuiCol_Text);
-  ImVec4 warn_color = text_color;
-  warn_color.y *= 0.5f;
-  warn_color.z *= 0.5f;
-
+// "Settings > Rendering": renderer choice, supersampling, shading and visualization.
+void LodClusters::uiSettingsRendering()
+{
   // for emphasized parameter we want to recommend to the user
   const ImVec4 recommendedColor = ImVec4(0.0, 1.0, 0.0, 1.0);
-  const ImVec4 changesColor     = ImVec4(1.0f, 1.0f, 0.1f, 1.0f);
 
-  UsagePercentages pct = {};
-  if(m_renderer)
+  namespace PE = nvgui::PropertyEditor;
+
+  if(ImGui::CollapsingHeader("Rendering", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
   {
-    pct.setupPercentages(readback, m_renderer->getMaxRenderClusters(), m_renderer->getMaxTraversalTasks(),
-                         m_renderer->getMaxBlasBuilds());
+
+    PE::begin("##Rendering", ImGuiTableFlags_Resizable);
+    PE::entry("Renderer", [&]() { return m_ui.enumCombobox(GUI_RENDERER, "renderer", &m_tweak.renderer); });
+    PE::entry("Super Resolution", [&]() { return m_ui.enumCombobox(GUI_SUPERSAMPLE, "sampling", &m_tweak.supersample); });
+#if USE_DLSS
+    bool        dlssAvailable = false;
+    const char* dlssLabel     = "DLSS";
+    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+    {
+      dlssAvailable = m_resources.m_frameBuffer.dlssDenoiser.isAvailable();
+      dlssLabel     = "DLSS - RR";
+    }
+    else if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD)
+    {
+      dlssAvailable = m_resources.m_frameBuffer.dlssUpscaler.isAvailable();
+      dlssLabel     = "DLSS - SR";
+    }
+    ImGui::BeginDisabled(!dlssAvailable);
+    {
+      PE::entry(dlssLabel, [&]() {
+        bool changed = ImGui::Checkbox("Enabled", &m_rendererConfig.useDlss);
+        ImGui::SameLine();
+
+        const char* labels[] = {"DLAA", "Quality", "Balanced", "Performance", "Ultra Performance"};
+        const NVSDK_NGX_PerfQuality_Value values[] = {
+            NVSDK_NGX_PerfQuality_Value_DLAA,
+            NVSDK_NGX_PerfQuality_Value_MaxQuality,
+            NVSDK_NGX_PerfQuality_Value_Balanced,
+            NVSDK_NGX_PerfQuality_Value_MaxPerf,
+            NVSDK_NGX_PerfQuality_Value_UltraPerformance,
+        };
+
+        int current = 1;
+        for(int i = 0; i < IM_ARRAYSIZE(values); i++)
+        {
+          if(m_rendererConfig.dlssQuality == values[i])
+          {
+            current = i;
+            break;
+          }
+        }
+        if(ImGui::Combo("Quality", &current, labels, IM_ARRAYSIZE(labels)))
+        {
+          m_rendererConfig.dlssQuality = values[current];
+          changed                      = true;
+        }
+        return changed;
+      });
+    }
+    ImGui::EndDisabled();
+#endif
+    PE::Text("Render Resolution:", "%d x %d", m_resources.m_frameBuffer.renderSize.width,
+             m_resources.m_frameBuffer.renderSize.height);
+
+    ImGui::PushStyleColor(ImGuiCol_Text, recommendedColor);
+    PE::entry("Visualize", [&]() {
+      ImGui::PopStyleColor();  // pop text color here so it only applies to the label
+      return m_ui.enumCombobox(GUI_VISUALIZE, "visualize", &m_frameConfig.visualize);
+    });
+
+    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+    {
+      PE::Checkbox("Path tracing", &m_rendererConfig.usePathtrace,
+                   "Basic path tracer: shade in the ray-generation shader with multi-bounce GI under the "
+                   "physical sky (1 spp). Best with DLSS Ray Reconstruction; noisy otherwise.");
+
+      if(m_rendererConfig.usePathtrace)
+      {
+        PE::SliderInt("Bounces", &m_frameConfig.frameConstants.pathtraceNumBounces, 1, 8);
+        PE::SliderFloat("Firefly clamp", &m_frameConfig.frameConstants.pathtraceFireflyClamp, 0.0f, 100.0f, "%.1f");
+        PE::entry(
+            "Tonemapper",
+            [&]() {
+              if(ImGui::Button("Misc Settings > Tonemapper"))
+              {
+                m_revealTonemapper = true;
+                ImGui::SetWindowFocus("Misc Settings");
+              }
+              return false;
+            },
+            "The tone map operator, exposure and color grading live in the \"Misc Settings\" window.");
+      }
+      else
+      {
+        PE::Checkbox("Cast shadow rays", (bool*)&m_frameConfig.frameConstants.doShadow);
+        PE::Checkbox("Ambient occlusion", &m_tweak.hbaoActive);
+
+        if(!m_tweak.hbaoActive)
+        {
+          m_frameConfig.frameConstants.ambientOcclusionSamples = 0;
+        }
+        else
+        {
+          m_frameConfig.frameConstants.ambientOcclusionSamples = m_lastAmbientOcclusionSamples;
+        }
+      }
+    }
+    if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD)
+    {
+      PE::Text("HBAO", "");
+      PE::Checkbox("Ambient occlusion", &m_tweak.hbaoActive);
+    }
+    if(PE::treeNode("AO settings"))
+    {  // conditional UI, declutters the UI, prevents presenting many sections in disabled state
+      if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+      {
+        PE::SliderFloat("Radius", &m_frameConfig.frameConstants.ambientOcclusionRadius, 0.001f, 1.f, "%.7f");
+        if(PE::SliderInt("Rays", &m_frameConfig.frameConstants.ambientOcclusionSamples, 1, 64))
+        {
+          if(m_frameConfig.frameConstants.ambientOcclusionSamples)
+          {
+            m_tweak.hbaoActive = true;
+          }
+        }
+        if(m_frameConfig.frameConstants.ambientOcclusionSamples)
+        {
+          m_lastAmbientOcclusionSamples = m_frameConfig.frameConstants.ambientOcclusionSamples;
+        }
+      }
+      if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD)
+      {
+        PE::Checkbox("Blur", &m_frameConfig.hbaoSettings.blur);
+        PE::InputFloat("Radius", &m_tweak.hbaoRadius, 0.01f, 0, "%.6f");
+        PE::InputFloat("Sharpness", &m_frameConfig.hbaoSettings.powerExponent, 1.0f);
+        PE::InputFloat("Intensity", &m_frameConfig.hbaoSettings.intensity, 0.1f);
+        PE::InputFloat("Bias", &m_frameConfig.hbaoSettings.bias, 0.01f);
+      }
+      PE::treePop();
+    }
+
+    if(PE::treeNode("Other settings"))
+    {
+      if(m_scene && m_scene->m_hasVertexNormals)
+      {
+        PE::Checkbox("Facet shading", &m_tweak.facetShading);
+      }
+      if(m_resources.m_supportsBarycentrics || m_resources.m_supportsClusterRaytracing)
+      {
+        PE::Checkbox("Wireframe", (bool*)&m_frameConfig.frameConstants.doWireframe);
+      }
+      PE::Checkbox("Instance BBoxes", &m_frameConfig.showInstanceBboxes);
+      PE::Checkbox("Cluster BBoxes", &m_frameConfig.showClusterBboxes);
+      PE::Checkbox("Reflective box", (bool*)&m_frameConfig.frameConstants.useMirrorBox);
+      PE::treePop();
+    }
+
+    PE::end();
   }
+}
+
+// "Settings > Traversal": lod error, culling and the per-frame render statistics.
+void LodClusters::uiSettingsTraversal()
+{
+  shaderio::Readback readback;
+  m_resources.getReadbackData(readback);
 
   StreamingStats stats = {};
   if(m_renderScene && m_renderScene->useStreaming)
@@ -686,828 +811,677 @@ void LodClusters::onUIRender()
 
   namespace PE = nvgui::PropertyEditor;
 
-  if(ImGui::Begin("Settings"))
+  if(ImGui::CollapsingHeader("Traversal", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
   {
-    ImGui::PushItemWidth(170 * ImGui::GetWindowDpiScale());
-
-    if(ImGui::CollapsingHeader("Scene Modifiers"))  //, nullptr, ImGuiTreeNodeFlags_DefaultOpen ))
+    PE::begin("##TraversalSpecifics", ImGuiTableFlags_Resizable);
+    PE::InputIntClamped("Max tasks (bits)", (int*)&m_rendererConfig.numTraversalTaskBits, 8, 25, 1, 1,
+                        ImGuiInputTextFlags_EnterReturnsTrue);
+    PE::InputIntClamped("Max clusters (bits)", (int*)&m_rendererConfig.numRenderClusterBits, 8, 25, 1, 1,
+                        ImGuiInputTextFlags_EnterReturnsTrue,
+                        "Maximum clusters that can be enqueued per-frame in bits. For raster this equals rendered clusters, for ray tracing its BLAS input.");
+    PE::InputFloat("LoD pixel error", &m_frameConfig.lodPixelError, 0.25f, 0.25f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
+    PE::Checkbox("Adaptive error", &m_frameConfig.adaptiveError, "alters pixel error based on streaming load");
+    if(m_frameConfig.adaptiveError && m_renderer)
     {
-      PE::begin("##Scene Complexity", ImGuiTableFlags_Resizable);
-      PE::Checkbox("Allow textured materials", &m_sceneLoaderConfig.enableTexturedMaterials);
-      ImGui::BeginDisabled(!m_sceneLoaderConfig.enableTexturedMaterials);
-      PE::Checkbox("Skip normal maps", &m_sceneLoaderConfig.skipNormalMaps, "Don't load normal map textures.");
-      ImGui::EndDisabled();
-      PE::InputIntClamped("Max texture MiB", (int*)&m_texturesConfig.maxBudgetMiB, 0, 1024 * 48, 128, 128,
-                          ImGuiInputTextFlags_EnterReturnsTrue,
-                          "VRAM budget for material textures. 0 disables the limit. Textures reload when changed.");
-      PE::Checkbox("Flip faces winding", &m_rendererConfig.flipWinding);
-      PE::Checkbox("Disable back-face culling", &m_rendererConfig.forceTwoSided);
-
-      if(PE::treeNode("Render grid settings", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_SpanFullWidth))
-      {
-        PE::InputInt("Copies", (int*)&m_sceneGridConfig.numCopies, 1, 16, ImGuiInputTextFlags_EnterReturnsTrue,
-                     "Instances the entire scene on a grid");
-        PE::entry("Position Axis", [&] {
-          for(uint32_t i = 0; i < 3; i++)
-          {
-            ImGui::PushID(i);
-            bool used = (m_sceneGridConfig.gridBits & (1 << i)) != 0;
-
-            ImGui::Checkbox("##hidden", &used);
-            if(i < 2)
-              ImGui::SameLine();
-            if(used)
-              m_sceneGridConfig.gridBits |= (1 << i);
-            else
-              m_sceneGridConfig.gridBits &= ~(1 << i);
-            ImGui::PopID();
-          }
-          return false;
-        });
-
-        PE::entry("Rotation Axis", [&] {
-          for(uint32_t i = 3; i < 6; i++)
-          {
-            ImGui::PushID(i);
-            bool used = (m_sceneGridConfig.gridBits & (1 << i)) != 0;
-
-            ImGui::Checkbox("##hidden", &used);
-            if((i % 3) < 2)
-              ImGui::SameLine();
-            if(used)
-              m_sceneGridConfig.gridBits |= (1 << i);
-            else
-              m_sceneGridConfig.gridBits &= ~(1 << i);
-            ImGui::PopID();
-          }
-          return false;
-        });
-
-        PE::Checkbox("Unique geometries", &m_sceneGridConfig.uniqueGeometriesForCopies,
-                     "New Instances of the grid also get their own set of geometries, stresses streaming & memory consumption");
-
-        PE::InputFloat("X gap", &m_sceneGridConfig.refShift.x, 0.1f, 0.1f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
-                       "Instance grid config encoded in 6 bits: 0..2 bit enabled axis, 3..5 bit enabled rotation");
-        PE::InputFloat("Y gap", &m_sceneGridConfig.refShift.y, 0.1f, 0.1f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
-                       "Instance grid config encoded in 6 bits: 0..2 bit enabled axis, 3..5 bit enabled rotation");
-        PE::InputFloat("Z gap", &m_sceneGridConfig.refShift.z, 0.1f, 0.1f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
-                       "Instance grid config encoded in 6 bits: 0..2 bit enabled axis, 3..5 bit enabled rotation");
-        PE::InputFloat("Snap angle", &m_sceneGridConfig.snapAngle, 5.0f, 10.f, "%.3f",
-                       ImGuiInputTextFlags_EnterReturnsTrue, "If rotation is active snaps angle");
-        PE::InputFloat("Min scale", &m_sceneGridConfig.minScale, 0.1f, 1.f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue, "Scale object");
-        PE::InputFloat("Max scale", &m_sceneGridConfig.maxScale, 0.1f, 1.f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue, "Scale object");
-        PE::treePop();
-      }
-      PE::end();
+      PE::Text("LoD pixel error (used)", fmt::format("{}", m_renderer->getLodError()));
     }
 
-    if(ImGui::CollapsingHeader("Rendering", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
+    m_frameConfig.lodPixelError = std::max(0.001f, m_frameConfig.lodPixelError);
+
+    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
     {
-
-      PE::begin("##Rendering", ImGuiTableFlags_Resizable);
-      PE::entry("Renderer", [&]() { return m_ui.enumCombobox(GUI_RENDERER, "renderer", &m_tweak.renderer); });
-      PE::entry("Super Resolution",
-                [&]() { return m_ui.enumCombobox(GUI_SUPERSAMPLE, "sampling", &m_tweak.supersample); });
-#if USE_DLSS
-      bool        dlssAvailable = false;
-      const char* dlssLabel     = "DLSS";
-      if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
-      {
-        dlssAvailable = m_resources.m_frameBuffer.dlssDenoiser.isAvailable();
-        dlssLabel     = "DLSS - RR";
-      }
-      else if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD)
-      {
-        dlssAvailable = m_resources.m_frameBuffer.dlssUpscaler.isAvailable();
-        dlssLabel     = "DLSS - SR";
-      }
-      ImGui::BeginDisabled(!dlssAvailable);
-      {
-        PE::entry(dlssLabel, [&]() {
-          bool changed = ImGui::Checkbox("Enabled", &m_rendererConfig.useDlss);
-          ImGui::SameLine();
-
-          const char* labels[] = {"DLAA", "Quality", "Balanced", "Performance", "Ultra Performance"};
-          const NVSDK_NGX_PerfQuality_Value values[] = {
-              NVSDK_NGX_PerfQuality_Value_DLAA,
-              NVSDK_NGX_PerfQuality_Value_MaxQuality,
-              NVSDK_NGX_PerfQuality_Value_Balanced,
-              NVSDK_NGX_PerfQuality_Value_MaxPerf,
-              NVSDK_NGX_PerfQuality_Value_UltraPerformance,
-          };
-
-          int current = 1;
-          for(int i = 0; i < IM_ARRAYSIZE(values); i++)
-          {
-            if(m_rendererConfig.dlssQuality == values[i])
-            {
-              current = i;
-              break;
-            }
-          }
-          if(ImGui::Combo("Quality", &current, labels, IM_ARRAYSIZE(labels)))
-          {
-            m_rendererConfig.dlssQuality = values[current];
-            changed                      = true;
-          }
-          return changed;
-        });
-      }
+      ImGui::BeginDisabled(!m_rendererConfig.useCulling);
+      PE::InputFloat("Culled error scale", &m_frameConfig.culledErrorScale, 1.f, 1.f, "%.3f",
+                     ImGuiInputTextFlags_EnterReturnsTrue, "scale the pixel error for occluded objects in ray tracing");
       ImGui::EndDisabled();
-#endif
-      PE::Text("Render Resolution:", "%d x %d", m_resources.m_frameBuffer.renderSize.width,
-               m_resources.m_frameBuffer.renderSize.height);
 
-      ImGui::PushStyleColor(ImGuiCol_Text, recommendedColor);
-      PE::entry("Visualize", [&]() {
-        ImGui::PopStyleColor();  // pop text color here so it only applies to the label
-        return m_ui.enumCombobox(GUI_VISUALIZE, "visualize", &m_frameConfig.visualize);
-      });
+      m_frameConfig.culledErrorScale = std::max(1.0f, m_frameConfig.culledErrorScale);
 
-      if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+      PE::Checkbox("Blas Sharing", &m_rendererConfig.useBlasSharing, "shares blas for instances further away that can use it safely");
+      PE::Checkbox("Blas Caching", &m_rendererConfig.useBlasCaching,
+                   "(only when streaming) builds a cached blas depending on highest fully resident lod level. Independent of blas "
+                   "sharing.");
+
+      const bool useBlasReuse = m_rendererConfig.useBlasSharing || m_rendererConfig.useBlasCaching;
+
+      if(PE::treeNode("Blas settings"))
       {
-        PE::Checkbox("Path tracing", &m_rendererConfig.usePathtrace,
-                     "Basic path tracer: shade in the ray-generation shader with multi-bounce GI under the "
-                     "physical sky (1 spp). Best with DLSS Ray Reconstruction; noisy otherwise.");
+        ImGui::BeginDisabled(!m_rendererConfig.useBlasSharing);
+        PE::Checkbox("Blas Merging", &m_rendererConfig.useBlasMerging,
+                     "(only when streaming) builds a merged blas for closer instances. Guarantees only 2 dynamic blas per geometry.");
+        PE::InputIntClamped("Shared tail levels", (int*)&m_frameConfig.sharingEnabledLevels, 0, 32, 1, 1,
+                            ImGuiInputTextFlags_EnterReturnsTrue,
+                            "Sharing may be used in the last N levels of the instance geometry");
+        PE::InputIntClamped("Tolerant tail levels", (int*)&m_frameConfig.sharingTolerantLevels, 0, 32, 1, 1,
+                            ImGuiInputTextFlags_EnterReturnsTrue,
+                            "Share BLAS despite a lod level mismatch in the last N levels of the instance geometry");
+        ImGui::EndDisabled();
 
-        if(m_rendererConfig.usePathtrace)
+        ImGui::BeginDisabled(!m_rendererConfig.useBlasCaching);
+        PE::InputIntClamped("Cached tail levels", (int*)&m_frameConfig.cachingEnabledLevels, 0, 32, 1, 1,
+                            ImGuiInputTextFlags_EnterReturnsTrue,
+                            "Caching may be used in the last N levels of the instance geometry");
+        ImGui::EndDisabled();
+
+        ImGui::BeginDisabled(!useBlasReuse);
+        PE::Checkbox("Push culled lod", &m_frameConfig.sharingPushCulled,
+                     "culled instances artificially pushed by one lod level, increases sharing and caching likelihood");
+        ImGui::EndDisabled();
+
+        if(m_rendererConfig.useBlasCaching && m_renderScene && m_renderScene->useStreaming)
         {
-          PE::SliderInt("Bounces", &m_frameConfig.frameConstants.pathtraceNumBounces, 1, 8);
-          PE::SliderFloat("Firefly clamp", &m_frameConfig.frameConstants.pathtraceFireflyClamp, 0.0f, 100.0f, "%.1f");
-          PE::entry(
-              "Tonemapper",
-              [&]() {
-                if(ImGui::Button("Misc Settings > Tonemapper"))
-                {
-                  m_revealTonemapper = true;
-                  ImGui::SetWindowFocus("Misc Settings");
-                }
-                return false;
-              },
-              "The tone map operator, exposure and color grading live in the \"Misc Settings\" window.");
+          ImGui::Separator();
+          PE::Text("Cached blas", fmt::format("{}", stats.cachedBlasCount));
+          PE::Text("Cached blas memory", fmt::format("{}", formatMemorySize(stats.usedCachedBlasBytes)));
         }
-        else
-        {
-          PE::Checkbox("Cast shadow rays", (bool*)&m_frameConfig.frameConstants.doShadow);
-          PE::Checkbox("Ambient occlusion", &m_tweak.hbaoActive);
+        PE::treePop();
+      }
+    }
+    if(PE::treeNode("Other settings"))
+    {
+      PE::Checkbox("Persistent Traversal Kernel", &m_rendererConfig.usePersistentTraversal);
+      PE::Checkbox("Instance Sorting", &m_rendererConfig.useSorting);
+      PE::Checkbox("Enqueued Statistics", &m_rendererConfig.useRenderStats,
+                   "Adds additional atomic counters for statistics, impacts performance");
+      PE::Checkbox("Culling (Occlusion & Frustum)", &m_rendererConfig.useCulling);
+      ImGui::BeginDisabled(!m_rendererConfig.useCulling);
+      PE::Checkbox("Freeze Culling", &m_frameConfig.freezeCulling);
+      PE::Checkbox("Freeze LoD", &m_frameConfig.freezeLoD);
+      if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD)
+      {
+        PE::Checkbox("Use TwoPass Culling", (bool*)&m_rendererConfig.useTwoPassCulling,
+                     "Use two pass culling in rasterization, otherwise uses only last frame's hiz");
+        ImGui::EndDisabled();
+        ImGui::BeginDisabled(!(!m_rendererConfig.useEXTmeshShader && m_rendererConfig.useCulling && m_resources.m_supportsMeshShaderNV));
+        PE::Checkbox("Use Primitive Culling", (bool*)&m_rendererConfig.usePrimitiveCulling, "Use primitive culling in NV mesh shader");
+        ImGui::EndDisabled();
+        ImGui::BeginDisabled(!((m_frameConfig.visualize == VISUALIZE_VIS_BUFFER || m_frameConfig.visualize == VISUALIZE_DEPTH_ONLY)
+                               && m_rendererConfig.useCulling));
+        PE::Checkbox("Allow SW-Raster", (bool*)&m_rendererConfig.useComputeRaster,
+                     "Allows use of compute-shader based rasterization (if visualize == visibility buffer / depth only)");
+        PE::InputFloat("SW-Raster threshold", &m_frameConfig.swRasterThreshold, 1.0f, 1.0f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue,
+                       "cluster uses SW-Raster if its longest edge has less than the specified projected pixels");
+        ImGui::EndDisabled();
+      }
+      else
+      {
+        PE::Checkbox("Force Invisible Culling", (bool*)&m_rendererConfig.useForcedInvisibleCulling,
+                     "Even ray tracing will cull based on primary visibility alone. Warning BLAS Sharing techniques may cause artifacts.");
+        ImGui::EndDisabled();
+      }
+      PE::treePop();
+    }
+    PE::end();
 
-          if(!m_tweak.hbaoActive)
+    ImGui::Separator();
+
+    if(m_rendererConfig.useRenderStats)
+    {
+      const bool hasAlphaMask = m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD && m_scene && m_scene->m_hasAlphaMask;
+      const bool hasSW        = m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD && m_rendererConfig.useComputeRaster;
+
+      struct RenderStatTrack
+      {
+        const char* header;
+        uint32_t    clusters;
+        uint64_t    tris;
+        uint64_t    raster;
+      };
+      RenderStatTrack tracks[4];
+      int             trackCount = 0;
+      tracks[trackCount++] = {"Default", readback.numRenderedClusters, readback.numRenderedTriangles, readback.numRasteredTriangles};
+      if(hasAlphaMask)
+      {
+        tracks[trackCount++] = {"Alpha", readback.numRenderedClustersAlpha, readback.numRenderedTrianglesAlpha,
+                                readback.numRasteredTrianglesAlpha};
+      }
+      if(hasSW)
+      {
+        tracks[trackCount++] = {"SW", readback.numRenderedClustersSW, readback.numRenderedTrianglesSW, readback.numRasteredTrianglesSW};
+      }
+      if(hasAlphaMask && hasSW)
+      {
+        tracks[trackCount++] = {"Alpha SW", readback.numRenderedClustersAlphaSW, readback.numRenderedTrianglesAlphaSW,
+                                readback.numRasteredTrianglesAlphaSW};
+      }
+
+      if(ImGui::BeginTable("##Render stats", 1 + trackCount, ImGuiTableFlags_RowBg))
+      {
+        ImGui::TableSetupColumn("Metric", ImGuiTableColumnFlags_WidthFixed, 80.0f * ImGui::GetWindowDpiScale());
+        for(int i = 0; i < trackCount; i++)
+        {
+          ImGui::TableSetupColumn(tracks[i].header, ImGuiTableColumnFlags_WidthStretch);
+        }
+        ImGui::TableHeadersRow();
+
+        static const char* kNoTrack = "\xe2\x80\x94";
+
+        uint64_t sumClusters = 0;
+        uint64_t sumTris     = 0;
+        uint64_t sumRaster   = 0;
+        for(int i = 0; i < trackCount; i++)
+        {
+          sumClusters += uint64_t(tracks[i].clusters);
+          sumTris += tracks[i].tris;
+          sumRaster += tracks[i].raster;
+        }
+
+        const auto startMetricRow = [](const char* label) {
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+          ImGui::TextUnformatted(label);
+        };
+        const auto startPctRow = []() {
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+          ImGui::TextDisabled("");
+        };
+        const auto nextCellText = [](const char* s) {
+          ImGui::TableNextColumn();
+          ImGui::TextUnformatted(s);
+        };
+        const auto nextCellFmtMetric = [](size_t v) {
+          ImGui::TableNextColumn();
+          const std::string t = formatMetric(v);
+          ImGui::TextUnformatted(t.c_str());
+        };
+        const auto nextCellPct = [](uint64_t sum, uint64_t numer, const char* emptyCell) {
+          ImGui::TableNextColumn();
+          if(sum == 0)
           {
-            m_frameConfig.frameConstants.ambientOcclusionSamples = 0;
+            ImGui::TextUnformatted(emptyCell);
           }
           else
           {
-            m_frameConfig.frameConstants.ambientOcclusionSamples = m_lastAmbientOcclusionSamples;
+            ImGui::Text("%.0f %%", 100.0 * double(numer) / double(sum));
           }
-        }
-      }
-      if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD)
-      {
-        PE::Text("HBAO", "");
-        PE::Checkbox("Ambient occlusion", &m_tweak.hbaoActive);
-      }
-      if(PE::treeNode("AO settings"))
-      {  // conditional UI, declutters the UI, prevents presenting many sections in disabled state
-        if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
-        {
-          PE::SliderFloat("Radius", &m_frameConfig.frameConstants.ambientOcclusionRadius, 0.001f, 1.f, "%.7f");
-          if(PE::SliderInt("Rays", &m_frameConfig.frameConstants.ambientOcclusionSamples, 1, 64))
-          {
-            if(m_frameConfig.frameConstants.ambientOcclusionSamples)
-            {
-              m_tweak.hbaoActive = true;
-            }
-          }
-          if(m_frameConfig.frameConstants.ambientOcclusionSamples)
-          {
-            m_lastAmbientOcclusionSamples = m_frameConfig.frameConstants.ambientOcclusionSamples;
-          }
-        }
-        if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD)
-        {
-          PE::Checkbox("Blur", &m_frameConfig.hbaoSettings.blur);
-          PE::InputFloat("Radius", &m_tweak.hbaoRadius, 0.01f, 0, "%.6f");
-          PE::InputFloat("Sharpness", &m_frameConfig.hbaoSettings.powerExponent, 1.0f);
-          PE::InputFloat("Intensity", &m_frameConfig.hbaoSettings.intensity, 0.1f);
-          PE::InputFloat("Bias", &m_frameConfig.hbaoSettings.bias, 0.01f);
-        }
-        PE::treePop();
-      }
-
-      if(PE::treeNode("Other settings"))
-      {
-        if(m_scene && m_scene->m_hasVertexNormals)
-        {
-          PE::Checkbox("Facet shading", &m_tweak.facetShading);
-        }
-        if(m_resources.m_supportsBarycentrics || m_resources.m_supportsClusterRaytracing)
-        {
-          PE::Checkbox("Wireframe", (bool*)&m_frameConfig.frameConstants.doWireframe);
-        }
-        PE::Checkbox("Instance BBoxes", &m_frameConfig.showInstanceBboxes);
-        PE::Checkbox("Cluster BBoxes", &m_frameConfig.showClusterBboxes);
-        PE::Checkbox("Reflective box", (bool*)&m_frameConfig.frameConstants.useMirrorBox);
-        PE::treePop();
-      }
-
-      PE::end();
-    }
-    if(ImGui::CollapsingHeader("Traversal", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
-    {
-      PE::begin("##TraversalSpecifics", ImGuiTableFlags_Resizable);
-      PE::InputIntClamped("Max tasks (bits)", (int*)&m_rendererConfig.numTraversalTaskBits, 8, 25, 1, 1,
-                          ImGuiInputTextFlags_EnterReturnsTrue);
-      PE::InputIntClamped("Max clusters (bits)", (int*)&m_rendererConfig.numRenderClusterBits, 8, 25, 1, 1,
-                          ImGuiInputTextFlags_EnterReturnsTrue,
-                          "Maximum clusters that can be enqueued per-frame in bits. For raster this equals rendered clusters, for ray tracing its BLAS input.");
-      PE::InputFloat("LoD pixel error", &m_frameConfig.lodPixelError, 0.25f, 0.25f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
-      PE::Checkbox("Adaptive error", &m_frameConfig.adaptiveError, "alters pixel error based on streaming load");
-      if(m_frameConfig.adaptiveError && m_renderer)
-      {
-        PE::Text("LoD pixel error (used)", fmt::format("{}", m_renderer->getLodError()));
-      }
-
-      m_frameConfig.lodPixelError = std::max(0.001f, m_frameConfig.lodPixelError);
-
-      if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
-      {
-        ImGui::BeginDisabled(!m_rendererConfig.useCulling);
-        PE::InputFloat("Culled error scale", &m_frameConfig.culledErrorScale, 1.f, 1.f, "%.3f",
-                       ImGuiInputTextFlags_EnterReturnsTrue, "scale the pixel error for occluded objects in ray tracing");
-        ImGui::EndDisabled();
-
-        m_frameConfig.culledErrorScale = std::max(1.0f, m_frameConfig.culledErrorScale);
-
-        PE::Checkbox("Blas Sharing", &m_rendererConfig.useBlasSharing, "shares blas for instances further away that can use it safely");
-
-        if(PE::treeNode("Blas Sharing settings"))
-        {
-          ImGui::BeginDisabled(!m_rendererConfig.useBlasSharing);
-          PE::Checkbox("Blas Caching", &m_rendererConfig.useBlasCaching,
-                       "(only when streaming) builds a cached blas depending on highest fully resident lod level.");
-          PE::Checkbox("Blas Merging", &m_rendererConfig.useBlasMerging,
-                       "(only when streaming) builds a merged blas for closer instances. Guarantees only 2 dynamic blas per geometry.");
-          PE::Checkbox("Push culled lod", &m_frameConfig.sharingPushCulled, "culled instances artificially pushed by one lod level");
-          PE::InputIntClamped("Shared tail levels", (int*)&m_frameConfig.sharingEnabledLevels, 0, 32, 1, 1,
-                              ImGuiInputTextFlags_EnterReturnsTrue,
-                              "Sharing may be used in the last N levels of the instance geometry");
-          PE::InputIntClamped("Tolerant tail levels", (int*)&m_frameConfig.sharingTolerantLevels, 0, 32, 1, 1,
-                              ImGuiInputTextFlags_EnterReturnsTrue,
-                              "Share BLAS despite a lod level mismatch in the last N levels of the instance geometry");
-          PE::InputIntClamped("Cached tail levels", (int*)&m_frameConfig.cachingEnabledLevels, 0, 32, 1, 1,
-                              ImGuiInputTextFlags_EnterReturnsTrue,
-                              "Caching may be used in the last N levels of the instance geometry");
-          ImGui::EndDisabled();
-          PE::treePop();
-        }
-      }
-      if(PE::treeNode("Other settings"))
-      {
-        PE::Checkbox("Persistent Traversal Kernel", &m_rendererConfig.usePersistentTraversal);
-        PE::Checkbox("Instance Sorting", &m_rendererConfig.useSorting);
-        PE::Checkbox("Enqueued Statistics", &m_rendererConfig.useRenderStats,
-                     "Adds additional atomic counters for statistics, impacts performance");
-        PE::Checkbox("Culling (Occlusion & Frustum)", &m_rendererConfig.useCulling);
-        ImGui::BeginDisabled(!m_rendererConfig.useCulling);
-        PE::Checkbox("Freeze Culling", &m_frameConfig.freezeCulling);
-        PE::Checkbox("Freeze LoD", &m_frameConfig.freezeLoD);
-        if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD)
-        {
-          PE::Checkbox("Use TwoPass Culling", (bool*)&m_rendererConfig.useTwoPassCulling,
-                       "Use two pass culling in rasterization, otherwise uses only last frame's hiz");
-          ImGui::EndDisabled();
-          ImGui::BeginDisabled(!(!m_rendererConfig.useEXTmeshShader && m_rendererConfig.useCulling && m_resources.m_supportsMeshShaderNV));
-          PE::Checkbox("Use Primitive Culling", (bool*)&m_rendererConfig.usePrimitiveCulling, "Use primitive culling in NV mesh shader");
-          ImGui::EndDisabled();
-          ImGui::BeginDisabled(!((m_frameConfig.visualize == VISUALIZE_VIS_BUFFER || m_frameConfig.visualize == VISUALIZE_DEPTH_ONLY)
-                                 && m_rendererConfig.useCulling));
-          PE::Checkbox("Allow SW-Raster", (bool*)&m_rendererConfig.useComputeRaster,
-                       "Allows use of compute-shader based rasterization (if visualize == visibility buffer / depth only)");
-          PE::InputFloat("SW-Raster threshold", &m_frameConfig.swRasterThreshold, 1.0f, 1.0f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue,
-                         "cluster uses SW-Raster if its longest edge has less than the specified projected pixels");
-          ImGui::EndDisabled();
-        }
-        else
-        {
-          PE::Checkbox("Force Invisible Culling", (bool*)&m_rendererConfig.useForcedInvisibleCulling,
-                       "Even ray tracing will cull based on primary visibility alone. Warning BLAS Sharing techniques may cause artifacts.");
-          ImGui::EndDisabled();
-        }
-        PE::treePop();
-      }
-      PE::end();
-
-      ImGui::Separator();
-
-      if(m_rendererConfig.useRenderStats)
-      {
-        const bool hasAlphaMask = m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD && m_scene && m_scene->m_hasAlphaMask;
-        const bool hasSW = m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD && m_rendererConfig.useComputeRaster;
-
-        struct RenderStatTrack
-        {
-          const char* header;
-          uint32_t    clusters;
-          uint64_t    tris;
-          uint64_t    raster;
         };
-        RenderStatTrack tracks[4];
-        int             trackCount = 0;
-        tracks[trackCount++] = {"Default", readback.numRenderedClusters, readback.numRenderedTriangles, readback.numRasteredTriangles};
-        if(hasAlphaMask)
+
+        startMetricRow("Tasks");
+        for(int i = 0; i < trackCount; i++)
         {
-          tracks[trackCount++] = {"Alpha", readback.numRenderedClustersAlpha, readback.numRenderedTrianglesAlpha,
-                                  readback.numRasteredTrianglesAlpha};
-        }
-        if(hasSW)
-        {
-          tracks[trackCount++] = {"SW", readback.numRenderedClustersSW, readback.numRenderedTrianglesSW, readback.numRasteredTrianglesSW};
-        }
-        if(hasAlphaMask && hasSW)
-        {
-          tracks[trackCount++] = {"Alpha SW", readback.numRenderedClustersAlphaSW, readback.numRenderedTrianglesAlphaSW,
-                                  readback.numRasteredTrianglesAlphaSW};
+          if(i == 0)
+          {
+            nextCellFmtMetric(size_t(readback.numTraversedTasks));
+          }
+          else
+          {
+            nextCellText(kNoTrack);
+          }
         }
 
-        if(ImGui::BeginTable("##Render stats", 1 + trackCount, ImGuiTableFlags_RowBg))
+        startMetricRow("Clusters");
+        for(int i = 0; i < trackCount; i++)
         {
-          ImGui::TableSetupColumn("Metric", ImGuiTableColumnFlags_WidthFixed, 80.0f * ImGui::GetWindowDpiScale());
-          for(int i = 0; i < trackCount; i++)
-          {
-            ImGui::TableSetupColumn(tracks[i].header, ImGuiTableColumnFlags_WidthStretch);
-          }
-          ImGui::TableHeadersRow();
-
-          static const char* kNoTrack = "\xe2\x80\x94";
-
-          uint64_t sumClusters = 0;
-          uint64_t sumTris     = 0;
-          uint64_t sumRaster   = 0;
-          for(int i = 0; i < trackCount; i++)
-          {
-            sumClusters += uint64_t(tracks[i].clusters);
-            sumTris += tracks[i].tris;
-            sumRaster += tracks[i].raster;
-          }
-
-          const auto startMetricRow = [](const char* label) {
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted(label);
-          };
-          const auto startPctRow = []() {
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::TextDisabled("");
-          };
-          const auto nextCellText = [](const char* s) {
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted(s);
-          };
-          const auto nextCellFmtMetric = [](size_t v) {
-            ImGui::TableNextColumn();
-            const std::string t = formatMetric(v);
-            ImGui::TextUnformatted(t.c_str());
-          };
-          const auto nextCellPct = [](uint64_t sum, uint64_t numer, const char* emptyCell) {
-            ImGui::TableNextColumn();
-            if(sum == 0)
-            {
-              ImGui::TextUnformatted(emptyCell);
-            }
-            else
-            {
-              ImGui::Text("%.0f %%", 100.0 * double(numer) / double(sum));
-            }
-          };
-
-          startMetricRow("Tasks");
-          for(int i = 0; i < trackCount; i++)
-          {
-            if(i == 0)
-            {
-              nextCellFmtMetric(size_t(readback.numTraversedTasks));
-            }
-            else
-            {
-              nextCellText(kNoTrack);
-            }
-          }
-
-          startMetricRow("Clusters");
-          for(int i = 0; i < trackCount; i++)
-          {
-            nextCellFmtMetric(size_t(tracks[i].clusters));
-          }
-          startPctRow();
-          for(int i = 0; i < trackCount; i++)
-          {
-            nextCellPct(sumClusters, uint64_t(tracks[i].clusters), kNoTrack);
-          }
-
-          startMetricRow("Tri / Cluster");
-          for(int i = 0; i < trackCount; i++)
-          {
-            ImGui::TableNextColumn();
-            const uint32_t c = tracks[i].clusters;
-            const uint64_t t = tracks[i].tris;
-            if(c > 0)
-            {
-              ImGui::Text("%.1f", double(t) / double(c));
-            }
-            else
-            {
-              ImGui::TextUnformatted("N/A");
-            }
-          }
-
-          startMetricRow("Triangles");
-          for(int i = 0; i < trackCount; i++)
-          {
-            nextCellFmtMetric(size_t(tracks[i].tris));
-          }
-          startPctRow();
-          for(int i = 0; i < trackCount; i++)
-          {
-            nextCellPct(sumTris, tracks[i].tris, kNoTrack);
-          }
-
-          startMetricRow("Rastered Tri");
-          for(int i = 0; i < trackCount; i++)
-          {
-            nextCellFmtMetric(size_t(tracks[i].raster));
-          }
-          startPctRow();
-          for(int i = 0; i < trackCount; i++)
-          {
-            nextCellPct(sumRaster, tracks[i].raster, kNoTrack);
-          }
-
-          ImGui::EndTable();
+          nextCellFmtMetric(size_t(tracks[i].clusters));
         }
-      }
-    }
-
-    if(ImGui::CollapsingHeader("Clusters & LoDs generation", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
-    {
-      ImGui::Text("Applying changes can take significant time");
-
-      PE::begin("##Clusters", ImGuiTableFlags_Resizable);
-      if(PE::entry("Cluster/meshlet size",
-                   [&]() { return m_ui.enumCombobox(GUI_MESHLET, "##cluster", &m_tweak.clusterConfig); }))
-      {
-        setFromClusterConfig(m_sceneConfigEdit, m_tweak.clusterConfig);
-      }
-
-      if(PE::treeNode("Compression settings"))
-      {
-        PE::Checkbox("Enable compression", &m_sceneConfigEdit.useCompressedData, "Lowers cache file size, can speed up streaming");
-        PE::InputIntClamped("POS Mantissa drop bits", (int*)&m_sceneConfigEdit.compressionPosDropBits, 0, 22, 1, 1,
-                            ImGuiInputTextFlags_EnterReturnsTrue,
-                            "position number of mantissa bits to drop (zeroed) to improve compression");
-        PE::InputIntClamped("TC Mantissa drop bits", (int*)&m_sceneConfigEdit.compressionTexDropBits, 0, 22, 1, 1,
-                            ImGuiInputTextFlags_EnterReturnsTrue,
-                            "texcoord number of mantissa bits to drop (zeroed) to improve compression");
-        PE::treePop();
-      }
-
-      if(PE::treeNode("Other settings"))
-      {
-        PE::InputIntClamped("LoD group size", (int*)&m_sceneConfigEdit.clusterGroupSize, 8, SHADERIO_MAX_GROUP_CLUSTERS,
-                            1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
-                            "number of clusters that make a lod group. Their triangles are decimated together and they share a common error property");
-        PE::InputIntClamped("Preferred node width", (int*)&m_sceneConfigEdit.preferredNodeWidth, 4,
-                            SHADERIO_MAX_NODE_CHILDREN, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
-                            "number of children a lod node should have (max is always 32).");
-        PE::Checkbox("Prefer ray tracing (RT)", &m_sceneConfigEdit.meshoptPreferRayTracing,
-                     "Configures meshoptimizer's lod cluster builder to prefer ray tracing over rasterization.");
-        PE::InputFloat("RT fill weight", &m_sceneConfigEdit.meshoptFillWeight, 0, 0, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue,
-                       "If ray tracing is preferred, influences weight between SAH optimized (towards zero), or filling clusters (higher value).");
-        PE::InputFloat("RA split factor", &m_sceneConfigEdit.meshoptSplitFactor, 0, 0, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue,
-                       "If raster is preferred, influences the maximum size of a cluster prior splitting it up.");
-        PE::Checkbox("Mesh Multi-Materials", &m_sceneConfigEdit.enableMultiMaterials, "Allows a mesh to have multiple materials.");
-        PE::entry("Enabled Attributes", [&] {
-          for(uint32_t i = 0; i < 4; i++)
-          {
-            ImGui::PushID(i);
-            uint32_t bit  = (1 << i);
-            bool     used = (m_sceneConfigEdit.enabledAttributes & bit) != 0;
-
-            const char* what = "error";
-
-            switch(bit)
-            {
-              case shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL:
-                what = "NRM";
-                break;
-              case shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT:
-                what = "TAN";
-                break;
-              case shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0:
-                what = "TEX 0";
-                break;
-              case shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1:
-                what = "TEX 1";
-                break;
-            }
-
-            ImGui::Checkbox(what, &used);
-            if((i % 2) < 1)
-              ImGui::SameLine();
-            if(used)
-              m_sceneConfigEdit.enabledAttributes |= bit;
-            else
-              m_sceneConfigEdit.enabledAttributes &= ~bit;
-            ImGui::PopID();
-          }
-          return false;
-        });
-
-        PE::treePop();
-      }
-
-      if(PE::treeNode("Mesh error settings"))
-      {
-        PE::InputFloat("Error merge previous", &m_sceneConfigEdit.lodErrorMergePrevious, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
-                       "Mesh error propagation: scales previous lod error before combining it with the current error to compute the group error as max(previous_error * factor, error).");
-        PE::InputFloat("Error merge additive", &m_sceneConfigEdit.lodErrorMergeAdditive, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
-                       "Mesh error propagation: adds scaled current error to the group error after the maximum computation.");
-        PE::InputFloat("Error edge limit", &m_sceneConfigEdit.lodErrorEdgeLimit, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
-                       "Mesh error: limit error by edge length, aiming to remove subpixel triangles even if the attribute error is high");
-        PE::InputFloat("Normal weight", &m_sceneConfigEdit.simplifyNormalWeight, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
-                       "How much to weight this attribute for the error metric. 0 Disables");
-        PE::InputFloat("TexCoord weight", &m_sceneConfigEdit.simplifyTexCoordWeight, 0, 0, "%.3f",
-                       ImGuiInputTextFlags_EnterReturnsTrue, "How much to weight this attribute for the error metric. 0 Disables");
-        PE::InputFloat("Tangent weight", &m_sceneConfigEdit.simplifyTangentWeight, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
-                       "How much to weight this attribute for the error metric. 0 Disables");
-        PE::InputFloat("BiTangent Sign weight", &m_sceneConfigEdit.simplifyTangentSignWeight, 0, 0, "%.3f",
-                       ImGuiInputTextFlags_EnterReturnsTrue, "How much to weight this attribute for the error metric. 0 Disables");
-        PE::InputFloat("Material weight", &m_sceneConfigEdit.simplifyMaterialWeight, 0, 0, "%.3f",
-                       ImGuiInputTextFlags_EnterReturnsTrue, "How much to weight this attribute for the error metric. 0 Disables");
-        m_sceneConfigEdit.lodErrorMergePrevious = std::max(1.0f, m_sceneConfigEdit.lodErrorMergePrevious);
-        m_sceneConfigEdit.lodErrorMergeAdditive = std::max(0.0f, m_sceneConfigEdit.lodErrorMergeAdditive);
-        PE::treePop();
-      }
-
-      bool hasChanges = memcmp(&m_sceneConfigEdit, &m_sceneConfig, sizeof(m_sceneConfigEdit)) != 0;
-
-      ImGui::BeginDisabled(!hasChanges);
-      if(hasChanges)
-      {
-        ImGui::PushStyleColor(ImGuiCol_Text, changesColor);
-      }
-
-      ImVec2 buttonSize = {100.0f * ImGui::GetWindowDpiScale(), 20 * ImGui::GetWindowDpiScale()};
-      if(PE::entry("Operations", [&] { return ImGui::Button("Apply Changes", buttonSize); }, "Applying changes triggers reload and processing of the scene"))
-      {
-        m_sceneConfig = m_sceneConfigEdit;
-      }
-      if(hasChanges)
-      {
-        ImGui::PopStyleColor();
-      }
-      if(PE::entry("", [&] { return ImGui::Button("Reset Changes", buttonSize); }, "Resets the current edits"))
-      {
-        m_sceneConfigEdit     = m_sceneConfig;
-        m_tweak.clusterConfig = findSceneClusterConfig(m_sceneConfig);
-      }
-      ImGui::EndDisabled();
-
-      PE::end();
-
-
-      if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
-      {
-        ImGui::Separator();
-        PE::begin("##CLAS", ImGuiTableFlags_Resizable);
-        PE::InputIntClamped("CLAS Mantissa drop bits", (int*)&m_streamingConfig.clasPositionTruncateBits, 0, 22, 1, 1,
-                            ImGuiInputTextFlags_EnterReturnsTrue,
-                            "number of mantissa bits to drop (zeroed) to reduce memory consumption");
-        PE::entry("CLAS build mode",
-                  [&]() { return m_ui.enumCombobox(GUI_BUILDMODE, "##clasbuild", &m_streamingConfig.clasBuildFlags); });
-        PE::end();
-      }
-    }
-
-
-    if(m_renderScene && ImGui::CollapsingHeader("Streaming", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
-    {
-      PE::begin("##Streaming", ImGuiTableFlags_Resizable);
-      if(m_renderSceneCanPreload)
-      {
-        ImGui::PushStyleColor(ImGuiCol_Text, recommendedColor);
-        PE::Checkbox("Enable", &m_tweak.useStreaming);
-        ImGui::PopStyleColor();
-      }
-
-      PE::SliderFloat("Unloading threshold pct.", &m_frameConfig.streamingUnloadThreshold, 0.0f, 0.75f, "%.3f", 0,
-                      "If memory load factor is greater than this start unloading.");
-
-      ImGui::BeginDisabled(m_renderScene == nullptr);
-      if(PE::entry("Streaming state", [&] { return ImGui::Button("Reset"); }, "resets the streaming state"))
-      {
-        m_renderScene->streamingReset();
-      }
-      ImGui::EndDisabled();
-
-
-      PE::InputIntClamped("Max Resident Groups", (int*)&m_streamingConfig.maxGroups,
-                          uint32_t(m_scene ? m_scene->getActiveGeometryCount() : 1024 * 1024), 1024 * 1024, 128, 128,
-                          ImGuiInputTextFlags_EnterReturnsTrue);
-
-      PE::InputIntClamped("Max Geometry MiB", (int*)&m_streamingConfig.maxGeometryMegaBytes, 128, 1024 * 48, 128, 128,
-                          ImGuiInputTextFlags_EnterReturnsTrue);
-      if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
-      {
-        PE::InputIntClamped("Max CLAS MiB", (int*)&m_streamingConfig.maxClasMegaBytes, 256, 1024 * 48, 128, 128,
-                            ImGuiInputTextFlags_EnterReturnsTrue);
-        PE::InputIntClamped("Start CLAS MiB", (int*)&m_streamingConfig.startClasMegaBytes, 128, 1024 * 48, 128, 128,
-                            ImGuiInputTextFlags_EnterReturnsTrue);
-        PE::InputIntClamped("CLAS grow MiB", (int*)&m_streamingConfig.clasGrowMegaBytes, 128, 1024 * 48, 128, 128,
-                            ImGuiInputTextFlags_EnterReturnsTrue);
-
-        PE::Checkbox("Persistent CLAS Allocator", &m_streamingConfig.usePersistentClasAllocator,
-                     "Use persistent allocation on the device for CLAS memory, otherwise move based compaction");
-        if(PE::treeNode("Allocator settings"))
+        startPctRow();
+        for(int i = 0; i < trackCount; i++)
         {
-          ImGui::BeginDisabled(!m_streamingConfig.usePersistentClasAllocator);
-          PE::InputIntClamped("Granularity shift bits", (int*)&m_streamingConfig.clasAllocatorGranularityShift, 0, 8, 1,
-                              1, ImGuiInputTextFlags_EnterReturnsTrue,
-                              "CLAS Allocation byte granularity: (CLAS alignment value) < shift");
-          PE::InputIntClamped("Sector shift bits", (int*)&m_streamingConfig.clasAllocatorSectorSizeShift, 5, 16, 1, 1,
-                              ImGuiInputTextFlags_EnterReturnsTrue,
-                              "CLAS Allocation is scanning for free gaps using unused bits is done per sector of (1 << shift) of 32-bit values");
-          PE::Text("Sector size", "%d", 1 << m_streamingConfig.clasAllocatorSectorSizeShift);
-          ImGui::EndDisabled();
-          PE::treePop();
+          nextCellPct(sumClusters, uint64_t(tracks[i].clusters), kNoTrack);
         }
-      }
 
-      if(PE::treeNode("Frame settings"))
-      {
-        PE::InputIntClamped("Unload frame delay", (int*)&m_frameConfig.streamingAgeThreshold, 2, 1024, 1, 1,
-                            ImGuiInputTextFlags_EnterReturnsTrue);
-
-        PE::InputIntClamped("Max Group Loads", (int*)&m_streamingConfig.maxPerFrameLoadRequests, 1, 16 * 1024 * 1024,
-                            128, 128, ImGuiInputTextFlags_EnterReturnsTrue);
-        PE::InputIntClamped("Max Group Unloads", (int*)&m_streamingConfig.maxPerFrameUnloadRequests, 1,
-                            16 * 1024 * 1024, 128, 128, ImGuiInputTextFlags_EnterReturnsTrue);
-
-        PE::InputIntClamped("Max Transfer MiB", (int*)&m_streamingConfig.maxTransferMegaBytes, 1, 1024, 1, 2,
-                            ImGuiInputTextFlags_EnterReturnsTrue);
-
-        PE::Checkbox("Async transfer", &m_streamingConfig.useAsyncTransfer, "Use asynchronous transfer queue for uploads");
-        ImGui::BeginDisabled(!m_streamingConfig.useAsyncTransfer);
-        PE::Checkbox("Decoupled transfer", &m_streamingConfig.useDecoupledAsyncTransfer,
-                     "Allow asynchronous transfers to take multiple frames");
-        ImGui::EndDisabled();
-        PE::treePop();
-      }
-
-      PE::end();
-
-      ImGui::Separator();
-
-      if(ImGui::BeginTable("Streaming stats", 3, ImGuiTableFlags_RowBg))
-      {
-        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 155.0f * ImGui::GetWindowDpiScale());
-        ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("Percentage", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::Text("Geometry");
-        ImGui::TableNextColumn();
-        ImGui::TextColored(stats.couldNotStore ? warn_color : text_color, "%s", formatMemorySize(stats.usedDataBytes).c_str());
-        ImGui::TableNextColumn();
-        ImGui::TextColored(stats.couldNotStore ? warn_color : text_color, "%d %%",
-                           getUsagePct(stats.usedDataBytes, stats.maxDataBytes));
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+        startMetricRow("Tri / Cluster");
+        for(int i = 0; i < trackCount; i++)
         {
-          ImGui::Text("CLAS memory");
           ImGui::TableNextColumn();
-          ImGui::TextColored(stats.couldNotAllocateClas ? warn_color : text_color, "%s",
-                             formatMemorySize(stats.usedClasBytes).c_str());
-          ImGui::TableNextColumn();
-          ImGui::TextColored(stats.couldNotAllocateClas ? warn_color : text_color, "%d %%",
-                             getUsagePct(stats.usedClasBytes, stats.maxClasBytes));
-          ImGui::TableNextRow();
-          ImGui::TableNextColumn();
-
-          ImGui::Text("CLAS waste");
-          ImGui::TableNextColumn();
-          ImGui::TextColored(text_color, "%s", formatMemorySize(stats.wastedClasBytes).c_str());
-          ImGui::TableNextColumn();
-          ImGui::TextColored(text_color, "%d %%", getUsagePct(stats.wastedClasBytes, stats.usedClasBytes));
-          ImGui::TableNextRow();
-          ImGui::TableNextColumn();
-
-          ImGui::Text("CLAS groups left");
-          ImGui::TableNextColumn();
-          ImGui::TextColored(stats.couldNotAllocateClas ? warn_color : text_color, "%s",
-                             formatMetric(stats.maxSizedLeft).c_str());
-          ImGui::TableNextColumn();
-          ImGui::TextColored(stats.couldNotAllocateClas ? warn_color : text_color, "%d %%",
-                             getUsagePct(stats.maxSizedLeft, stats.maxSizedReserved));
-          ImGui::TableNextRow();
-          ImGui::TableNextColumn();
+          const uint32_t c = tracks[i].clusters;
+          const uint64_t t = tracks[i].tris;
+          if(c > 0)
+          {
+            ImGui::Text("%.1f", double(t) / double(c));
+          }
+          else
+          {
+            ImGui::TextUnformatted("N/A");
+          }
         }
-        ImGui::Text("Resident groups");
-        ImGui::TableNextColumn();
-        ImGui::TextColored(stats.couldNotAllocateGroup ? warn_color : text_color, "%s",
-                           formatMetric(stats.residentGroups).c_str());
-        ImGui::TableNextColumn();
-        ImGui::TextColored(stats.couldNotAllocateGroup ? warn_color : text_color, "%d %%",
-                           getUsagePct(stats.residentGroups, stats.maxGroups));
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
 
-        ImGui::Text("Resident clusters");
-        uint32_t pctClusters = getUsagePct(stats.residentClusters, stats.maxClusters);
-        ImGui::TableNextColumn();
-        ImGui::TextColored(pctClusters > 99 ? warn_color : text_color, "%s", formatMetric(stats.residentClusters).c_str());
-        ImGui::TableNextColumn();
-        ImGui::TextColored(pctClusters > 99 ? warn_color : text_color, "%d %%", pctClusters);
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
+        startMetricRow("Triangles");
+        for(int i = 0; i < trackCount; i++)
+        {
+          nextCellFmtMetric(size_t(tracks[i].tris));
+        }
+        startPctRow();
+        for(int i = 0; i < trackCount; i++)
+        {
+          nextCellPct(sumTris, tracks[i].tris, kNoTrack);
+        }
 
-        ImGui::Text("Resident Triangles");
-        ImGui::TableNextColumn();
-        ImGui::TextColored(text_color, "%s", formatMetric(stats.residentTriangles).c_str());
-        ImGui::TableNextColumn();
-        ImGui::TextColored(text_color, "%d %%", pctClusters);
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-
-        ImGui::Text("Last Completed Transfer");
-        ImGui::TableNextColumn();
-        ImGui::TextColored(stats.couldNotTransfer ? warn_color : text_color, "%s", formatMemorySize(stats.transferBytes).c_str());
-        ImGui::TableNextColumn();
-        ImGui::TextColored(stats.couldNotTransfer ? warn_color : text_color, "%d %%",
-                           getUsagePct(stats.transferBytes, stats.maxTransferBytes));
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-#if 0
-      ImGui::Text("Last Completed Transfers");
-      ImGui::TableNextColumn();
-      ImGui::TextColored(text_color, "%s", formatMetric(stats.transferCount).c_str());
-      ImGui::TableNextColumn();
-      ImGui::TextColored(text_color, "-");
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-#endif
-
-        uint32_t pctLoad =
-            stats.loadCount == m_streamingConfig.maxPerFrameLoadRequests ?
-                100 :
-                std::min(99u, uint32_t(float(stats.loadCount) * 100.0f / float(m_streamingConfig.maxPerFrameLoadRequests)));
-
-        ImGui::Text("Last Completed Loads");
-        ImGui::TableNextColumn();
-        ImGui::TextColored(pctLoad == 100 ? warn_color : text_color, "%s", formatMetric(stats.loadCount).c_str());
-        ImGui::TableNextColumn();
-        ImGui::TextColored(pctLoad == 100 ? warn_color : text_color, "%d %%", pctLoad);
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-
-        uint32_t pctUnLoad =
-            stats.unloadCount == m_streamingConfig.maxPerFrameUnloadRequests ?
-                100 :
-                std::min(99u, uint32_t(float(stats.unloadCount) * 100.0f / float(m_streamingConfig.maxPerFrameUnloadRequests)));
-
-        ImGui::Text("Last Completed Unloads");
-        ImGui::TableNextColumn();
-        ImGui::TextColored(pctUnLoad == 100 ? warn_color : text_color, "%s", formatMetric(stats.unloadCount).c_str());
-        ImGui::TableNextColumn();
-        ImGui::TextColored(pctUnLoad == 100 ? warn_color : text_color, "%d %%", pctUnLoad);
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-
-        uint32_t pctUncompleted =
-            stats.uncompletedLoadCount == m_streamingConfig.maxPerFrameLoadRequests ?
-                100 :
-                std::min(99u, uint32_t(float(stats.unloadCount) * 100.0f / float(m_streamingConfig.maxPerFrameUnloadRequests)));
-
-        ImGui::Text("Last Uncompleted Loads");
-        ImGui::TableNextColumn();
-        ImGui::TextColored(stats.uncompletedLoadCount ? warn_color : text_color, "%s",
-                           formatMetric(stats.uncompletedLoadCount).c_str());
-        ImGui::TableNextColumn();
-        ImGui::TextColored(stats.uncompletedLoadCount ? warn_color : text_color, "%d %%", pctUncompleted);
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
+        startMetricRow("Rastered Tri");
+        for(int i = 0; i < trackCount; i++)
+        {
+          nextCellFmtMetric(size_t(tracks[i].raster));
+        }
+        startPctRow();
+        for(int i = 0; i < trackCount; i++)
+        {
+          nextCellPct(sumRaster, tracks[i].raster, kNoTrack);
+        }
 
         ImGui::EndTable();
       }
     }
   }
+}
+
+// "Settings > Clusters & LoDs generation": cluster build settings, these invalidate
+// the cache file and require reprocessing the scene.
+void LodClusters::uiSettingsClusterGeneration()
+{
+  // marks settings whose change only takes effect after a rebuild
+  const ImVec4 changesColor = ImVec4(1.0f, 1.0f, 0.1f, 1.0f);
+
+  namespace PE = nvgui::PropertyEditor;
+
+  if(ImGui::CollapsingHeader("Clusters & LoDs generation", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
+  {
+    ImGui::Text("Applying changes can take significant time");
+
+    PE::begin("##Clusters", ImGuiTableFlags_Resizable);
+    if(PE::entry("Cluster/meshlet size",
+                 [&]() { return m_ui.enumCombobox(GUI_MESHLET, "##cluster", &m_tweak.clusterConfig); }))
+    {
+      setFromClusterConfig(m_sceneConfigEdit, m_tweak.clusterConfig);
+    }
+
+    if(PE::treeNode("Compression settings"))
+    {
+      PE::Checkbox("Enable compression", &m_sceneConfigEdit.useCompressedData, "Lowers cache file size, can speed up streaming");
+      PE::InputIntClamped("POS Mantissa drop bits", (int*)&m_sceneConfigEdit.compressionPosDropBits, 0, 22, 1, 1,
+                          ImGuiInputTextFlags_EnterReturnsTrue,
+                          "position number of mantissa bits to drop (zeroed) to improve compression");
+      PE::InputIntClamped("TC Mantissa drop bits", (int*)&m_sceneConfigEdit.compressionTexDropBits, 0, 22, 1, 1,
+                          ImGuiInputTextFlags_EnterReturnsTrue,
+                          "texcoord number of mantissa bits to drop (zeroed) to improve compression");
+      PE::treePop();
+    }
+
+    if(PE::treeNode("Other settings"))
+    {
+      PE::InputIntClamped("LoD group size", (int*)&m_sceneConfigEdit.clusterGroupSize, 8, SHADERIO_MAX_GROUP_CLUSTERS,
+                          1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
+                          "number of clusters that make a lod group. Their triangles are decimated together and they share a common error property");
+      PE::InputIntClamped("Preferred node width", (int*)&m_sceneConfigEdit.preferredNodeWidth, 4,
+                          SHADERIO_MAX_NODE_CHILDREN, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
+                          "number of children a lod node should have (max is always 32).");
+      PE::Checkbox("Prefer ray tracing (RT)", &m_sceneConfigEdit.meshoptPreferRayTracing,
+                   "Configures meshoptimizer's lod cluster builder to prefer ray tracing over rasterization.");
+      PE::InputFloat("RT fill weight", &m_sceneConfigEdit.meshoptFillWeight, 0, 0, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue,
+                     "If ray tracing is preferred, influences weight between SAH optimized (towards zero), or filling clusters (higher value).");
+      PE::InputFloat("RA split factor", &m_sceneConfigEdit.meshoptSplitFactor, 0, 0, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue,
+                     "If raster is preferred, influences the maximum size of a cluster prior splitting it up.");
+      PE::Checkbox("Mesh Multi-Materials", &m_sceneConfigEdit.enableMultiMaterials, "Allows a mesh to have multiple materials.");
+      PE::entry("Enabled Attributes", [&] {
+        for(uint32_t i = 0; i < 4; i++)
+        {
+          ImGui::PushID(i);
+          uint32_t bit  = (1 << i);
+          bool     used = (m_sceneConfigEdit.enabledAttributes & bit) != 0;
+
+          const char* what = "error";
+
+          switch(bit)
+          {
+            case shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL:
+              what = "NRM";
+              break;
+            case shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT:
+              what = "TAN";
+              break;
+            case shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0:
+              what = "TEX 0";
+              break;
+            case shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1:
+              what = "TEX 1";
+              break;
+          }
+
+          ImGui::Checkbox(what, &used);
+          if((i % 2) < 1)
+            ImGui::SameLine();
+          if(used)
+            m_sceneConfigEdit.enabledAttributes |= bit;
+          else
+            m_sceneConfigEdit.enabledAttributes &= ~bit;
+          ImGui::PopID();
+        }
+        return false;
+      });
+
+      PE::treePop();
+    }
+
+    if(PE::treeNode("Mesh error settings"))
+    {
+      PE::InputFloat("Error merge previous", &m_sceneConfigEdit.lodErrorMergePrevious, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
+                     "Mesh error propagation: scales previous lod error before combining it with the current error to compute the group error as max(previous_error * factor, error).");
+      PE::InputFloat("Error merge additive", &m_sceneConfigEdit.lodErrorMergeAdditive, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
+                     "Mesh error propagation: adds scaled current error to the group error after the maximum computation.");
+      PE::InputFloat("Error edge limit", &m_sceneConfigEdit.lodErrorEdgeLimit, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
+                     "Mesh error: limit error by edge length, aiming to remove subpixel triangles even if the attribute error is high");
+      PE::InputFloat("Normal weight", &m_sceneConfigEdit.simplifyNormalWeight, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
+                     "How much to weight this attribute for the error metric. 0 Disables");
+      PE::InputFloat("TexCoord weight", &m_sceneConfigEdit.simplifyTexCoordWeight, 0, 0, "%.3f",
+                     ImGuiInputTextFlags_EnterReturnsTrue, "How much to weight this attribute for the error metric. 0 Disables");
+      PE::InputFloat("Tangent weight", &m_sceneConfigEdit.simplifyTangentWeight, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
+                     "How much to weight this attribute for the error metric. 0 Disables");
+      PE::InputFloat("BiTangent Sign weight", &m_sceneConfigEdit.simplifyTangentSignWeight, 0, 0, "%.3f",
+                     ImGuiInputTextFlags_EnterReturnsTrue, "How much to weight this attribute for the error metric. 0 Disables");
+      PE::InputFloat("Material weight", &m_sceneConfigEdit.simplifyMaterialWeight, 0, 0, "%.3f",
+                     ImGuiInputTextFlags_EnterReturnsTrue, "How much to weight this attribute for the error metric. 0 Disables");
+      m_sceneConfigEdit.lodErrorMergePrevious = std::max(1.0f, m_sceneConfigEdit.lodErrorMergePrevious);
+      m_sceneConfigEdit.lodErrorMergeAdditive = std::max(0.0f, m_sceneConfigEdit.lodErrorMergeAdditive);
+      PE::treePop();
+    }
+
+    bool hasChanges = memcmp(&m_sceneConfigEdit, &m_sceneConfig, sizeof(m_sceneConfigEdit)) != 0;
+
+    ImGui::BeginDisabled(!hasChanges);
+    if(hasChanges)
+    {
+      ImGui::PushStyleColor(ImGuiCol_Text, changesColor);
+    }
+
+    ImVec2 buttonSize = {100.0f * ImGui::GetWindowDpiScale(), 20 * ImGui::GetWindowDpiScale()};
+    if(PE::entry("Operations", [&] { return ImGui::Button("Apply Changes", buttonSize); }, "Applying changes triggers reload and processing of the scene"))
+    {
+      m_sceneConfig = m_sceneConfigEdit;
+    }
+    if(hasChanges)
+    {
+      ImGui::PopStyleColor();
+    }
+    if(PE::entry("", [&] { return ImGui::Button("Reset Changes", buttonSize); }, "Resets the current edits"))
+    {
+      m_sceneConfigEdit     = m_sceneConfig;
+      m_tweak.clusterConfig = findSceneClusterConfig(m_sceneConfig);
+    }
+    ImGui::EndDisabled();
+
+    PE::end();
+
+
+    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+    {
+      ImGui::Separator();
+      PE::begin("##CLAS", ImGuiTableFlags_Resizable);
+      PE::InputIntClamped("CLAS Mantissa drop bits", (int*)&m_streamingConfig.clasPositionTruncateBits, 0, 22, 1, 1,
+                          ImGuiInputTextFlags_EnterReturnsTrue,
+                          "number of mantissa bits to drop (zeroed) to reduce memory consumption");
+      PE::entry("CLAS build mode",
+                [&]() { return m_ui.enumCombobox(GUI_BUILDMODE, "##clasbuild", &m_streamingConfig.clasBuildFlags); });
+      PE::end();
+    }
+  }
+}
+
+// "Settings > Streaming": streaming budgets, clas allocator settings and the
+// per-frame streaming statistics.
+void LodClusters::uiSettingsStreaming()
+{
+  StreamingStats stats = {};
+  if(m_renderScene && m_renderScene->useStreaming)
+  {
+    m_renderScene->sceneStreaming.getStats(stats);
+  }
+
+  UsagePercentages pct = {};
+  pct.setupPercentages(stats, m_streamingConfig);
+
+  ImVec4 text_color = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+  ImVec4 warn_color = text_color;
+  warn_color.y *= 0.5f;
+  warn_color.z *= 0.5f;
+
+  // for emphasized parameter we want to recommend to the user
+  const ImVec4 recommendedColor = ImVec4(0.0, 1.0, 0.0, 1.0);
+
+  namespace PE = nvgui::PropertyEditor;
+
+  if(m_renderScene && ImGui::CollapsingHeader("Streaming", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
+  {
+    PE::begin("##Streaming", ImGuiTableFlags_Resizable);
+    if(m_renderSceneCanPreload)
+    {
+      ImGui::PushStyleColor(ImGuiCol_Text, recommendedColor);
+      PE::Checkbox("Enable", &m_tweak.useStreaming);
+      ImGui::PopStyleColor();
+    }
+
+    PE::SliderFloat("Unloading threshold pct.", &m_frameConfig.streamingUnloadThreshold, 0.0f, 0.75f, "%.3f", 0,
+                    "If memory load factor is greater than this start unloading.");
+
+    ImGui::BeginDisabled(m_renderScene == nullptr);
+    if(PE::entry("Streaming state", [&] { return ImGui::Button("Reset"); }, "resets the streaming state"))
+    {
+      m_renderScene->streamingReset();
+    }
+    ImGui::EndDisabled();
+
+
+    PE::InputIntClamped("Max Resident Groups", (int*)&m_streamingConfig.maxGroups,
+                        uint32_t(m_scene ? m_scene->getActiveGeometryCount() : 1024 * 1024), 1024 * 1024, 128, 128,
+                        ImGuiInputTextFlags_EnterReturnsTrue);
+
+    PE::InputIntClamped("Max Geometry MiB", (int*)&m_streamingConfig.maxGeometryMegaBytes, 128, 1024 * 48, 128, 128,
+                        ImGuiInputTextFlags_EnterReturnsTrue);
+    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+    {
+      PE::InputIntClamped("Max CLAS MiB", (int*)&m_streamingConfig.maxClasMegaBytes, 256, 1024 * 48, 128, 128,
+                          ImGuiInputTextFlags_EnterReturnsTrue);
+      PE::InputIntClamped("Start CLAS MiB", (int*)&m_streamingConfig.startClasMegaBytes, 128, 1024 * 48, 128, 128,
+                          ImGuiInputTextFlags_EnterReturnsTrue);
+      PE::InputIntClamped("CLAS grow MiB", (int*)&m_streamingConfig.clasGrowMegaBytes, 128, 1024 * 48, 128, 128,
+                          ImGuiInputTextFlags_EnterReturnsTrue);
+
+      PE::Checkbox("Persistent CLAS Allocator", &m_streamingConfig.usePersistentClasAllocator,
+                   "Use persistent allocation on the device for CLAS memory, otherwise move based compaction");
+      if(PE::treeNode("Allocator settings"))
+      {
+        ImGui::BeginDisabled(!m_streamingConfig.usePersistentClasAllocator);
+        PE::InputIntClamped("Granularity shift bits", (int*)&m_streamingConfig.clasAllocatorGranularityShift, 0, 8, 1, 1,
+                            ImGuiInputTextFlags_EnterReturnsTrue, "CLAS Allocation byte granularity: (CLAS alignment value) < shift");
+        PE::InputIntClamped("Sector shift bits", (int*)&m_streamingConfig.clasAllocatorSectorSizeShift, 5, 16, 1, 1,
+                            ImGuiInputTextFlags_EnterReturnsTrue,
+                            "CLAS Allocation is scanning for free gaps using unused bits is done per sector of (1 << shift) of 32-bit values");
+        PE::Text("Sector size", "%d", 1 << m_streamingConfig.clasAllocatorSectorSizeShift);
+        ImGui::EndDisabled();
+        PE::treePop();
+      }
+    }
+
+    if(PE::treeNode("Frame settings"))
+    {
+      PE::InputIntClamped("Unload frame delay", (int*)&m_frameConfig.streamingAgeThreshold, 2, 1024, 1, 1,
+                          ImGuiInputTextFlags_EnterReturnsTrue);
+
+      PE::InputIntClamped("Max Group Loads", (int*)&m_streamingConfig.maxPerFrameLoadRequests, 1, 16 * 1024 * 1024, 128,
+                          128, ImGuiInputTextFlags_EnterReturnsTrue);
+      PE::InputIntClamped("Max Group Unloads", (int*)&m_streamingConfig.maxPerFrameUnloadRequests, 1, 16 * 1024 * 1024,
+                          128, 128, ImGuiInputTextFlags_EnterReturnsTrue);
+
+      PE::InputIntClamped("Max Transfer MiB", (int*)&m_streamingConfig.maxTransferMegaBytes, 1, 1024, 1, 2,
+                          ImGuiInputTextFlags_EnterReturnsTrue);
+
+      PE::Checkbox("Async transfer", &m_streamingConfig.useAsyncTransfer, "Use asynchronous transfer queue for uploads");
+      ImGui::BeginDisabled(!m_streamingConfig.useAsyncTransfer);
+      PE::Checkbox("Decoupled transfer", &m_streamingConfig.useDecoupledAsyncTransfer,
+                   "Allow asynchronous transfers to take multiple frames");
+      ImGui::EndDisabled();
+      PE::treePop();
+    }
+
+    PE::end();
+
+    ImGui::Separator();
+
+    if(ImGui::BeginTable("Streaming stats", 3, ImGuiTableFlags_RowBg))
+    {
+      ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 155.0f * ImGui::GetWindowDpiScale());
+      ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_WidthStretch);
+      ImGui::TableSetupColumn("Percentage", ImGuiTableColumnFlags_WidthStretch);
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::Text("Geometry");
+      ImGui::TableNextColumn();
+      ImGui::TextColored(stats.couldNotStore ? warn_color : text_color, "%s", formatMemorySize(stats.usedDataBytes).c_str());
+      ImGui::TableNextColumn();
+      ImGui::TextColored(stats.couldNotStore ? warn_color : text_color, "%d %%", getUsagePct(stats.usedDataBytes, stats.maxDataBytes));
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+      {
+        ImGui::Text("CLAS memory");
+        ImGui::TableNextColumn();
+        ImGui::TextColored(stats.couldNotAllocateClas ? warn_color : text_color, "%s",
+                           formatMemorySize(stats.usedClasBytes).c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextColored(stats.couldNotAllocateClas ? warn_color : text_color, "%d %%",
+                           getUsagePct(stats.usedClasBytes, stats.maxClasBytes));
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+
+        ImGui::Text("CLAS waste");
+        ImGui::TableNextColumn();
+        ImGui::TextColored(text_color, "%s", formatMemorySize(stats.wastedClasBytes).c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextColored(text_color, "%d %%", getUsagePct(stats.wastedClasBytes, stats.usedClasBytes));
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+
+        ImGui::Text("CLAS groups left");
+        ImGui::TableNextColumn();
+        ImGui::TextColored(stats.couldNotAllocateClas ? warn_color : text_color, "%s", formatMetric(stats.maxSizedLeft).c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextColored(stats.couldNotAllocateClas ? warn_color : text_color, "%d %%",
+                           getUsagePct(stats.maxSizedLeft, stats.maxSizedReserved));
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+      }
+      ImGui::Text("Resident groups");
+      ImGui::TableNextColumn();
+      ImGui::TextColored(stats.couldNotAllocateGroup ? warn_color : text_color, "%s", formatMetric(stats.residentGroups).c_str());
+      ImGui::TableNextColumn();
+      ImGui::TextColored(stats.couldNotAllocateGroup ? warn_color : text_color, "%d %%",
+                         getUsagePct(stats.residentGroups, stats.maxGroups));
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+
+      ImGui::Text("Resident clusters");
+      uint32_t pctClusters = getUsagePct(stats.residentClusters, stats.maxClusters);
+      ImGui::TableNextColumn();
+      ImGui::TextColored(pctClusters > 99 ? warn_color : text_color, "%s", formatMetric(stats.residentClusters).c_str());
+      ImGui::TableNextColumn();
+      ImGui::TextColored(pctClusters > 99 ? warn_color : text_color, "%d %%", pctClusters);
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+
+      ImGui::Text("Resident Triangles");
+      ImGui::TableNextColumn();
+      ImGui::TextColored(text_color, "%s", formatMetric(stats.residentTriangles).c_str());
+      ImGui::TableNextColumn();
+      // streaming budgets groups and clusters, not triangles
+      ImGui::TextColored(text_color, "-");
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+
+      ImGui::Text("Last Completed Transfer");
+      ImGui::TableNextColumn();
+      ImGui::TextColored(stats.couldNotTransfer ? warn_color : text_color, "%s", formatMemorySize(stats.transferBytes).c_str());
+      ImGui::TableNextColumn();
+      ImGui::TextColored(stats.couldNotTransfer ? warn_color : text_color, "%d %%",
+                         getUsagePct(stats.transferBytes, stats.maxTransferBytes));
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+#if 0
+    ImGui::Text("Last Completed Transfers");
+    ImGui::TableNextColumn();
+    ImGui::TextColored(text_color, "%s", formatMetric(stats.transferCount).c_str());
+    ImGui::TableNextColumn();
+    ImGui::TextColored(text_color, "-");
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+#endif
+
+      uint32_t pctLoad =
+          stats.loadCount == m_streamingConfig.maxPerFrameLoadRequests ?
+              100 :
+              std::min(99u, uint32_t(float(stats.loadCount) * 100.0f / float(m_streamingConfig.maxPerFrameLoadRequests)));
+
+      ImGui::Text("Last Completed Loads");
+      ImGui::TableNextColumn();
+      ImGui::TextColored(pctLoad == 100 ? warn_color : text_color, "%s", formatMetric(stats.loadCount).c_str());
+      ImGui::TableNextColumn();
+      ImGui::TextColored(pctLoad == 100 ? warn_color : text_color, "%d %%", pctLoad);
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+
+      uint32_t pctUnLoad =
+          stats.unloadCount == m_streamingConfig.maxPerFrameUnloadRequests ?
+              100 :
+              std::min(99u, uint32_t(float(stats.unloadCount) * 100.0f / float(m_streamingConfig.maxPerFrameUnloadRequests)));
+
+      ImGui::Text("Last Completed Unloads");
+      ImGui::TableNextColumn();
+      ImGui::TextColored(pctUnLoad == 100 ? warn_color : text_color, "%s", formatMetric(stats.unloadCount).c_str());
+      ImGui::TableNextColumn();
+      ImGui::TextColored(pctUnLoad == 100 ? warn_color : text_color, "%d %%", pctUnLoad);
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+
+      uint32_t pctUncompleted = stats.uncompletedLoadCount == m_streamingConfig.maxPerFrameLoadRequests ?
+                                    100 :
+                                    std::min(99u, uint32_t(float(stats.uncompletedLoadCount) * 100.0f
+                                                           / float(m_streamingConfig.maxPerFrameLoadRequests)));
+
+      ImGui::Text("Last Uncompleted Loads");
+      ImGui::TableNextColumn();
+      ImGui::TextColored(stats.uncompletedLoadCount ? warn_color : text_color, "%s",
+                         formatMetric(stats.uncompletedLoadCount).c_str());
+      ImGui::TableNextColumn();
+      ImGui::TextColored(stats.uncompletedLoadCount ? warn_color : text_color, "%d %%", pctUncompleted);
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+
+      ImGui::EndTable();
+    }
+  }
+}
+
+void LodClusters::uiSettings()
+{
+  if(!m_showWindow.settings)
+    return;
+
+  if(ImGui::Begin("Settings", &m_showWindow.settings))
+  {
+    ImGui::PushItemWidth(170 * ImGui::GetWindowDpiScale());
+
+    uiSettingsSceneModifiers();
+    uiSettingsRendering();
+    uiSettingsTraversal();
+    uiSettingsClusterGeneration();
+    uiSettingsStreaming();
+
+    ImGui::PopItemWidth();
+  }
   ImGui::End();
+}
 
-  Renderer::ResourceUsageInfo resourceActual = m_renderer ? m_renderer->getResourceUsage(false) : Renderer::ResourceUsageInfo();
-  Renderer::ResourceUsageInfo resourceReserved = m_renderer ? m_renderer->getResourceUsage(true) : Renderer::ResourceUsageInfo();
+// "Streaming memory" panel: history plot of the geometry and clas memory in use.
+void LodClusters::uiStreamingMemory()
+{
+  if(!m_showWindow.streamingMemory)
+    return;
 
-  if(ImGui::Begin("Streaming memory"))
+  StreamingStats stats = {};
+  if(m_renderScene && m_renderScene->useStreaming)
+  {
+    m_renderScene->sceneStreaming.getStats(stats);
+  }
+
+  if(ImGui::Begin("Streaming memory", &m_showWindow.streamingMemory))
   {
     const uint32_t maxSlots = 512;
     if(m_streamGeometryHistogram.empty() == m_tweak.useStreaming)
@@ -1552,8 +1526,41 @@ void LodClusters::onUIRender()
     }
   }
   ImGui::End();
+}
 
-  if(ImGui::Begin("Statistics"))
+// "Statistics" panel: scene, traversal and memory numbers of the current frame.
+void LodClusters::uiStatistics()
+{
+  if(!m_showWindow.statistics)
+    return;
+
+  shaderio::Readback readback;
+  m_resources.getReadbackData(readback);
+
+  UsagePercentages pct = {};
+  if(m_renderer)
+  {
+    pct.setupPercentages(readback, m_renderer->getMaxRenderClusters(), m_renderer->getMaxTraversalTasks(),
+                         m_renderer->getMaxBlasBuilds());
+  }
+
+  StreamingStats stats = {};
+  if(m_renderScene && m_renderScene->useStreaming)
+  {
+    m_renderScene->sceneStreaming.getStats(stats);
+  }
+
+  pct.setupPercentages(stats, m_streamingConfig);
+
+  Renderer::ResourceUsageInfo resourceActual = m_renderer ? m_renderer->getResourceUsage(false) : Renderer::ResourceUsageInfo();
+  Renderer::ResourceUsageInfo resourceReserved = m_renderer ? m_renderer->getResourceUsage(true) : Renderer::ResourceUsageInfo();
+
+  ImVec4 text_color = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+  ImVec4 warn_color = text_color;
+  warn_color.y *= 0.5f;
+  warn_color.z *= 0.5f;
+
+  if(ImGui::Begin("Statistics", &m_showWindow.statistics))
   {
     if(m_scene && ImGui::CollapsingHeader("Scene", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {
@@ -1767,8 +1774,20 @@ void LodClusters::onUIRender()
     }
   }
   ImGui::End();
+}
 
-  if(ImGui::Begin("Misc Settings"))
+// "Misc Settings" panel: camera, sky, tonemapper and visualization options.
+void LodClusters::uiMiscSettings(bool pickingValid, const glm::dvec3& hitPos)
+{
+  if(!m_showWindow.miscSettings)
+    return;
+
+  shaderio::Readback readback;
+  m_resources.getReadbackData(readback);
+
+  namespace PE = nvgui::PropertyEditor;
+
+  if(ImGui::Begin("Misc Settings", &m_showWindow.miscSettings))
   {
     if(ImGui::CollapsingHeader("Camera", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {
@@ -1916,89 +1935,256 @@ void LodClusters::onUIRender()
     }
   }
   ImGui::End();
+}
 
-  if(m_showDebugUI)
+// "Debug" panel with the shader readback values, off unless --debugui is set.
+void LodClusters::uiDebug()
+{
+  if(!m_showDebugUI)
+    return;
+
+  shaderio::Readback readback;
+  m_resources.getReadbackData(readback);
+
+  namespace PE = nvgui::PropertyEditor;
+
+  if(ImGui::Begin("Debug", &m_showDebugUI))
   {
-    if(ImGui::Begin("Debug"))
+    if(ImGui::CollapsingHeader("Debug Shader Values", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {
-      if(ImGui::CollapsingHeader("Debug Shader Values", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
+      PE::begin("##HiddenID");
+      PE::InputInt("dbgInt", (int*)&m_frameConfig.frameConstants.dbgUint, 1, 100, ImGuiInputTextFlags_EnterReturnsTrue);
+      PE::InputFloat("dbgFloat", &m_frameConfig.frameConstants.dbgFloat, 0.1f, 1.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
+      PE::end();
+
+      ImGui::Text(" debugI :  %10d", readback.debugI);
+      ImGui::Text(" debugUI:  %10u", readback.debugUI);
+      ImGui::Text(" debugU64:  %" PRIX64, readback.debugU64);
+      static bool debugFloat = false;
+      static bool debugHex   = false;
+      static bool debugAll   = false;
+      ImGui::Checkbox(" as float", &debugFloat);
+      ImGui::SameLine();
+      ImGui::Checkbox("hex", &debugHex);
+      ImGui::SameLine();
+      ImGui::Checkbox("all", &debugAll);
+      //ImGui::SameLine();
+      //bool     doPrint = ImGui::Button("print");
+      uint32_t count = debugAll ? 64 : 32;
+
+      if(ImGui::BeginTable("##Debug", 4, ImGuiTableFlags_BordersOuter))
       {
-        PE::begin("##HiddenID");
-        PE::InputInt("dbgInt", (int*)&m_frameConfig.frameConstants.dbgUint, 1, 100, ImGuiInputTextFlags_EnterReturnsTrue);
-        PE::InputFloat("dbgFloat", &m_frameConfig.frameConstants.dbgFloat, 0.1f, 1.0f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue);
-        PE::end();
-
-        ImGui::Text(" debugI :  %10d", readback.debugI);
-        ImGui::Text(" debugUI:  %10u", readback.debugUI);
-        ImGui::Text(" debugU64:  %" PRIX64, readback.debugU64);
-        static bool debugFloat = false;
-        static bool debugHex   = false;
-        static bool debugAll   = false;
-        ImGui::Checkbox(" as float", &debugFloat);
-        ImGui::SameLine();
-        ImGui::Checkbox("hex", &debugHex);
-        ImGui::SameLine();
-        ImGui::Checkbox("all", &debugAll);
-        //ImGui::SameLine();
-        //bool     doPrint = ImGui::Button("print");
-        uint32_t count = debugAll ? 64 : 32;
-
-        if(ImGui::BeginTable("##Debug", 4, ImGuiTableFlags_BordersOuter))
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 32);
+        ImGui::TableSetupColumn("A", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("B", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("C", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableHeadersRow();
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        for(uint32_t i = 0; i < count; i++)
         {
-          ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 32);
-          ImGui::TableSetupColumn("A", ImGuiTableColumnFlags_WidthStretch);
-          ImGui::TableSetupColumn("B", ImGuiTableColumnFlags_WidthStretch);
-          ImGui::TableSetupColumn("C", ImGuiTableColumnFlags_WidthStretch);
-          ImGui::TableHeadersRow();
-          ImGui::TableNextRow();
-          ImGui::TableNextColumn();
-          for(uint32_t i = 0; i < count; i++)
+          ImGui::Text("%2d", i);
+          if(debugFloat)
           {
-            ImGui::Text("%2d", i);
-            if(debugFloat)
-            {
-              ImGui::TableNextColumn();
-              ImGui::Text("%f", *(float*)&readback.debugA[i]);
-              ImGui::TableNextColumn();
-              ImGui::Text("%f", *(float*)&readback.debugB[i]);
-              ImGui::TableNextColumn();
-              ImGui::Text("%f", *(float*)&readback.debugC[i]);
-            }
-            else if(debugHex)
-            {
-              ImGui::TableNextColumn();
-              ImGui::Text("%X", readback.debugA[i]);
-              ImGui::TableNextColumn();
-              ImGui::Text("%X", readback.debugB[i]);
-              ImGui::TableNextColumn();
-              ImGui::Text("%X", readback.debugC[i]);
-            }
-            else
-            {
-              ImGui::TableNextColumn();
-              ImGui::Text("%d", readback.debugA[i]);
-              ImGui::TableNextColumn();
-              ImGui::Text("%d", readback.debugB[i]);
-              ImGui::TableNextColumn();
-              ImGui::Text("%d", readback.debugC[i]);
-            }
-
-            ImGui::TableNextRow();
             ImGui::TableNextColumn();
+            ImGui::Text("%f", *(float*)&readback.debugA[i]);
+            ImGui::TableNextColumn();
+            ImGui::Text("%f", *(float*)&readback.debugB[i]);
+            ImGui::TableNextColumn();
+            ImGui::Text("%f", *(float*)&readback.debugC[i]);
+          }
+          else if(debugHex)
+          {
+            ImGui::TableNextColumn();
+            ImGui::Text("%X", readback.debugA[i]);
+            ImGui::TableNextColumn();
+            ImGui::Text("%X", readback.debugB[i]);
+            ImGui::TableNextColumn();
+            ImGui::Text("%X", readback.debugC[i]);
+          }
+          else
+          {
+            ImGui::TableNextColumn();
+            ImGui::Text("%d", readback.debugA[i]);
+            ImGui::TableNextColumn();
+            ImGui::Text("%d", readback.debugB[i]);
+            ImGui::TableNextColumn();
+            ImGui::Text("%d", readback.debugC[i]);
           }
 
-          ImGui::EndTable();
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
         }
+
+        ImGui::EndTable();
       }
     }
-    ImGui::End();
   }
+  ImGui::End();
+}
+
+void LodClusters::onUIRender()
+{
+  ImGuiWindow* viewport = ImGui::FindWindowByName("Viewport");
+
+  bool requestCameraRecenter = false;
+  bool requestMirrorBox      = false;
+
+  if(m_sceneLoading)
+  {
+    // Display a modal window when loading assets or other long operation on separated thread
+    ImGui::OpenPopup("Busy Info");
+
+    // Position in the center of the main window when appearing
+    const ImVec2 win_size(300, 130);
+    ImGui::SetNextWindowSize(win_size);
+    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5F, 0.5F));
+
+    // Window without any decoration
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 15.0);
+    if(ImGui::BeginPopupModal("Busy Info", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDecoration))
+    {
+      uint32_t completed = m_sceneCompletedCount.load();
+      uint32_t total     = m_sceneTotalCount.load();
+      float    fraction  = total ? float(completed) / float(total) : 0.0f;
+
+      // Center text in window
+      ImGui::TextDisabled("Please wait ...");
+      ImGui::TextDisabled("Completed: %u of %u", completed, total);
+      ImGui::NewLine();
+      ImGui::ProgressBar(fraction, ImVec2(-1.0f, 0.0f), getLoadPhaseName(m_sceneProgressPhase));
+      ImGui::EndPopup();
+    }
+    ImGui::PopStyleVar();
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+
+  if(viewport)
+  {
+    if(nvgui::isWindowHovered(viewport))
+    {
+      if(ImGui::IsKeyPressed(ImGuiKey_R, false))
+      {
+        m_reloadShaders = true;
+      }
+      if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) || ImGui::IsKeyPressed(ImGuiKey_Space))
+      {
+        requestCameraRecenter = true;
+      }
+      if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Right) || ImGui::IsKeyPressed(ImGuiKey_M))
+      {
+        requestMirrorBox = true;
+      }
+
+      bool screenShotJpg = ImGui::IsKeyPressed(ImGuiKey_F11, false);
+      bool screenShotPng = ImGui::IsKeyPressed(ImGuiKey_F12, false);
+      if(screenShotJpg || screenShotPng)
+      {
+        auto        now      = std::chrono::system_clock::now();
+        std::string filename = fmt::format("screenshot_{:%Y_%m_%d_%H_%M_%S}.{}", now, screenShotJpg ? "jpg" : "png");
+
+        VkExtent2D extent = {m_resources.m_frameBuffer.imgColor.extent.width, m_resources.m_frameBuffer.imgColor.extent.height};
+
+        m_app->saveImageToFile(m_resources.m_frameBuffer.imgColor.image, extent, filename, screenShotJpg ? 90 : 100,
+                               m_resources.m_frameBuffer.useResolved ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL :
+                                                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+      }
+    }
+  }
+
+  shaderio::Readback readback;
+  m_resources.getReadbackData(readback);
+
+  bool       pickingValid = isPickingValid(readback);
+  glm::dvec3 hitPos       = {};
+  bool       hitPosValid  = false;
+  if(pickingValid)
+  {
+    float d = decodePickingDepth(readback);
+    // reject far plane and beyond (reversed-Z: 0 = far)
+    if(d > 0.0f)
+    {
+      glm::uvec2 mousePos = {m_frameConfig.frameConstants.mousePosition.x, m_frameConfig.frameConstants.mousePosition.y};
+
+      const glm::dmat4 view = m_info.cameraManipulator->getViewMatrix();
+      const glm::dmat4 proj = m_frameConfig.frameConstants.projMatrix;
+
+      glm::dvec4 win_norm = {0, 0, m_frameConfig.frameConstants.viewport.x, m_frameConfig.frameConstants.viewport.y};
+      hitPosValid         = true;
+      hitPos              = glm::unProjectZO({mousePos.x, mousePos.y, d}, view, proj, win_norm);
+    }
+  }
+
+  // P sets the rasterization solo filter on the currently hovered instance,
+  // Shift+P also solos its cluster. If any filter is already active, P always
+  // clears it (regardless of what's under the mouse), so you can toggle off
+  // without needing to move the pointer back over the soloed target.
+  // Only the rasterizer honors the filter, so the key does nothing elsewhere.
+  const bool soloFilterUsable = m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD;
+  if(soloFilterUsable && viewport && nvgui::isWindowHovered(viewport) && ImGui::IsKeyPressed(ImGuiKey_P, false))
+  {
+    bool anyFilterActive = m_tweak.filterInstanceID >= 0 || m_tweak.filterClusterID >= 0;
+    if(anyFilterActive)
+    {
+      m_tweak.filterInstanceID = -1;
+      m_tweak.filterClusterID  = -1;
+    }
+    else if(pickingValid)
+    {
+      bool shift               = ImGui::GetIO().KeyShift;
+      m_tweak.filterInstanceID = int32_t(uint32_t(readback.instanceId));
+      m_tweak.filterClusterID  = shift ? int32_t(uint32_t(readback.clusterTriangleId >> 8)) : -1;
+    }
+  }
+
+  // camera control, recenter
+  if((requestCameraRecenter || requestMirrorBox) && pickingValid)
+  {
+    if(hitPosValid)
+    {
+      glm::dvec3 eye, center, up;
+      m_info.cameraManipulator->getLookat(eye, center, up);
+
+      if(requestCameraRecenter)
+      {
+        // Set the interest position
+        m_info.cameraManipulator->setLookat(eye, hitPos, up, false);
+        m_info.cameraManipulator->setSpeed(glm::length(eye - hitPos) * m_tweak.clickSpeedScale);
+      }
+
+      if(requestMirrorBox)
+      {
+        m_frameConfig.frameConstants.useMirrorBox = 1;
+        m_frameConfig.frameConstants.wMirrorBox = glm::vec4(hitPos, glm::distance(eye, hitPos) * m_tweak.mirrorBoxScale);
+      }
+    }
+    else
+    {
+      if(requestMirrorBox)
+      {
+        m_frameConfig.frameConstants.useMirrorBox = 0;
+      }
+    }
+  }
+  else if(requestMirrorBox && !pickingValid)
+  {
+    m_frameConfig.frameConstants.useMirrorBox = 0;
+  }
+
+  uiSettings();
+  uiStreamingMemory();
+  uiStatistics();
+  uiMiscSettings(pickingValid, hitPos);
+  uiDebug();
 
   // resolve any --max*megabytes overrides written into m_memoryBudgetArgs since the last frame
   // (e.g. by the parameter sequencer's onPreRender, which runs before this onUIRender) before
   // handleChanges() compares the resolved configs against their last-seen state
   applyMemoryBudgetArgs();
   handleChanges();
+
+  clasAllocatorUI();
 
   // Rendered image displayed fully in 'Viewport' window
   if(ImGui::Begin("Viewport"))
@@ -2019,6 +2205,139 @@ void LodClusters::onUIRender()
     ImVec2 corner = ImGui::GetCursorScreenPos();  // Corner of the viewport
     ImGui::Image((ImTextureID)m_imguiTexture, imageSize);
     viewportUI(corner, imageSize);
+  }
+  ImGui::End();
+}
+
+// Floating inspector for the memory of the persistent clas allocator.
+// The offscreen texture is only refreshed while this window is actually visible,
+// `m_clasAllocatorVisVisible` is picked up by `onRender` later in the same frame.
+void LodClusters::clasAllocatorUI()
+{
+  m_clasAllocatorVisVisible   = false;
+  m_clasAllocatorVisHistogram = false;
+
+  if(!m_showWindow.clasAllocator)
+    return;
+
+  const ImGuiViewport* viewport = ImGui::GetMainViewport();
+  ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+  ImGui::SetNextWindowSize(ImVec2(900, 480), ImGuiCond_FirstUseEver);
+
+  if(ImGui::Begin("CLAS Allocator Memory", &m_showWindow.clasAllocator))
+  {
+    // there is only a bit field once clas are managed by it, which needs streaming,
+    // ray tracing and the persistent allocator
+    const shaderio::StreamingAllocator* allocator = (m_renderScene && m_renderScene->useStreaming) ?
+                                                        &m_renderScene->sceneStreaming.getShaderStreamingData().clasAllocator :
+                                                        nullptr;
+
+    if(!allocator || !allocator->usedBits || !allocator->sectorCount || !m_clasAllocatorVis.getImguiTexture())
+    {
+      ImGui::TextWrapped(
+          "Needs streaming with the persistent CLAS allocator enabled and a ray tracing renderer, "
+          "so that CLAS memory is actually managed on the device.");
+    }
+    else
+    {
+      m_clasAllocatorVisVisible = true;
+
+      const VkExtent2D mapped   = m_clasAllocatorVis.getMappedExtent();
+      const uint32_t   rowCount = m_clasAllocatorVis.getRowCount();
+
+      StreamingStats stats = {};
+      m_renderScene->sceneStreaming.getStats(stats);
+
+      // the histogram costs an extra dispatch and readback, so it follows this section
+      // being expanded rather than the window merely being open
+      if(ImGui::CollapsingHeader("Allocation size histogram", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
+      {
+        m_clasAllocatorVisHistogram = true;
+
+        const uint32_t* counts = m_clasAllocatorVis.getHistogram(m_resources.m_cycleIndex);
+        if(counts)
+        {
+          uiPlotAllocatorHistogram(counts, m_clasAllocatorVis.getHistogramPlotBins(counts),
+                                   m_clasAllocatorVis.getHistogramBinBytes());
+
+          ImGui::TextDisabled("%u groups", stats.residentGroups - stats.persistentGroups);
+          ImGui::SetItemTooltip(
+              "Allocation size includes the padding to the allocator's granularity, so it is at least the "
+              "sum of the group's CLAS sizes. Persistently resident groups are not counted, their CLAS "
+              "live outside the allocator's memory.");
+        }
+      }
+
+      ImGui::Text("%s of %s allocated, %s used, %s wasted", formatMemorySize(stats.reservedClasBytes).c_str(),
+                  formatMemorySize(stats.maxClasBytes).c_str(), formatMemorySize(stats.usedClasBytes).c_str(),
+                  formatMemorySize(stats.wastedClasBytes).c_str());
+      ImGui::Text("%u rows of %s, one pixel is %s, %u allocator sectors", rowCount,
+                  formatMemorySize(size_t(m_clasAllocatorVis.getRowBytes())).c_str(),
+                  formatMemorySize(size_t(m_clasAllocatorVis.getPixelBytes())).c_str(), allocator->sectorCount);
+      ImGui::SetItemTooltip(
+          "Memory grows left to right within a row, then top to bottom. A row is a whole number of "
+          "allocator sectors, so allocations never straddle rows. Resize the window to stretch the rows.");
+      ImGui::NewLine();
+
+      // must match the colors of `stream_allocator_vis.comp.glsl`
+      auto legend = [](ImVec4 color, const char* text, const char* tooltip) {
+        ImGui::ColorButton(text, color, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop | ImGuiColorEditFlags_NoPicker,
+                           ImVec2(ImGui::GetTextLineHeight(), ImGui::GetTextLineHeight()));
+        ImGui::SameLine();
+        ImGui::TextUnformatted(text);
+        ImGui::SetItemTooltip("%s", tooltip);
+        ImGui::SameLine(0, ImGui::GetTextLineHeight());
+      };
+
+      legend(ImVec4(0.16f, 0.17f, 0.21f, 1.0f), "free", "no allocation covers these bytes");
+      legend(ImVec4(0.42f, 0.44f, 0.48f, 1.0f), "used", "occupancy from the allocator's bit field, sub-pixel accurate");
+      legend(ImVec4(0.85f, 0.12f, 0.06f, 1.0f), "wasted", "tail of an allocation that is padding rather than CLAS data");
+      ImGui::Checkbox("group allocations", &m_clasAllocatorVisShowGroups);
+      ImGui::SetItemTooltip(
+          "Paint each cluster group's allocation over the occupancy, colored by its resident group ID. "
+          "Turn off to see the plain occupancy of the allocator's bit field.");
+
+      // the texture is generated at the size available here, picked up by the `cmdUpdate`
+      // that runs after this in the same frame
+      ImVec2 avail                  = ImGui::GetContentRegionAvail();
+      m_clasAllocatorVisDisplaySize = ImVec2(std::max(0.0f, avail.x), std::max(0.0f, avail.y));
+
+      if(mapped.width && mapped.height && avail.x > 0 && avail.y > 0)
+      {
+        // `cmdUpdate` fits the mapped extent in here, so this only ever magnifies.
+        // Fractional is fine along a row, there is no pattern to beat against, but every
+        // rowPitch'th texel is a separator and would end up at uneven thickness.
+        const float scaleX = std::max(1.0f, avail.x / float(mapped.width));
+        float       scaleY = std::max(1.0f, avail.y / float(mapped.height));
+        if(m_clasAllocatorVis.getRowPitch() > 1)
+        {
+          scaleY = std::floor(scaleY);
+        }
+
+        ImVec2 imageSize = ImVec2(float(mapped.width) * scaleX, float(mapped.height) * scaleY);
+        ImVec2 uvMax     = ImVec2(float(mapped.width) / float(StreamingAllocatorVis::IMAGE_WIDTH),
+                                  float(mapped.height) / float(StreamingAllocatorVis::IMAGE_HEIGHT));
+        // imgui owns the samplers and switches them per draw command
+        ImDrawList*            drawList   = ImGui::GetWindowDrawList();
+        const ImGuiPlatformIO& platformIO = ImGui::GetPlatformIO();
+        drawList->AddCallback(platformIO.DrawCallback_SetSamplerNearest, nullptr);
+
+        ImVec2 corner = ImGui::GetCursorScreenPos();
+        ImGui::Image((ImTextureID)m_clasAllocatorVis.getImguiTexture(), imageSize, ImVec2(0, 0), uvMax);
+
+        drawList->AddCallback(platformIO.DrawCallback_SetSamplerLinear, nullptr);
+
+        if(ImGui::IsItemHovered())
+        {
+          ImVec2   mouse = ImGui::GetMousePos();
+          uint32_t row   = std::min(uint32_t((mouse.y - corner.y) * float(rowCount) / imageSize.y), rowCount - 1);
+          uint32_t column = std::min(uint32_t((mouse.x - corner.x) * float(mapped.width) / imageSize.x), mapped.width - 1);
+          uint64_t offset =
+              uint64_t(row) * m_clasAllocatorVis.getRowBytes() + uint64_t(column) * m_clasAllocatorVis.getPixelBytes();
+          ImGui::SetTooltip("row %u, offset %s", row, formatMemorySize(size_t(offset)).c_str());
+        }
+      }
+    }
   }
   ImGui::End();
 }
@@ -2084,6 +2403,16 @@ void LodClusters::onUIMenu()
     {
       doToggleVsync = true;
     }
+
+    ImGui::Separator();
+
+    // the logger and the profiler add their own entries to this menu
+    ImGui::MenuItem(ICON_MS_TUNE " Settings", nullptr, &m_showWindow.settings);
+    ImGui::MenuItem(ICON_MS_TUNE " Misc Settings", nullptr, &m_showWindow.miscSettings);
+    ImGui::MenuItem(ICON_MS_QUERY_STATS " Statistics", nullptr, &m_showWindow.statistics);
+    ImGui::MenuItem(ICON_MS_QUERY_STATS " Streaming memory", nullptr, &m_showWindow.streamingMemory);
+    ImGui::MenuItem(ICON_MS_MEMORY " CLAS Allocator Memory", nullptr, &m_showWindow.clasAllocator);
+    ImGui::MenuItem(ICON_MS_BUG_REPORT " Debug", nullptr, &m_showDebugUI);
 
     ImGui::EndMenu();
   }

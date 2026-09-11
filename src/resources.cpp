@@ -24,7 +24,7 @@ void Resources::postProcessFrame(VkCommandBuffer cmd, const FrameConfig& frame, 
   auto sec = profiler.cmdFrameSection(cmd, "Post-process");
 
   // do hbao on the full-res input image
-  bool runHbao = frame.hbaoActive;
+  bool runHbao = frame.hbaoActive && m_hbaoFrame.slot != ~0u;
 #if USE_DLSS
   runHbao = runHbao && m_frameBuffer.dlssMode != DlssMode::eSuperResolution;
 #endif

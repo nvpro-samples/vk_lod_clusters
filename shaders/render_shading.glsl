@@ -70,29 +70,61 @@ vec3 visualizeColor(uint visData, uint instanceID)
     //return vec3(pow(lodMix(uintBitsToFloat(visData)),vec3(8.0))) * 0.8 + 0.1;
   }
 #if TARGETS_RAY_TRACING
-  else if (view.visualize == VISUALIZE_BLAS || view.visualize == VISUALIZE_BLAS_CACHED) {
-    uint blasBuildIndex = build.instanceBuildInfos.d[instanceID].blasBuildIndex;
-    
-    bool lowDetail = false;
-    if (blasBuildIndex == BLAS_BUILD_INDEX_LOWDETAIL)
+  else if (view.visualize == VISUALIZE_BLAS || view.visualize == VISUALIZE_BLAS_REUSE) {
+    InstanceBuildInfo instanceBuildInfo = build.instanceBuildInfos.d[instanceID];
+    uint              blasBuildIndex    = instanceBuildInfo.blasBuildIndex;
+
+    bool lowDetail = blasBuildIndex == BLAS_BUILD_INDEX_LOWDETAIL;
+
+    if (view.visualize == VISUALIZE_BLAS_REUSE)
     {
-      lowDetail = true;
+      // where this instance's blas comes from, the more it is reused the greener.
+      // Must be evaluated before `instanceID` is redirected below.
+
+      // the pre-built low detail blas always exists, no matter which
+      // of the blas reuse techniques are enabled
+      if (lowDetail)
+      {
+        return vec3(0.1, 0.9, 0.1);
+      }
+    #if USE_BLAS_CACHING
+      if ((blasBuildIndex & BLAS_BUILD_INDEX_CACHE_BIT) != 0)
+      {
+        // the geometry's cached blas
+        return vec3(0.1, 0.9, 0.1);
+      }
+    #endif
+    #if USE_BLAS_MERGING
+      if ((uint(build.instanceVisibility.d[instanceID]) & INSTANCE_USES_MERGED_BIT) != 0)
+      {
+        // the geometry's merged blas, also colors the instance that builds it
+        return vec3(0.9, 0.5, 0.1);
+      }
+    #endif
+    #if USE_BLAS_SHARING
+      // the elected instance builds the blas, but when others share from it, it is not built
+      // for itself alone, so it gets the same color as them
+      GeometryBuildInfo geometryBuildInfo = build.geometryBuildInfos.d[instanceBuildInfo.geometryID];
+      if ((blasBuildIndex & BLAS_BUILD_INDEX_SHARE_BIT) != 0
+          || (geometryBuildInfo.shareInstanceID == instanceID
+              && (geometryBuildInfo.flags & GEOMETRY_HAS_SHARING_INSTANCES) != 0))
+      {
+        // another instance's blas
+        return vec3(0.9, 0.9, 0.1);
+      }
+    #endif
+      // own blas, built for this instance alone in this frame
+      return vec3(0.9, 0.1, 0.1);
     }
-  #if USE_BLAS_SHARING
-    else if ((blasBuildIndex & (BLAS_BUILD_INDEX_SHARE_BIT | BLAS_BUILD_INDEX_CACHE_BIT)) != 0)
+
+  #if USE_BLAS_REUSE
+    if (!lowDetail && (blasBuildIndex & (BLAS_BUILD_INDEX_SHARE_BIT | BLAS_BUILD_INDEX_CACHE_BIT)) != 0)
     {
       // intentionally keep CACHE_BIT here for colorization
       instanceID = blasBuildIndex & ~(BLAS_BUILD_INDEX_SHARE_BIT);
     }
   #endif
-    if (view.visualize == VISUALIZE_BLAS_CACHED)
-    {
-      return lowDetail || ((blasBuildIndex & BLAS_BUILD_INDEX_CACHE_BIT) != 0) ? vec3(0.1, 0.9, 0.1) : vec3(0.9, 0.1, 0.1);
-    }
-    else 
-    {
-      return lowDetail ? vec3(0.9, 0.1, 0.1) : colorizeID(instanceID).xyz;
-    }
+    return lowDetail ? vec3(0.9, 0.1, 0.1) : colorizeID(instanceID).xyz;
   }
 #endif
   else

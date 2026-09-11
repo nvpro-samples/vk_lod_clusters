@@ -103,6 +103,7 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene)
   options.AddMacroDefinition("USE_RENDER_STATS", m_config.useRenderStats ? "1" : "0");
   options.AddMacroDefinition("USE_DLSS", m_config.useDlss ? "1" : "0");
   options.AddMacroDefinition("USE_DLSS_GUIDE_BUFFERS", "0");
+  options.AddMacroDefinition("USE_BLAS_REUSE", "0");
   options.AddMacroDefinition("USE_BLAS_SHARING", "0");
   options.AddMacroDefinition("USE_BLAS_MERGING", "0");
   options.AddMacroDefinition("USE_BLAS_CACHING", "0");

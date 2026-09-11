@@ -18,6 +18,9 @@ using namespace glm;
 #define INSTANCE_VISIBLE_BIT 1
 #define INSTANCE_USES_MERGED_BIT 2
 
+// `GeometryBuildInfo::flags`, only maintained for the "blas reuse" visualization
+#define GEOMETRY_HAS_SHARING_INSTANCES 1
+
 #define BLAS_BUILD_INDEX_LOWDETAIL (uint(~0))
 #define BLAS_BUILD_INDEX_SHARE_BIT (uint(1 << 31))
 #define BLAS_BUILD_INDEX_CACHE_BIT (uint(1 << 30))
@@ -81,19 +84,28 @@ struct GeometryBuildHistogram
 };
 BUFFER_REF_DECLARE_ARRAY(GeometryBuildHistogram_inout, GeometryBuildHistogram, , 16);
 
+// blas sharing / merging state, padded so all fields come from one 16 byte load
 struct GeometryBuildInfo
 {
-  // blas caching
-  uint32_t cachedBuildIndex;
-  uint16_t cachedLevel;
   // blas sharing
   uint8_t  shareLevelMin;    // highest potential detail
   uint8_t  shareLevelMax;    // lowest potential detail
   uint32_t shareInstanceID;  // which instance to use for sharing (its lod range is expressed by the values above)
   // blas merging
   uint32_t mergedInstanceID;  // which instance to use for triggering the merged traversal
+  uint32_t flags;             // GEOMETRY_HAS_SHARING_INSTANCES, visualization only
 };
 BUFFER_REF_DECLARE_ARRAY(GeometryBuildInfos_inout, GeometryBuildInfo, , 16);
+BUFFER_REF_DECLARE_SIZE(GeometryBuildInfo_size, GeometryBuildInfo, 16);
+
+// blas caching state, kept apart from the sharing state as the two are independent.
+// The streaming age filter reads `cachedLevel` for every resident group, so it stays dense.
+struct GeometryCachedInfo
+{
+  uint32_t cachedLevel;       // lowest lod level of any instance using the cached blas, invalid if none
+  uint32_t cachedBuildIndex;  // per-frame blas build that the cached blas is copied from
+};
+BUFFER_REF_DECLARE_ARRAY(GeometryCachedInfos_inout, GeometryCachedInfo, , 8);
 
 struct InstanceBuildInfo
 {
@@ -253,6 +265,7 @@ struct SceneBuilding
   // per scene geometry
   // ------------
   BUFFER_REF(GeometryBuildInfos_inout) geometryBuildInfos;
+  BUFFER_REF(GeometryCachedInfos_inout) geometryCachedInfos;
   BUFFER_REF(GeometryBuildHistogram_inout) geometryHistograms;
 
   // for USE_BLAS_CACHING

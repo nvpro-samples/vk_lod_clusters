@@ -38,6 +38,6 @@ Similar to BLAS sharing, we use one instance as proxy and it is building the mer
 In the source look for `USE_BLAS_MERGING` and `useBlasMerging`.
 
 * [`geometry_blas_sharing.comp.glsl`](../shaders/geometry_blas_sharing.comp.glsl) The geometry evaluation is electing one instance as proxy for building the merged BLAS.
-* [`traversal_init_blas_sharing.comp.glsl`](../shaders/traversal_init_blas_sharing.comp.glsl) Modify the instance's decision which BLAS to use. It leverages the existing `BLAS_BUILD_INDEX_SHARE_BIT` to implement the indirection to the proxy instance that builds the merged BLAS.
+* [`traversal_init_blas_reuse.comp.glsl`](../shaders/traversal_init_blas_reuse.comp.glsl) Modify the instance's decision which BLAS to use. It leverages the existing `BLAS_BUILD_INDEX_SHARE_BIT` to implement the indirection to the proxy instance that builds the merged BLAS.
 * [`traversal_blas_merging.comp.glsl`](../shaders/traversal_blas_merging.comp.glsl) This kernel does the combined age filtering and filling the BLAS references list with the highest detail clusters for all merged geometries at once.
 * [`traversal_run.comp.glsl`](../shaders/traversal_run.comp.glsl) For instances that use merging (`INSTANCE_USES_MERGED_BIT`) we can skip traversing the cluster groups in detail, however, streaming requests must still be performed for groups that should be streamed in.

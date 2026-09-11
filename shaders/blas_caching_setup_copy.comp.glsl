@@ -105,7 +105,7 @@ void main()
   {
     // configure the BLAS copy operation to the persistent storage address
     
-    uint buildIndex = build.geometryBuildInfos.d[sgpatch.geometryID].cachedBuildIndex;    
+    uint buildIndex = build.geometryCachedInfos.d[sgpatch.geometryID].cachedBuildIndex;    
     uint copyOffset = atomicAdd(buildRW.cachedBlasCopyCounter, 1);
     
     build.cachedBlasClusterAddressesSrc.d[copyOffset] = build.blasBuildAddresses.d[buildIndex];

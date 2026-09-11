@@ -54,7 +54,7 @@ Key changes in the shaders and device code are:
 * [`stream_update_scene.comp/glsl`](../shaders/stream_update_scene.comp.glsl): If required, patches the latest cached BLAS address and lod level for a geometry.
 * [`streaming.glsl`](../shaders/streaming.glsl): `streamingAgeFilter(... useBlasCaching)`: The age filtering during streaming must prevent unloading of cached levels that are still required.
 * [`geometry_blas_sharing.comp.glsl`](../shaders/geometry_blas_sharing.comp.glsl) The geometry evaluation is changed to account for cached blas. This can avoid using merged / shared instances and fully rely on the cached blas.
-* [`traversal_init_blas_sharing.comp.glsl`](../shaders/traversal_init_blas_sharing.comp.glsl) Modify the instance's decision which BLAS to use. We use `BLAS_BUILD_INDEX_CACHE_BIT` to tag cached BLAS.
+* [`traversal_init_blas_reuse.comp.glsl`](../shaders/traversal_init_blas_reuse.comp.glsl) Modify the instance's decision which BLAS to use. We use `BLAS_BUILD_INDEX_CACHE_BIT` to tag cached BLAS.
 * [`blas_caching_setup_build.comp.glsl`](../shaders/blas_caching_setup_build.comp.glsl): Feeds the CLAS addresses into the cached BLAS list of references prior building.
 * [`blas_caching_setup_copy.comp.glsl`](../shaders/blas_caching_setup_copy.comp.glsl): Sets up the BLAS copy from the per-frame BLAS builds into their persistent storage. 
 * [`instance_assign_blas.comp.glsl`](../shaders/instance_assign_blas.comp.glsl): When assigning the BLAS to the ray tracing instance, account for cached BLAS use-case.

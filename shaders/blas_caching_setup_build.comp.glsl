@@ -115,7 +115,7 @@ void main()
     uint referencesOffset = atomicAdd(buildRW.blasClasCounter, cachedBlasClustersCount);
     uint buildOffset      = atomicAdd(buildRW.blasBuildCounter, 1);
     
-    build.geometryBuildInfos.d[geometryID].cachedBuildIndex = buildOffset;
+    build.geometryCachedInfos.d[geometryID].cachedBuildIndex = buildOffset;
     
     // setup insertion of clusters for builds
     build.blasBuildInfos.d[buildOffset].clusterReferencesCount  = cachedBlasClustersCount;

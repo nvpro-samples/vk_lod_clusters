@@ -132,7 +132,7 @@ As described in **2.** the transfers are separated for ray tracing, to avoid sto
 the positions persistently in memory. Instead we make use of various fetch intrinsics in
 the shading languages.
 
-```
+```text
 Slang:
 HitTriangleVertexPosition(0..2)
 

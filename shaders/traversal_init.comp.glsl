@@ -13,7 +13,7 @@
 
   A thread represents one instance.
 
-  NOT compatible with USE_BLAS_SHARING, see `traversal_init_blas_sharing.comp.glsl`
+  NOT compatible with USE_BLAS_SHARING, see `traversal_init_blas_reuse.comp.glsl`
 */
 
 #version 460
@@ -176,8 +176,11 @@ void main()
     mat4 transform = build.traversalViewMatrix * toMat4(worldMatrix);
   
     // if there is no need to traverse the pen ultimate lod level,
-    // then just insert the last lod level node's cluster directly
-    if (!testForTraversal(mat4x3(transform), uniformScale, traversalMetric, errorScale))
+    // then just insert the last lod level node's cluster directly.
+    // A geometry with a single lod level has no pen ultimate level, its only level
+    // is the lowest detail one. `instance_classify_lod.comp.glsl` classifies those
+    // the same way, so both traversal init variants agree.
+    if (childCountMinusOne == 0 || !testForTraversal(mat4x3(transform), uniformScale, traversalMetric, errorScale))
     {
     
     #if TARGETS_RAY_TRACING

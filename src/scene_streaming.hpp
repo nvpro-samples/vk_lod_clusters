@@ -290,6 +290,13 @@ private:
   nvvk::BufferSubAllocator m_cachedBlasAllocator;
   uint32_t                 m_cachedBlasAlignment = 4;
 
+  // ui convenience only, not part of the caching algorithm, see `appendBlasCacheRevalidation`.
+  // Cursor of the sweep that drops cached BLAS which a lowered `blasCacheMinLevel` excludes,
+  // ~0 is idle.
+  uint32_t m_blasCacheMinLevelLast   = 0;
+  uint32_t m_blasCacheRevalidateNext = ~0u;
+  uint32_t m_cachedBlasCount         = 0;
+
   // This is the main function where we react on streaming requests.
   // It processes the request by issuing new storage upload work and prepares the scene patching and resident update task.
   // returns the updateTaskIndex to be handled immediately in this frame if it's != INVALID_TASK_INDEX
@@ -301,6 +308,8 @@ private:
 
 private:
   void handleBlasCaching(StreamingUpdates::TaskInfo& updateTask, const FrameSettings& settings);
+  // ui convenience only, see definition
+  void appendBlasCacheRevalidation(StreamingUpdates::TaskInfo& updateTask, const FrameSettings& settings);
 
   bool allocateCachedBlas(const PersistentGeometry&  geometry,
                           uint32_t                   lodClustersCount,

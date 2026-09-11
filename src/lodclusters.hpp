@@ -18,6 +18,7 @@
 
 #include "renderer.hpp"
 #include "camera_path.hpp"
+#include "scene_streaming_vis.hpp"
 
 namespace lodclusters {
 
@@ -154,11 +155,31 @@ private:
 
   // key components
 
-  Resources                 m_resources;
-  FrameConfig               m_frameConfig;
-  double                    m_lastTime = 0;
-  VkDescriptorSet           m_imguiTexture{};
-  VkSampler                 m_imguiSampler{};
+  Resources       m_resources;
+  FrameConfig     m_frameConfig;
+  double          m_lastTime = 0;
+  VkDescriptorSet m_imguiTexture{};
+  VkSampler       m_imguiSampler{};
+
+  // fragmentation view of the persistent clas allocator, updated while its widget is visible
+  StreamingAllocatorVis m_clasAllocatorVis;
+  bool                  m_clasAllocatorVisVisible     = false;
+  bool                  m_clasAllocatorVisShowGroups  = true;
+  bool                  m_clasAllocatorVisHistogram   = false;
+  ImVec2                m_clasAllocatorVisDisplaySize = {};
+
+  // toggled from the "View" menu. The dockable panels are on by default, the clas
+  // allocator inspector is opt-in and floats over the viewport.
+  struct WindowShow
+  {
+    bool settings        = true;
+    bool miscSettings    = true;
+    bool statistics      = true;
+    bool streamingMemory = true;
+    bool clasAllocator   = false;
+  };
+  WindowShow m_showWindow;
+
   nvgui::EnumRegistry       m_ui;
   nvutils::PerformanceTimer m_clock;
 
@@ -318,6 +339,21 @@ private:
   bool  isPickingValid(const shaderio::Readback& readback);
 
   void viewportUI(ImVec2 corner, ImVec2 imageSize);
+
+  // the individual panels of `onUIRender`, each is a no-op when its window is hidden
+  void uiSettings();
+  // collapsing sections within the "Settings" panel
+  void uiSettingsSceneModifiers();
+  void uiSettingsRendering();
+  void uiSettingsTraversal();
+  void uiSettingsClusterGeneration();
+  void uiSettingsStreaming();
+  void uiStreamingMemory();
+  void uiStatistics();
+  void uiMiscSettings(bool pickingValid, const glm::dvec3& hitPos);
+  void uiDebug();
+  // floating inspector for the persistent clas allocator's memory
+  void clasAllocatorUI();
 
   void loadingUI();
 

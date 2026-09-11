@@ -8,14 +8,15 @@
   Shader Description
   ==================
   
-  Only used for TARGETS_RAY_TRACING && USE_BLAS_SHARING
-  
-  This compute shader initializes the traversal queue with the 
+  Only used for TARGETS_RAY_TRACING && USE_BLAS_REUSE
+
+  This compute shader initializes the traversal queue with the
   root nodes of the lod hierarchy of rendered instances.
-  
+
   Not all instances will require this, as some instances
-  may use the BLAS of another instance.
-  
+  may use the BLAS of another instance (blas sharing / merging)
+  or the geometry's cached BLAS (blas caching).
+
   Compared to the regular `traversal_init.comp.glsl`, some work
   was already done in `instance_classify_lod.comp.glsl`
 
@@ -118,13 +119,18 @@ void main()
   uint instanceLevelMin          = instanceInfo.lodLevelMin;
   uint instanceLevelMax          = instanceInfo.lodLevelMax;
   
+#if USE_BLAS_CACHING
+  // lowest lod level of any instance using the cached blas
+  // computed in `instance_classify_lod.comp.glsl`
+  uint cachedLevel     = build.geometryCachedInfos.d[geometryID].cachedLevel;
+#endif
+#if USE_BLAS_SHARING
   // geometry's pick for the shared blas lod level
   // computed in `geometry_blas_sharing.comp.glsl`
-  
-  uint cachedLevel     = build.geometryBuildInfos.d[geometryID].cachedLevel;
   uint shareLevelMin   = build.geometryBuildInfos.d[geometryID].shareLevelMin;
   uint shareLevelMax   = build.geometryBuildInfos.d[geometryID].shareLevelMax;
   uint shareInstanceID = build.geometryBuildInfos.d[geometryID].shareInstanceID;
+#endif
 #if USE_BLAS_MERGING
   uint mergedInstanceID = build.geometryBuildInfos.d[geometryID].mergedInstanceID;
 #endif
@@ -153,30 +159,48 @@ void main()
     }
   #endif
     
+    // the test order is the priority of the techniques: cached, then shared, then
+    // merged as the fallback below. Caching wins because it costs no build at all,
+    // hence the elected sharing instance only builds its own blas when the cached
+    // blas isn't detailed enough for it. The instances sharing from it need even
+    // less detail (`instanceLevelMin >= shareLevelMax >= shareLevelMin`), so they
+    // then use the cached blas as well and never reference a blas that wasn't built.
+
     if (TRAVERSAL_ALLOW_LOW_DETAIL_BLAS && instanceLevelMin == uint(instanceInfo.geometryLodLevelMax)) {
       // no need, lowest detail BLAS is used
       traverseRootNode = false;
-    }
-    else if (shareInstanceID == instanceID) {
-      // one of the instances becomes the one shared by all others
-      
-      // we want to traverse this instance
-      traverseRootNode = true;
     }
   #if USE_BLAS_CACHING
     else if (instanceLevelMin >= cachedLevel) {
       // don't add, use cached blas instead
       blasBuildIndex = geometryID | BLAS_BUILD_INDEX_CACHE_BIT;
-    
+
       traverseRootNode = false;
     }
   #endif
+  #if USE_BLAS_SHARING
+    else if (shareInstanceID == instanceID) {
+      // one of the instances becomes the one shared by all others
+
+      // we want to traverse this instance
+      traverseRootNode = true;
+    }
+  #endif
+  #if USE_BLAS_SHARING
     else if (instanceLevelMin >= shareLevelMax) {
       // don't add, use shareInstance's blas instead
-      blasBuildIndex = build.geometryBuildInfos.d[geometryID].shareInstanceID | BLAS_BUILD_INDEX_SHARE_BIT;
-      
+      blasBuildIndex = shareInstanceID | BLAS_BUILD_INDEX_SHARE_BIT;
+
       traverseRootNode = false;
+
+      // visualization only, tells the elected instance apart from one that builds for itself.
+      if (view.visualize == VISUALIZE_BLAS_REUSE
+          && (build.geometryBuildInfos.d[geometryID].flags & GEOMETRY_HAS_SHARING_INSTANCES) == 0)
+      {
+        atomicOr(build.geometryBuildInfos.d[geometryID].flags, GEOMETRY_HAS_SHARING_INSTANCES);
+      }
     }
+  #endif
     else {
       // typically we are not sharing anything, trigger a regular per-instance traversal
       traverseRootNode = true;

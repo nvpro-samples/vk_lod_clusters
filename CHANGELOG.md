@@ -1,4 +1,20 @@
 # Changelog for vk_lod_clusters
+* 2026-9-10:
+
+  * The "BLAS Caching" option no longer requires "BLAS Sharing" activated, `--blascaching` and `--blassharing` are now independent so each technique can be enabled and measured on its own ("BLAS Merging" stays an extension of sharing). Both are driven by the per-instance lod range classification, which is expressed as the new `USE_BLAS_REUSE` / `useBlasReuse()`; `traversal_init_blas_sharing.comp.glsl` was renamed to [`traversal_init_blas_reuse.comp.glsl`](shaders/traversal_init_blas_reuse.comp.glsl) accordingly.
+  * Bugfix: There was a major regression in `SceneStreaming::handleBlasCaching`, it re-declared `cachedClustersCount` inside its lod level loop, as a result Blas caching was ineffective for several versions.
+  * Bugfix: Detection of low detail BLAS within `traversal_init.comp.glsl` for geometries that only have one level.
+  * Lowering "Cached tail levels" in UI now also affects geometries that already have a cached BLAS. `SceneStreaming::appendBlasCacheRevalidation` sweeps them back through the regular caching logic over a few frames, so they are rebuilt coarser or invalidated without a streaming reset. This exists for UI behavior only, the caching algorithm itself does not need it.
+  * The "blas cached" visualization became "blas reuse" (`--visualize 9`) and now colors each instance by where its BLAS comes from, greener the more it is reused: green for the pre-built low detail or the geometry's cached BLAS, yellow for another instance's shared BLAS, orange for the geometry's merged BLAS, and red for a BLAS that was built for that instance alone in this frame.
+  * Bugfix: potential crash due to hbao not initialized properly due to stale raster vs ray-tracing state. Regression from recent attempt to reduce memory consumption for raster/raytracing independently.
+
+* 2026-8-31:
+
+  * New "CLAS Allocator Memory" inspector ("View" menu), a floating fragmentation view of the persistent CLAS allocator. Two compute passes render into an offscreen texture ([stream_allocator_vis.comp.glsl](shaders/stream_allocator_vis.comp.glsl), [scene_streaming_vis.hpp](src/scene_streaming_vis.hpp)): the allocator's `usedBits` become an occupancy heat map, then each resident group's allocation is painted on top, colored by resident group ID with its wasted tail (the padding to the allocation granularity) in red. One row covers a whole number of allocator sectors, so allocations never straddle rows. Only updated while the window is visible.
+  * The inspector also plots a histogram of the sizes the resident groups occupy in the allocator, filled by a third compute pass and read back to the host. The pass and its readback only run while that section of the widget is expanded. Its size axis grows to the largest allocation seen and never shrinks, so it does not rescale as groups stream in and out.
+  * The "View" menu now toggles the "Settings", "Misc Settings", "Statistics", "Streaming memory" and "Debug" windows, which previously could be closed but not reopened.
+  * `LodClusters::onUIRender` was split into one function per panel (`uiSettings`, `uiStreamingMemory`, `uiStatistics`, `uiMiscSettings`, `uiDebug`), each a no-op while its window is hidden, and the "Settings" panel further into one per collapsing section (`uiSettingsSceneModifiers`, `uiSettingsRendering`, `uiSettingsTraversal`, `uiSettingsClusterGeneration`, `uiSettingsStreaming`).
+
 * 2026-8-28:
 
   **WARNING** Old cache files are not compatible anymore. First time loading such scenes will trigger processing and overwrite / delete them.
@@ -117,7 +133,7 @@
   * Add automatic USE_PERPRIMITIVE_OUT in mesh-shaders to move cluster uniform outputs to either be per-triangle or per-vertex.
 * 2026-2-3:
   * Bugfix freeze culling with "Two Pass Culling" and manage the matrix assignment outside the renderers.
-  * Bugfix regression when applying cluster changes in ui due to new cachesuffix changes.
+  * Bugfix regression when applying cluster changes in UI due to new cachesuffix changes.
 * 2026-1-30:
   * Performance fix in `Scene::decompressGroup` accidental reads on write-combined memory (thanks Arseny Kapoulkine). This impacted streaming performance when using compressed data quite a lot. In future we intend to decompress on GPU.
   * Bugfix regression with `Allow SW-Raster`, forgot changes for "reverse Z".
@@ -274,7 +290,7 @@
 * 2025-7-11:
   * The downloadable extra scenes `threedscans_animals` and `threedscans_statues` were updated. By accident they were stored with independent triangles which increased storage and processing time unnecessarily.
   * Change default cluster config to 128 triangles 128 vertices (more common).
-  * Add `Geometries` to "Statistics" ui.
+  * Add `Geometries` to "Statistics" UI.
   * Updated `nv_cluster_lod_library` submodule, which brings performance improvements to "inner" parallelism, the `threedscans_animals` processing improved from 26 to 11 seconds on a windows test system.
 * 2025-7-10:
   * Reduce number of BLAS builds by introducing a per-geometry `lowDetailBlas` that is built once at scene preparation time.

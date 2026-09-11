@@ -309,6 +309,45 @@ struct SceneStreaming
 };
 
 
+/////////////////////////////////////////
+
+// Visualization of the persistent clas allocator's memory state.
+// see `StreamingAllocatorVis` and `stream_allocator_vis.comp.glsl`
+
+BUFFER_REF_DECLARE(SceneStreaming_in, SceneStreaming, readonly, 8);
+
+#define STREAM_ALLOCATOR_VIS_PASS_MEMORY 0
+#define STREAM_ALLOCATOR_VIS_PASS_GROUPS 1
+#define STREAM_ALLOCATOR_VIS_PASS_HISTOGRAM 2
+
+// allocation sizes run from 1 to `maxAllocationSize` units, binned down to this on the device
+#define STREAM_ALLOCATOR_VIS_HISTOGRAM_BINS 256
+
+struct StreamingAllocatorVisConstants
+{
+  uint64_t streamingAddress;
+
+  // sub-rectangle of the image that maps to allocator memory, sized to the pixels the UI
+  // has for it. `usedHeight` counts image rows, so it is `rowCount * rowPitch`.
+  uint usedWidth;
+  uint usedHeight;
+  // image rows per memory row, the ones past `rowContent` are left blank as a separator
+  uint rowPitch;
+  uint rowContent;
+  // a row is a whole number of sectors, so an allocation never straddles one
+  uint unitsPerPixel;
+  uint unitsPerRow;
+  uint totalUnits;
+
+  uint groupCount;
+  uint colorXor;
+
+  // histogram pass, `STREAM_ALLOCATOR_VIS_HISTOGRAM_BINS` counters
+  uint64_t histogramAddress;
+  // in units, the range the histogram covers
+  uint maxAllocationSize;
+};
+
 #ifdef __cplusplus
 }
 #endif

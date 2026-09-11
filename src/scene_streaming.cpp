@@ -142,6 +142,8 @@ void SceneStreaming::updateBindings(const nvvk::Buffer& sceneBuildingBuffer)
 
 void SceneStreaming::resetCachedBlas(Resources::BatchedUploader& uploader)
 {
+  m_cachedBlasCount = 0;
+
   for(size_t geometryIndex = 0; geometryIndex < m_scene->getActiveGeometryCount(); geometryIndex++)
   {
     SceneStreaming::PersistentGeometry& persistentGeometry = m_persistentGeometries[geometryIndex];
@@ -156,6 +158,10 @@ void SceneStreaming::resetCachedBlas(Resources::BatchedUploader& uploader)
 
   // resets cachedBlasLevel and cachedBlasAddress
   uploader.uploadBuffer(m_shaderGeometriesBuffer, m_shaderGeometries.data());
+
+  // ui convenience only, see `appendBlasCacheRevalidation`. A clean run streams the scene in
+  // after this and re-populates the cached blas, a runtime re-init does not.
+  m_blasCacheRevalidateNext = 0;
 }
 
 void SceneStreaming::resetCachedBlas()
@@ -525,6 +531,21 @@ void SceneStreaming::cmdBeginFrame(VkCommandBuffer         cmd,
   m_shaderData.useBlasCaching           = settings.useBlasCaching ? 1 : 0;
   m_shaderData.clasPositionTruncateBits = m_clasTriangleInput.minPositionTruncateBitCount;
 
+  // ui convenience only, see `appendBlasCacheRevalidation`.
+  // Without caching there is nothing to revalidate, and only `handleBlasCaching` consumes
+  // the sweep, so an armed cursor must not survive into a frame that skips it.
+  if(!settings.useBlasCaching)
+  {
+    m_blasCacheRevalidateNext = ~0u;
+  }
+  else if(settings.blasCacheMinLevel != m_blasCacheMinLevelLast)
+  {
+    // either direction, lowering drops cached blas of excluded lod levels, raising lets
+    // geometries that have none become eligible again
+    m_blasCacheRevalidateNext = 0;
+  }
+  m_blasCacheMinLevelLast = settings.blasCacheMinLevel;
+
   // refresh per lod-level residency stats now that this frame's loads/unloads were applied
   uint32_t totalLoaded = 0;
   for(uint32_t i = 0; i < m_residentStats.maxLodLevelsCount; i++)
@@ -639,7 +660,8 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
   }
 
 #if !STREAMING_DEBUG_FORCE_REQUESTS
-  if((!loadCount && !unloadCount) || !m_debugFrameLimit)
+  // a pending cached blas revalidation (ui convenience) is work as well, it needs this task's geometry patches
+  if(((!loadCount && !unloadCount) && m_blasCacheRevalidateNext == ~0u) || !m_debugFrameLimit)
   {
     // no work to do
     m_requestsTaskQueue.releaseTaskIndex(popRequestIndex);
@@ -904,7 +926,8 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
   updateTask.newClusterCount = clasBuildOffset;
 
 #if !STREAMING_DEBUG_FORCE_REQUESTS
-  if(updateTask.loadCount == 0 && updateTask.unloadCount == 0)
+  // a pending cached blas revalidation still needs the geometry patches of this task
+  if(updateTask.loadCount == 0 && updateTask.unloadCount == 0 && !(useBlasCaching && m_blasCacheRevalidateNext != ~0u))
   {
     // we ended up doing no work
     m_requestsTaskQueue.releaseTaskIndex(popRequestIndex);
@@ -1005,12 +1028,52 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
   return useDecoupledUpdate ? INVALID_TASK_INDEX : pushUpdateIndex;
 }
 
+// Nothing here is required by the blas caching algorithm itself, it exists purely for the UI,
+// which changes settings while the scene is already resident. `handleBlasCaching` only
+// re-evaluates geometries whose groups changed, which a clean run covers via the initial
+// streaming. The sweep hands it geometries that have no cached blas (every renderer re-init
+// calls `resetCachedBlas`, a static camera would never rebuild them) or whose cached blas fell
+// outside "Cached tail levels". It is spread over frames.
+void SceneStreaming::appendBlasCacheRevalidation(StreamingUpdates::TaskInfo& updateTask, const FrameSettings& settings)
+{
+  if(m_blasCacheRevalidateNext == ~0u)
+    return;
+
+  uint32_t geometryCount = uint32_t(m_scene->getActiveGeometryCount());
+  uint32_t maxPatches    = m_updates.getMaxGeometryPatches();
+
+  while(m_blasCacheRevalidateNext < geometryCount && updateTask.geometryCachedCount < maxPatches)
+  {
+    uint32_t            geometryID         = m_blasCacheRevalidateNext++;
+    PersistentGeometry& persistentGeometry = m_persistentGeometries[geometryID];
+
+    uint32_t blasCacheMinLevel =
+        persistentGeometry.lodLevelsCount - std::min(settings.blasCacheMinLevel, persistentGeometry.lodLevelsCount);
+
+    bool hasNoCachedBlas = persistentGeometry.cachedBlasLevel == TRAVERSAL_INVALID_LOD_LEVEL;
+    bool isBelowMinLevel = !hasNoCachedBlas && persistentGeometry.cachedBlasLevel < blasCacheMinLevel;
+
+    if((hasNoCachedBlas || isBelowMinLevel) && persistentGeometry.cachedBlasUpdateFrame != m_frameIndex)
+    {
+      persistentGeometry.cachedBlasUpdateFrame                                = m_frameIndex;
+      updateTask.geometryPatches[updateTask.geometryCachedCount++].geometryID = geometryID;
+    }
+  }
+
+  if(m_blasCacheRevalidateNext >= geometryCount)
+  {
+    m_blasCacheRevalidateNext = ~0u;
+  }
+}
+
 void SceneStreaming::handleBlasCaching(StreamingUpdates::TaskInfo& updateTask, const FrameSettings& settings)
 {
   uint32_t writeIndex = 0;
 
   uint32_t cachedBuildsTotal   = 0;
   uint32_t cachedClustersTotal = 0;
+
+  appendBlasCacheRevalidation(updateTask, settings);
 
 #if STREAMING_DEBUG_FORCE_REQUESTS
   if(updateTask.geometryCachedCount == 0)
@@ -1035,9 +1098,9 @@ void SceneStreaming::handleBlasCaching(StreamingUpdates::TaskInfo& updateTask, c
       // fully loaded
       if(persistentGeometry.lodGroupsCount[i] == persistentGeometry.lodLoadedGroupsCount[i])
       {
-        uint32_t groupCount          = geometryView.lodLevels[i].groupCount;
-        uint32_t groupOffset         = geometryView.lodLevels[i].groupOffset;
-        uint32_t cachedClustersCount = geometryView.lodLevels[i].clusterCount;
+        uint32_t groupCount  = geometryView.lodLevels[i].groupCount;
+        uint32_t groupOffset = geometryView.lodLevels[i].groupOffset;
+        cachedClustersCount  = geometryView.lodLevels[i].clusterCount;
 
         // check if it fits
         if(cachedClustersCount <= STREAMING_CACHED_BLAS_MAX_CLUSTERS)
@@ -1091,6 +1154,7 @@ void SceneStreaming::handleBlasCaching(StreamingUpdates::TaskInfo& updateTask, c
         {
           m_cachedBlasAllocator.subFree(persistentGeometry.cachedBlasAllocation);
         }
+        m_cachedBlasCount += persistentGeometry.cachedBlasLevel == TRAVERSAL_INVALID_LOD_LEVEL ? 1 : 0;
         persistentGeometry.cachedBlasLevel       = sgpatch.cachedBlasLodLevel;
         persistentGeometry.cachedBlasAllocation  = subAllocation;
         persistentGeometry.cachedBlasUpdateFrame = m_frameIndex;
@@ -1111,6 +1175,7 @@ void SceneStreaming::handleBlasCaching(StreamingUpdates::TaskInfo& updateTask, c
       else
       {
         // setup invalidate patch
+        m_cachedBlasCount -= persistentGeometry.cachedBlasLevel != TRAVERSAL_INVALID_LOD_LEVEL ? 1 : 0;
         persistentGeometry.cachedBlasLevel       = TRAVERSAL_INVALID_LOD_LEVEL;
         persistentGeometry.cachedBlasUpdateFrame = m_frameIndex;
 
@@ -1595,6 +1660,15 @@ void SceneStreaming::getStats(StreamingStats& stats) const
   if(m_requiresClas)
   {
     stats.reservedClasBytes = m_resident.getAllocatedClasBytes();
+  }
+
+  if(m_requiresClas && m_config.allowBlasCaching)
+  {
+    nvvk::BufferSubAllocator::Report report = m_cachedBlasAllocator.getReport();
+
+    stats.cachedBlasCount         = m_cachedBlasCount;
+    stats.usedCachedBlasBytes     = report.requestedSize;
+    stats.reservedCachedBlasBytes = report.reservedSize;
   }
 }
 

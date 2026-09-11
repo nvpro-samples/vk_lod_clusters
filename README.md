@@ -148,7 +148,15 @@ from another instance.
 
 ![image illustrating the blas sharing optimizations](docs/blas_techniques.png)
 
-Please have a look at the [BLAS Sharing documentation](docs/blas_sharing.md).
+Please have a look at the [BLAS Sharing documentation](docs/blas_sharing.md), as well as
+[BLAS Merging](docs/blas_merging.md) and [BLAS Caching](docs/blas_caching.md), which build on it.
+
+The _"blas reuse"_ visualization shows which of these an instance ended up using, greener the more its BLAS is reused:
+
+* **green**: the pre-built low detail BLAS, or the geometry's cached BLAS
+* **yellow**: another instance's BLAS, through sharing
+* **orange**: the geometry's merged BLAS
+* **red**: a BLAS that was built for this instance alone in this frame
 
 The occlusion culling is kept basic, testing the footprint of the bounding box against the appropriate mip-level of last frame's HiZ buffer and last frame's matrices. This can cause artifacts on faster motion.
 

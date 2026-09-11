@@ -8,12 +8,15 @@
   Shader Description
   ==================
   
-  Only used for TARGETS_RAY_TRACING && USE_BLAS_SHARING
-  
+  Only used for TARGETS_RAY_TRACING && USE_BLAS_REUSE
+
   This compute shader classifies the lod range
-  of each instance and updates the geometry's lod 
+  of each instance and updates the geometry's lod
   histogram information accordingly.
-  
+
+  Blas caching only needs `lodLevelMin` and the geometry's `cachedLevel`,
+  blas sharing also needs `lodLevelMax` and the histogram.
+
   It also ensure that each tlas instance is initialized
   to use the pre-built low detail blas. This blas assignment
   may later be overridden in `instance_assign_blas.comp.glsl`
@@ -266,31 +269,45 @@ void main()
       
       if (TRAVERSAL_ALLOW_LOW_DETAIL_BLAS && lowestDetailOnly)
       {
-
+        // uses the pre-built blas, influences neither sharing nor caching
       }
-      else if (geometryUsesBlasSharing)
+      else
       {
-        // fill geometry histogram
-        atomicAdd(build.geometryHistograms.d[geometryID].lodLevelMinHistogram[lodLevelMin], 1);
-        atomicAdd(build.geometryHistograms.d[geometryID].lodLevelMaxHistogram[lodLevelMax], 1);
-        
-        // we want to find the instance with the highest lod min level (meaning it likely has less detail)
-        // for each lod max level
-        
-        // pack lod min in upper 5 most significant bits, and instanceID in lower 27
-        // this should give us a "stable" result on a static camera
-        uint packedLodInstance = (lodLevelMin << 27) | instanceID & 0x7FFFFFF;
-        atomicMax(build.geometryHistograms.d[geometryID].lodLevelMaxPackedInstance[lodLevelMax], packedLodInstance);
-        
-        // The `build.geometryBuildInfos` is read in the
-        // `geometry_blas_sharing.comp.glsl` kernel
+      #if USE_BLAS_CACHING && !USE_BLAS_SHARING
+        // this instance can use the cached blas, accumulate the lowest lod level any
+        // such instance needs, the streaming age filter keeps those levels alive.
+        // With sharing the same value is derived from the histogram in
+        // `geometry_blas_sharing.comp.glsl`, which spares us this atomic.
+        if (lodLevelMin >= uint(geometry.cachedBlasLodLevel))
+        {
+          atomicMin(build.geometryCachedInfos.d[geometryID].cachedLevel, lodLevelMin);
+        }
+      #endif
+
+        if (geometryUsesBlasSharing)
+        {
+          // fill geometry histogram
+          atomicAdd(build.geometryHistograms.d[geometryID].lodLevelMinHistogram[lodLevelMin], 1);
+          atomicAdd(build.geometryHistograms.d[geometryID].lodLevelMaxHistogram[lodLevelMax], 1);
+
+          // we want to find the instance with the highest lod min level (meaning it likely has less detail)
+          // for each lod max level
+
+          // pack lod min in upper 5 most significant bits, and instanceID in lower 27
+          // this should give us a "stable" result on a static camera
+          uint packedLodInstance = (lodLevelMin << 27) | instanceID & 0x7FFFFFF;
+          atomicMax(build.geometryHistograms.d[geometryID].lodLevelMaxPackedInstance[lodLevelMax], packedLodInstance);
+
+          // The histogram is evaluated in the
+          // `geometry_blas_sharing.comp.glsl` kernel
+        }
       }
     }
-    
+
     // used during `traversal_run.comp.glsl` to allow lower detail for "invisible" instances
     build.instanceVisibility.d[instanceID]                        = uint8_t(visibilityState);
     
-    // used in `traversal_init_blas_sharing.comp.glsl` to drive the actual decision
+    // used in `traversal_init_blas_reuse.comp.glsl` to drive the actual decision
     // which blas an instance should use
     build.instanceBuildInfos.d[instanceID].lodLevelMin            = uint8_t(lodLevelMin);
     build.instanceBuildInfos.d[instanceID].lodLevelMax            = uint8_t(lodLevelMax);

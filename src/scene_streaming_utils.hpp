@@ -70,6 +70,10 @@ struct StreamingStats
   uint64_t reservedDataBytes = 0;
   uint64_t usedDataBytes     = 0;
 
+  uint32_t cachedBlasCount         = 0;
+  uint64_t usedCachedBlasBytes     = 0;
+  uint64_t reservedCachedBlasBytes = 0;
+
   uint64_t maxClasBytes      = 0;
   uint64_t reservedClasBytes = 0;
   uint64_t usedClasBytes     = 0;
@@ -464,6 +468,8 @@ public:
   size_t   getOperationsSize() const;
   size_t   getClasOperationsSize() const;
   uint32_t getMaxCachedBlasBuilds() const;
+  // capacity of a task's `geometryPatches` array
+  uint32_t getMaxGeometryPatches() const { return m_shaderData.patchCachedBlasCount; }
 
   // ray tracing: per-frame CLAS-build vertex-position scratch
   VkBuffer getClasVerticesBuffer() const { return m_clasVerticesBuffer.buffer; }

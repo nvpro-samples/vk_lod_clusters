@@ -24,7 +24,7 @@
 #define VISUALIZE_LOD 6
 #define VISUALIZE_TRIANGLE 7
 #define VISUALIZE_BLAS 8
-#define VISUALIZE_BLAS_CACHED 9
+#define VISUALIZE_BLAS_REUSE 9
 #define VISUALIZE_DEPTH_ONLY 10
 
 // Texture LOD selection for material sampling, resolved entirely at compile time via TEXTURE_LOD_MODE.
@@ -65,6 +65,9 @@
 #define BINDINGS_RASTER_ATOMIC 12
 // DLSS buffers start here as well
 #define BINDINGS_RENDER_TARGET 13
+
+// dedicated descriptor set of the clas allocator visualization
+#define BINDINGS_ALLOCATOR_VIS_IMAGE 0
 
 /////////////////////////////////////////
 
@@ -108,6 +111,7 @@
 #define STREAM_ALLOCATOR_BUILD_FREEGAPS_WORKGROUP 64
 #define STREAM_ALLOCATOR_FREEGAPS_INSERT_WORKGROUP 64
 #define STREAM_ALLOCATOR_SETUP_INSERTION_WORKGROUP 64
+#define STREAM_ALLOCATOR_VIS_WORKGROUP 64
 
 
 /////////////////////////////////////////
@@ -204,6 +208,10 @@ using namespace glm;
 
 #ifndef USE_BLAS_CACHING
 #define USE_BLAS_CACHING 1
+#endif
+
+#ifndef USE_BLAS_REUSE
+#define USE_BLAS_REUSE (USE_BLAS_SHARING || USE_BLAS_CACHING)
 #endif
 
 #ifndef USE_STREAMING

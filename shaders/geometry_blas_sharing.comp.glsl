@@ -138,6 +138,7 @@ void main()
         {
           if (cachedLevelNeeded == TRAVERSAL_INVALID_LOD_LEVEL)
           {
+            // lowest lod level of any instance using the cached blas
             cachedLevelNeeded = lodLevel;
             // pretend we already triggered shareLevelMax
             // triggering sharing isn't necessary after this point
@@ -195,14 +196,13 @@ void main()
   #if USE_BLAS_CACHING
     // this value is later used to influence the streaming age filter,
     // but we don't want to keep everything alive if it isn't actually used.
-    build.geometryBuildInfos.d[geometryID].cachedLevel      = uint16_t(cachedLevelNeeded);
-  #else
-    build.geometryBuildInfos.d[geometryID].cachedBuildIndex = ~0;
-    build.geometryBuildInfos.d[geometryID].cachedLevel      = uint16_t(TRAVERSAL_INVALID_LOD_LEVEL);
+    // Without sharing it is accumulated in `instance_classify_lod.comp.glsl` instead.
+    build.geometryCachedInfos.d[geometryID].cachedLevel = cachedLevelNeeded;
   #endif
     build.geometryBuildInfos.d[geometryID].shareLevelMin   = uint8_t(shareLevelMin);
     build.geometryBuildInfos.d[geometryID].shareLevelMax   = uint8_t(shareLevelMax);
     build.geometryBuildInfos.d[geometryID].shareInstanceID = shareInstanceID;
+    build.geometryBuildInfos.d[geometryID].flags           = 0;
   #if USE_BLAS_MERGING
     build.geometryBuildInfos.d[geometryID].mergedInstanceID = mergedInstanceID;
   #endif

@@ -106,23 +106,22 @@ void main()
     bool doStats         = true;
     uint64_t blasAddress = 0;
     
-  #if USE_BLAS_SHARING    
-    // we might reference another instance's blas
-    if (buildIndex != BLAS_BUILD_INDEX_LOWDETAIL && (buildIndex & (BLAS_BUILD_INDEX_SHARE_BIT | BLAS_BUILD_INDEX_CACHE_BIT)) != 0)
+  #if USE_BLAS_CACHING
+    // we might reference the geometry's cached blas
+    if (buildIndex != BLAS_BUILD_INDEX_LOWDETAIL && (buildIndex & BLAS_BUILD_INDEX_CACHE_BIT) != 0)
     {
-      uint lookupIndex = buildIndex & ~(BLAS_BUILD_INDEX_SHARE_BIT | BLAS_BUILD_INDEX_CACHE_BIT);
-    #if USE_BLAS_CACHING
-      if ((buildIndex & BLAS_BUILD_INDEX_CACHE_BIT) != 0)
-      {
-        blasAddress = geometries[lookupIndex].cachedBlasAddress;
-      }
-      else
-    #endif
-      {
-        buildIndex = build.instanceBuildInfos.d[lookupIndex].blasBuildIndex;
-      }
+      blasAddress = geometries[buildIndex & ~BLAS_BUILD_INDEX_CACHE_BIT].cachedBlasAddress;
+      // don't add to build stats, the cached blas has its own persistent storage
+      doStats     = false;
+    }
+  #endif
+  #if USE_BLAS_SHARING
+    // we might reference another instance's blas, the two bits are mutually exclusive
+    if (buildIndex != BLAS_BUILD_INDEX_LOWDETAIL && (buildIndex & BLAS_BUILD_INDEX_SHARE_BIT) != 0)
+    {
+      buildIndex = build.instanceBuildInfos.d[buildIndex & ~BLAS_BUILD_INDEX_SHARE_BIT].blasBuildIndex;
       // don't add to build stats if we are referencing another instance
-      doStats = false;
+      doStats    = false;
     }
   #endif
     

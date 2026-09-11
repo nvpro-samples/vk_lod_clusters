@@ -185,7 +185,7 @@ LodClusters::LodClusters(const Info& info)
                                 &m_rendererConfig.numRenderClusterBits);
   m_info.parameterRegistry->add({"rendertraversalbits", "intermediate traversal tasks in bits (1 << N). 8 to 25, default 20"},
                                 &m_rendererConfig.numTraversalTaskBits);
-  m_info.parameterRegistry->add({"visualize", "0 shaded, 1 grey, 2 visibility buffer, 3 material, 4 clusters, 5 groups, 6 lod levels, 7 triangles, 8 blas, 9 blas cached, 10 depth only. default 6"},
+  m_info.parameterRegistry->add({"visualize", "0 shaded, 1 grey, 2 visibility buffer, 3 material, 4 clusters, 5 groups, 6 lod levels, 7 triangles, 8 blas, 9 blas reuse, 10 depth only. default 6"},
                                 &m_frameConfig.visualize);
   m_info.parameterRegistry->add({"swraster", "allow compute-shader rasterization, needs visualize 2 or 10. default false"},
                                 &m_rendererConfig.useComputeRaster);
@@ -675,7 +675,7 @@ void LodClusters::onAttach(nvapp::Application* app)
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_LOD, "lod levels");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_TRIANGLE, "triangles");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_BLAS, "blas");
-    m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_BLAS_CACHED, "blas cached");
+    m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_BLAS_REUSE, "blas reuse");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_DEPTH_ONLY, "depth only (black)");
   }
 
@@ -693,6 +693,11 @@ void LodClusters::onAttach(nvapp::Application* app)
 
   m_resources.initFramebuffer({128, 128}, m_tweak.supersample);
   updateImguiImage();
+
+  if(!m_clasAllocatorVis.init(m_resources))
+  {
+    LOGW("CLAS allocator visualization unavailable\n");
+  }
 
   setFromClusterConfig(m_sceneConfig, m_tweak.clusterConfig);
 
@@ -771,6 +776,8 @@ void LodClusters::onDetach()
 
   deinitRenderer();
   deinitScene();
+
+  m_clasAllocatorVis.deinit(m_resources);
 
   m_resources.m_samplerPool.releaseSampler(m_imguiSampler);
   ImGui_ImplVulkan_RemoveTexture(m_imguiTexture);
@@ -966,6 +973,11 @@ void LodClusters::parameterSequenceCallback(const nvutils::ParameterSequencer::S
       message += fmt::format("Groups; {}; {};\n", stats.residentGroups, stats.maxGroups);
       message += fmt::format("Clusters; {}; {};\n", stats.residentClusters, stats.maxClusters);
       message += fmt::format("Triangles; {};\n", stats.residentTriangles);
+      if(m_rendererConfig.useBlasCaching)
+      {
+        message += fmt::format("Cached BLAS; {};\n", stats.cachedBlasCount);
+        message += fmt::format("Cached BLAS memory; {}; {};\n", stats.usedCachedBlasBytes, stats.reservedCachedBlasBytes);
+      }
     }
 
     shaderio::Readback readback;
@@ -1132,7 +1144,8 @@ void LodClusters::handleChanges()
     m_rendererConfig.useBlasSharing = false;
   }
 
-  if(m_rendererConfig.useBlasSharing && m_renderScene && !m_renderScene->useStreaming)
+  // merging and caching require streaming, but neither depends on the other nor on sharing
+  if(m_renderScene && !m_renderScene->useStreaming)
   {
     m_rendererConfig.useBlasMerging = false;
     m_rendererConfig.useBlasCaching = false;
@@ -1268,6 +1281,7 @@ void LodClusters::handleChanges()
       if(shaderChanged)
       {
         m_resources.m_hbaoPass.reloadShaders();
+        m_clasAllocatorVis.reloadShaders(m_resources);
         //m_resources.m_hiz.initPipelines();
       }
     }
@@ -1479,7 +1493,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     rasterDlssSrActive = m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD && m_rendererConfig.useDlss
                          && m_resources.m_frameBuffer.dlssUpscaler.isAvailable();
 #endif
-    m_frameConfig.hbaoActive = m_rendererConfig.useShading && m_tweak.hbaoActive && m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD;
+    m_frameConfig.hbaoActive = m_rendererConfig.useShading && m_tweak.hbaoActive && m_resources.m_frameBuffer.useRasterization;
 
     shaderio::FrameConstants& frameConstants = m_frameConfig.frameConstants;
 
@@ -1648,6 +1662,27 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     }
 
     m_renderer->render(cmd, m_resources, *m_renderScene, m_frameConfig, m_profilerGpuTimer);
+
+    // after all streaming operations of this frame, so it reflects the state the
+    // next frame allocates against
+    if(m_clasAllocatorVisVisible && m_renderScene->useStreaming)
+    {
+      auto timerSection = m_profilerGpuTimer.cmdFrameSection(cmd, "Clas Allocator Vis");
+
+      const shaderio::SceneStreaming& streamingData = m_renderScene->sceneStreaming.getShaderStreamingData();
+
+      StreamingAllocatorVis::FrameInfo visInfo;
+      visInfo.streamingAddress  = m_renderScene->sceneStreaming.getShaderStreamingBuffer().address;
+      visInfo.activeGroupsCount = streamingData.resident.activeGroupsCount;
+      visInfo.colorXor          = m_frameConfig.frameConstants.colorXor;
+      visInfo.showGroups        = m_clasAllocatorVisShowGroups;
+      visInfo.displayWidth      = uint32_t(m_clasAllocatorVisDisplaySize.x);
+      visInfo.displayHeight     = uint32_t(m_clasAllocatorVisDisplaySize.y);
+      visInfo.wantHistogram     = m_clasAllocatorVisHistogram;
+      visInfo.cycleIndex        = m_resources.m_cycleIndex;
+
+      m_clasAllocatorVis.cmdUpdate(cmd, streamingData.clasAllocator, visInfo);
+    }
   }
   else
   {

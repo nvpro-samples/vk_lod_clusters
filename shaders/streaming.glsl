@@ -19,7 +19,7 @@ void streamingAgeFilter(uint residentID, uint geometryID, Group_in groupRef, boo
   if (useBlasCaching)
   {
     uint lodLevel    = streaming.resident.groups.d[residentID].lodLevel;
-    uint cachedLevel = build.geometryBuildInfos.d[geometryID].cachedLevel;
+    uint cachedLevel = build.geometryCachedInfos.d[geometryID].cachedLevel;
     
     // keep cached levels alive
     if (lodLevel >= cachedLevel) {

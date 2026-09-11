@@ -116,23 +116,29 @@ void main()
   // maxAllocationSize
   
   const uint workGroupID   = getWorkGroupIndex(gl_WorkGroupID);
-  
-  const uint sectorID      = workGroupID * SUBGROUP_COUNT + gl_SubgroupID;
+
+  const uint sectorIndex   = workGroupID * SUBGROUP_COUNT + gl_SubgroupID;
+
+  if (sectorIndex >= streaming.clasAllocator.sectorCount) return;
+
+  // Walk the sectors from the high end downwards. The gap lists are filled by atomics,
+  // so their order roughly follows the launch order, and the allocation in
+  // `stream_allocator_load_groups.comp.glsl` pops them LIFO. Going backwards here means
+  // it pops the lower addresses first and lets the free space collect at the top.
+  const uint sectorID      = streaming.clasAllocator.sectorCount - 1 - sectorIndex;
   // each sector operates on this many 32-bit values
   const uint sectorSize32  = 1 << streaming.clasAllocator.sectorSizeShift;
   // where the sector starts in the global `usedBits` array that represents the entire memory
   const uint sectorStart32 = sectorID << streaming.clasAllocator.sectorSizeShift;
-  
+
   // in units and not bytes (overall within this shader we only operate in units)
   const uint maxAllocationSize = streaming.clasAllocator.maxAllocationSize;
 
-  // when no loads are performed in this frame, then we only need the statistics 
+  // when no loads are performed in this frame, then we only need the statistics
   // of the state of the free space, and not the actual gap positions
-  const bool updateHasNoLoads = streaming.update.patchGroupsCount == streaming.update.patchUnloadGroupsCount 
+  const bool updateHasNoLoads = streaming.update.patchGroupsCount == streaming.update.patchUnloadGroupsCount
                                 && STREAMING_DEBUG_ALWAYS_BUILD_FREEGAPS == 0;
-  
-  if (sectorID >= streaming.clasAllocator.sectorCount) return;
-  
+
   // Take shortcut to a simpler logic if we know the entire sector is empty
   if ((streaming.clasAllocator.usedSectorBits.d[sectorID / 32] & (1 << (sectorID & 31))) == 0)
   {  
