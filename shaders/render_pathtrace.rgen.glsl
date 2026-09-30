@@ -208,7 +208,8 @@ float ptTraceShadowRay(vec3 wPos, vec3 wNormal, vec3 wDir, float coneWidth, floa
   rayHit.hitT       = 1.0;  // occluded sentinel; the index-0 miss shader sets it to -1 (unoccluded)
   rayHit.coneWidth  = coneWidth;
   rayHit.coneSpread = coneSpread;
-  traceRayEXT(asScene, flags, 0xFF, 0, 1, 0, offsetRay(wPos, wDir, wNormal), 0.001, wDir, 1e7, 0);
+  float minT = view.shadowRayMinT * (1.0 + distance(wPos, view.viewMatrixI[3].xyz) * view.shadowRayDistanceBias);
+  traceRayEXT(asScene, flags, 0xFF, 0, 1, 0, offsetRay(wPos, wDir, wNormal), minT, wDir, 1e7, 0);
   return rayHit.hitT < 0.0 ? 1.0 : 0.0;
 }
 

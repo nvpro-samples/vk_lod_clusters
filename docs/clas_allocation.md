@@ -22,6 +22,12 @@ or ensure that we grow the CLAS buffer so they can fit (look for `SceneStreaming
 > estimates for CLAS sizes are way too conservative and would yield a lot of 
 > memory waste otherwise.
 
+Keeping a CLAS at one address for its entire residency is also what makes
+["BLAS Caching"](blas_caching.md) possible: a cached BLAS stores the CLAS addresses it was
+built from and is reused over many frames. The alternative move based compaction
+(`--clasallocator 0`) moves all resident CLAS whenever a group is unloaded, so the ray
+tracing renderer ignores the BLAS caching setting in that mode.
+
 Building the CLAS into scratch space first allows us to easily access the actual
 size of the CLAS when making the allocation. While upper bounds can be
 queried on the host, they are typically far from the real consumption,

@@ -69,6 +69,26 @@ vec3 visualizeColor(uint visData, uint instanceID)
     return vec3(lodMix(uintBitsToFloat(visData))) * 0.7 + 0.2;
     //return vec3(pow(lodMix(uintBitsToFloat(visData)),vec3(8.0))) * 0.8 + 0.1;
   }
+#if TARGETS_RASTERIZATION
+  else if (view.visualize == VISUALIZE_DISCRETE_LOD)
+  {
+    // how an instance built its cluster list
+    uint instanceState = uint(build.instanceVisibility.d[instanceID]);
+
+    if ((instanceState & INSTANCE_USES_DISCRETE_BIT) != 0)
+    {
+      // a single discrete lod level
+      return vec3(0.1, 0.9, 0.1);
+    }
+    if ((instanceState & INSTANCE_USES_LOWDETAIL_BIT) != 0)
+    {
+      // the lowest detail cluster, also a discrete level, mixed towards yellow
+      return vec3(0.1, 0.9, 0.1);
+    }
+    // lod hierarchy traversal
+    return vec3(0.9, 0.1, 0.1);
+  }
+#endif
 #if TARGETS_RAY_TRACING
   else if (view.visualize == VISUALIZE_BLAS || view.visualize == VISUALIZE_BLAS_REUSE) {
     InstanceBuildInfo instanceBuildInfo = build.instanceBuildInfos.d[instanceID];
@@ -523,7 +543,7 @@ float traceShadowRay(vec3 wPos, vec3 wNormal, vec3 wDirection)
   #if !HAS_ALPHA_TEST
     flags |= gl_RayFlagsOpaqueEXT;
   #endif
-  float minT       = 0.001f;
+  float minT       = view.shadowRayMinT * (1.0f + distance(wPos, view.viewMatrixI[3].xyz) * view.shadowRayDistanceBias);
   float maxT       = 10000000.0f;
   traceRayEXT(asScene, flags, mask, 0, 1, 1, offsetRay(wPos, wDirection, wNormal), minT, wDirection, maxT, 1);
 

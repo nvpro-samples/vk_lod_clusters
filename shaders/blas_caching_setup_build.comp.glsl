@@ -88,24 +88,24 @@ void main()
   
   StreamingGeometryPatch sgpatch = streaming.update.geometryPatches.d[patchID];
   
-  uint cachedBlasLodLevel      = sgpatch.cachedBlasLodLevel;
+  uint discreteLodLevel        = sgpatch.discreteLodLevel;
   uint cachedBlasClustersCount = sgpatch.cachedBlasClustersCount;
   uint geometryID              = sgpatch.geometryID;
   
   if (localThreadID == 0)
   {  
-    geometries[geometryID].cachedBlasLodLevel = uint8_t(cachedBlasLodLevel);
-    geometries[geometryID].cachedBlasAddress  = sgpatch.cachedBlasAddress;
+    geometries[geometryID].discreteLodLevel  = uint8_t(discreteLodLevel);
+    geometries[geometryID].cachedBlasAddress = sgpatch.cachedBlasAddress;
   }
   
-  if (cachedBlasLodLevel == TRAVERSAL_INVALID_LOD_LEVEL)
+  if (discreteLodLevel == TRAVERSAL_INVALID_LOD_LEVEL)
   {
     // rare event we fully disable the cached BLAS
     return;
   }
   
   Geometry geometry     = geometries[geometryID];
-  LodLevel lodLevelInfo = geometry.lodLevels.d[cachedBlasLodLevel];
+  LodLevel lodLevelInfo = geometry.lodLevels.d[discreteLodLevel];
   
   if (localThreadID == 0)
   {

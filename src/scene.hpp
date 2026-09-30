@@ -13,6 +13,8 @@
 #include <condition_variable>
 #include <unordered_set>
 #include <functional>
+#include <regex>
+#include <span>
 
 #include <glm/glm.hpp>
 #include <nvutils/file_mapping.hpp>
@@ -20,6 +22,7 @@
 #include <nvutils/alignment.hpp>
 
 #include "serialization.hpp"
+#include "scene_kdop.hpp"
 #include "meshopt_clusterlod.h"
 #include "../shaders/shaderio_scene.h"
 
@@ -92,9 +95,76 @@ struct SceneConfig
   // experimental meshoptimizer, try to remove small triangles despite high error
   float lodErrorEdgeLimit = 1.0;
 
+  // clamp the attribute error to the position error scale, avoids overly conservative lod picking
+  bool simplifyErrorClamped = true;
+  // try to keep fold lines between opposite-facing triangles, at a small processing cost
+  bool simplifyPreserveFolds = false;
+  // dilate open cluster borders to compensate area loss, mostly useful for foliage.
+  // `All` as in every geometry, the two-sided variant below is the selective one.
+  bool simplifyDilateBordersAll = false;
+  // dilate the borders of geometries that use a two-sided material, which is what foliage
+  // typically is. Only ever adds dilation, it does not turn off `simplifyDilateBordersAll`.
+  bool simplifyDilateBordersTwoSided = true;
+
+  // triangle order optimization within a cluster, see `meshopt_optimizeMeshletLevel`
+  uint32_t optimizeClustersLevel = 1;
+
   // want to allow some binary compatibility with older cache files
   // safe to add new variables into this section as long as they are zeroed by default
-  uint32_t reservedData[14] = {};
+  uint32_t reservedData[12] = {};
+};
+
+// Per-mesh overrides of the simplification settings, loaded from a json file
+// (`SceneLoaderConfig::simplifyOverridesFile`). Each entry matches glTF mesh names with a
+// regular expression and replaces the global `SceneConfig` values for the geometries built
+// from them, so one scene can mix e.g. aggressive foliage settings with conservative ones.
+//
+//   [
+//     { "mesh": "leaves_.*",  "simplifyuvweight": 1.0, "simplifydilateall": true },
+//     { "mesh": "leaves_lod", "simplifyuvweight": 0.25 }
+//   ]
+//
+// All matching entries are applied in file order, so a later entry wins over an earlier one.
+struct SimplifyOverrides
+{
+  // a `SceneConfig` member that an entry may replace; `key` is the json name, which is the
+  // same name the equivalent command line option uses
+  struct Field
+  {
+    enum Kind : uint8_t
+    {
+      eFloat,
+      eBool,
+      eUint,
+    };
+
+    const char* key;
+    Kind        kind;
+    size_t      offset;  // into SceneConfig
+  };
+
+  static std::span<const Field> getFields();
+
+  struct Entry
+  {
+    std::string pattern;
+    std::regex  regex;
+    // bit per `getFields()` entry, tells which members of `values` are meaningful
+    uint32_t    setMask = 0;
+    SceneConfig values  = {};
+  };
+
+  std::vector<Entry> entries;
+
+  bool empty() const { return entries.empty(); }
+
+  // parses the json file, logs and returns false on error
+  bool load(const std::filesystem::path& filePath);
+
+  // applies every entry whose regex matches `meshName`, in file order.
+  // `config` may be null when only the hash is of interest.
+  // returns a hash over the entries that matched, 0 when none did.
+  uint64_t match(const std::string& meshName, SceneConfig* config) const;
 };
 
 // Phases reported during asynchronous scene loading, exposed through
@@ -131,13 +201,16 @@ struct SceneProgressInfo
 {
   // items completed / total in the current phase. The loader only reports the raw
   // counts; the UI derives the percentage and shows "Completed: N of T".
-  std::atomic_uint32_t* completedCount = nullptr;
-  std::atomic_uint32_t* totalCount     = nullptr;
+  // What an item is depends on the phase: triangles while geometries are loaded or processed
+  // (geometries if their triangle count is not known up front), images for textures. Same unit
+  // as the percentage that phase logs, so ui and log agree.
+  std::atomic_uint64_t* completedCount = nullptr;
+  std::atomic_uint64_t* totalCount     = nullptr;
   // current LoadPhase (stored as uint32_t)
   std::atomic_uint32_t* progressPhase = nullptr;
 
   // start a new phase: label it and reset the completed/total counters
-  void beginPhase(LoadPhase phase, uint32_t total) const
+  void beginPhase(LoadPhase phase, uint64_t total) const
   {
     if(progressPhase)
       progressPhase->store(uint32_t(phase));
@@ -147,7 +220,7 @@ struct SceneProgressInfo
       completedCount->store(0);
   }
 
-  void setCompleted(uint32_t completed) const
+  void setCompleted(uint64_t completed) const
   {
     if(completedCount)
       completedCount->store(completed);
@@ -167,8 +240,6 @@ struct SceneLoaderConfig
   bool processingOnly = false;
   // in processing only mode we allow partial success / resuming
   bool processingAllowPartial = false;
-  // -1 inner, +1 outer, 0 auto
-  int processingMode = 0;
   // upper budget in GiB for the estimated memory of all geometries processed in parallel.
   // Prevents many large geometries from being in-flight at once, which is what drives
   // peak memory. 0 is automatic (60 % of installed memory), negative is a percentage
@@ -189,6 +260,9 @@ struct SceneLoaderConfig
 
   SceneProgressInfo progressInfo;
 
+  // json file with per-mesh overrides of the simplification settings, see `SimplifyOverrides`
+  std::filesystem::path simplifyOverridesFile;
+
   // regular expression strings to discard instances by property name
   std::string skipNodeNames;
   std::string skipMaterialNames;
@@ -206,10 +280,10 @@ struct SceneLoaderConfig
   {
     // ignore progressInfo (runtime pointers, not configuration)
     return processingThreadsPct == other.processingThreadsPct && processingOnly == other.processingOnly
-           && processingAllowPartial == other.processingAllowPartial && processingMode == other.processingMode
-           && processingMemoryGiB == other.processingMemoryGiB && autoSaveCache == other.autoSaveCache
-           && autoLoadCache == other.autoLoadCache && memoryMappedCache == other.memoryMappedCache
-           && forcePreprocessMiB == other.forcePreprocessMiB && skipNodeNames == other.skipNodeNames
+           && processingAllowPartial == other.processingAllowPartial && processingMemoryGiB == other.processingMemoryGiB
+           && autoSaveCache == other.autoSaveCache && autoLoadCache == other.autoLoadCache
+           && memoryMappedCache == other.memoryMappedCache && forcePreprocessMiB == other.forcePreprocessMiB
+           && simplifyOverridesFile == other.simplifyOverridesFile && skipNodeNames == other.skipNodeNames
            && skipMaterialNames == other.skipMaterialNames && skipMeshNames == other.skipMeshNames
            && skipAlphaMasked == other.skipAlphaMasked && skipAlphaBlended == other.skipAlphaBlended
            && enableTexturedMaterials == other.enableTexturedMaterials && skipNormalMaps == other.skipNormalMaps;
@@ -323,6 +397,8 @@ public:
     // otherwise they provide the size information of the uncompressed state.
     uint64_t uncompressedVertexDataCount : 21;
     uint64_t uncompressedSizeBytes : 22;
+    // MAX_TRIANGLE_DATA_COUNT, 0 if group is stored 'uncompressed'
+    uint32_t uncompressedTriangleDataCount : 18;
 
     // compression may impact the size on device
     uint32_t getDeviceSize() const { return uint32_t(uncompressedSizeBytes ? uncompressedSizeBytes : sizeBytes); }
@@ -335,8 +411,14 @@ public:
     size_t computeSize() const;
 
     // compute size of the uncompressed section in a compressed group
-    // based on relevant properties
+    // based on relevant properties.
+    // It is the leading part that a compressed group stores verbatim, everything
+    // from the triangle region on is compressed.
     size_t computeUncompressedSectionSize() const;
+
+    // byte offset (within the runtime group blob) where the vertex region begins,
+    // that is behind the uncompressed section and the runtime triangle region
+    size_t computeRuntimeVerticesOffset() const;
 
     // At runtime the trailing vertex region is laid out as [attributes][positions]:
     //   attributes = per-cluster normals/texcoords (attributesFloatCount() floats)
@@ -346,6 +428,11 @@ public:
     {
       return uint32_t(uncompressedVertexDataCount ? uncompressedVertexDataCount : vertexDataCount);
     }
+    // number of bytes in the runtime (uncompressed) triangle region
+    uint32_t getRuntimeTriangleDataCount() const
+    {
+      return uncompressedTriangleDataCount ? uncompressedTriangleDataCount : uint32_t(triangleDataCount);
+    }
     // vec3 positions, one per vertex
     uint32_t positionsFloatCount() const { return 3u * uint32_t(vertexCount); }
     // normals/texcoords float count = everything in the vertex region except the trailing positions
@@ -353,7 +440,7 @@ public:
     // byte offset (within the runtime group blob) where the trailing positions region begins
     size_t positionsByteOffset() const
     {
-      return computeUncompressedSectionSize() + size_t(attributesFloatCount()) * sizeof(float);
+      return computeRuntimeVerticesOffset() + size_t(attributesFloatCount()) * sizeof(float);
     }
     // byte size of the trailing positions region
     size_t positionsByteSize() const { return size_t(positionsFloatCount()) * sizeof(float); }
@@ -476,6 +563,11 @@ public:
   // scratch decode space, reused across calls (decompressGroup grows it as needed)
   static void decompressGroup(const GroupInfo& info, const GroupView& groupView, void* dstWriteOnly, size_t dstSize, std::vector<uint32_t>& scratch);
 
+  // decodes the per-triangle material bytes of a group. `triangleMaterials` must hold
+  // `info.triangleCount` bytes, `perCluster` `info.clusterCount` pointers into it, which are
+  // null for clusters without such materials.
+  static void getGroupTriangleMaterials(const GroupInfo& info, const GroupView& groupView, uint8_t* triangleMaterials, const uint8_t** perCluster);
+
 
   //////////////////////////////////////////////////////////////////////////
 
@@ -490,6 +582,14 @@ public:
     // local material slot partition and the material properties baked into the
     // cluster/triangle state bits. Invalidates the cache when materials change.
     uint64_t inputMaterialSetHash = 0;
+    // the `SimplifyOverrides` entries that applied to this geometry, 0 when none did.
+    // Invalidates the cache when the override file changes.
+    uint64_t inputSimplifyOverrideHash = 0;
+
+    // this struct is compared as raw bytes against the cache file, so new inputs must come
+    // out of this section and default to zero. That keeps caches of scenes that don't use
+    // the new input valid, without another `geoVersion` bump.
+    uint64_t reservedData[6] = {};
   };
 
   struct GeometryBase
@@ -512,6 +612,10 @@ public:
     uint32_t totalClustersCount{};
 
     shaderio::BBox bbox{};
+
+    // oriented 26-DOP over the same positions as `bbox`, host only.
+    // source for the per-instance AABBs, see `Scene::m_geometryHulls`
+    KDop kdop{};
 
     GeometryLodInput lodInfo;
 
@@ -559,6 +663,10 @@ public:
   const GeometryView& getActiveGeometry(size_t idx) const { return m_geometryViews[idx % m_originalGeometryCount]; }
   size_t              getActiveGeometryCount() const { return m_activeGeometryCount; }
 
+  // transform these by an instance matrix and take the min/max for a tight world AABB,
+  // see `kdopBuildHull` for why it has to be these points
+  const KDopHull& getActiveGeometryHull(size_t idx) const { return m_geometryHulls[idx % m_originalGeometryCount]; }
+
   uint32_t getGeometryInstanceFactor() const
   {
     return m_gridConfig.uniqueGeometriesForCopies ? 1u : uint32_t(m_instances.size() / m_originalInstanceCount);
@@ -578,6 +686,10 @@ public:
     uint32_t  materialSetID = ~0U;
     glm::vec4 color{0.8, 0.8, 0.8, 1.0f};
   };
+
+  // world-space AABB of an instance, from its geometry's k-DOP hull.
+  // tighter than transforming `GeometryBase::bbox` and never looser.
+  shaderio::BBox getInstanceWorldBBox(const Instance& instance) const;
 
   // geometries are deduplicated across glTF meshes that only differ in materials,
   // so the actual material per local slot comes from the instance, not the geometry.
@@ -681,6 +793,9 @@ public:
   std::vector<Camera>      m_cameras;
   std::vector<Material>    m_materials;
   std::vector<std::string> m_geometryNames;
+
+  // parsed from `SceneLoaderConfig::simplifyOverridesFile`, empty when none was given
+  SimplifyOverrides        m_simplifyOverrides;
   std::vector<std::string> m_materialNames;
   std::vector<Image>       m_images;
 
@@ -742,6 +857,10 @@ private:
     std::vector<float>      vertexAttributes;
     std::vector<glm::uvec3> triangles;
 
+    // `SceneConfig` with this mesh's `SimplifyOverrides` already applied, used by the
+    // lod build. Equal to `Scene::m_config` when no override matched.
+    SceneConfig lodConfig;
+
     uint32_t attributesWithWeights   = 0u;
     uint32_t attributeNormalOffset   = ~0u;
     uint32_t attributeTex0offset     = ~0u;
@@ -764,6 +883,9 @@ private:
 
   std::vector<GeometryStorage> m_geometryStorages;
   std::vector<GeometryView>    m_geometryViews;
+
+  // derived from the geometries' `kdop` at load, never cached
+  std::vector<KDopHull> m_geometryHulls;
 
   //////////////////////////////////////////////////////////////////////////
 
@@ -802,7 +924,7 @@ private:
     struct Header
     {
       uint64_t magic               = 0x006f65676e73766eULL;  // nvsngeo
-      uint32_t geoVersion          = 12;
+      uint32_t geoVersion          = 15;
       uint32_t geoStructSize       = uint32_t(sizeof(GeometryView));
       uint32_t configVersion       = SceneConfig::version;
       uint32_t configStructSize    = uint32_t(sizeof(SceneConfig));
@@ -824,6 +946,12 @@ private:
       //    shaderio::Cluster offsets packed into 3x24-bit fields
       // 11 GeometryLodInput.inputMaterialSetHash, geometry dedup keyed by material partition
       // 12 bugfix texcoord compressor header size (was hardcoded 32*3, now 32*DIM)
+      // 13 GeometryLodInput.inputSimplifyOverrideHash, plus reserved room so further
+      //    lod inputs no longer need a version bump.
+      //    GroupInfo.uncompressedTriangleDataCount, compressed groups encode their
+      //    triangle indices with meshoptimizer's meshlet codec
+      // 14 compressed groups palette encode their per-triangle material bytes
+      // 15 GeometryBase.kdop, oriented 26-DOP per geometry
     };
 
     Header header;
@@ -914,23 +1042,19 @@ private:
   // Processing
 
   // only used in `processingOnly` mode
-  FILE*                 m_processingOnlyFile             = nullptr;
-  FILE*                 m_processingOnlyPartialFile      = nullptr;
-  size_t                m_processingOnlyPartialCompleted = 0;
-  uint64_t              m_processingOnlyFileOffset       = 0;
+  FILE*                 m_processingOnlyFile        = nullptr;
+  FILE*                 m_processingOnlyPartialFile = nullptr;
+  uint64_t              m_processingOnlyFileOffset  = 0;
   std::vector<uint64_t> m_processingOnlyGeometryOffsets;
 
   struct ProcessingInfo
   {
-    // how we perform multi-threading:
-    // - either over geometries (outer loop)
-    // - or within a geometry (inner loops)
+    // multi-threading is done over geometries, a single geometry is processed serially
 
     uint32_t numPoolThreadsOriginal = 1;
     uint32_t numPoolThreads         = 1;
 
     uint32_t numOuterThreads = 1;
-    uint32_t numInnerThreads = 1;
 
     // if triangleCount is not 0, then we will track progress
     // based on completed triangles, otherwise based on
@@ -975,21 +1099,22 @@ private:
 
     struct Stats
     {
-      std::atomic_uint64_t groups                = 0;
-      std::atomic_uint64_t clusters              = 0;
-      std::atomic_uint64_t multiMaterialClusters = 0;
-      std::atomic_uint64_t vertices              = 0;
-      std::atomic_uint64_t groupUniqueVertices   = 0;
-      std::atomic_uint64_t groupHeaderBytes      = 0;
-      std::atomic_uint64_t triangleIndexBytes    = 0;
-      std::atomic_uint64_t triangleDataBytes     = 0;
-      std::atomic_uint64_t vertexPosBytes        = 0;
-      std::atomic_uint64_t vertexTexCoordBytes   = 0;
-      std::atomic_uint64_t vertexNrmBytes        = 0;
-      std::atomic_uint64_t vertexCompressedBytes = 0;
-      std::atomic_uint64_t clusterBboxBytes      = 0;
-      std::atomic_uint64_t clusterHeaderBytes    = 0;
-      std::atomic_uint64_t clusterGenBytes       = 0;
+      std::atomic_uint64_t groups                  = 0;
+      std::atomic_uint64_t clusters                = 0;
+      std::atomic_uint64_t multiMaterialClusters   = 0;
+      std::atomic_uint64_t vertices                = 0;
+      std::atomic_uint64_t groupUniqueVertices     = 0;
+      std::atomic_uint64_t groupHeaderBytes        = 0;
+      std::atomic_uint64_t triangleIndexBytes      = 0;
+      std::atomic_uint64_t triangleDataBytes       = 0;
+      std::atomic_uint64_t vertexPosBytes          = 0;
+      std::atomic_uint64_t vertexTexCoordBytes     = 0;
+      std::atomic_uint64_t vertexNrmBytes          = 0;
+      std::atomic_uint64_t vertexCompressedBytes   = 0;
+      std::atomic_uint64_t triangleCompressedBytes = 0;
+      std::atomic_uint64_t clusterBboxBytes        = 0;
+      std::atomic_uint64_t clusterHeaderBytes      = 0;
+      std::atomic_uint64_t clusterGenBytes         = 0;
     } stats;
 
 
@@ -1004,13 +1129,12 @@ private:
     double                    startTime = 0;
 
     void init(float pct);
-    // parallelismMode: <0 inner, ==0 auto, >0 outer
-    void setupParallelism(size_t geometryCount_, size_t geometryCompletedCount, int parallelismMode);
+    void setupParallelism(size_t geometryCount_);
     void setupCompressedGltf(size_t bufferViewCount);
     void deinit();
 
     void     logBegin(uint64_t totalTriangleCount);
-    uint32_t logCompletedGeometry(uint64_t triangleCount = 0);
+    uint64_t logCompletedGeometry(uint64_t triangleCount = 0);
     void     logEnd();
   };
 
@@ -1040,7 +1164,7 @@ private:
   void processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex, bool isCached);
 
   void buildGeometryLod(ProcessingInfo& processingInfo, GeometryStorage& geometry);
-  void buildGeometryLodHierarchy(ProcessingInfo& processingInfo, GeometryStorage& geometry);
+  void buildGeometryLodHierarchy(GeometryStorage& geometry);
 
   void computeLodBboxes_recursive(GeometryStorage& geometry, size_t nodeIdx);
   void buildGeometryDedupVertices(ProcessingInfo& processingInfo, GeometryStorage& geometry);
@@ -1064,19 +1188,15 @@ private:
     GeometryStorage& geometry;
     Scene&           scene;
 
-    bool      innerThreadingActive   = false;
-    bool      levelGroupOffsetValid  = false;
-    GroupInfo threadGroupInfo        = {};
-    uint32_t  threadGroupSize        = 0;
-    uint32_t  threadGroupStorageSize = 0;
-    uint32_t  lodLevel               = ~0u;
-    size_t    levelGroupOffset       = 0;
+    GroupInfo tempGroupInfo        = {};
+    uint32_t  tempGroupSize        = 0;
+    uint32_t  tempGroupStorageSize = 0;
+    uint32_t  lodLevel             = ~0u;
 
-
-    std::mutex           groupMutex;
-    std::atomic_uint32_t groupIndexOrdered = 0;
-    std::atomic_size_t   groupDataOrdered  = 0;
-    std::vector<uint8_t> threadGroupDatas;
+    // scratch for the group currently being assembled
+    std::vector<uint8_t> tempGroupData;
+    // scratch for the triangle index compression, see `compressGroupTriangles`
+    std::vector<uint8_t> tempTriangleData;
   };
 
   struct TempGroup
@@ -1099,22 +1219,13 @@ private:
 
   static uint8_t getMaterialLocalIndex(const GeometryStorage& geometry, uint32_t index, uint32_t attributeStride);
 
-  uint32_t storeGroup(TempContext*       context,
-                      uint32_t           threadIndex,
-                      uint32_t           groupIndex,
-                      const clodGroup&   group,
-                      uint32_t           clusterCount,
-                      const clodCluster* clusters);
+  uint32_t storeGroup(TempContext* context, const clodGroup& group, uint32_t clusterCount, const clodCluster* clusters);
 
   void compressGroup(TempContext* context, GroupStorage& groupTempStorage, GroupInfo& groupInfo, uint32_t* vertexCacheLocal);
+  void compressGroupTriangles(TempContext* context, GroupStorage& groupTempStorage, GroupInfo& groupInfo);
 
-  static void clodIterationMeshoptimizer(void* iteration_context, void* output_context, int depth, size_t task_count);
-  static int  clodGroupMeshoptimizer(void*              output_context,
-                                     clodGroup          group,
-                                     const clodCluster* clusters,
-                                     size_t             cluster_count,
-                                     size_t             task_index,
-                                     uint32_t           thread_index);
+  static void decompressGroupTriangles(const GroupInfo& info, const GroupView& groupSrc, GroupStorage& groupDst);
+  static int clodGroupMeshoptimizer(void* output_context, clodGroup group, const clodCluster* clusters, size_t cluster_count);
 };
 
 }  // namespace lodclusters

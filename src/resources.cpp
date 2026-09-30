@@ -9,6 +9,7 @@
 #include <nvutils/spirv.hpp>
 #include <nvvk/barriers.hpp>
 #include <nvvk/formats.hpp>
+#include <nvvk/pipeline.hpp>
 
 #include "resources.hpp"
 
@@ -93,9 +94,11 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
   m_physicalDeviceInfo.init(physicalDevice);
   vkGetPhysicalDeviceMemoryProperties(physicalDevice, &m_memoryProperties);
 
-  m_use16bitDispatch = m_physicalDeviceInfo.properties10.limits.maxComputeWorkGroupCount[0] < (1 << 30);
+  m_use16bitDispatch = m_force16bitDispatch || m_physicalDeviceInfo.properties10.limits.maxComputeWorkGroupCount[0] < (1 << 30);
 
   m_basicGraphicsState.depthStencilState.depthCompareOp = VK_COMPARE_OP_GREATER;
+
+  m_dumpInternal = m_dumpInternal && m_supportsPipelineExecutableInfo;
 
   {
     VkPhysicalDeviceProperties2 props2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
@@ -127,7 +130,7 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
   {
     // load-time texture uploads run on the dedicated transfer queue and hand ownership
     // to the graphics queue;
-    AsyncUploader::InitInfo asyncInfo;
+    nvvk::AsyncUploader::InitInfo asyncInfo;
     asyncInfo.allocator      = &m_allocator;
     asyncInfo.transferQueue  = m_queueTransfer;
     asyncInfo.targetQueue    = m_queue;
@@ -222,7 +225,8 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
     {
       shaderc::CompileOptions options = makeCompilerOptions();
       m_hiz.appendShaderDefines(i, options);
-      compileShader(shaderResults[i], VK_SHADER_STAGE_COMPUTE_BIT, "nvhiz-update.comp.glsl", &options);
+      compileShader(shaderResults[i], VK_SHADER_STAGE_COMPUTE_BIT, "nvhiz-update.comp.glsl", &options,
+                    "nvhiz-update.comp." + std::to_string(i));
     }
     m_hiz.initPipelines(shaderResults);
   }
@@ -868,6 +872,11 @@ void Resources::getReadbackData(shaderio::Readback& readback)
   readback                            = pReadback[m_cycleIndex];
 }
 
+void Resources::clearReadbackData()
+{
+  memset(m_commonBuffers.readBackHost.data(), 0, m_commonBuffers.readBackHost.bufferSize);
+}
+
 void Resources::cmdBuildHiz(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler, uint32_t idx)
 {
   auto timerSection = profiler.cmdFrameSection(cmd, "HiZ");
@@ -928,7 +937,8 @@ void Resources::cmdHBAO(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::Pro
 bool Resources::compileShader(shaderc::SpvCompilationResult& compiled,
                               VkShaderStageFlagBits          shaderStage,
                               const std::filesystem::path&   filePath,
-                              shaderc::CompileOptions*       options)
+                              shaderc::CompileOptions*       options,
+                              const std::filesystem::path&   dumpFileName)
 {
   compiled = m_glslCompiler.compileFile(filePath, nvvkglsl::getShaderKind(shaderStage), options);
   if(compiled.GetCompilationStatus() == shaderc_compilation_status_success)
@@ -936,8 +946,8 @@ bool Resources::compileShader(shaderc::SpvCompilationResult& compiled,
     if(m_dumpSpirv)
     {
       // dump spirv files for improved aftermath debugging
-      std::filesystem::path dumpFile = filePath.filename();
-      dumpFile.replace_extension("spirv");
+      std::filesystem::path dumpFile = dumpFileName.empty() ? filePath.stem() : dumpFileName;
+      dumpFile += ".spirv";
 
       nvutils::dumpSpirv(dumpFile, nvvkglsl::GlslCompiler::getSpirv(compiled), nvvkglsl::GlslCompiler::getSpirvSize(compiled));
     }
@@ -950,6 +960,40 @@ bool Resources::compileShader(shaderc::SpvCompilationResult& compiled,
       nvutils::Logger::getInstance().log(nvutils::Logger::LogLevel::eWARNING, "%s", errorMessage.c_str());
     return false;
   }
+}
+
+bool Resources::compileShader(Shader&                      shader,
+                              VkShaderStageFlagBits        shaderStage,
+                              const std::filesystem::path& filePath,
+                              shaderc::CompileOptions*     options,
+                              const char*                  variant)
+{
+  shader.fileName = filePath.stem();
+  if(variant)
+  {
+    shader.fileName += std::string(".") + variant;
+  }
+  return compileShader(shader.compiled, shaderStage, filePath, options, shader.fileName);
+}
+
+void Resources::dumpPipelineInternals(VkPipeline pipeline, const Shader& shader)
+{
+  if(!m_dumpInternal)
+    return;
+
+  nvvk::dumpPipelineInternals(m_device, pipeline, shader.fileName);
+}
+
+void Resources::createComputePipeline(VkComputePipelineCreateInfo& compInfo, const Shader& shader, VkPipeline& pipeline)
+{
+  VkShaderModuleCreateInfo shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(shader);
+
+  compInfo.stage.pNext = &shaderInfo;
+  compInfo.flags |= getPipelineCreateFlags();
+
+  NVVK_CHECK(vkCreateComputePipelines(m_device, nullptr, 1, &compInfo, nullptr, &pipeline));
+
+  dumpPipelineInternals(pipeline, shader);
 }
 
 VkCommandBuffer Resources::createTempCmdBuffer()

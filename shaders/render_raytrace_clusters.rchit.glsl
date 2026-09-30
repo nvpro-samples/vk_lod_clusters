@@ -193,7 +193,7 @@ void main()
   vec3 oNormal;
   bool backFacing = false;
 
-  mat3 worldMatrixI = mat3(instance.worldMatrixI);
+  mat3 worldMatrixI = transpose(mat3(instance.worldMatrixI));
 
 #if ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS
   uint32s_in oNormals   = Cluster_getVertexNormals(clusterRef);

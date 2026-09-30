@@ -18,6 +18,7 @@
 #include <nvutils/parallel_work.hpp>
 
 #include "scene.hpp"
+#include "scene_quantization.hpp"
 #include "threadlocal_arena.hpp"
 
 namespace {
@@ -155,61 +156,6 @@ void cgltf_release(const struct cgltf_memory_options* memory_options, const stru
 using unique_cgltf_ptr = std::unique_ptr<cgltf_data, decltype(&cgltf_free)>;
 
 
-// based on meshopt_quantizeFloat
-// https://github.com/zeux/meshoptimizer/blob/master/src/quantization.cpp
-inline float quantizeFloat(float value, uint32_t dropBits)
-{
-  union
-  {
-    uint32_t u32;
-    float    f32;
-  } un;
-
-  un.f32      = value;
-  uint32_t ui = un.u32;
-
-  const int32_t mask  = (1 << (dropBits)) - 1;
-  const int32_t round = (1 << (dropBits)) >> 1;
-
-  int32_t  e   = ui & 0x7f800000;
-  uint32_t rui = (ui + round) & ~mask;
-
-  // round all numbers except inf/nan; this is important to make sure nan doesn't overflow into -0
-  ui = e == 0x7f800000 ? ui : rui;
-
-  // flush denormals to zero
-  ui = e == 0 ? 0 : ui;
-
-  un.u32 = ui;
-  return un.f32;
-}
-
-inline glm::vec2 quantizeFloat(const glm::vec2& vec, uint32_t dropBits)
-{
-  glm::vec2 res;
-  res.x = quantizeFloat(vec.x, dropBits);
-  res.y = quantizeFloat(vec.y, dropBits);
-  return res;
-}
-
-inline glm::vec3 quantizeFloat(const glm::vec3& vec, uint32_t dropBits)
-{
-  glm::vec3 res;
-  res.x = quantizeFloat(vec.x, dropBits);
-  res.y = quantizeFloat(vec.y, dropBits);
-  res.z = quantizeFloat(vec.z, dropBits);
-  return res;
-}
-
-inline glm::vec4 quantizeFloat(const glm::vec4& vec, uint32_t dropBits)
-{
-  glm::vec4 res;
-  res.x = quantizeFloat(vec.x, dropBits);
-  res.y = quantizeFloat(vec.y, dropBits);
-  res.z = quantizeFloat(vec.z, dropBits);
-  res.w = quantizeFloat(vec.w, dropBits);
-  return res;
-}
 }  // namespace
 
 namespace lodclusters {
@@ -351,6 +297,14 @@ static void buildMeshMaterialSetGLTF(const cgltf_data*                   gltf,
 Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesystem::path& filePath)
 {
   std::string fileName = nvutils::utf8FromPath(filePath);
+
+  // these influence what gets built, so a bad file must not silently fall back to the
+  // global settings after the user asked for overrides
+  m_simplifyOverrides = {};
+  if(!m_loaderConfig.simplifyOverridesFile.empty() && !m_simplifyOverrides.load(m_loaderConfig.simplifyOverridesFile))
+  {
+    return SCENE_RESULT_ERROR;
+  }
 
   // Parse the glTF file using cgltf
   cgltf_options options = {};
@@ -689,6 +643,12 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
       // deliberately not part of it, that is what the instance provides.
       meshIdentifier += fmt::format("|{}", materialSet.hash);
 
+      // meshes that simplify differently must not share a geometry, even when their
+      // accessors and materials are identical
+      uint64_t simplifyOverrideHash =
+          m_simplifyOverrides.empty() ? 0 : m_simplifyOverrides.match(gltfMesh.name ? gltfMesh.name : "", nullptr);
+      meshIdentifier += fmt::format("|{}", simplifyOverrideHash);
+
       // find canonical string in map
       auto pair = mapMeshToGeometry.try_emplace(meshIdentifier, geometryToMesh.size());
       if(pair.second)
@@ -738,6 +698,7 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
 
   m_geometryStorages.resize(geometryToMesh.size());
   m_geometryViews.resize(geometryToMesh.size());
+  m_geometryHulls.resize(geometryToMesh.size());
   m_geometryNames.resize(geometryToMesh.size());
 
   if(!beginProcessingOnly(geometryToMesh.size()))
@@ -766,11 +727,9 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
          compressedViewCount, double(decompressedBytes) / (1024.0 * 1024.0));
   }
 
-  // when we are resuming in processingOnly mode, we might have completed several geometries already,
-  // which is passed to influence the decision about the parallelism mode.
-  processingInfo.setupParallelism(geometryToMesh.size(), m_processingOnlyPartialCompleted, m_loaderConfig.processingMode);
+  processingInfo.setupParallelism(geometryToMesh.size());
 
-  if(processingInfo.numOuterThreads > processingInfo.numInnerThreads)
+  if(processingInfo.numOuterThreads > 1)
   {
     // let's do the actual processing in a slightly different order (large meshes first).
     // This gives better work distribution across threads, avoids few long running threads
@@ -799,13 +758,16 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
   // for partial files we don't have the completed triangle information
   processingInfo.logBegin(m_processingOnlyPartialFile ? 0 : totalTriangleCount);
   // reading pre-processed clusters from cache is "loading", building them is "processing"
+  // counted in triangles, matching what logCompletedGeometry reports; geometries only when the
+  // triangle total is unknown, which is the case for a resumed partial processing
   m_loaderConfig.progressInfo.beginPhase(m_cacheFileView.isValid() ? LoadPhase::LoadingScene : LoadPhase::ProcessingScene,
-                                         uint32_t(geometryToMesh.size()));
+                                         processingInfo.triangleCount ? processingInfo.triangleCount :
+                                                                        uint64_t(geometryToMesh.size()));
 
   nvutils::parallel_batches_pooled<1>(geometryToMesh.size(), fnLoadAndProcessGeometry, processingInfo.numOuterThreads);
 
-  // workers are joined here, so it is safe to reach the arenas they retained; with inner
-  // parallelism the per-geometry trim only ever covered the calling thread
+  // workers are joined here, so it is safe to reach the arenas they retained; the
+  // per-geometry trim only ever covers the calling thread
   threadLocalArenaTrimAll();
 
   processingInfo.logEnd();
@@ -1264,11 +1226,18 @@ void Scene::loadGeometryGLTF(ProcessingInfo&          processingInfo,
   const cgltf_mesh& gltfMesh = gltf->meshes[meshIndex];
   GeometryStorage&  geometry = m_geometryStorages[geometryIndex];
   geometry.bbox              = {{FLT_MAX, FLT_MAX, FLT_MAX}, {-FLT_MAX, -FLT_MAX, -FLT_MAX}, 0, 0};
+  geometry.kdop.reset(glm::mat3(1.0f));
 
   if(gltfMesh.name)
   {
     m_geometryNames[geometryIndex] = std::move(std::string(gltfMesh.name));
   }
+
+  // resolve the per-mesh simplification overrides once, the lod build reads them from here.
+  // Must use the same mesh name the dedup pass hashed above.
+  geometry.lodConfig = m_config;
+  uint64_t simplifyOverrideHash =
+      m_simplifyOverrides.empty() ? 0 : m_simplifyOverrides.match(gltfMesh.name ? gltfMesh.name : "", &geometry.lodConfig);
 
   // this mesh is the representative of the deduplicated geometry, so its local slots
   // define the slot layout that all instances of the geometry remap their materials into
@@ -1276,6 +1245,18 @@ void Scene::loadGeometryGLTF(ProcessingInfo&          processingInfo,
   MeshMaterialSetGLTF materialSet;
   buildMeshMaterialSetGLTF(gltf, gltfMesh, m_materials, m_config.enableMultiMaterials, materialSet, exceededMaxLocals);
   geometry.localMaterialIDs = materialSet.localSlots;
+
+  if(geometry.lodConfig.simplifyDilateBordersTwoSided && !geometry.lodConfig.simplifyDilateBordersAll)
+  {
+    for(uint32_t materialID : materialSet.localSlots)
+    {
+      if(m_materials[materialID].twoSided)
+      {
+        geometry.lodConfig.simplifyDilateBordersAll = true;
+        break;
+      }
+    }
+  }
 
   // count triangle and vertices pass
   uint32_t triangleCount = 0;
@@ -1330,11 +1311,13 @@ void Scene::loadGeometryGLTF(ProcessingInfo&          processingInfo,
   }
 
 
-  // use memset 0 to avoid issues with padding within struct
+  // use memset 0 to avoid issues with padding and the reserved section within the struct,
+  // it gets compared against the cache file as raw bytes
   memset(&geometry.lodInfo, 0, sizeof(geometry.lodInfo));
-  geometry.lodInfo.inputTriangleCount   = triangleCount;
-  geometry.lodInfo.inputVertexCount     = verticesCount;
-  geometry.lodInfo.inputMaterialSetHash = materialSetHash;
+  geometry.lodInfo.inputTriangleCount        = triangleCount;
+  geometry.lodInfo.inputVertexCount          = verticesCount;
+  geometry.lodInfo.inputMaterialSetHash      = materialSetHash;
+  geometry.lodInfo.inputSimplifyOverrideHash = simplifyOverrideHash;
 
   // test if this mesh exists in the cache
   bool isCached = checkCache(geometry.lodInfo, geometryIndex);
@@ -1379,10 +1362,11 @@ void Scene::loadGeometryGLTF(ProcessingInfo&          processingInfo,
     uint32_t attributeEnd   = uint32_t(attributeStride);
 
     // all attributes with simplification weights must come first due to how
-    // meshoptimizer works
+    // meshoptimizer works. Must read the per-mesh `lodConfig`, not the global config,
+    // otherwise an overridden weight and this layout disagree (see `SimplifyOverrides`).
     if((geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL))
     {
-      if(m_config.simplifyNormalWeight > 0)
+      if(geometry.lodConfig.simplifyNormalWeight > 0)
       {
         geometry.attributeNormalOffset = attributeStart;
         attributeStart += 3;
@@ -1396,7 +1380,7 @@ void Scene::loadGeometryGLTF(ProcessingInfo&          processingInfo,
 
     if((geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0))
     {
-      if(m_config.simplifyTexCoordWeight > 0)
+      if(geometry.lodConfig.simplifyTexCoordWeight > 0)
       {
         geometry.attributeTex0offset = attributeStart;
         attributeStart += 2;
@@ -1410,7 +1394,7 @@ void Scene::loadGeometryGLTF(ProcessingInfo&          processingInfo,
 
     if((geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_1))
     {
-      if(m_config.simplifyTexCoordWeight > 0)
+      if(geometry.lodConfig.simplifyTexCoordWeight > 0)
       {
         geometry.attributeTex1offset = attributeStart;
         attributeStart += 2;
@@ -1424,7 +1408,7 @@ void Scene::loadGeometryGLTF(ProcessingInfo&          processingInfo,
 
     if((geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT))
     {
-      if(m_config.simplifyTangentWeight > 0 && m_config.simplifyTangentSignWeight > 0)
+      if(geometry.lodConfig.simplifyTangentWeight > 0 || geometry.lodConfig.simplifyTangentSignWeight > 0)
       {
         geometry.attributeTangentOffset = attributeStart;
         attributeStart += 4;
@@ -1438,7 +1422,7 @@ void Scene::loadGeometryGLTF(ProcessingInfo&          processingInfo,
 
     if(hasMultiMaterial)
     {
-      if(m_config.simplifyMaterialWeight > 0)
+      if(geometry.lodConfig.simplifyMaterialWeight > 0)
       {
         geometry.attributeMaterialOffset = attributeStart;
         attributeStart += 1;
@@ -1576,6 +1560,24 @@ void Scene::loadGeometryGLTF(ProcessingInfo&          processingInfo,
       offsetVertices += numVertices;
       supportedPrimIdx++;
     }
+
+    // the frame must exist before the lod build, which extends the slabs with the coarser
+    // levels' positions. deriving it from the input level alone is fine, it only has to be
+    // some frame, the slabs measured in it are what has to cover every level.
+    geometry.kdop.reset(kdopComputeFrame(geometry.vertexPositions.data(), geometry.vertexPositions.size(),
+                                         geometry.triangles.data(), geometry.triangles.size()));
+
+    // seed with the input positions like `bbox` above. these are already truncated by
+    // `compressionPosDropBits`, so they match what gets stored.
+    KDopAccumulator accumulator;
+    accumulator.init(geometry.kdop.frame);
+
+    for(size_t i = 0; i < geometry.vertexPositions.size(); i++)
+    {
+      accumulator.add(geometry.vertexPositions[i]);
+    }
+
+    accumulator.mergeInto(geometry.kdop);
   }
 
   processGeometry(processingInfo, geometryIndex, isCached);

@@ -98,6 +98,22 @@ bool intersectFrustum(mat4 viewProjMatrix, vec3 bboxMin, vec3 bboxMax, mat4x3 wo
   return andBits == 0;
 }
 
+// frustum test without the clipspace bounds, saves the per corner divide.
+// used to drop items that cannot reappear in the second cull pass.
+bool intersectFrustumOnly(mat4 viewProjMatrix, vec3 bboxMin, vec3 bboxMax, mat4x3 worldTM)
+{
+  mat4 worldViewProjTM = viewProjMatrix * toMat4(worldTM);
+
+  uint andBits = getCullBits(worldViewProjTM * getBoxCorner(bboxMin, bboxMax, 0));
+
+  [[unroll]]
+  for (int n = 1; n < 8; n++){
+    andBits &= getCullBits(worldViewProjTM * getBoxCorner(bboxMin, bboxMax, n));
+  }
+
+  return andBits == 0;
+}
+
 #ifndef CULLING_NO_HIZ
 bool intersectHiz(vec4 clipMin, vec4 clipMax, uint idx)
 {

@@ -46,27 +46,27 @@ private:
 
   struct Shaders
   {
-    shaderc::SpvCompilationResult rayGen;
-    shaderc::SpvCompilationResult rayClosestHit;
-    shaderc::SpvCompilationResult rayAnyHit;
-    shaderc::SpvCompilationResult rayMiss;
-    shaderc::SpvCompilationResult rayMissAO;
+    Shader rayGen;
+    Shader rayClosestHit;
+    Shader rayAnyHit;
+    Shader rayMiss;
+    Shader rayMissAO;
 
-    shaderc::SpvCompilationResult computeTraversalPresort;
-    shaderc::SpvCompilationResult computeTraversalInit;
-    shaderc::SpvCompilationResult computeTraversalRun;
-    shaderc::SpvCompilationResult computeTraversalGroups;
-    shaderc::SpvCompilationResult computeTraversalMerge;
-    shaderc::SpvCompilationResult computeBuildSetup;
+    Shader computeTraversalPresort;
+    Shader computeTraversalInit;
+    Shader computeTraversalRun;
+    Shader computeTraversalGroups;
+    Shader computeTraversalMerge;
+    Shader computeBuildSetup;
 
-    shaderc::SpvCompilationResult computeBlasInsertClusters;
-    shaderc::SpvCompilationResult computeBlasSetupInsertion;
-    shaderc::SpvCompilationResult computeBlasCachingSetupCopy;
-    shaderc::SpvCompilationResult computeBlasCachingSetupBuild;
+    Shader computeBlasInsertClusters;
+    Shader computeBlasSetupInsertion;
+    Shader computeBlasCachingSetupCopy;
+    Shader computeBlasCachingSetupBuild;
 
-    shaderc::SpvCompilationResult computeInstanceAssignBlas;
-    shaderc::SpvCompilationResult computeInstanceClassifyLod;
-    shaderc::SpvCompilationResult computeGeometryBlasSharing;
+    Shader computeInstanceAssignBlas;
+    Shader computeInstanceClassifyLod;
+    Shader computeGeometryBlasSharing;
   };
 
   struct Pipelines
@@ -158,6 +158,7 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("USE_SORTING", m_config.useSorting ? "1" : "0");
   options.AddMacroDefinition("USE_CULLING", m_config.useCulling ? "1" : "0");
   options.AddMacroDefinition("USE_TWO_PASS_CULLING", "0");
+  options.AddMacroDefinition("USE_TWO_PASS_REJECT_LISTS", "0");
   options.AddMacroDefinition("USE_BLAS_REUSE", useBlasReuse() ? "1" : "0");
   options.AddMacroDefinition("USE_BLAS_SHARING", m_config.useBlasSharing ? "1" : "0");
   options.AddMacroDefinition("USE_BLAS_MERGING", m_config.useBlasSharing && m_config.useBlasMerging ? "1" : "0");
@@ -181,6 +182,9 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("USE_FORCED_TWO_SIDED", m_config.forceTwoSided ? "1" : "0");
   options.AddMacroDefinition("USE_FORCED_INVISIBLE_CULLING", m_config.useForcedInvisibleCulling ? "1" : "0");
   options.AddMacroDefinition("USE_PERSISTENT_TRAVERSAL_KERNEL", m_config.usePersistentTraversal ? "1" : "0");
+  options.AddMacroDefinition("TRAVERSAL_VULKAN_MEMORY_MODEL",
+                             m_config.usePersistentTraversal && m_config.useVulkanMemoryModel ? "1" : "0");
+  options.AddMacroDefinition("TRAVERSAL_ATOMIC_LOAD_STORE", m_config.useAtomicLoadStore ? "1" : "0");
   // Ray/path tracer texture LOD mode (overrides the TARGETS_RASTERIZATION-derived default in shaderio.h).
   options.AddMacroDefinition("TEXTURE_LOD_MODE", m_config.textureLodMode == 1 ? "TEXLODMODE_LOD" :
                                                  m_config.textureLodMode == 2 ? "TEXLODMODE_IMPLICIT" :
@@ -207,8 +211,8 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   m_hasAlphaMask = rscene.scene->m_hasAlphaMask;
   if(m_hasAlphaMask)
     res.compileShader(m_shaders.rayAnyHit, VK_SHADER_STAGE_ANY_HIT_BIT_KHR, rahitFile, &options);
-  res.compileShader(m_shaders.rayMiss, VK_SHADER_STAGE_MISS_BIT_KHR, rmissFile, &options);
-  res.compileShader(m_shaders.rayMissAO, VK_SHADER_STAGE_MISS_BIT_KHR, rmissFile, &optionsAO);
+  res.compileShader(m_shaders.rayMiss, VK_SHADER_STAGE_MISS_BIT_KHR, rmissFile, &options, "primary");
+  res.compileShader(m_shaders.rayMissAO, VK_SHADER_STAGE_MISS_BIT_KHR, rmissFile, &optionsAO, "ao");
 
   if(m_config.useSorting)
   {
@@ -266,6 +270,22 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
   {
     m_config.useBlasMerging = false;
     m_config.useBlasCaching = false;
+  }
+  else if(!rscene.sceneStreaming.getStreamingConfig().usePersistentClasAllocator)
+  {
+    // A cached blas stores the addresses of the CLAS it was built from and is kept across
+    // frames, so those addresses have to stay valid for as long as the cache lives. Only the
+    // persistent CLAS allocator guarantees that: the move based compaction relocates every
+    // resident CLAS whenever any group is unloaded, which would leave cached blas of untouched
+    // geometries pointing at other geometries' CLAS memory (device loss).
+    // Only this local copy is cleared, so the requested setting comes back with the allocator.
+    m_config.useBlasCaching = false;
+  }
+
+  // the persistent kernel's Vulkan memory model variant uses device scope atomics
+  if(!res.m_physicalDeviceInfo.features12.vulkanMemoryModelDeviceScope)
+  {
+    m_config.useVulkanMemoryModel = false;
   }
 
 #if USE_DLSS
@@ -551,65 +571,50 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
   // initialize traversal pipeline
 
   {
-    VkComputePipelineCreateInfo compInfo   = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    VkShaderModuleCreateInfo    shaderInfo = {};
-    compInfo.stage                         = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-    compInfo.stage.stage                   = VK_SHADER_STAGE_COMPUTE_BIT;
-    compInfo.stage.pName                   = "main";
-    compInfo.stage.pNext                   = &shaderInfo;
-    compInfo.layout                        = m_pipelineLayout;
+    VkComputePipelineCreateInfo compInfo = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    compInfo.stage                       = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    compInfo.stage.stage                 = VK_SHADER_STAGE_COMPUTE_BIT;
+    compInfo.stage.pName                 = "main";
+    compInfo.layout                      = m_pipelineLayout;
 
-    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeBuildSetup);
-    vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeBuildSetup);
+    res.createComputePipeline(compInfo, m_shaders.computeBuildSetup, m_pipelines.computeBuildSetup);
 
     if(m_config.useSorting)
     {
-      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeTraversalPresort);
-      vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTraversalPresort);
+      res.createComputePipeline(compInfo, m_shaders.computeTraversalPresort, m_pipelines.computeTraversalPresort);
     }
 
-    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeTraversalInit);
-    vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTraversalInit);
+    res.createComputePipeline(compInfo, m_shaders.computeTraversalInit, m_pipelines.computeTraversalInit);
 
-    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeTraversalRun);
-    vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTraversalRun);
+    res.createComputePipeline(compInfo, m_shaders.computeTraversalRun, m_pipelines.computeTraversalRun);
 
-    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeTraversalGroups);
-    vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTraversalGroups);
+    res.createComputePipeline(compInfo, m_shaders.computeTraversalGroups, m_pipelines.computeTraversalGroups);
 
-    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeBlasInsertClusters);
-    vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeBlasInsertClusters);
+    res.createComputePipeline(compInfo, m_shaders.computeBlasInsertClusters, m_pipelines.computeBlasInsertClusters);
 
-    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeBlasSetupInsertion);
-    vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeBlasSetupInsertion);
+    res.createComputePipeline(compInfo, m_shaders.computeBlasSetupInsertion, m_pipelines.computeBlasSetupInsertion);
 
-    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeInstanceAssignBlas);
-    vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeInstanceAssignBlas);
+    res.createComputePipeline(compInfo, m_shaders.computeInstanceAssignBlas, m_pipelines.computeInstanceAssignBlas);
 
     if(useBlasReuse())
     {
-      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeInstanceClassifyLod);
-      vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeInstanceClassifyLod);
+      res.createComputePipeline(compInfo, m_shaders.computeInstanceClassifyLod, m_pipelines.computeInstanceClassifyLod);
     }
 
     if(m_config.useBlasSharing)
     {
-      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeGeometryBlasSharing);
-      vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeGeometryBlasSharing);
+      res.createComputePipeline(compInfo, m_shaders.computeGeometryBlasSharing, m_pipelines.computeGeometryBlasSharing);
       if(m_config.useBlasMerging)
       {
-        shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeTraversalMerge);
-        vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTraversalMerge);
+        res.createComputePipeline(compInfo, m_shaders.computeTraversalMerge, m_pipelines.computeTraversalMerge);
       }
     }
 
     if(m_config.useBlasCaching)
     {
-      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeBlasCachingSetupCopy);
-      vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeBlasCachingSetupCopy);
+      res.createComputePipeline(compInfo, m_shaders.computeBlasCachingSetupCopy, m_pipelines.computeBlasCachingSetupCopy);
 
-      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeBlasCachingSetupBuild);
-      vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeBlasCachingSetupBuild);
+      res.createComputePipeline(compInfo, m_shaders.computeBlasCachingSetupBuild, m_pipelines.computeBlasCachingSetupBuild);
     }
   }
 
@@ -1342,6 +1347,7 @@ void RendererRayTraceClustersLod::initRayTracingPipeline(Resources& res)
   // Assemble the shader stages and recursion depth info into the ray tracing pipeline
   VkRayTracingPipelineCreateInfoKHR rayPipelineInfo{
       .sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR,
+      .flags = res.getPipelineCreateFlags(),
       // eAnyHit is the last stage, so dropping it is just a smaller count
       .stageCount = uint32_t(m_hasAlphaMask ? eShaderGroupCount : eShaderGroupCount - 1),
       .pStages    = stages.data(),
@@ -1362,6 +1368,7 @@ void RendererRayTraceClustersLod::initRayTracingPipeline(Resources& res)
 
   NVVK_CHECK(vkCreateRayTracingPipelinesKHR(res.m_device, {}, {}, 1, &rayPipelineInfo, nullptr, &m_pipelines.rayTracing));
   NVVK_DBG_NAME(m_pipelines.rayTracing);
+  res.dumpPipelineInternals(m_pipelines.rayTracing, m_shaders.rayGen);
 
   // Creating the SBT
   {
@@ -1403,7 +1410,7 @@ void RendererRayTraceClustersLod::initRayTracingTlas(Resources& res, VkDeviceSiz
   for(size_t i = 0; i < m_renderInstances.size(); i++)
   {
     VkAccelerationStructureInstanceKHR instance{};
-    instance.transform           = nvvk::toTransformMatrixKHR(m_renderInstances[i].worldMatrix);
+    memcpy(&instance.transform, &m_renderInstances[i].worldMatrix, sizeof(VkTransformMatrixKHR));
     instance.instanceCustomIndex = static_cast<uint32_t>(i);  // gl_InstanceCustomIndexEX
     instance.mask                = 0xFF;                      // All objects
     instance.flags               = 0;

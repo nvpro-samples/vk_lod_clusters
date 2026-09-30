@@ -95,7 +95,7 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
 
 ////////////////////////////////////////////
 
-#if !USE_DEPTH_ONLY
+#if NEEDS_PRIMITIVE_IDS
 
 #if USE_PERPRIMITIVE_OUT
 
@@ -270,7 +270,7 @@ void main()
     uint vertLoad = min(vert, vertMax);
 
     vec3 oPos = oVertices.d[vertLoad];
-    vec3 wPos = instance.worldMatrix * vec4(oPos, 1.0f);
+    vec3 wPos = vec4(oPos, 1.0f) * instance.worldMatrix;
 
     if(vert <= vertMax)
     {
@@ -285,7 +285,7 @@ void main()
       s_vertices[vert] = hPos;
 #endif
 
-#if !USE_DEPTH_ONLY
+#if NEEDS_PRIMITIVE_IDS
 #if ALLOW_SHADING
       OUT[vert].wPos = wPos.xyz;
 #endif
@@ -349,18 +349,18 @@ void main()
     {
 #if USE_EXT_MESH_SHADER
       gl_PrimitiveTriangleIndicesEXT[triOut] = indices;
-#if !USE_DEPTH_ONLY
+#if NEEDS_PRIMITIVE_IDS
       gl_MeshPrimitivesEXT[triOut].gl_PrimitiveID = int(tri);
 #endif
 #else
       gl_PrimitiveIndicesNV[triOut * 3 + 0] = indices.x;
       gl_PrimitiveIndicesNV[triOut * 3 + 1] = indices.y;
       gl_PrimitiveIndicesNV[triOut * 3 + 2] = indices.z;
-#if !USE_DEPTH_ONLY
+#if NEEDS_PRIMITIVE_IDS
       gl_MeshPrimitivesNV[triOut].gl_PrimitiveID = int(tri);
 #endif
 #endif
-#if USE_PERPRIMITIVE_OUT && !USE_DEPTH_ONLY
+#if USE_PERPRIMITIVE_OUT && NEEDS_PRIMITIVE_IDS
       OUTPRIM[triOut].instanceID = instanceID;
       OUTPRIM[triOut].clusterID  = clusterID;
 #endif

@@ -131,7 +131,7 @@ void main()
 #else
       gl_MeshVerticesNV[vert].gl_Position =
 #endif
-          view.viewProjMatrixRender * vec4(instance.worldMatrix * vec4(cornerPos, 1), 1);
+          view.viewProjMatrixRender * vec4(vec4(cornerPos, 1) * instance.worldMatrix, 1);
 
       // Latched from last frame's readback on the CPU side; ~0u == no valid pick.
       OUT[vert].instanceID  = baseID + box;

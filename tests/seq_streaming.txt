@@ -1,0 +1,76 @@
+# Streaming against preloaded, and the streaming transport options.
+#
+# Preloaded is a separate path through the whole scene setup, not a flag on the streaming
+# one, so it is worth a few sequences of its own on both renderers. The toggling back and
+# forth is part of the test: the sample has to tear the one down and bring the other up
+# repeatedly without leaking or tripping over stale resources.
+#
+# Deliberately small. The feature matrices around streaming live in seq_raytrace_blas.txt
+# and seq_raster_features.txt, and the budget exhaustion cases in seq_limits.txt.
+
+SEQUENCE "streaming_on_raster"
+--sequenceframes 32
+--sequenceresetframes 8
+--gridunique 1
+--streaming 1
+--clasallocator 1
+--asynctransfer 0
+--decoupledtransfer 0
+--renderer 0
+--culling 1
+--visualize 5
+
+SEQUENCE "streaming_off_raster"
+--streaming 0
+--renderer 0
+--visualize 5
+
+SEQUENCE "streaming_on_raytrace"
+--streaming 1
+--renderer 1
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--visualize 5
+
+SEQUENCE "streaming_off_raytrace"
+--streaming 0
+--renderer 1
+--visualize 5
+
+# back to streaming, to catch anything that only breaks on the second transition
+SEQUENCE "streaming_on_raytrace_again"
+--streaming 1
+--renderer 1
+--visualize 5
+
+# move based CLAS compaction instead of the persistent device-side allocator.
+# Blas caching stays on from above on purpose, the renderer has to ignore it here.
+SEQUENCE "streaming_clasallocator_off"
+--streaming 1
+--renderer 1
+--clasallocator 0
+--visualize 5
+
+SEQUENCE "streaming_asynctransfer"
+--clasallocator 1
+--asynctransfer 1
+--decoupledtransfer 0
+--visualize 5
+
+SEQUENCE "streaming_asynctransfer_decoupled"
+--asynctransfer 1
+--decoupledtransfer 1
+--visualize 5
+
+# unloading only above a load factor, which changes what is resident frame to frame
+SEQUENCE "streaming_unloadthreshold"
+--asynctransfer 0
+--decoupledtransfer 0
+--streamingunloadthreshold 0.5
+--visualize 5
+
+SEQUENCE "streaming_shared_geometries"
+--streamingunloadthreshold 0
+--gridunique 0
+--visualize 5

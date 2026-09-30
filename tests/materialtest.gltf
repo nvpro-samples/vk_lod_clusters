@@ -1,0 +1,546 @@
+{
+ "asset": {
+  "version": "2.0",
+  "generator": "tests/make_materialtest.py"
+ },
+ "scene": 0,
+ "scenes": [
+  {
+   "name": "MaterialTest",
+   "nodes": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10
+   ]
+  }
+ ],
+ "nodes": [
+  {
+   "name": "BoxOpaqueFull",
+   "mesh": 0,
+   "translation": [
+    -12.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "BoxTwoSided",
+   "mesh": 1,
+   "translation": [
+    -9.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "BoxAlphaMask",
+   "mesh": 2,
+   "translation": [
+    -6.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "BoxAlphaBlend",
+   "mesh": 3,
+   "translation": [
+    -3.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "BoxMultiMaterial",
+   "mesh": 4,
+   "translation": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "BoxMixedAlpha",
+   "mesh": 5,
+   "translation": [
+    3.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "BoxTexcoord0Only",
+   "mesh": 6,
+   "translation": [
+    6.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "BoxPositionNormal",
+   "mesh": 7,
+   "translation": [
+    9.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "BoxNoMaterial",
+   "mesh": 8,
+   "translation": [
+    12.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "BoxOpaqueFull.001",
+   "mesh": 0,
+   "translation": [
+    0.0,
+    3.0,
+    0.0
+   ]
+  },
+  {
+   "name": "BoxAlphaMask.001",
+   "mesh": 2,
+   "translation": [
+    3.0,
+    3.0,
+    0.0
+   ]
+  }
+ ],
+ "meshes": [
+  {
+   "name": "BoxOpaqueFull",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0,
+      "NORMAL": 1,
+      "TEXCOORD_0": 2,
+      "TEXCOORD_1": 3,
+      "TANGENT": 4
+     },
+     "indices": 5,
+     "material": 0
+    }
+   ]
+  },
+  {
+   "name": "BoxTwoSided",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0,
+      "NORMAL": 1,
+      "TEXCOORD_0": 2,
+      "TEXCOORD_1": 3,
+      "TANGENT": 4
+     },
+     "indices": 5,
+     "material": 1
+    }
+   ]
+  },
+  {
+   "name": "BoxAlphaMask",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0,
+      "NORMAL": 1,
+      "TEXCOORD_0": 2,
+      "TEXCOORD_1": 3,
+      "TANGENT": 4
+     },
+     "indices": 5,
+     "material": 2
+    }
+   ]
+  },
+  {
+   "name": "BoxAlphaBlend",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0,
+      "NORMAL": 1,
+      "TEXCOORD_0": 2,
+      "TEXCOORD_1": 3,
+      "TANGENT": 4
+     },
+     "indices": 5,
+     "material": 3
+    }
+   ]
+  },
+  {
+   "name": "BoxMultiMaterial",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0,
+      "NORMAL": 1,
+      "TEXCOORD_0": 2,
+      "TEXCOORD_1": 3,
+      "TANGENT": 4
+     },
+     "indices": 6,
+     "material": 4
+    },
+    {
+     "attributes": {
+      "POSITION": 0,
+      "NORMAL": 1,
+      "TEXCOORD_0": 2,
+      "TEXCOORD_1": 3,
+      "TANGENT": 4
+     },
+     "indices": 7,
+     "material": 5
+    }
+   ]
+  },
+  {
+   "name": "BoxMixedAlpha",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0,
+      "NORMAL": 1,
+      "TEXCOORD_0": 2,
+      "TEXCOORD_1": 3,
+      "TANGENT": 4
+     },
+     "indices": 6,
+     "material": 2
+    },
+    {
+     "attributes": {
+      "POSITION": 0,
+      "NORMAL": 1,
+      "TEXCOORD_0": 2,
+      "TEXCOORD_1": 3,
+      "TANGENT": 4
+     },
+     "indices": 7,
+     "material": 1
+    }
+   ]
+  },
+  {
+   "name": "BoxTexcoord0Only",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0,
+      "NORMAL": 1,
+      "TEXCOORD_0": 2
+     },
+     "indices": 5,
+     "material": 0
+    }
+   ]
+  },
+  {
+   "name": "BoxPositionNormal",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0,
+      "NORMAL": 1
+     },
+     "indices": 5,
+     "material": 4
+    }
+   ]
+  },
+  {
+   "name": "BoxNoMaterial",
+   "primitives": [
+    {
+     "attributes": {
+      "POSITION": 0,
+      "NORMAL": 1
+     },
+     "indices": 5
+    }
+   ]
+  }
+ ],
+ "materials": [
+  {
+   "name": "Opaque",
+   "pbrMetallicRoughness": {
+    "baseColorFactor": [
+     0.8,
+     0.2,
+     0.2,
+     1.0
+    ],
+    "metallicFactor": 0.0,
+    "roughnessFactor": 0.6
+   },
+   "alphaMode": "OPAQUE"
+  },
+  {
+   "name": "TwoSided",
+   "pbrMetallicRoughness": {
+    "baseColorFactor": [
+     0.2,
+     0.8,
+     0.3,
+     1.0
+    ],
+    "metallicFactor": 0.1,
+    "roughnessFactor": 0.4
+   },
+   "alphaMode": "OPAQUE",
+   "doubleSided": true
+  },
+  {
+   "name": "AlphaMask",
+   "pbrMetallicRoughness": {
+    "baseColorFactor": [
+     1.0,
+     1.0,
+     1.0,
+     1.0
+    ],
+    "baseColorTexture": {
+     "index": 0
+    },
+    "metallicFactor": 0.0,
+    "roughnessFactor": 0.8
+   },
+   "alphaMode": "MASK",
+   "alphaCutoff": 0.5,
+   "doubleSided": true
+  },
+  {
+   "name": "AlphaBlend",
+   "pbrMetallicRoughness": {
+    "baseColorFactor": [
+     0.2,
+     0.4,
+     0.9,
+     0.45
+    ],
+    "metallicFactor": 0.0,
+    "roughnessFactor": 0.3
+   },
+   "alphaMode": "BLEND"
+  },
+  {
+   "name": "Metal",
+   "pbrMetallicRoughness": {
+    "baseColorFactor": [
+     0.9,
+     0.8,
+     0.4,
+     1.0
+    ],
+    "metallicFactor": 1.0,
+    "roughnessFactor": 0.15
+   },
+   "alphaMode": "OPAQUE"
+  },
+  {
+   "name": "Emissive",
+   "pbrMetallicRoughness": {
+    "baseColorFactor": [
+     0.1,
+     0.1,
+     0.1,
+     1.0
+    ],
+    "metallicFactor": 0.0,
+    "roughnessFactor": 1.0
+   },
+   "emissiveFactor": [
+    0.9,
+    0.5,
+    0.1
+   ],
+   "alphaMode": "OPAQUE"
+  }
+ ],
+ "textures": [
+  {
+   "source": 0
+  }
+ ],
+ "images": [
+  {
+   "uri": "materialtest_alpha.ktx",
+   "mimeType": "image/ktx"
+  }
+ ],
+ "accessors": [
+  {
+   "bufferView": 0,
+   "componentType": 5126,
+   "count": 486,
+   "type": "VEC3",
+   "min": [
+    -1.0,
+    -1.0,
+    -1.0
+   ],
+   "max": [
+    1.0,
+    1.0,
+    1.0
+   ],
+   "name": "POSITION"
+  },
+  {
+   "bufferView": 1,
+   "componentType": 5126,
+   "count": 486,
+   "type": "VEC3",
+   "min": [
+    -1,
+    -1,
+    -1
+   ],
+   "max": [
+    1,
+    1,
+    1
+   ],
+   "name": "NORMAL"
+  },
+  {
+   "bufferView": 2,
+   "componentType": 5126,
+   "count": 486,
+   "type": "VEC2",
+   "min": [
+    0.0,
+    0.0
+   ],
+   "max": [
+    1.0,
+    1.0
+   ],
+   "name": "TEXCOORD_0"
+  },
+  {
+   "bufferView": 3,
+   "componentType": 5126,
+   "count": 486,
+   "type": "VEC2",
+   "min": [
+    0.0,
+    0.0
+   ],
+   "max": [
+    1.0,
+    1.0
+   ],
+   "name": "TEXCOORD_1"
+  },
+  {
+   "bufferView": 4,
+   "componentType": 5126,
+   "count": 486,
+   "type": "VEC4",
+   "min": [
+    -1.0,
+    0.0,
+    -1.0,
+    1.0
+   ],
+   "max": [
+    1.0,
+    0.0,
+    1.0,
+    1.0
+   ],
+   "name": "TANGENT"
+  },
+  {
+   "bufferView": 5,
+   "componentType": 5125,
+   "count": 2304,
+   "byteOffset": 0,
+   "type": "SCALAR",
+   "name": "indices"
+  },
+  {
+   "bufferView": 5,
+   "componentType": 5125,
+   "count": 1152,
+   "byteOffset": 0,
+   "type": "SCALAR",
+   "name": "indices_lo"
+  },
+  {
+   "bufferView": 5,
+   "componentType": 5125,
+   "count": 1152,
+   "byteOffset": 4608,
+   "type": "SCALAR",
+   "name": "indices_hi"
+  }
+ ],
+ "bufferViews": [
+  {
+   "buffer": 0,
+   "byteOffset": 0,
+   "byteLength": 5832,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 5832,
+   "byteLength": 5832,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 11664,
+   "byteLength": 3888,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 15552,
+   "byteLength": 3888,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 19440,
+   "byteLength": 7776,
+   "target": 34962
+  },
+  {
+   "buffer": 0,
+   "byteOffset": 27216,
+   "byteLength": 9216,
+   "target": 34963
+  }
+ ],
+ "buffers": [
+  {
+   "uri": "materialtest.bin",
+   "byteLength": 36432
+  }
+ ]
+}

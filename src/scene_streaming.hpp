@@ -123,6 +123,7 @@ public:
   struct FrameSettings
   {
     bool                                 useBlasCaching        = false;
+    bool                                 useDiscreteLod        = false;
     float                                unloadThreshold       = 0.0f;
     bool                                 freeze                = false;
     uint32_t                             blasCacheAgeThreshold = 16;
@@ -240,7 +241,9 @@ private:
     uint32_t                              lodGroupsCount[SHADERIO_MAX_LOD_LEVELS]       = {};
     uint32_t                              cachedBlasUpdateFrame                         = 0;
     uint32_t                              cachedBlasLevel                               = TRAVERSAL_INVALID_LOD_LEVEL;
-    nvvk::BufferSubAllocation             cachedBlasAllocation                          = {};
+    // last published `shaderio::Geometry::discreteLodLevel` for USE_DISCRETE_LOD
+    uint32_t                  discreteLodLevel     = TRAVERSAL_INVALID_LOD_LEVEL;
+    nvvk::BufferSubAllocation cachedBlasAllocation = {};
   };
 
   std::vector<PersistentGeometry>       m_persistentGeometries;
@@ -308,6 +311,8 @@ private:
 
 private:
   void handleBlasCaching(StreamingUpdates::TaskInfo& updateTask, const FrameSettings& settings);
+  // rasterization: publishes the lod level from which on all levels are fully resident
+  void handleDiscreteLod(StreamingUpdates::TaskInfo& updateTask);
   // ui convenience only, see definition
   void appendBlasCacheRevalidation(StreamingUpdates::TaskInfo& updateTask, const FrameSettings& settings);
 
@@ -347,21 +352,21 @@ private:
 
   struct Shaders
   {
-    shaderc::SpvCompilationResult computeAgeFilterGroups;
-    shaderc::SpvCompilationResult computeUpdateSceneRaster;
-    shaderc::SpvCompilationResult computeUpdateSceneRay;
-    shaderc::SpvCompilationResult computeUpdateClasGeometryIndices;
-    shaderc::SpvCompilationResult computeSetup;
+    Shader computeAgeFilterGroups;
+    Shader computeUpdateSceneRaster;
+    Shader computeUpdateSceneRay;
+    Shader computeUpdateClasGeometryIndices;
+    Shader computeSetup;
 
     // if usePersistentClasAllocator
-    shaderc::SpvCompilationResult computeAllocatorBuildFreeGaps;
-    shaderc::SpvCompilationResult computeAllocatorFreeGapsInsert;
-    shaderc::SpvCompilationResult computeAllocatorSetupInsertion;
-    shaderc::SpvCompilationResult computeAllocatorUnloadGroups;
-    shaderc::SpvCompilationResult computeAllocatorLoadGroups;
+    Shader computeAllocatorBuildFreeGaps;
+    Shader computeAllocatorFreeGapsInsert;
+    Shader computeAllocatorSetupInsertion;
+    Shader computeAllocatorUnloadGroups;
+    Shader computeAllocatorLoadGroups;
     // else
-    shaderc::SpvCompilationResult computeCompactionClasOld;
-    shaderc::SpvCompilationResult computeCompactionClasNew;
+    Shader computeCompactionClasOld;
+    Shader computeCompactionClasNew;
   };
 
   struct Pipelines

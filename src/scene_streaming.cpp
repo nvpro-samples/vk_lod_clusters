@@ -115,8 +115,8 @@ bool SceneStreaming::init(Resources* resources, const Scene* scene, const Stream
   m_operationsSize += logMemoryUsage(m_storage.getOperationsSize(), "operations", "stream storage");
 
   res.createBuffer(m_shaderBuffer, sizeof(shaderio::SceneStreaming),
-                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT
-                       | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT
+                       | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
   NVVK_DBG_NAME(m_shaderBuffer.buffer);
 
   m_operationsSize += logMemoryUsage(m_shaderBuffer.bufferSize, "operations", "stream shaderio");
@@ -210,6 +210,10 @@ void SceneStreaming::resetGeometryGroupAddresses(Resources::BatchedUploader& upl
     }
     persistentGeometry.lodLoadedGroupsCount[maxLodLevel] = 1;
 
+    // nothing is resident anymore, the device must not keep a level from before
+    persistentGeometry.discreteLodLevel = TRAVERSAL_INVALID_LOD_LEVEL;
+    shaderGeometry.discreteLodLevel     = TRAVERSAL_INVALID_LOD_LEVEL;
+
     // the persistent coarsest group is reverse lod level 0
     m_residentStats.backLodLoadedCount[0]++;
   }
@@ -263,7 +267,7 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
     shaderGeometry.lodLevelsCount          = numLodLevels;
     shaderGeometry.lodLevels               = persistentGeometry.lodLevels.address;
     shaderGeometry.cachedBlasAddress       = 0;
-    shaderGeometry.cachedBlasLodLevel      = TRAVERSAL_INVALID_LOD_LEVEL;
+    shaderGeometry.discreteLodLevel        = TRAVERSAL_INVALID_LOD_LEVEL;
     shaderGeometry.instancesCount          = sceneGeometry.instanceReferenceCount * scene->getGeometryInstanceFactor();
     shaderGeometry.instancesOffset         = instancesOffset;
 
@@ -526,9 +530,10 @@ void SceneStreaming::cmdBeginFrame(VkCommandBuffer         cmd,
     m_clasAllocator.cmdBeginFrame(cmd);
   }
 
-  m_shaderData.frameIndex               = m_frameIndex;
-  m_shaderData.ageThreshold             = getLoadFactor() < settings.unloadThreshold ? 10000000 : settings.ageThreshold;
-  m_shaderData.useBlasCaching           = settings.useBlasCaching ? 1 : 0;
+  m_shaderData.frameIndex   = m_frameIndex;
+  m_shaderData.ageThreshold = getLoadFactor() < settings.unloadThreshold ? 10000000 : settings.ageThreshold;
+  // both keep the lod levels they rely on alive during age filtering
+  m_shaderData.useBlasCaching           = (settings.useBlasCaching || settings.useDiscreteLod) ? 1 : 0;
   m_shaderData.clasPositionTruncateBits = m_clasTriangleInput.minPositionTruncateBitCount;
 
   // ui convenience only, see `appendBlasCacheRevalidation`.
@@ -699,6 +704,8 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
   updateTask.clasVerticesRingSlot = pushUpdateIndex;
 
   bool useBlasCaching = m_requiresClas && m_config.allowBlasCaching && settings.useBlasCaching;
+  // both features are driven by the same geometry patches, they are mutually exclusive
+  bool useGeometryPatches = useBlasCaching || settings.useDiscreteLod;
 
   // let's do unloads first, so we can recycle resident objects
   for(uint32_t g = 0; g < unloadCount; g++)
@@ -740,7 +747,7 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
     m_resident.removeGroup(group->groupResidentID);
 
     // append to geometry patch list if necessary
-    if(useBlasCaching && m_persistentGeometries[geometryGroup.geometryID].cachedBlasUpdateFrame != m_frameIndex)
+    if(useGeometryPatches && m_persistentGeometries[geometryGroup.geometryID].cachedBlasUpdateFrame != m_frameIndex)
     {
       m_persistentGeometries[geometryGroup.geometryID].cachedBlasUpdateFrame = m_frameIndex;
       uint32_t                          geometryPatchIndex                   = updateTask.geometryCachedCount++;
@@ -811,16 +818,16 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
     {
       groupClasSize = m_clasSingleMaxSize * clusterCount;
 
-      // must always fit in scratch
-      assert((clasBuildSize + groupClasSize) <= m_clasScratchNewClasSize);
+      // must always fit in scratch, defer the group rather than build past the end of it
+      canAllocateClas = (clasBuildSize + groupClasSize) <= m_clasScratchNewClasSize;
 
       if(m_config.usePersistentClasAllocator)
       {
-        canAllocateClas = clasAllocatedMaxSizedLeft > 0;
+        canAllocateClas = canAllocateClas && clasAllocatedMaxSizedLeft > 0;
       }
       else
       {
-        canAllocateClas = (clasMovedUsedSize + (clasBuildSize + groupClasSize)) <= clasMovedReservedSize;
+        canAllocateClas = canAllocateClas && (clasMovedUsedSize + (clasBuildSize + groupClasSize)) <= clasMovedReservedSize;
       }
     }
 
@@ -892,7 +899,7 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
     m_residentStats.backLodLoadedCount[m_persistentGeometries[geometryGroup.geometryID].lodLevelsCount - 1 - groupInfo.lodLevel]++;
 
     // append to geometry patch list if necessary
-    if(useBlasCaching && m_persistentGeometries[geometryGroup.geometryID].cachedBlasUpdateFrame != m_frameIndex)
+    if(useGeometryPatches && m_persistentGeometries[geometryGroup.geometryID].cachedBlasUpdateFrame != m_frameIndex)
     {
       m_persistentGeometries[geometryGroup.geometryID].cachedBlasUpdateFrame = m_frameIndex;
       uint32_t                          geometryPatchIndex                   = updateTask.geometryCachedCount++;
@@ -957,6 +964,10 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
   if(useBlasCaching)
   {
     handleBlasCaching(updateTask, settings);
+  }
+  else if(settings.useDiscreteLod)
+  {
+    handleDiscreteLod(updateTask);
   }
 
   uint32_t transferCount = 0;
@@ -1066,6 +1077,44 @@ void SceneStreaming::appendBlasCacheRevalidation(StreamingUpdates::TaskInfo& upd
   }
 }
 
+void SceneStreaming::handleDiscreteLod(StreamingUpdates::TaskInfo& updateTask)
+{
+  // Rasterization can render an instance from a single discrete lod level, as long
+  // as that level is fully resident. We publish the lod level from which on all
+  // levels are fully loaded, so the device test is `lodLevelMin >= discreteLodLevel`.
+  // Only geometries whose level changed need to be patched.
+
+  uint32_t writeIndex = 0;
+
+  for(uint32_t g = 0; g < updateTask.geometryCachedCount; g++)
+  {
+    shaderio::StreamingGeometryPatch sgpatch            = updateTask.geometryPatches[g];
+    PersistentGeometry&              persistentGeometry = m_persistentGeometries[sgpatch.geometryID];
+
+    // the last level is always resident, scan towards higher detail
+    uint32_t discreteLodLevel = persistentGeometry.lodLevelsCount - 1;
+    while(discreteLodLevel > 0
+          && persistentGeometry.lodGroupsCount[discreteLodLevel - 1] == persistentGeometry.lodLoadedGroupsCount[discreteLodLevel - 1])
+    {
+      discreteLodLevel--;
+    }
+
+    if(discreteLodLevel == persistentGeometry.discreteLodLevel)
+      continue;
+
+    persistentGeometry.discreteLodLevel = discreteLodLevel;
+
+    sgpatch.discreteLodLevel        = uint16_t(discreteLodLevel);
+    sgpatch.cachedBlasClustersCount = 0;
+    sgpatch.cachedBlasAddress       = 0;
+
+    updateTask.geometryPatches[writeIndex++] = sgpatch;
+  }
+
+  updateTask.geometryCachedCount         = writeIndex;
+  updateTask.geometryCachedClustersCount = 0;
+}
+
 void SceneStreaming::handleBlasCaching(StreamingUpdates::TaskInfo& updateTask, const FrameSettings& settings)
 {
   uint32_t writeIndex = 0;
@@ -1105,7 +1154,7 @@ void SceneStreaming::handleBlasCaching(StreamingUpdates::TaskInfo& updateTask, c
         // check if it fits
         if(cachedClustersCount <= STREAMING_CACHED_BLAS_MAX_CLUSTERS)
         {
-          sgpatch.cachedBlasLodLevel = i;
+          sgpatch.discreteLodLevel = i;
           break;
         }
         else
@@ -1121,8 +1170,8 @@ void SceneStreaming::handleBlasCaching(StreamingUpdates::TaskInfo& updateTask, c
     // do nothing
 
     bool isInvalidateOnly = !cachedClustersCount && persistentGeometry.cachedBlasLevel != TRAVERSAL_INVALID_LOD_LEVEL;
-    bool isLowerDetail    = cachedClustersCount && sgpatch.cachedBlasLodLevel > persistentGeometry.cachedBlasLevel;
-    bool isHigherDetail   = cachedClustersCount && sgpatch.cachedBlasLodLevel < persistentGeometry.cachedBlasLevel
+    bool isLowerDetail    = cachedClustersCount && sgpatch.discreteLodLevel > persistentGeometry.cachedBlasLevel;
+    bool isHigherDetail   = cachedClustersCount && sgpatch.discreteLodLevel < persistentGeometry.cachedBlasLevel
                           && persistentGeometry.cachedBlasUpdateFrame + settings.blasCacheAgeThreshold > m_frameIndex;
 
     if(isLowerDetail || isHigherDetail || isInvalidateOnly || STREAMING_DEBUG_FORCE_REQUESTS)
@@ -1155,7 +1204,7 @@ void SceneStreaming::handleBlasCaching(StreamingUpdates::TaskInfo& updateTask, c
           m_cachedBlasAllocator.subFree(persistentGeometry.cachedBlasAllocation);
         }
         m_cachedBlasCount += persistentGeometry.cachedBlasLevel == TRAVERSAL_INVALID_LOD_LEVEL ? 1 : 0;
-        persistentGeometry.cachedBlasLevel       = sgpatch.cachedBlasLodLevel;
+        persistentGeometry.cachedBlasLevel       = sgpatch.discreteLodLevel;
         persistentGeometry.cachedBlasAllocation  = subAllocation;
         persistentGeometry.cachedBlasUpdateFrame = m_frameIndex;
 
@@ -1179,8 +1228,8 @@ void SceneStreaming::handleBlasCaching(StreamingUpdates::TaskInfo& updateTask, c
         persistentGeometry.cachedBlasLevel       = TRAVERSAL_INVALID_LOD_LEVEL;
         persistentGeometry.cachedBlasUpdateFrame = m_frameIndex;
 
-        sgpatch.cachedBlasLodLevel = TRAVERSAL_INVALID_LOD_LEVEL;
-        sgpatch.cachedBlasAddress  = 0;
+        sgpatch.discreteLodLevel  = TRAVERSAL_INVALID_LOD_LEVEL;
+        sgpatch.cachedBlasAddress = 0;
 
         updateTask.geometryPatches[writeIndex++] = sgpatch;
       }
@@ -1836,6 +1885,11 @@ void SceneStreaming::reset()
   {
     resetCachedBlas(uploader);
   }
+  else
+  {
+    // resets discreteLodLevel, `resetCachedBlas` does this as well
+    uploader.uploadBuffer(m_shaderGeometriesBuffer, m_shaderGeometries.data());
+  }
   if(m_requiresClas && m_config.usePersistentClasAllocator)
   {
     m_clasAllocator.cmdReset(uploader.getCmd());
@@ -1862,8 +1916,9 @@ bool SceneStreaming::initShadersAndPipelines()
 
   res.compileShader(m_shaders.computeAgeFilterGroups, VK_SHADER_STAGE_COMPUTE_BIT, "stream_agefilter_groups.comp.glsl", &options);
   res.compileShader(m_shaders.computeSetup, VK_SHADER_STAGE_COMPUTE_BIT, "stream_setup.comp.glsl", &options);
-  res.compileShader(m_shaders.computeUpdateSceneRaster, VK_SHADER_STAGE_COMPUTE_BIT, "stream_update_scene.comp.glsl", &optionsRaster);
-  res.compileShader(m_shaders.computeUpdateSceneRay, VK_SHADER_STAGE_COMPUTE_BIT, "stream_update_scene.comp.glsl", &optionsRay);
+  res.compileShader(m_shaders.computeUpdateSceneRaster, VK_SHADER_STAGE_COMPUTE_BIT, "stream_update_scene.comp.glsl",
+                    &optionsRaster, "raster");
+  res.compileShader(m_shaders.computeUpdateSceneRay, VK_SHADER_STAGE_COMPUTE_BIT, "stream_update_scene.comp.glsl", &optionsRay, "ray");
   res.compileShader(m_shaders.computeUpdateClasGeometryIndices, VK_SHADER_STAGE_COMPUTE_BIT,
                     "stream_update_clas_geometry_indices.comp.glsl", &options);
   // we load all shaders regardless of use for now
@@ -1895,53 +1950,39 @@ bool SceneStreaming::initShadersAndPipelines()
   }
 
   {
-    VkComputePipelineCreateInfo compInfo   = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    VkShaderModuleCreateInfo    shaderInfo = {};
-    compInfo.stage                         = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-    compInfo.stage.stage                   = VK_SHADER_STAGE_COMPUTE_BIT;
-    compInfo.stage.pName                   = "main";
-    compInfo.stage.pNext                   = &shaderInfo;
-    compInfo.layout                        = m_pipelineLayout;
+    VkComputePipelineCreateInfo compInfo = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    compInfo.stage                       = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    compInfo.stage.stage                 = VK_SHADER_STAGE_COMPUTE_BIT;
+    compInfo.stage.pName                 = "main";
+    compInfo.layout                      = m_pipelineLayout;
 
-    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeAgeFilterGroups);
-    vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeAgeFilterGroups);
+    res.createComputePipeline(compInfo, m_shaders.computeAgeFilterGroups, m_pipelines.computeAgeFilterGroups);
 
-    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeSetup);
-    vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeSetup);
+    res.createComputePipeline(compInfo, m_shaders.computeSetup, m_pipelines.computeSetup);
 
-    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeUpdateSceneRaster);
-    vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeUpdateSceneRaster);
+    res.createComputePipeline(compInfo, m_shaders.computeUpdateSceneRaster, m_pipelines.computeUpdateSceneRaster);
 
-    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeUpdateSceneRay);
-    vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeUpdateSceneRay);
+    res.createComputePipeline(compInfo, m_shaders.computeUpdateSceneRay, m_pipelines.computeUpdateSceneRay);
 
-    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeUpdateClasGeometryIndices);
-    vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeUpdateClasGeometryIndices);
+    res.createComputePipeline(compInfo, m_shaders.computeUpdateClasGeometryIndices, m_pipelines.computeUpdateClasGeometryIndices);
 
     if(m_config.usePersistentClasAllocator)
     {
-      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeAllocatorBuildFreeGaps);
-      vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeAllocatorBuildFreeGaps);
+      res.createComputePipeline(compInfo, m_shaders.computeAllocatorBuildFreeGaps, m_pipelines.computeAllocatorBuildFreeGaps);
 
-      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeAllocatorFreeGapsInsert);
-      vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeAllocatorFreeGapsInsert);
+      res.createComputePipeline(compInfo, m_shaders.computeAllocatorFreeGapsInsert, m_pipelines.computeAllocatorFreeGapsInsert);
 
-      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeAllocatorLoadGroups);
-      vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeAllocatorLoadGroups);
+      res.createComputePipeline(compInfo, m_shaders.computeAllocatorLoadGroups, m_pipelines.computeAllocatorLoadGroups);
 
-      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeAllocatorSetupInsertion);
-      vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeAllocatorSetupInsertion);
+      res.createComputePipeline(compInfo, m_shaders.computeAllocatorSetupInsertion, m_pipelines.computeAllocatorSetupInsertion);
 
-      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeAllocatorUnloadGroups);
-      vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeAllocatorUnloadGroups);
+      res.createComputePipeline(compInfo, m_shaders.computeAllocatorUnloadGroups, m_pipelines.computeAllocatorUnloadGroups);
     }
     else
     {
-      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeCompactionClasOld);
-      vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeCompactionClasOld);
+      res.createComputePipeline(compInfo, m_shaders.computeCompactionClasOld, m_pipelines.computeCompactionClasOld);
 
-      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeCompactionClasNew);
-      vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeCompactionClasNew);
+      res.createComputePipeline(compInfo, m_shaders.computeCompactionClasNew, m_pipelines.computeCompactionClasNew);
     }
   }
 
@@ -2124,6 +2165,11 @@ bool SceneStreaming::initClas()
     m_clasScratchMoveSize = buildSizesInfo.updateScratchSize;
 
     m_clasScratchTotalSize = m_clasScratchNewClasSize + std::max(m_clasScratchMoveSize, m_clasScratchNewBuildSize);
+
+    // the worst case per frame is what the budget has to leave room for, so print both
+    LOGI("streaming: CLAS %u B max per cluster, %u KiB max new per frame, scratch move %u KiB / build %u KiB, budget %u KiB\n",
+         uint32_t(m_clasSingleMaxSize), uint32_t(m_clasScratchNewClasSize / 1024), uint32_t(m_clasScratchMoveSize / 1024),
+         uint32_t(m_clasScratchNewBuildSize / 1024), uint32_t(m_config.maxClasMegaBytes * 1024));
   }
 
 
@@ -2231,6 +2277,9 @@ bool SceneStreaming::initClas()
     uint32_t*                                                     geometryIndices = clasGeometryIndicesHost.data();
     size_t                                                        geometryOffset  = 0;
 
+    // per-triangle materials are palette encoded within a compressed group, decode space for one group
+    std::vector<uint8_t> triangleMaterialsScratch(SHADERIO_MAX_GROUP_CLUSTERS * SHADERIO_MAX_CLUSTER_TRIANGLES);
+
     // prepare build of clusters
     for(uint32_t g = 0; g < loGroupsCount; g++)
     {
@@ -2241,6 +2290,9 @@ bool SceneStreaming::initClas()
 
       uint64_t groupVA     = residentGroup.deviceAddress;
       size_t   indexOffset = size_t(sceneGroupView.triangles.data()) - size_t(sceneGroupView.raw);
+
+      const uint8_t* clusterTriangleMaterials[SHADERIO_MAX_GROUP_CLUSTERS];
+      Scene::getGroupTriangleMaterials(sceneGroupInfo, sceneGroupView, triangleMaterialsScratch.data(), clusterTriangleMaterials);
 
       blasBuildInfos[g].clusterReferencesCount  = residentGroup.clusterCount;
       blasBuildInfos[g].clusterReferencesStride = sizeof(uint64_t);
@@ -2291,8 +2343,8 @@ bool SceneStreaming::initClas()
           buildInfo.geometryIndexAndFlagsBuffer = clasGeometryIndicesHost.address + geometryOffset * sizeof(uint32_t);
           buildInfo.geometryIndexAndFlagsBufferStride = uint16_t(sizeof(uint32_t));
 
-          const uint8_t* clusterMaterialIndices = sceneGroupView.getClusterIndices(c) + 3 * buildInfo.triangleCount;
-          if(sceneCluster.localMaterialID == SHADERIO_PER_TRIANGLE_MATERIALS)
+          const uint8_t* clusterMaterialIndices = clusterTriangleMaterials[c];
+          if(clusterMaterialIndices)
           {
             for(uint32_t t = 0; t < buildInfo.triangleCount; t++)
             {

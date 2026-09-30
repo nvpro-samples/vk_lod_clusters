@@ -52,6 +52,9 @@ public:
 
   static const ClusterInfo s_clusterInfos[NUM_CLUSTER_CONFIGS];
 
+  // maximum number of entries in the "Open Recent" list
+  static const size_t s_recentFilesMax = 16;
+
   enum GuiEnums
   {
     GUI_RENDERER,
@@ -86,6 +89,9 @@ public:
 
     float mirrorBoxScale  = 0.2f;
     float clickSpeedScale = 0.33f;
+
+    // user part of the texture LOD bias, the DLSS render/target ratio is added on top
+    float texLodBias = 0.0f;
 
     // rasterization-only solo filters; -1 disables (default)
     int32_t filterInstanceID = -1;
@@ -130,10 +136,14 @@ public:
   void onFileDrop(const std::filesystem::path& filename) override;
   void onLastHeadlessFrame() override;
 
+  // must be called after the ImGui context exists, adds the recent files to the .ini settings
+  void registerRecentFilesHandler();
+
   void setSupportsClusterRaytracing(bool supported) { m_resources.m_supportsClusterRaytracing = supported; }
   void setSupportsBarycentrics(bool supported) { m_resources.m_supportsBarycentrics = supported; }
   void setSupportsMeshShaderNV(bool supported) { m_resources.m_supportsMeshShaderNV = supported; }
   void setSupportsSmBuiltinsNV(bool supported) { m_resources.m_supportsSmBuiltinsNV = supported; }
+  void setSupportsPipelineExecutableInfo(bool supported) { m_resources.m_supportsPipelineExecutableInfo = supported; }
   bool getShowDebugUI() const { return m_showDebugUI; }
 
   bool isProcessingOnly() const { return !m_sceneFilePathDropNew.empty() && m_sceneLoaderConfig.processingOnly; }
@@ -202,7 +212,11 @@ private:
 
   uint32_t m_lastAmbientOcclusionSamples = 0;
 
+  // only ever a scene that is ready to use: the loader thread hands its result over via
+  // m_scenePending and handleChanges installs it, so the ui (which keeps drawing during a load)
+  // can rely on a plain null test.
   std::unique_ptr<Scene> m_scene;
+  std::unique_ptr<Scene> m_scenePending;
   std::filesystem::path  m_sceneFilePath;
   std::filesystem::path  m_sceneFilePathDefault;
   std::filesystem::path  m_sceneFilePathDropLast;
@@ -210,16 +224,20 @@ private:
   std::string            m_sceneCacheSuffix = ".nvsngeo";
   SceneLoaderConfig      m_sceneLoaderConfig;
   SceneLoaderConfig      m_sceneLoaderConfigLast;
-  SceneConfig            m_sceneConfig;
-  SceneConfig            m_sceneConfigLast;
-  SceneConfig            m_sceneConfigEdit;
-  glm::vec3              m_sceneUpVector = glm::vec3(0, 1, 0);
-  SceneGridConfig        m_sceneGridConfig;
-  SceneGridConfig        m_sceneGridConfigLast;
-  std::atomic_bool       m_sceneLoading = false;
+  // state after the command line was parsed, restored when switching to a different scene so
+  // that a scene's config file and its scene_overrides do not leak into the next scene
+  SceneConfig       m_sceneConfigBaseline;
+  SceneLoaderConfig m_sceneLoaderConfigBaseline;
+  SceneConfig       m_sceneConfig;
+  SceneConfig       m_sceneConfigLast;
+  SceneConfig       m_sceneConfigEdit;
+  glm::vec3         m_sceneUpVector = glm::vec3(0, 1, 0);
+  SceneGridConfig   m_sceneGridConfig;
+  SceneGridConfig   m_sceneGridConfigLast;
+  std::atomic_bool  m_sceneLoading = false;
   // progress signals shared with the background loader via m_sceneLoaderConfig.progressInfo
-  std::atomic_uint32_t m_sceneCompletedCount = 0;  // items done in the current phase
-  std::atomic_uint32_t m_sceneTotalCount     = 0;  // items total in the current phase
+  std::atomic_uint64_t m_sceneCompletedCount = 0;  // items done in the current phase
+  std::atomic_uint64_t m_sceneTotalCount     = 0;  // items total in the current phase
   std::atomic_uint32_t m_sceneProgressPhase  = 0;  // current LoadPhase
   // set by the loader thread once textures are loaded into m_renderScenePending; the main thread
   // then promotes it to m_renderScene and finishes the GPU geometry setup in handleChanges.
@@ -300,15 +318,25 @@ private:
 
   uint32_t m_equalFrames = 0;
 
+  // most recently loaded scene/config files, persisted through the imgui .ini
+  std::vector<std::filesystem::path> m_recentFiles;
+
   // use by-value copies for flexibility
   void initScene(std::filesystem::path filePath, std::string cacheSuffix, bool configChange);
 
-  void setSceneCamera(const std::filesystem::path& filePath);
+  void setSceneCamera(const std::filesystem::path& filePath, Scene& scene);
   void saveCacheFile();
   void applyMemoryBudgetArgs();
+  void clampStreamingConfig(const Scene& scene);
+
+  // runs "scene_overrides/<stem of filePath>.cfg" if it exists, must happen before the scene is loaded
+  void applySceneOverrides(const std::filesystem::path& filePath);
+
+  void addToRecentFiles(const std::filesystem::path& filePath);
+  void removeFromRecentFiles(const std::filesystem::path& filePath);
 
   void deinitScene();
-  void postInitNewScene();
+  void postInitNewScene(Scene& scene);
 
   void initRenderScene();
   void initRenderSceneGeometry();
@@ -321,7 +349,7 @@ private:
 
   ClusterConfig findSceneClusterConfig(const SceneConfig& sceneConfig);
   void          setFromClusterConfig(SceneConfig& sceneConfig, ClusterConfig clusterConfig);
-  void          updatedSceneGrid();
+  void          updatedSceneGrid(const Scene& scene);
 
   void handleChanges();
   void applyCameraString();

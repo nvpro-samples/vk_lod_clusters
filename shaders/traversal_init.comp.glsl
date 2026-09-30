@@ -65,7 +65,7 @@ layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffe
   Geometry geometries[];
 };
 
-#if USE_TWO_PASS_CULLING && TARGETS_RASTERIZATION
+#if TARGETS_RASTERIZATION && USE_TWO_PASS_CULLING
 layout(binding = BINDINGS_HIZ_TEX)  uniform sampler2D texHizFar[2];
 #else
 layout(binding = BINDINGS_HIZ_TEX)  uniform sampler2D texHizFar;
@@ -93,14 +93,35 @@ layout(local_size_x=TRAVERSAL_INIT_WORKGROUP) in;
 
 void main()
 {
-  uint instanceID   = getGlobalInvocationIndex(gl_GlobalInvocationID);
-  uint instanceLoad = min(build.numRenderInstances-1, instanceID);
-  bool isValid      = instanceID == instanceLoad;
+  uint threadID = getGlobalInvocationIndex(gl_GlobalInvocationID);
 
-#if USE_SORTING
-  instanceLoad = build.instanceSortValues.d[instanceLoad];
-  instanceID   = instanceLoad;
+#if TARGETS_RASTERIZATION && USE_TWO_PASS_REJECT_LISTS
+  // the second pass only revisits the instances that the first pass rejected
+  bool useRejects   = build.cullPass == 1;
+  uint numInstances = useRejects ? min(build.rejectInstanceCounter, build.numRenderInstances) : build.numRenderInstances;
+#else
+  const bool useRejects = false;
+  uint numInstances     = build.numRenderInstances;
 #endif
+
+  bool isValid      = threadID < numInstances;
+  uint instanceLoad = isValid ? threadID : 0;
+  uint instanceID   = instanceLoad;
+
+#if TARGETS_RASTERIZATION && USE_TWO_PASS_REJECT_LISTS
+  if (useRejects)
+  {
+    instanceLoad = build.rejectInstances.d[instanceLoad];
+    instanceID   = instanceLoad;
+  }
+  else
+#endif
+  {
+#if USE_SORTING
+    instanceLoad = build.instanceSortValues.d[instanceLoad];
+    instanceID   = instanceLoad;
+#endif
+  }
 
   RenderInstance instance = instances[instanceLoad];
   uint geometryID = instance.geometryID;
@@ -118,25 +139,53 @@ void main()
   vec4 clipMax;
   bool clipValid;
   
-#if USE_TWO_PASS_CULLING && TARGETS_RASTERIZATION
-  bool inFrustum = intersectFrustum( build.cullPass == 0 ? build.cullViewProjMatrixLast : build.cullViewProjMatrix, geometry.bbox.lo, geometry.bbox.hi, instance.worldMatrix, clipMin, clipMax, clipValid);
-  bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, build.cullPass)));
-  
+#if TARGETS_RASTERIZATION && USE_TWO_PASS_CULLING
+  bool inFrustum = intersectFrustum( build.cullPass == 0 ? build.cullViewProjMatrixLast : build.cullViewProjMatrix, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix), clipMin, clipMax, clipValid);
+  bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, CULL_MIN_PIXEL_SIZE) && intersectHiz(clipMin, clipMax, build.cullPass)));
+
+#if !USE_TWO_PASS_REJECT_LISTS
   // if smallish and was already drawn, don't process again
-  if (build.cullPass == 1 && isVisible && clipValid && !intersectSize(clipMin, clipMax, 8.0) && ((uint(build.instanceVisibility.d[instanceLoad]) & INSTANCE_VISIBLE_BIT) != 0)) {
+  if (build.cullPass == 1 && isVisible && clipValid && !intersectSize(clipMin, clipMax, CULL_SECOND_PASS_MIN_PIXEL_SIZE) && ((uint(build.instanceVisibility.d[instanceLoad]) & INSTANCE_VISIBLE_BIT) != 0)) {
     isVisible = false;
   }
-  
+#endif
+
 #else
-  bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, geometry.bbox.lo, geometry.bbox.hi, instance.worldMatrix, clipMin, clipMax, clipValid);
-  bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 0)));
+  bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix), clipMin, clipMax, clipValid);
+  bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, CULL_MIN_PIXEL_SIZE) && intersectHiz(clipMin, clipMax, 0)));
 #endif
 
 #if TARGETS_RASTERIZATION
   // Solo-instance filter: ~0u disables the filter.
-  if (view.visFilterInstanceID != ~0u && instanceID != view.visFilterInstanceID)
+  bool soloFiltered = view.visFilterInstanceID != ~0u && instanceID != view.visFilterInstanceID;
+  if (soloFiltered)
   {
     isVisible = false;
+  }
+#else
+  const bool soloFiltered = false;
+#endif
+
+#if TARGETS_RASTERIZATION && USE_TWO_PASS_REJECT_LISTS
+  {
+    // Record instances the first pass could not draw. Only those within the current
+    // frustum can reappear once the hiz is updated, everything else would fail the
+    // second pass anyway, so filter here and keep the list short.
+    bool reject = isValid && build.cullPass == 0 && !isVisible && !soloFiltered
+                  && intersectFrustumOnly(build.cullViewProjMatrix, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix));
+
+    uvec4 voteReject   = subgroupBallot(reject);
+    uint  offsetReject = 0;
+    if (subgroupElect())
+    {
+      offsetReject = atomicAdd(buildRW.rejectInstanceCounter, subgroupBallotBitCount(voteReject));
+    }
+    offsetReject = subgroupBroadcastFirst(offsetReject) + subgroupBallotExclusiveBitCount(voteReject);
+
+    if (reject && offsetReject < build.numRenderInstances)
+    {
+      build.rejectInstances.d[offsetReject] = instanceID;
+    }
   }
 #endif
 
@@ -166,7 +215,7 @@ void main()
     Node childNode          = geometry.nodes.d[childOffset + childNodeIndex];
     TraversalMetric traversalMetric = childNode.traversalMetric;
   
-    mat4x3 worldMatrix = instances[instanceID].worldMatrix;
+    mat4x3 worldMatrix = transpose(instance.worldMatrix);
     float uniformScale = computeUniformScale(worldMatrix);
     float errorScale   = 1.0;
   #if USE_CULLING && TARGETS_RAY_TRACING
@@ -205,6 +254,8 @@ void main()
     #endif
 
       rasterBinning(geometry.lowDetailClusterID, instanceID, useAlpha, useSW, true);
+
+      visibilityState |= INSTANCE_USES_LOWDETAIL_BIT;
     #endif
 
       // we can skip adding the node for traversal
@@ -252,7 +303,8 @@ void main()
       build.tlasInstances.d[instanceID].blasReference             = geometry.lowDetailBlasAddress;
     }
   }
-#elif USE_TWO_PASS_CULLING && TARGETS_RASTERIZATION
+#elif TARGETS_RASTERIZATION
+  // drives the two pass culling and VISUALIZE_DISCRETE_LOD
   if (build.cullPass == 0 && isValid) {
     build.instanceVisibility.d[instanceID]                        = uint8_t(visibilityState);
   }

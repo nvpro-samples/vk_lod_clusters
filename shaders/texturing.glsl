@@ -63,8 +63,9 @@ TexLOD makeConeTexLOD(float coneWidth, float texelDensity, float incidence)
   TexLOD tl;
   float footUV = coneFootprintUV(coneWidth, texelDensity, incidence);
 #if TEXTURE_LOD_MODE == TEXLODMODE_LOD
-  tl.lodBase = log2(footUV);  // per-texture 0.5*log2(w*h) added in sampleBindless()
+  tl.lodBase = log2(footUV) + view.texLodBias;  // per-texture 0.5*log2(w*h) added in sampleBindless()
 #else
+  footUV *= view.texLodBiasScale;
   tl.gradX = vec2(footUV, 0.0);
   tl.gradY = vec2(0.0, footUV);
 #endif
@@ -83,7 +84,11 @@ vec4 sampleBindless(uint texIndex, vec2 uv, TexLOD texLod)
   float lod = texLod.lodBase + 0.5 * log2(max(ts.x * ts.y, 1.0));
   return textureLod(bindlessTextures[nonuniformEXT(texIndex)], uv, lod);
 #else  // TEXLODMODE_IMPLICIT
+#ifdef TEXTURING_IMPLICIT_HAS_BIAS
+  return texture(bindlessTextures[nonuniformEXT(texIndex)], uv, view.texLodBias);
+#else
   return texture(bindlessTextures[nonuniformEXT(texIndex)], uv);
+#endif
 #endif
 }
 #endif
@@ -175,7 +180,7 @@ float computeRasterFootprintGrad(float triArea, vec2 uv0, vec2 uv1, vec2 uv2)
   vec2  duv2   = uv2 - uv0;
   float uvArea = abs(duv1.x * duv2.y - duv1.y * duv2.x);
 
-  return sqrt(max(uvArea, 1e-20) / max(triArea, 1e-20)) * view.texGradScale;
+  return sqrt(max(uvArea, 1e-20) / max(triArea, 1e-20)) * view.texGradScale * view.texLodBiasScale;
 }
 
 // Screen-space texture gradients from a rasterized triangle (software compute-raster alpha test; the
@@ -194,6 +199,6 @@ void computeRasterTextureGradients(vec2 pos0,
   vec3 baryDdx = vec3(pos2.y - pos1.y, pos0.y - pos2.y, pos1.y - pos0.y) * (winding * invTriArea);
   vec3 baryDdy = vec3(pos1.x - pos2.x, pos2.x - pos0.x, pos0.x - pos1.x) * (winding * invTriArea);
 
-  texGradDdx = interpolateTexCoord(baryDdx, uv0, uv1, uv2) * view.texGradScale;
-  texGradDdy = interpolateTexCoord(baryDdy, uv0, uv1, uv2) * view.texGradScale;
+  texGradDdx = interpolateTexCoord(baryDdx, uv0, uv1, uv2) * view.texGradScale * view.texLodBiasScale;
+  texGradDdy = interpolateTexCoord(baryDdy, uv0, uv1, uv2) * view.texGradScale * view.texLodBiasScale;
 }

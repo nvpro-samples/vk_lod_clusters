@@ -160,7 +160,7 @@ void main()
       bool clusterFiltered = view.visFilterClusterID != ~0u && clusterID != view.visFilterClusterID;
       vec4 clipPos = clusterFiltered
                        ? vec4(2.0, 2.0, 2.0, 1.0)
-                       : view.viewProjMatrixRender * vec4(instance.worldMatrix * vec4(cornerPos, 1), 1);
+                       : view.viewProjMatrixRender * vec4(vec4(cornerPos, 1) * instance.worldMatrix, 1);
 #if USE_EXT_MESH_SHADER
       gl_MeshVerticesEXT[vert].gl_Position = clipPos;
 #else

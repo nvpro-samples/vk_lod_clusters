@@ -1,0 +1,95 @@
+# The lod traversal kernel: persistent on/off, on both renderers.
+#
+# The persistent kernel and the plain one are two separate implementations of the same
+# traversal, so anything that changes the traversal has to be tried against both. Not a
+# full matrix on purpose - the feature permutations around traversal are already covered
+# by seq_raster_features.txt and seq_raytrace_blas.txt, this only pins down that both
+# kernels still agree on what they enqueue.
+#
+# Instance sorting rides along here because it reorders exactly the input the traversal
+# consumes.
+
+SEQUENCE "traversal_raster_persistent_on"
+--sequenceframes 32
+--sequenceresetframes 8
+--renderer 0
+--swraster 0
+--culling 1
+--twopassculling 1
+--discretelod 0
+--instancesorting 0
+--persistenttraversal 1
+--visualize 6
+
+SEQUENCE "traversal_raster_persistent_off"
+--renderer 0
+--persistenttraversal 0
+--visualize 6
+
+SEQUENCE "traversal_raster_persistent_off_sorted"
+--renderer 0
+--persistenttraversal 0
+--instancesorting 1
+--visualize 6
+
+SEQUENCE "traversal_raster_persistent_on_sorted"
+--renderer 0
+--persistenttraversal 1
+--instancesorting 1
+--visualize 6
+
+# discrete lod skips the traversal for the instances that qualify, so the two kernels see
+# a different work item mix with it on
+SEQUENCE "traversal_raster_persistent_off_discretelod"
+--renderer 0
+--persistenttraversal 0
+--instancesorting 0
+--discretelod 1
+--visualize 11
+
+SEQUENCE "traversal_raster_persistent_on_discretelod"
+--renderer 0
+--persistenttraversal 1
+--discretelod 1
+--visualize 11
+
+SEQUENCE "traversal_raytrace_persistent_on"
+--renderer 1
+--discretelod 0
+--instancesorting 0
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--persistenttraversal 1
+--visualize 6
+
+SEQUENCE "traversal_raytrace_persistent_off"
+--renderer 1
+--persistenttraversal 0
+--visualize 6
+
+SEQUENCE "traversal_raytrace_persistent_off_sorted"
+--renderer 1
+--persistenttraversal 0
+--instancesorting 1
+--visualize 6
+
+SEQUENCE "traversal_raytrace_persistent_on_sorted"
+--renderer 1
+--persistenttraversal 1
+--instancesorting 1
+--visualize 6
+
+# without culling the traversal has no visibility feedback to work from
+SEQUENCE "traversal_raytrace_persistent_off_noculling"
+--renderer 1
+--persistenttraversal 0
+--instancesorting 0
+--culling 0
+--visualize 6
+
+SEQUENCE "traversal_raytrace_persistent_on_noculling"
+--renderer 1
+--persistenttraversal 1
+--culling 0
+--visualize 6

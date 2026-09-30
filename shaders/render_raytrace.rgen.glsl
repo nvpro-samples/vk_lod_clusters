@@ -205,7 +205,13 @@ void main()
   imageStore(imgDlssSpecAlbedo, screen, vec4(rayHit.dlssSpecular, 1.0f));
   imageStore(imgDlssNormalRoughness, screen, rayHit.dlssNormalRoughness);
 #else
+  // without shading there is no albedo/normal/roughness to report; the depth-only
+  // variant does not even have a `color` in the payload.
+#if !USE_DEPTH_ONLY
   imageStore(imgDlssAlbedo, screen, vec4(rayHit.color.xyz, 1));
+#else
+  imageStore(imgDlssAlbedo, screen, vec4(0));
+#endif
   imageStore(imgDlssSpecAlbedo, screen, vec4(vec3(0), 1.0f));
   imageStore(imgDlssNormalRoughness, screen, vec4(0));
 #endif

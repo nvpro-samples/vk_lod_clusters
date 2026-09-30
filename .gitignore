@@ -28,3 +28,5 @@ downloaded_resources/
 _downloaded_resources/
 zbsgfxpack.lua
 clang_format.bat
+tests/_results/
+tests/*.nvsngeo

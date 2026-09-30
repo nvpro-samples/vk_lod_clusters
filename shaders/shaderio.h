@@ -26,6 +26,7 @@
 #define VISUALIZE_BLAS 8
 #define VISUALIZE_BLAS_REUSE 9
 #define VISUALIZE_DEPTH_ONLY 10
+#define VISUALIZE_DISCRETE_LOD 11
 
 // Texture LOD selection for material sampling, resolved entirely at compile time via TEXTURE_LOD_MODE.
 // Raster uses hardware quad derivatives; the ray tracer / path tracer turn the ray-cone footprint into
@@ -91,6 +92,7 @@
 #define TRAVERSAL_INIT_WORKGROUP 64
 #define TRAVERSAL_RUN_WORKGROUP 64
 #define TRAVERSAL_GROUPS_WORKGROUP 64
+#define TRAVERSAL_REJECT_CLUSTERS_WORKGROUP 64
 #define TRAVERSAL_BLAS_MERGING_WORKGROUP 64
 #define BLAS_SETUP_INSERTION_WORKGROUP 64
 #define BLAS_INSERT_CLUSTERS_WORKGROUP 64
@@ -124,6 +126,15 @@
 // are removed from the TLAS if invisible. Otherwise they use the low detail BLAS.
 // Both options yield different sorts of artifacts, but removing yields better performance.
 #define FORCE_INVISIBLE_CULLED_REMOVES_INSTANCE 1
+
+// sub-pixel cull next to the hiz occlusion test, boxes below this screen-space size
+// in both dimensions cannot be shaded anyway.
+#define CULL_MIN_PIXEL_SIZE 1.0
+
+// in the second pass of two pass culling, passing instances below this size are culled. Much
+// bigger than the lossless CULL_MIN_PIXEL_SIZE: re-traversal only refreshes lod and
+// visibility over a few pixels, yet costs as much as any other instance.
+#define CULL_SECOND_PASS_MIN_PIXEL_SIZE 8.0
 
 /////////////////////////////////////////
 
@@ -185,8 +196,17 @@ using namespace glm;
 #define USE_FORCED_INVISIBLE_CULLING 1
 #endif
 
+// the host pre-ands these with USE_CULLING, like USE_PRIMITIVE_CULLING below,
+// so they can be tested on their own
 #ifndef USE_TWO_PASS_CULLING
 #define USE_TWO_PASS_CULLING 1
+#endif
+
+// two pass culling records what pass 0 rejected, so the second pass only
+// re-tests those against the updated hiz instead of traversing from scratch.
+// pre-anded with USE_TWO_PASS_CULLING as well
+#ifndef USE_TWO_PASS_REJECT_LISTS
+#define USE_TWO_PASS_REJECT_LISTS 1
 #endif
 
 // only effective in NV_mesh_shader
@@ -341,18 +361,19 @@ struct FrameConstants
   mat4 viewProjMatrixI;
   mat4 viewMatrix;
   mat4 viewMatrixI;
-  vec4 viewPos;
-  vec4 viewDir;
-  vec4 viewPlane;
 
   // for motion vectors
   mat4 viewProjMatrixPrev;
 
-  ivec2 viewport;
-  vec2  viewportf;
+  vec2 viewportf;
+  vec2 hizSize;
+  vec4 hizSizeFactors;
 
-  vec2 viewPixelSize;
-  vec2 viewClipSize;
+  vec4 viewPos;
+  vec4 viewDir;
+  vec4 viewPlane;
+
+  ivec2 viewport;
 
   vec3  wLightPos;
   float lightMixer;
@@ -372,10 +393,6 @@ struct FrameConstants
   float   ambientOcclusionRadius;
   int32_t ambientOcclusionSamples;
 
-  vec4 hizSizeFactors;
-  vec4 nearSizeFactors;
-
-  vec2 hizSize;
   vec2 jitter;
 
   uint  dbgUint;
@@ -386,7 +403,8 @@ struct FrameConstants
   float timeSec;
   uint  pickedInstanceID;
   uint  pickedClusterID;
-  uint  _pad;
+  float shadowRayMinT;
+  float shadowRayDistanceBias;
 
   vec4 bgColor;
 
@@ -407,6 +425,8 @@ struct FrameConstants
   uint visFilterClusterID;
 
   float texGradScale;
+  float texLodBias;       // user bias plus log2(renderSize/targetSize) when DLSS upscales
+  float texLodBiasScale;  // exp2(texLodBias), for the gradient paths
   float pixelAngle;
   int   facetShading;
 
@@ -430,11 +450,15 @@ struct Readback
   uint     numRenderClustersAlphaSW;
   uint     numTraversalTasks;
   uint     numTraversedTasks;
+  uint     numRejectInstances;
+  uint     numRejectNodes;
+  uint     numRejectGroups;
   uint     numBlasBuilds;
   uint     numRenderedClusters;
   uint     numRenderedClustersSW;
   uint     numRenderedClustersAlpha;
   uint     numRenderedClustersAlphaSW;
+  uint     numDiscreteInstances;
   uint64_t numRenderedTriangles;
   uint64_t numRenderedTrianglesSW;
   uint64_t numRenderedTrianglesAlpha;

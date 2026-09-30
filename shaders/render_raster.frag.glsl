@@ -98,6 +98,8 @@ layout(set = 1, binding = 0) uniform sampler2D bindlessTextures[];
 ///////////////////////////////////////////////////
 
 #include "attribute_encoding.h"
+// only the fragment stage can pass a bias to texture()
+#define TEXTURING_IMPLICIT_HAS_BIAS 1
 #include "texturing.glsl"
 #if USE_DLSS && ALLOW_SHADING && !USE_SW_RASTER
 #include "dlss_util.h"
@@ -105,6 +107,8 @@ layout(set = 1, binding = 0) uniform sampler2D bindlessTextures[];
 #include "render_shading.glsl"
 
 ///////////////////////////////////////////////////
+
+#if NEEDS_PRIMITIVE_IDS
 
 #if USE_PERPRIMITIVE_OUT
 
@@ -148,6 +152,8 @@ layout(set = 1, binding = 0) uniform sampler2D bindlessTextures[];
 
 #endif
 
+#endif
+
 #if (!USE_DEPTH_ONLY && ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS)) || (HAS_ALPHA_TEST && ALLOW_VERTEX_TEXCOORDS)
 layout(location = 3) pervertexEXT in Interpolants2
 {
@@ -178,7 +184,12 @@ void main()
   vec3 wNormal   = vec3(1);
   vec2 oTexCoord = vec2(1);
   
-#if USE_PERPRIMITIVE_OUT
+#if !NEEDS_PRIMITIVE_IDS
+  // depth only without alpha testing: this shader is never attached to a pipeline, the mesh
+  // shader does not write the ids, so nothing may read them here either
+  uint instanceID = 0;
+  uint clusterID  = 0;
+#elif USE_PERPRIMITIVE_OUT
   uint instanceID = INPRIM.instanceID;
   uint clusterID  = INPRIM.clusterID;
 #else
@@ -218,7 +229,7 @@ void main()
     else
     {
       vec3 baryWeight   = gl_BaryCoordEXT;
-      mat3 worldMatrixI = mat3(instance.worldMatrixI);
+      mat3 worldMatrixI = transpose(mat3(instance.worldMatrixI));
 
       uvec3 triNormalsPacked =
           uvec3(oNormals.d[triangleIndices.x], oNormals.d[triangleIndices.y], oNormals.d[triangleIndices.z]);

@@ -743,6 +743,14 @@ void LodClusters::uiSettingsRendering()
           m_frameConfig.frameConstants.ambientOcclusionSamples = m_lastAmbientOcclusionSamples;
         }
       }
+
+      // both the path tracer and the regular shading trace shadow rays
+      PE::InputFloat("Shadow ray minT", &m_frameConfig.frameConstants.shadowRayMinT, 0, 0, "%.5f", ImGuiInputTextFlags_EnterReturnsTrue,
+                     "Shadow ray start offset in world units, so it follows the scale the scene is authored in.");
+      PE::SliderFloat("Shadow ray distance bias", &m_frameConfig.frameConstants.shadowRayDistanceBias, 0.0f, 4.0f, "%.2f", 0,
+                      "Scales the offset above with the camera distance. The lod error is a screen-space value, so the "
+                      "geometry a shadow ray can re-hit drifts from the shaded surface proportionally to that "
+                      "distance, which shows up as shadow acne far away. 0 uses a constant offset.");
     }
     if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD)
     {
@@ -838,28 +846,36 @@ void LodClusters::uiSettingsTraversal()
       m_frameConfig.culledErrorScale = std::max(1.0f, m_frameConfig.culledErrorScale);
 
       PE::Checkbox("Blas Sharing", &m_rendererConfig.useBlasSharing, "shares blas for instances further away that can use it safely");
+      // Caching needs streaming, and it needs the CLAS addresses it built the cached blas from
+      // to stay put, which only the persistent allocator does. These settings are kept as the
+      // user left them, the renderer ignores them instead, see `RendererRayTraceClustersLod::init`.
+      const bool useStreaming = m_renderScene && m_renderScene->useStreaming;
+      ImGui::BeginDisabled(!useStreaming || !m_streamingConfig.usePersistentClasAllocator);
       PE::Checkbox("Blas Caching", &m_rendererConfig.useBlasCaching,
-                   "(only when streaming) builds a cached blas depending on highest fully resident lod level. Independent of blas "
-                   "sharing.");
+                   "(only when streaming) builds a cached blas depending on highest fully resident lod level. Independent "
+                   "of blas sharing. Has no effect without the persistent CLAS allocator.");
+      ImGui::EndDisabled();
 
       const bool useBlasReuse = m_rendererConfig.useBlasSharing || m_rendererConfig.useBlasCaching;
 
       if(PE::treeNode("Blas settings"))
       {
         ImGui::BeginDisabled(!m_rendererConfig.useBlasSharing);
+        ImGui::BeginDisabled(!useStreaming);
         PE::Checkbox("Blas Merging", &m_rendererConfig.useBlasMerging,
                      "(only when streaming) builds a merged blas for closer instances. Guarantees only 2 dynamic blas per geometry.");
-        PE::InputIntClamped("Shared tail levels", (int*)&m_frameConfig.sharingEnabledLevels, 0, 32, 1, 1,
-                            ImGuiInputTextFlags_EnterReturnsTrue,
+        ImGui::EndDisabled();
+        PE::InputIntClamped("Shared tail levels", (int*)&m_frameConfig.sharingEnabledLevels, 0, SHADERIO_MAX_LOD_LEVELS,
+                            1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
                             "Sharing may be used in the last N levels of the instance geometry");
-        PE::InputIntClamped("Tolerant tail levels", (int*)&m_frameConfig.sharingTolerantLevels, 0, 32, 1, 1,
-                            ImGuiInputTextFlags_EnterReturnsTrue,
+        PE::InputIntClamped("Tolerant tail levels", (int*)&m_frameConfig.sharingTolerantLevels, 0,
+                            SHADERIO_MAX_LOD_LEVELS, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
                             "Share BLAS despite a lod level mismatch in the last N levels of the instance geometry");
         ImGui::EndDisabled();
 
         ImGui::BeginDisabled(!m_rendererConfig.useBlasCaching);
-        PE::InputIntClamped("Cached tail levels", (int*)&m_frameConfig.cachingEnabledLevels, 0, 32, 1, 1,
-                            ImGuiInputTextFlags_EnterReturnsTrue,
+        PE::InputIntClamped("Cached tail levels", (int*)&m_frameConfig.cachingEnabledLevels, 0, SHADERIO_MAX_LOD_LEVELS,
+                            1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
                             "Caching may be used in the last N levels of the instance geometry");
         ImGui::EndDisabled();
 
@@ -877,6 +893,32 @@ void LodClusters::uiSettingsTraversal()
         PE::treePop();
       }
     }
+    if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD)
+    {
+      PE::Checkbox("Discrete LoD", &m_rendererConfig.useDiscreteLod,
+                   "instances that get away with a single fully resident lod level skip the lod traversal");
+
+      if(PE::treeNode("Discrete LoD settings"))
+      {
+        ImGui::BeginDisabled(!m_rendererConfig.useDiscreteLod);
+        PE::InputIntClamped("Discrete tail levels", (int*)&m_frameConfig.discreteEnabledLevels, 0,
+                            SHADERIO_MAX_LOD_LEVELS, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
+                            "Discrete lod may be used in the last N levels of the instance geometry");
+        PE::InputIntClamped("Discrete lod range", (int*)&m_frameConfig.discreteLodRange, 1, SHADERIO_MAX_LOD_LEVELS, 1,
+                            1, ImGuiInputTextFlags_EnterReturnsTrue,
+                            "Discrete lod is used when the instance's lod range spans at most N levels. 1 is the strictest and "
+                            "renders exactly what the traversal would, higher values admit more instances at the cost of "
+                            "more triangles. From the geometry's lod level count on there is no limit left to enforce, "
+                            "which is also the cheapest as the instance's maximum lod level is then not computed.");
+        if(m_rendererConfig.useDiscreteLod && m_rendererConfig.useRenderStats)
+        {
+          PE::Text("Discrete instances", fmt::format("{}", readback.numDiscreteInstances));
+        }
+        ImGui::EndDisabled();
+        PE::treePop();
+      }
+    }
+
     if(PE::treeNode("Other settings"))
     {
       PE::Checkbox("Persistent Traversal Kernel", &m_rendererConfig.usePersistentTraversal);
@@ -891,6 +933,10 @@ void LodClusters::uiSettingsTraversal()
       {
         PE::Checkbox("Use TwoPass Culling", (bool*)&m_rendererConfig.useTwoPassCulling,
                      "Use two pass culling in rasterization, otherwise uses only last frame's hiz");
+        ImGui::BeginDisabled(!m_rendererConfig.useTwoPassCulling);
+        PE::Checkbox("TwoPass Reject Lists", (bool*)&m_rendererConfig.useTwoPassRejectLists,
+                     "Second pass continues from what the first pass rejected, rather than traversing the scene again");
+        ImGui::EndDisabled();
         ImGui::EndDisabled();
         ImGui::BeginDisabled(!(!m_rendererConfig.useEXTmeshShader && m_rendererConfig.useCulling && m_resources.m_supportsMeshShaderNV));
         PE::Checkbox("Use Primitive Culling", (bool*)&m_rendererConfig.usePrimitiveCulling, "Use primitive culling in NV mesh shader");
@@ -1111,6 +1157,9 @@ void LodClusters::uiSettingsClusterGeneration()
                      "If ray tracing is preferred, influences weight between SAH optimized (towards zero), or filling clusters (higher value).");
       PE::InputFloat("RA split factor", &m_sceneConfigEdit.meshoptSplitFactor, 0, 0, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue,
                      "If raster is preferred, influences the maximum size of a cluster prior splitting it up.");
+      PE::InputIntClamped("Cluster optimize level", (int*)&m_sceneConfigEdit.optimizeClustersLevel, 0, 3, 1, 1,
+                          ImGuiInputTextFlags_EnterReturnsTrue,
+                          "Triangle order optimization within a cluster, 0 disables it, higher trades processing time for compression ratio.");
       PE::Checkbox("Mesh Multi-Materials", &m_sceneConfigEdit.enableMultiMaterials, "Allows a mesh to have multiple materials.");
       PE::entry("Enabled Attributes", [&] {
         for(uint32_t i = 0; i < 4; i++)
@@ -1160,6 +1209,14 @@ void LodClusters::uiSettingsClusterGeneration()
                      "Mesh error propagation: adds scaled current error to the group error after the maximum computation.");
       PE::InputFloat("Error edge limit", &m_sceneConfigEdit.lodErrorEdgeLimit, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
                      "Mesh error: limit error by edge length, aiming to remove subpixel triangles even if the attribute error is high");
+      PE::Checkbox("Error clamped", &m_sceneConfigEdit.simplifyErrorClamped,
+                   "Mesh error: clamp the attribute error to the position error scale, which avoids overly conservative lod picking.");
+      PE::Checkbox("Preserve folds", &m_sceneConfigEdit.simplifyPreserveFolds,
+                   "Simplification tries to keep fold lines between opposite-facing triangles, costs a bit of processing time.");
+      PE::Checkbox("Dilate borders all", &m_sceneConfigEdit.simplifyDilateBordersAll,
+                   "Simplification dilates open cluster borders to compensate the area it loses. Meant for foliage, not for everything.");
+      PE::Checkbox("Dilate borders two-sided", &m_sceneConfigEdit.simplifyDilateBordersTwoSided,
+                   "Enable the above for meshes that use a two-sided material, which foliage typically does.");
       PE::InputFloat("Normal weight", &m_sceneConfigEdit.simplifyNormalWeight, 0, 0, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
                      "How much to weight this attribute for the error metric. 0 Disables");
       PE::InputFloat("TexCoord weight", &m_sceneConfigEdit.simplifyTexCoordWeight, 0, 0, "%.3f",
@@ -1264,16 +1321,19 @@ void LodClusters::uiSettingsStreaming()
                         uint32_t(m_scene ? m_scene->getActiveGeometryCount() : 1024 * 1024), 1024 * 1024, 128, 128,
                         ImGuiInputTextFlags_EnterReturnsTrue);
 
-    PE::InputIntClamped("Max Geometry MiB", (int*)&m_streamingConfig.maxGeometryMegaBytes, 128, 1024 * 48, 128, 128,
+    PE::InputIntClamped("Max Geometry MiB", (int*)&m_streamingConfig.maxGeometryMegaBytes, 16, 1024 * 48, 128, 128,
                         ImGuiInputTextFlags_EnterReturnsTrue);
     if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
     {
-      PE::InputIntClamped("Max CLAS MiB", (int*)&m_streamingConfig.maxClasMegaBytes, 256, 1024 * 48, 128, 128,
+      PE::InputIntClamped("Max CLAS MiB", (int*)&m_streamingConfig.maxClasMegaBytes, 16, 1024 * 48, 128, 128,
                           ImGuiInputTextFlags_EnterReturnsTrue);
-      PE::InputIntClamped("Start CLAS MiB", (int*)&m_streamingConfig.startClasMegaBytes, 128, 1024 * 48, 128, 128,
+      PE::InputIntClamped("Start CLAS MiB", (int*)&m_streamingConfig.startClasMegaBytes, 8, 1024 * 48, 128, 128,
                           ImGuiInputTextFlags_EnterReturnsTrue);
-      PE::InputIntClamped("CLAS grow MiB", (int*)&m_streamingConfig.clasGrowMegaBytes, 128, 1024 * 48, 128, 128,
+      PE::InputIntClamped("CLAS grow MiB", (int*)&m_streamingConfig.clasGrowMegaBytes, 4, 1024 * 48, 128, 128,
                           ImGuiInputTextFlags_EnterReturnsTrue);
+      // the allocator requires the initial clas allocation to fit the budget, and both are
+      // edited independently here, same rule as in `LodClusters::applyMemoryBudgetArgs`
+      m_streamingConfig.startClasMegaBytes = std::min(m_streamingConfig.startClasMegaBytes, m_streamingConfig.maxClasMegaBytes);
 
       PE::Checkbox("Persistent CLAS Allocator", &m_streamingConfig.usePersistentClasAllocator,
                    "Use persistent allocation on the device for CLAS memory, otherwise move based compaction");
@@ -1492,7 +1552,9 @@ void LodClusters::uiStreamingMemory()
       m_streamClasHistogram.resize(m_tweak.useStreaming ? maxSlots : 0, 0);
     }
 
-    if(m_renderScene && !m_streamGeometryHistogram.empty())
+    // the render scene only follows `m_tweak.useStreaming` in `handleChanges`, so for one frame
+    // after streaming is switched on the scene is still the preloaded one, without streaming state
+    if(m_renderScene && m_renderScene->useStreaming && !m_streamGeometryHistogram.empty())
     {
       m_renderScene->sceneStreaming.getStats(stats);
 
@@ -1868,7 +1930,7 @@ void LodClusters::uiMiscSettings(bool pickingValid, const glm::dvec3& hitPos)
       bool        materialAlphaMasked = false;
       bool        materialTwoSided    = false;
 
-      if(m_scene && pickingValid)
+      if(m_scene && pickingValid && readback.instanceId < m_scene->m_instances.size())
       {
         instanceID = readback.instanceId;
         geometryID = m_scene->m_instances[readback.instanceId].geometryID;
@@ -1905,6 +1967,8 @@ void LodClusters::uiMiscSettings(bool pickingValid, const glm::dvec3& hitPos)
       PE::begin("misc", ImGuiTableFlags_Resizable);
       PE::SliderFloat("Texture Gradient Scale", &m_frameConfig.frameConstants.texGradScale, 0.0f, 1.0f, "%.3f", 0,
                       "Influence texture gradient in ray tracing and compute rasterization");
+      PE::SliderFloat("Texture LOD Bias", &m_tweak.texLodBias, -2.0f, 2.0f, "%.2f", 0,
+                      "Bias for material texture mip selection, added on top of the automatic DLSS bias.");
       PE::SliderFloat("Wireframe Thickness", &m_frameConfig.frameConstants.wireThickness, 0.5f, 8.0f, "%.2f", 0,
                       "Wireframe line thickness (raster, ray trace and path tracer).");
       PE::entry(
@@ -2045,13 +2109,13 @@ void LodClusters::onUIRender()
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 15.0);
     if(ImGui::BeginPopupModal("Busy Info", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDecoration))
     {
-      uint32_t completed = m_sceneCompletedCount.load();
-      uint32_t total     = m_sceneTotalCount.load();
-      float    fraction  = total ? float(completed) / float(total) : 0.0f;
+      uint64_t completed = m_sceneCompletedCount.load();
+      uint64_t total     = m_sceneTotalCount.load();
+      float    fraction  = total ? float(double(completed) / double(total)) : 0.0f;
 
       // Center text in window
       ImGui::TextDisabled("Please wait ...");
-      ImGui::TextDisabled("Completed: %u of %u", completed, total);
+      ImGui::TextDisabled("Completed: %s of %s", formatMetric(completed).c_str(), formatMetric(total).c_str());
       ImGui::NewLine();
       ImGui::ProgressBar(fraction, ImVec2(-1.0f, 0.0f), getLoadPhaseName(m_sceneProgressPhase));
       ImGui::EndPopup();
@@ -2178,9 +2242,6 @@ void LodClusters::onUIRender()
   uiMiscSettings(pickingValid, hitPos);
   uiDebug();
 
-  // resolve any --max*megabytes overrides written into m_memoryBudgetArgs since the last frame
-  // (e.g. by the parameter sequencer's onPreRender, which runs before this onUIRender) before
-  // handleChanges() compares the resolved configs against their last-seen state
   applyMemoryBudgetArgs();
   handleChanges();
 
@@ -2342,6 +2403,77 @@ void LodClusters::clasAllocatorUI()
   ImGui::End();
 }
 
+// keep the most recent files at the front, no duplicates
+void LodClusters::addToRecentFiles(const std::filesystem::path& filePath)
+{
+  if(filePath.empty())
+    return;
+
+  auto it = std::find(m_recentFiles.begin(), m_recentFiles.end(), filePath);
+  if(it != m_recentFiles.end())
+  {
+    m_recentFiles.erase(it);
+  }
+  m_recentFiles.insert(m_recentFiles.begin(), filePath);
+  if(m_recentFiles.size() > s_recentFilesMax)
+  {
+    m_recentFiles.resize(s_recentFilesMax);
+  }
+}
+
+void LodClusters::removeFromRecentFiles(const std::filesystem::path& filePath)
+{
+  auto it = std::find(m_recentFiles.begin(), m_recentFiles.end(), filePath);
+  if(it != m_recentFiles.end())
+  {
+    m_recentFiles.erase(it);
+  }
+}
+
+// stores the recent files within the imgui .ini file
+void LodClusters::registerRecentFilesHandler()
+{
+  if(!ImGui::GetCurrentContext())
+    return;
+
+  // mandatory to work, see ImGui::DockContextInitialize as an example
+  auto readOpen = [](ImGuiContext*, ImGuiSettingsHandler*, const char* name) -> void* {
+    return strcmp(name, "Data") == 0 ? (void*)1 : nullptr;
+  };
+
+  // no captures, so the lambdas can be used as function pointers
+  auto writeAll = [](ImGuiContext* ctx, ImGuiSettingsHandler* handler, ImGuiTextBuffer* buf) {
+    const LodClusters* self = static_cast<const LodClusters*>(handler->UserData);
+    buf->appendf("[%s][Data]\n", handler->TypeName);
+    for(const std::filesystem::path& filePath : self->m_recentFiles)
+    {
+      buf->appendf("File=%s\n", nvutils::utf8FromPath(filePath).c_str());
+    }
+    buf->append("\n");
+  };
+
+  auto readLine = [](ImGuiContext* ctx, ImGuiSettingsHandler* handler, void* entry, const char* line) {
+    LodClusters* self = static_cast<LodClusters*>(handler->UserData);
+    if(strncmp(line, "File=", 5) == 0)
+    {
+      std::filesystem::path filePath = nvutils::pathFromUtf8(line + 5);
+      if(std::find(self->m_recentFiles.begin(), self->m_recentFiles.end(), filePath) == self->m_recentFiles.end())
+      {
+        self->m_recentFiles.push_back(filePath);
+      }
+    }
+  };
+
+  ImGuiSettingsHandler iniHandler;
+  iniHandler.TypeName   = "RecentFiles";
+  iniHandler.TypeHash   = ImHashStr(iniHandler.TypeName);
+  iniHandler.ReadOpenFn = readOpen;
+  iniHandler.ReadLineFn = readLine;
+  iniHandler.WriteAllFn = writeAll;
+  iniHandler.UserData   = this;
+  ImGui::GetCurrentContext()->SettingsHandlers.push_back(iniHandler);
+}
+
 void LodClusters::onUIMenu()
 {
   bool vsync = m_app->isVsync();
@@ -2355,12 +2487,25 @@ void LodClusters::onUIMenu()
 
   bool hasCache = m_scene && !m_scene->isMemoryMappedCache() && std::filesystem::exists(m_scene->getCacheFilePath());
 
+  std::filesystem::path recentFilePath;
+
 
   if(ImGui::BeginMenu("File"))
   {
     if(ImGui::MenuItem(ICON_MS_FILE_OPEN "Open", "Ctrl+O"))
     {
       doOpenFile = true;
+    }
+    if(ImGui::BeginMenu(ICON_MS_HISTORY "Open Recent", !m_recentFiles.empty()))
+    {
+      for(const std::filesystem::path& filePath : m_recentFiles)
+      {
+        if(ImGui::MenuItem(nvutils::utf8FromPath(filePath).c_str()))
+        {
+          recentFilePath = filePath;
+        }
+      }
+      ImGui::EndMenu();
     }
     if(m_scene)
     {
@@ -2431,6 +2576,19 @@ void LodClusters::onUIMenu()
     if(!filePath.empty())
     {
       onFileDrop(filePath);
+    }
+  }
+
+  if(!recentFilePath.empty())
+  {
+    if(std::filesystem::exists(recentFilePath))
+    {
+      onFileDrop(recentFilePath);
+    }
+    else
+    {
+      LOGW("Recent file no longer exists: %s\n", nvutils::utf8FromPath(recentFilePath).c_str());
+      removeFromRecentFiles(recentFilePath);
     }
   }
 

@@ -93,6 +93,13 @@
 #extension GL_KHR_shader_subgroup_arithmetic : require
 #extension GL_KHR_memory_scope_semantics : require
 
+#ifndef TRAVERSAL_VULKAN_MEMORY_MODEL
+#define TRAVERSAL_VULKAN_MEMORY_MODEL 0
+#endif
+#if TRAVERSAL_VULKAN_MEMORY_MODEL
+#pragma use_vulkan_memory_model
+#endif
+
 #include "shaderio.h"
 
 #define DEBUG_TRAVERSAL 0
@@ -124,7 +131,7 @@ layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffe
   Geometry geometries[];
 };
 
-#if USE_TWO_PASS_CULLING && TARGETS_RASTERIZATION
+#if TARGETS_RASTERIZATION && USE_TWO_PASS_CULLING
 layout(binding = BINDINGS_HIZ_TEX)  uniform sampler2D texHizFar[2];
 #else
 layout(binding = BINDINGS_HIZ_TEX)  uniform sampler2D texHizFar;
@@ -160,8 +167,13 @@ layout(local_size_x=TRAVERSAL_RUN_WORKGROUP) in;
 
 ////////////////////////////////////////////
 
-// work around compiler bug on older drivers not properly handling coherent & volatile
-#define USE_ATOMIC_LOAD_STORE 1
+// work around compiler bug on some drivers not properly handling coherent & volatile
+#ifndef TRAVERSAL_ATOMIC_LOAD_STORE
+#define TRAVERSAL_ATOMIC_LOAD_STORE 1
+#endif
+
+// plain coherent loads carry no acquire, they still need the fence
+#define USE_POLL_FENCES (!(TRAVERSAL_VULKAN_MEMORY_MODEL && TRAVERSAL_ATOMIC_LOAD_STORE))
 
 ////////////////////////////////////////////
 
@@ -173,44 +185,6 @@ uint setupTask(inout TraversalInfo traversalInfo, uint readIndex, uint pass)
 
   return subCount + 1;
 }
-
-#if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
-
-bool queryWasVisible(mat4x3 instanceTransform, BBox bbox, bool isNode)
-{
-  vec3 bboxMin = bbox.lo;
-  vec3 bboxMax = bbox.hi;
-  
-  vec4 clipMin;
-  vec4 clipMax;
-  bool clipValid;
-
-#if USE_NODE_OCCLUSION_CULLING
-  bool useOcclusion = true;
-#else
-  bool useOcclusion = false;
-#endif
-  
-#if USE_TWO_PASS_CULLING
-
-  // clusters are always first tested against last hiz
-  // node's should be tested against best available hiz
-  bool useLast =  build.cullPass == 0;
-
-  bool inFrustum = intersectFrustum(useLast ? build.cullViewProjMatrixLast : build.cullViewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
-  bool isVisible = inFrustum && 
-    (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, useLast ? 0 : 1)));
-#else
-  // always test against last frame visiblity
-  bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
-  bool isVisible = inFrustum && 
-    (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 0)));
-#endif
-  
-  return isVisible;
-}
-
-#endif
 
 void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSubID, bool isValid, uint threadReadIndex, uint pass)
 {
@@ -240,6 +214,8 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   
   uint instanceID     = traversalInfo.instanceID;
   bool forceCluster   = false;
+  // seeded at a discrete lod level, all nodes below are descended
+  bool forceTraverse  = unpackTraversalDiscrete(instanceID);
 
   uint geometryID   = instances[instanceID].geometryID;
   Geometry geometry = geometries[geometryID];
@@ -265,11 +241,13 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   
   // perform traversal & culling logic
   
-  mat4x3 worldMatrix = instances[instanceID].worldMatrix;
+  mat4x3 worldMatrix = transpose(instances[instanceID].worldMatrix);
   float uniformScale = computeUniformScale(worldMatrix);
   float errorScale   = 1.0;
 #if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
-  isValid            = isValid && queryWasVisible(worldMatrix, bbox, false);
+  bool threadValid   = isValid;
+  bool isVisible     = queryWasVisible(worldMatrix, bbox.lo, bbox.hi);
+  isValid            = isValid && isVisible;
 #endif
 #if (USE_CULLING || USE_BLAS_MERGING) && TARGETS_RAY_TRACING
   uint visibilityState = build.instanceVisibility.d[instanceID];
@@ -278,10 +256,61 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
     if ((visibilityState & INSTANCE_VISIBLE_BIT) == 0) errorScale = build.culledErrorScale;
   #endif
 #endif
-  bool traverse      = testForTraversal(mat4x3(build.traversalViewMatrix * toMat4(worldMatrix)), uniformScale, traversalMetric, errorScale);
+  bool traverse      = forceTraverse || testForTraversal(mat4x3(build.traversalViewMatrix * toMat4(worldMatrix)), uniformScale, traversalMetric, errorScale);
   bool traverseNode  = isValid && (traverse);                    // nodes test if we can descend
 
   bool isGroup = PACKED_GET(traversalInfo.packedNode, Node_packed_isGroup) != 0;
+
+#if TARGETS_RASTERIZATION && USE_TWO_PASS_REJECT_LISTS
+  {
+    // Record what the first pass could not descend into. The second pass seeds its
+    // queues from these lists rather than traversing from the roots again.
+    // Only items within the current frustum can reappear once the hiz is updated,
+    // so filter them here and keep the lists short.
+    bool mayReject = threadValid && traverse && !isVisible && build.cullPass == 0;
+
+    // This is the hottest kernel and most subgroups have nothing to record, so pay
+    // the frustum test, the ballots and the atomics only when someone does.
+    if (subgroupAny(mayReject))
+    {
+      bool rejected = mayReject && intersectFrustumOnly(build.cullViewProjMatrix, bbox.lo, bbox.hi, worldMatrix);
+
+      // inner nodes seed the node queue, group leaves seed the group queue directly
+      bool rejectNode  = rejected && !isGroup;
+      bool rejectGroup = rejected && isGroup;
+
+      uvec4 voteRejectNodes  = subgroupBallot(rejectNode);
+      uvec4 voteRejectGroups = subgroupBallot(rejectGroup);
+      uint countRejectNodes  = subgroupBallotBitCount(voteRejectNodes);
+      uint countRejectGroups = subgroupBallotBitCount(voteRejectGroups);
+
+      uint offsetRejectNodes  = 0;
+      uint offsetRejectGroups = 0;
+      if (subgroupElect())
+      {
+        if (countRejectNodes != 0)
+        {
+          offsetRejectNodes = atomicAdd(buildRW.rejectNodeCounter, countRejectNodes);
+        }
+        if (countRejectGroups != 0)
+        {
+          offsetRejectGroups = atomicAdd(buildRW.rejectGroupCounter, countRejectGroups);
+        }
+      }
+      offsetRejectNodes  = subgroupBroadcastFirst(offsetRejectNodes)  + subgroupBallotExclusiveBitCount(voteRejectNodes);
+      offsetRejectGroups = subgroupBroadcastFirst(offsetRejectGroups) + subgroupBallotExclusiveBitCount(voteRejectGroups);
+
+      if (rejectNode && offsetRejectNodes < build.maxTraversalInfos)
+      {
+        build.rejectNodeInfos.d[offsetRejectNodes] = packTraversalInfo(traversalInfo);
+      }
+      if (rejectGroup && offsetRejectGroups < build.maxTraversalInfos)
+      {
+        build.rejectGroupInfos.d[offsetRejectGroups] = packTraversalInfo(traversalInfo);
+      }
+    }
+  }
+#endif
 
 #if USE_STREAMING
   if (traverseNode)
@@ -409,7 +438,7 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
     uint64s_coh writePointer = uint64s_coh(traverseNode ? uint64_t(build.traversalNodeInfos) 
                                                         : uint64_t(build.traversalGroupInfos));
     
-  #if USE_ATOMIC_LOAD_STORE
+  #if TRAVERSAL_ATOMIC_LOAD_STORE
     atomicStore(writePointer.d[writeIndex], packTraversalInfo(traversalInfo), gl_ScopeDevice, gl_StorageSemanticsBuffer, gl_SemanticsRelease);
   #else
     writePointer.d[writeIndex] = packTraversalInfo(traversalInfo);
@@ -572,9 +601,11 @@ void run_persistent()
     {   
       if (threadReadIndex != ~0)
       {
+      #if USE_POLL_FENCES
         memoryBarrierBuffer();
+      #endif
         // get traversal info
-      #if USE_ATOMIC_LOAD_STORE
+      #if TRAVERSAL_ATOMIC_LOAD_STORE
         uint64_t rawValue = atomicLoad(build.traversalNodeInfos.d[threadReadIndex], gl_ScopeDevice, gl_StorageSemanticsBuffer, gl_SemanticsAcquire);
       #else
         uint64_t rawValue = build.traversalNodeInfos.d[threadReadIndex];
@@ -591,9 +622,11 @@ void run_persistent()
       // Entire warp saw no valid work.
       // We always race ahead with reads compared to writes, but we may also
       // simply have no actual tasks left.
-      
+
+    #if USE_POLL_FENCES
       memoryBarrierBuffer();
-    #if USE_ATOMIC_LOAD_STORE
+    #endif
+    #if TRAVERSAL_ATOMIC_LOAD_STORE
       bool isEmpty = atomicLoad(buildRW.traversalTaskCounter, gl_ScopeDevice, gl_StorageSemanticsBuffer, gl_SemanticsAcquire) == 0;
     #else
       bool isEmpty = buildRW.traversalTaskCounter == 0;
@@ -630,9 +663,10 @@ void run_persistent()
       
       processAllSubTasks(nodeTraversalInfo, threadRunnable, threadSubCount, threadReadIndex, pass);
       
-    #if USE_TWO_PASS_CULLING && TARGETS_RASTERIZATION
+    #if TARGETS_RASTERIZATION && USE_TWO_PASS_CULLING && !USE_TWO_PASS_REJECT_LISTS
       // when using two passes, we need to reset the used traversalNodeInfos to ~0
-      // so that they are "invalid" in the second pass
+      // so that they are "invalid" in the second pass.
+      // With reject lists each pass has its own array, both cleared once per frame.
       if (build.cullPass == 0 && threadRunnable) {
         build.traversalNodeInfos.d[threadReadIndex] = uint64_t(packUint2x32(uvec2(~0, ~0)));
       }

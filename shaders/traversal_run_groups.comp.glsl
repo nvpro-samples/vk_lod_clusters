@@ -78,7 +78,7 @@ layout(scalar, binding = BINDINGS_GEOMETRIES_SSBO, set = 0) buffer geometryBuffe
   Geometry geometries[];
 };
 
-#if USE_TWO_PASS_CULLING && TARGETS_RASTERIZATION
+#if TARGETS_RASTERIZATION && USE_TWO_PASS_CULLING
 layout(binding = BINDINGS_HIZ_TEX)  uniform sampler2D texHizFar[2];
 #else
 layout(binding = BINDINGS_HIZ_TEX)  uniform sampler2D texHizFar;
@@ -114,69 +114,6 @@ layout(local_size_x=TRAVERSAL_GROUPS_WORKGROUP) in;
 
 ////////////////////////////////////////////
 
-// work around compiler bug on older drivers not properly handling coherent & volatile
-#define USE_ATOMIC_LOAD_STORE 1
-
-////////////////////////////////////////////
-
-
-#if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
-
-bool queryWasVisible(mat4x3 instanceTransform, BBox bbox, inout bool outRenderClusterSW)
-{
-  vec3 bboxMin = bbox.lo;
-  vec3 bboxMax = bbox.hi;
-  
-  vec4 clipMin;
-  vec4 clipMax;
-  bool clipValid;
-  
-#if USE_CLUSTER_OCCLUSION_CULLING
-  bool useOcclusion = true;
-#else
-  bool useOcclusion = false;
-#endif
-  
-  // test if visible in last frame  
-  bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
-  bool isVisible = inFrustum && 
-    (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 0)));
-  
-#if USE_TWO_PASS_CULLING
-  if (build.cullPass == 1) 
-  {
-    // in second pass also test against current visibility
-    
-    if (isVisible) {
-      // was rendered in first pass already
-      isVisible = false;
-    }
-    else {
-      // test against current
-      inFrustum = intersectFrustum(build.cullViewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
-      isVisible = inFrustum && 
-        (!clipValid || (intersectSize(clipMin, clipMax, 1.0) && intersectHiz(clipMin, clipMax, 1)));
-    }
-  }
-#endif
-
-#if USE_SW_RASTER
-  // check if sw rasterization is okay to use (not near/far clipped and smaller than threshold)
-
-  // TODO should embed this relative longest edge in bbox instead
-  vec3 bboxDim       = bboxMax - bboxMin;
-  float relativeSize = bbox.longestEdge / length(bboxDim);
-  
-  if (isVisible && clipMin.z > 0 && clipMax.z < 1 && clipValid && !intersectSize(clipMin, clipMax, build.swRasterThreshold, relativeSize))
-  {
-    outRenderClusterSW = true;
-  }
-#endif
-  
-  return isVisible;
-}
-
-#endif
 
 void main()
 {
@@ -193,6 +130,8 @@ void main()
   // pull required inputs
   TraversalInfo traversalInfo = unpackTraversalInfo(build.traversalGroupInfos.d[threadReadIndex]);
   uint instanceID             = traversalInfo.instanceID;
+  // seeded at a discrete lod level, all clusters of this group are rendered
+  bool forceTraverse          = unpackTraversalDiscrete(instanceID);
   uint groupIndex             = PACKED_GET(traversalInfo.packedNode, Node_packed_groupIndex);
   uint groupClusterCount      = PACKED_GET(traversalInfo.packedNode, Node_packed_groupClusterCountMinusOne) + 1;
 
@@ -205,7 +144,7 @@ void main()
   BBox bbox;
 #endif
 
-  mat4x3 worldMatrix = instances[instanceID].worldMatrix;
+  mat4x3 worldMatrix = transpose(instances[instanceID].worldMatrix);
   float uniformScale = computeUniformScale(worldMatrix);
   float errorScale   = 1.0;
 #if USE_CULLING && TARGETS_RAY_TRACING
@@ -220,7 +159,40 @@ void main()
 #if USE_STREAMING
   // traversal_run ensured we never get here without ensuring residency
   // and we never traverse to a group that isn't resident.
-  Group_in groupRef = Group_in(geometry.streamingGroupAddresses.d[groupIndex]);
+  uint64_t groupAddress = geometry.streamingGroupAddresses.d[groupIndex];
+
+#if TARGETS_RASTERIZATION && USE_TWO_PASS_REJECT_LISTS
+  // Exception: the second pass seeds this kernel with group leaves that the first
+  // pass rejected before reaching traversal_run's residency check, so do it here.
+  if (groupAddress >= STREAMING_INVALID_ADDRESS_START)
+  {
+    uint64_t lastRequestFrameIndex = atomicMax(geometry.streamingGroupAddresses.d[groupIndex], streaming.request.frameIndex);
+    bool triggerRequest = lastRequestFrameIndex != streaming.request.frameIndex;
+
+    uvec4 voteRequested  = subgroupBallot(triggerRequest);
+    uint  offsetRequested = 0;
+    if (subgroupElect()) {
+      offsetRequested = atomicAdd(streamingRW.request.loadCounter, subgroupBallotBitCount(voteRequested));
+    }
+    offsetRequested = subgroupBroadcastFirst(offsetRequested) + subgroupBallotExclusiveBitCount(voteRequested);
+
+    if (triggerRequest && offsetRequested <= streaming.request.maxLoads) {
+      streaming.request.loadGeometryGroups.d[offsetRequested] = uvec2(geometryID, groupIndex);
+    }
+
+    // cannot happen in the first pass, traversal_run checks residency before
+    // enqueuing, but leaving a stale mask behind would make the reject kernel
+    // dereference a group that is not resident
+    if (build.cullPass == 0) {
+      [[unroll]] for (uint w = 0; w < REJECT_CLUSTER_MASK_WORDS; w++) {
+        build.rejectClusterMasks.d[threadReadIndex * REJECT_CLUSTER_MASK_WORDS + w] = 0;
+      }
+    }
+    return;
+  }
+#endif
+
+  Group_in groupRef = Group_in(groupAddress);
   Group group = groupRef.d;
   #if USE_BLAS_MERGING && TARGETS_RAY_TRACING
     // handled in traversal_run
@@ -231,6 +203,15 @@ void main()
   // can directly access the group
   Group_in groupRef = Group_in(geometry.preloadedGroups.d[groupIndex]);
   Group group = groupRef.d;
+#endif
+
+#if TARGETS_RASTERIZATION && USE_TWO_PASS_REJECT_LISTS
+  // one reject bit per cluster, plus the object space union of all rejected
+  // cluster bboxes for a single frustum test at the end
+  uint rejectMask[REJECT_CLUSTER_MASK_WORDS];
+  [[unroll]] for (uint w = 0; w < REJECT_CLUSTER_MASK_WORDS; w++) { rejectMask[w] = 0; }
+  vec3 rejectLo = vec3(FLT_MAX);
+  vec3 rejectHi = vec3(-FLT_MAX);
 #endif
 
   for (uint clusterIndex = 0; clusterIndex < groupClusterCount; clusterIndex++)
@@ -265,7 +246,7 @@ void main()
       // In streaming, it may also occur that the generating group isn't loaded, that also
       // means this cluster is the highest detail available.
       
-      uint32_t clusterGeneratingGroup = Group_getGeneratingGroup(groupRef, clusterIndex);
+      uint32_t clusterGeneratingGroup = forceTraverse ? SHADERIO_ORIGINAL_MESH_GROUP : Group_getGeneratingGroup(groupRef, clusterIndex);
     #if USE_STREAMING
       if (clusterGeneratingGroup != SHADERIO_ORIGINAL_MESH_GROUP
           && geometry.streamingGroupAddresses.d[clusterGeneratingGroup] < STREAMING_INVALID_ADDRESS_START)
@@ -297,37 +278,31 @@ void main()
     bool useAlpha = false;
     bool useSW = false;
 
-  #if TARGETS_RASTERIZATION && HAS_ALPHA_TEST
-    useAlpha = instances[instanceID].opaqueStatus == SHADERIO_OPAQUE_STATUS_ALPHAMASKED;
-    if (instances[instanceID].opaqueStatus == SHADERIO_OPAQUE_STATUS_MIXED)
-    {
-      // check group state bit first if all clusters are alphamasked
-      uint groupState = group.stateBits;
-      bool alphaMasked = (groupState & CLUSTER_STATE_ALPHAMASKED) != 0;
-      bool alphaMaskedMixed = (groupState & CLUSTER_STATE_ALPHAMASKED_MIXED) != 0;
-
-      if (alphaMasked && !alphaMaskedMixed)
-      {
-        useAlpha = true;
-      }
-      else if (alphaMasked && alphaMaskedMixed)
-      {
-        // check cluster state bits if not all clusters are alphamasked
-        uint clusterState = Group_getClusterState(groupRef, clusterIndex);
-        if ((clusterState & CLUSTER_STATE_ALPHAMASKED) != 0)
-        {
-          useAlpha = true;
-        }
-      }
-    }
+  #if TARGETS_RASTERIZATION
+    useAlpha = queryClusterUsesAlpha(instanceID, groupRef, group, clusterIndex);
   #endif
 
-    // perform traversal & culling logic  
+    // perform traversal & culling logic
   #if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
-    isValid            = isValid && queryWasVisible(worldMatrix, bbox, useSW);
+    bool isVisible     = queryClusterWasVisible(worldMatrix, bbox, useSW);
+    isValid            = isValid && isVisible;
+  #else
+    const bool isVisible = true;
   #endif
     bool traverse      = testForTraversal(traversalMatrix, uniformScale, traversalMetric, errorScale);
-    bool renderClusterAny = isValid && (!traverse || forceCluster);  // clusters use negated test or are forced
+    bool lodAccept     = !traverse || forceCluster;                  // clusters use negated test or are forced
+    bool renderClusterAny = isValid && lodAccept;
+
+  #if TARGETS_RASTERIZATION && USE_TWO_PASS_REJECT_LISTS
+    // The lod decision is identical in both passes, only visibility differs, so a
+    // cluster the metric wants but that failed here is all the second pass needs.
+    if (build.cullPass == 0 && lodAccept && !isVisible)
+    {
+      rejectMask[clusterIndex >> 5] |= 1u << (clusterIndex & 31);
+      rejectLo = min(rejectLo, bbox.lo);
+      rejectHi = max(rejectHi, bbox.hi);
+    }
+  #endif
 
     // nodes will enqueue their children again (producer)
     // groups will write out the clusters for rendering
@@ -373,4 +348,24 @@ void main()
     }
   #endif
   }
+
+#if TARGETS_RASTERIZATION && USE_TWO_PASS_REJECT_LISTS
+  if (build.cullPass == 0)
+  {
+    bool anyReject = false;
+    [[unroll]] for (uint w = 0; w < REJECT_CLUSTER_MASK_WORDS; w++) { anyReject = anyReject || rejectMask[w] != 0; }
+
+    // if the union of all rejected clusters is outside the current frustum,
+    // none of them can reappear in the second pass
+    if (anyReject && !intersectFrustumOnly(build.cullViewProjMatrix, rejectLo, rejectHi, worldMatrix))
+    {
+      [[unroll]] for (uint w = 0; w < REJECT_CLUSTER_MASK_WORDS; w++) { rejectMask[w] = 0; }
+    }
+
+    // indexed by the group's slot in the first pass' `traversalGroupInfos`
+    [[unroll]] for (uint w = 0; w < REJECT_CLUSTER_MASK_WORDS; w++) {
+      build.rejectClusterMasks.d[threadReadIndex * REJECT_CLUSTER_MASK_WORDS + w] = rejectMask[w];
+    }
+  }
+#endif
 }

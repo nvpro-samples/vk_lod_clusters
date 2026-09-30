@@ -175,7 +175,7 @@ void main()
   // fall back to a first-hit footprint (ray length).
   float texelDensity = computeTexelDensity(gl_ObjectToWorldEXT, pos0, pos1, pos2, uv0, uv1, uv2);
   float coneWidth = hasPrimaryRayPayload() ? (rayHit.coneWidth + rayHit.coneSpread * gl_HitTEXT) : (pixelAngle * gl_HitTEXT);
-  vec3  wGeoNormal = normalize(cross(pos1 - pos0, pos2 - pos0) * mat3(instance.worldMatrixI));
+  vec3  wGeoNormal = normalize(mat3(instance.worldMatrixI) * cross(pos1 - pos0, pos2 - pos0));
   float incidence  = abs(dot(wGeoNormal, gl_WorldRayDirectionEXT));
   TexLOD texLod    = makeConeTexLOD(coneWidth, texelDensity, incidence);
 

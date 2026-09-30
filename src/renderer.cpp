@@ -315,8 +315,8 @@ void Renderer::initBasics(Resources& res, RenderScene& rscene)
     const Scene::Material&     material       = scene.m_materials[sceneInstance.materialID];
 
     renderInstance              = {};
-    renderInstance.worldMatrix  = glm::mat4x3(sceneInstance.matrix);
-    renderInstance.worldMatrixI = glm::mat4x3(glm::inverse(sceneInstance.matrix));
+    renderInstance.worldMatrix  = glm::transpose(glm::mat4x3(sceneInstance.matrix));
+    renderInstance.worldMatrixI = glm::transpose(glm::mat4x3(glm::inverse(sceneInstance.matrix)));
     renderInstance.geometryID   = sceneInstance.geometryID;
 
     // base of this instance's render material range, the local slot is added in the shader
@@ -440,6 +440,7 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene)
   nvvk::GraphicsPipelineCreator graphicsGen;
   nvvk::GraphicsPipelineState   state                = res.m_basicGraphicsState;
   graphicsGen.pipelineInfo.layout                    = m_basicPipelineLayout;
+  graphicsGen.pipelineInfo.flags                     = res.getPipelineCreateFlags();
   graphicsGen.renderingState.depthAttachmentFormat   = res.m_frameBuffer.pipelineRenderingInfo.depthAttachmentFormat;
   graphicsGen.renderingState.stencilAttachmentFormat = res.m_frameBuffer.pipelineRenderingInfo.stencilAttachmentFormat;
   VkFormat basicColorFormat                          = res.m_frameBuffer.colorFormat;
@@ -474,6 +475,7 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene)
                         nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.renderInstanceBboxesFragmentShader));
 
   graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_basicPipelines.renderInstanceBboxes);
+  res.dumpPipelineInternals(m_basicPipelines.renderInstanceBboxes, m_basicShaders.renderInstanceBboxesMeshShader);
 
   graphicsGen.clearShaders();
 
@@ -484,6 +486,7 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene)
                         nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.renderClusterBboxesFragmentShader));
 
   graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_basicPipelines.renderClusterBboxes);
+  res.dumpPipelineInternals(m_basicPipelines.renderClusterBboxes, m_basicShaders.renderClusterBboxesMeshShader);
 
   state.depthStencilState.depthWriteEnable = VK_TRUE;
   state.depthStencilState.depthCompareOp   = VK_COMPARE_OP_ALWAYS;
@@ -502,6 +505,7 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene)
                         nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullScreenBackgroundFragShader));
 
   graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_basicPipelines.background);
+  res.dumpPipelineInternals(m_basicPipelines.background, m_basicShaders.fullScreenBackgroundFragShader);
 #if USE_DLSS
   if(useDlssSrMotionWrite)
   {
@@ -518,6 +522,7 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene)
                           nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullscreenAtomicRasterFragmentShader));
 
     graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_basicPipelines.atomicRaster);
+    res.dumpPipelineInternals(m_basicPipelines.atomicRaster, m_basicShaders.fullscreenAtomicRasterFragmentShader);
   }
 
   if(!m_isRaster)
@@ -529,6 +534,7 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene)
                           nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullScreenWriteDepthFragShader));
 
     graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_basicPipelines.writeDepth);
+    res.dumpPipelineInternals(m_basicPipelines.writeDepth, m_basicShaders.fullScreenWriteDepthFragShader);
   }
 }
 

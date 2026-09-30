@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <bit>
 #include <thread>
 #include <chrono>
 #include <cstdlib>
@@ -49,7 +50,13 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"screenshotmode", "screenshot content of screenshotframegap: 1 full window, 2 rendered viewport (default)"},
                                 (int*)&m_screenshotMode);
 
+  m_info.parameterRegistry->add({"force16bitdispatch",
+                                 "use the 16 bit compute launch grid even when the device does not need it, for "
+                                 "testing that path. command line / config only, it is applied at startup"},
+                                &m_resources.m_force16bitDispatch);
   m_info.parameterRegistry->add({"dumpspirv", "dumps compiled spirv into working directory"}, &m_resources.m_dumpSpirv);
+  m_info.parameterRegistry->add({"dumpinternal", "dumps the driver internal pipeline representation into working directory"},
+                                &m_resources.m_dumpInternal);
   m_info.parameterRegistry->add({"camerastring", "initial camera, copy/paste from the Misc Settings -> Camera widget"}, &m_cameraString);
   m_info.parameterRegistry->add({"cameraspeed", "camera movement speed, 0 derives it from the scene size"}, &m_cameraSpeed);
   registerCameraPathParameters();
@@ -93,6 +100,22 @@ LodClusters::LodClusters(const Info& info)
                                 &m_sceneConfig.lodErrorMergeAdditive);
   m_info.parameterRegistry->add({"loderroredgelimit", "limit the lod error by edge length, to drop subpixel triangles despite high attribute error. default 1"},
                                 &m_sceneConfig.lodErrorEdgeLimit);
+  m_info.parameterRegistry->add({"simplifyerrorclamped",
+                                 "clamp the attribute error to the position error scale, avoids overly conservative "
+                                 "lod picking. default true"},
+                                &m_sceneConfig.simplifyErrorClamped);
+  m_info.parameterRegistry->add({"simplifypreservefolds", "try to keep fold lines between opposite-facing triangles, costs a bit of processing time. default false"},
+                                &m_sceneConfig.simplifyPreserveFolds);
+  m_info.parameterRegistry->add({"simplifydilateall",
+                                 "dilate open cluster borders to compensate the area loss of simplification, meant "
+                                 "for foliage rather than everything. default false"},
+                                &m_sceneConfig.simplifyDilateBordersAll);
+  m_info.parameterRegistry->add({"simplifydilatetwosided",
+                                 "enable simplifydilateall for geometries that use a two-sided material, which "
+                                 "foliage typically does. default true"},
+                                &m_sceneConfig.simplifyDilateBordersTwoSided);
+  m_info.parameterRegistry->add({"optimizeclusterslevel", "triangle order optimization within a cluster, 0 off, higher trades processing time for compression ratio. default 1"},
+                                &m_sceneConfig.optimizeClustersLevel);
   m_info.parameterRegistry->add({"lodnodewidth", "preferred children per lod node, the maximum is always 32. default 8"},
                                 &m_sceneConfig.preferredNodeWidth);
   m_info.parameterRegistry->add({"loddecimationfactor", "triangle reduction factor per lod step. default 0.5"},
@@ -106,6 +129,12 @@ LodClusters::LodClusters(const Info& info)
                                 &m_frameConfig.adaptiveError);
   m_info.parameterRegistry->add({"shadowray", "cast shadow rays in ray tracing. default 1"},
                                 &m_frameConfig.frameConstants.doShadow);
+  m_info.parameterRegistry->add({"shadowraymint", "shadow ray start offset in world units. default 0.001"},
+                                &m_frameConfig.frameConstants.shadowRayMinT);
+  m_info.parameterRegistry->add({"shadowraydistancebias",
+                                 "scale the shadow ray start offset with the distance to the camera, which compensates "
+                                 "the lod error growing with distance. 0 uses a constant offset. default 1"},
+                                &m_frameConfig.frameConstants.shadowRayDistanceBias);
   m_info.parameterRegistry->add({"ao", "ambient occlusion, same setting as hbao. default true"}, &m_tweak.hbaoActive);  // use same as hbao
   m_info.parameterRegistry->add({"aoradius", "ray traced ambient occlusion radius as percentage to scene bounding radius. default 0.1"},
                                 &m_frameConfig.frameConstants.ambientOcclusionRadius);
@@ -147,6 +176,8 @@ LodClusters::LodClusters(const Info& info)
                                 &m_rendererConfig.usePrimitiveCulling);
   m_info.parameterRegistry->add({"twopassculling", "two pass culling in rasterization, otherwise only last frame's hiz. default false"},
                                 &m_rendererConfig.useTwoPassCulling);
+  m_info.parameterRegistry->add({"twopassrejectlists", "second pass continues from what the first pass rejected, rather than traversing again. default true"},
+                                &m_rendererConfig.useTwoPassRejectLists);
   m_info.parameterRegistry->add({"forcedinvisculling", "let ray tracing cull on primary visibility alone, may cause BLAS sharing artifacts. default false"},
                                 &m_rendererConfig.useForcedInvisibleCulling);
   m_info.parameterRegistry->add({"dlss", "enable DLSS, super resolution in rasterization and denoising in ray tracing. default false"},
@@ -172,6 +203,12 @@ LodClusters::LodClusters(const Info& info)
                                 &m_rendererConfig.useBlasMerging);
   m_info.parameterRegistry->add({"blascaching", "cached BLAS from the highest fully resident lod level, when streaming. default false"},
                                 &m_rendererConfig.useBlasCaching);
+  m_info.parameterRegistry->add({"discretelod", "rasterization: skip the lod traversal for instances that use a single fully resident lod level. default false"},
+                                &m_rendererConfig.useDiscreteLod);
+  m_info.parameterRegistry->add({"discreteenabledlevels", "allow discrete lod in the last N lod levels, 0 to 32. default 8"},
+                                &m_frameConfig.discreteEnabledLevels);
+  m_info.parameterRegistry->add({"discretelodrange", "allow discrete lod when an instance spans at most N lod levels, a value at or above the geometry's lod level count imposes no limit. default 16"},
+                                &m_frameConfig.discreteLodRange);
   m_info.parameterRegistry->add({"sharingpushculled", "push culled instances by one lod level for sharing. default true"},
                                 &m_frameConfig.sharingPushCulled);
   m_info.parameterRegistry->add({"sharingenabledlevels", "allow BLAS sharing in the last N lod levels, 0 to 32. default 8"},
@@ -185,8 +222,12 @@ LodClusters::LodClusters(const Info& info)
                                 &m_rendererConfig.numRenderClusterBits);
   m_info.parameterRegistry->add({"rendertraversalbits", "intermediate traversal tasks in bits (1 << N). 8 to 25, default 20"},
                                 &m_rendererConfig.numTraversalTaskBits);
-  m_info.parameterRegistry->add({"visualize", "0 shaded, 1 grey, 2 visibility buffer, 3 material, 4 clusters, 5 groups, 6 lod levels, 7 triangles, 8 blas, 9 blas reuse, 10 depth only. default 6"},
+  m_info.parameterRegistry->add({"visualize", "0 shaded, 1 grey, 2 visibility buffer, 3 material, 4 clusters, 5 groups, 6 lod levels, 7 triangles, 8 blas, 9 blas reuse, 10 depth only, 11 discrete lod. default 6"},
                                 &m_frameConfig.visualize);
+  m_info.parameterRegistry->add({"instancebboxes", "draw the instance bounding boxes as an overlay. default false"},
+                                &m_frameConfig.showInstanceBboxes);
+  m_info.parameterRegistry->add({"clusterbboxes", "draw the rendered clusters' bounding boxes as an overlay. default false"},
+                                &m_frameConfig.showClusterBboxes);
   m_info.parameterRegistry->add({"swraster", "allow compute-shader rasterization, needs visualize 2 or 10. default false"},
                                 &m_rendererConfig.useComputeRaster);
   m_info.parameterRegistry->add({"swrasterthreshold", "use SW raster when a cluster's longest edge covers fewer projected pixels. default 8"},
@@ -213,8 +254,6 @@ LodClusters::LodClusters(const Info& info)
                                 &m_sceneLoaderConfig.processingOnly);
   m_info.parameterRegistry->add({"processingpartial", "in processingonly mode also allow partial/resuming processing. default false"},
                                 &m_sceneLoaderConfig.processingAllowPartial);
-  m_info.parameterRegistry->add({"processingmode", "0 auto, -1 inner (within geometry), +1 outer (over geometries) parallelism. default 0"},
-                                &m_sceneLoaderConfig.processingMode);
   m_info.parameterRegistry->add({"processingmemorygigabytes",
                                  "upper budget in GiB for the estimated memory of geometries processed in parallel; "
                                  "0 is automatic (60 % of installed memory), negative is percentage of installed "
@@ -229,6 +268,10 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"compressedtexcoordbits", "texcoord mantissa bits to drop for better compression, 0 to 22. default 7"},
                                 &m_sceneConfig.compressionTexDropBits);
   m_info.parameterRegistry->add({"cachesuffix", "default is .nvsngeo"}, &m_sceneCacheSuffix);
+  m_info.parameterRegistry->add({"simplifyoverrides",
+                                 "json file with per-mesh overrides of the simplification settings, each entry is a "
+                                 "\"mesh\" name regular expression plus the settings it replaces"},
+                                &m_sceneLoaderConfig.simplifyOverridesFile);
   m_info.parameterRegistry->add({"skipnodes", "c++ regular expression string to skip adding instances whose name matches"},
                                 &m_sceneLoaderConfig.skipNodeNames);
   m_info.parameterRegistry->add({"skipmeshes", "c++ regular expression string to skip adding instances whose mesh name matches"},
@@ -241,10 +284,17 @@ LodClusters::LodClusters(const Info& info)
                                 &m_sceneLoaderConfig.skipAlphaMasked);
   m_info.parameterRegistry->add({"persistenttraversal", "use the persistent traversal kernel. default true"},
                                 &m_rendererConfig.usePersistentTraversal);
+  m_info.parameterRegistry->add({"traversalvulkanmemorymodel",
+                                 "compile the persistent traversal kernel with the Vulkan memory model, ignored without persistenttraversal. default false"},
+                                &m_rendererConfig.useVulkanMemoryModel);
+  m_info.parameterRegistry->add({"traversalatomics", "persistent traversal kernel polls with atomic load/store instead of plain coherent access. default true"},
+                                &m_rendererConfig.useAtomicLoadStore);
   m_info.parameterRegistry->add({"texlodmode", "ray/path tracer texture LOD: 0 gradient, 1 explicit lod, 2 mip0"},
                                 &m_rendererConfig.textureLodMode);
   m_info.parameterRegistry->add({"texturegradientscale", "scale the texture gradient in ray tracing and compute rasterization, 0 to 1. default 1"},
                                 &m_frameConfig.frameConstants.texGradScale);
+  m_info.parameterRegistry->add({"texlodbias", "bias added to all material texture LOD selection, on top of the automatic DLSS bias. default 0"},
+                                &m_tweak.texLodBias);
   m_info.parameterRegistry->add({"texturedmaterials", "enable textured materials"}, &m_sceneLoaderConfig.enableTexturedMaterials);
   m_info.parameterRegistry->add({"skipnormalmaps", "skip loading normal maps when textured materials are enabled"},
                                 &m_sceneLoaderConfig.skipNormalMaps);
@@ -270,6 +320,8 @@ LodClusters::LodClusters(const Info& info)
   m_frameConfig.frameConstants.wireStippleRepeats      = 5;
   m_frameConfig.frameConstants.wireStippleLength       = 0.5f;
   m_frameConfig.frameConstants.doShadow                = 1;
+  m_frameConfig.frameConstants.shadowRayMinT           = 0.001f;
+  m_frameConfig.frameConstants.shadowRayDistanceBias   = 1.0f;
   m_frameConfig.frameConstants.doWireframe             = 0;
   m_frameConfig.frameConstants.ambientOcclusionRadius  = 0.1f;
   m_frameConfig.frameConstants.ambientOcclusionSamples = 2;
@@ -307,8 +359,11 @@ void LodClusters::initScene(std::filesystem::path filePath, std::string cacheSuf
   {
     LOGI("Loading scene %s\n", fileName.c_str());
 
-    m_scene                  = nullptr;
-    m_sceneLoading           = true;
+    m_scene        = nullptr;
+    m_sceneLoading = true;
+    // picking results of the old scene must not survive into the new one, their instance and
+    // cluster ids do not mean anything there
+    m_resources.clearReadbackData();
     m_renderSceneInitAllowed = true;
     m_sceneCompletedCount    = 0;
     m_sceneTotalCount        = 0;
@@ -329,20 +384,22 @@ void LodClusters::initScene(std::filesystem::path filePath, std::string cacheSuf
       }
       else
       {
-        m_scene               = std::move(scene);
+        // The scene stays private to this thread until it is done, m_scene is only assigned by
+        // the main thread in handleChanges. The ui keeps drawing while we load and tests m_scene
+        // for null, so a scene whose grid or textures are still being set up must not be in there.
         m_sceneFilePath       = filePath;
-        m_tweak.clusterConfig = findSceneClusterConfig(m_scene->m_config);
+        m_tweak.clusterConfig = findSceneClusterConfig(scene->m_config);
 
-        m_scene->updateSceneGrid(m_sceneGridConfig);
+        scene->updateSceneGrid(m_sceneGridConfig);
         m_sceneGridConfigLast = m_sceneGridConfig;
-        updatedSceneGrid();
+        updatedSceneGrid(*scene);
 
-        m_renderSceneCanPreload = ScenePreloaded::canPreload(m_resources.getDeviceLocalHeapSize(), m_scene.get());
+        m_renderSceneCanPreload = ScenePreloaded::canPreload(m_resources.getDeviceLocalHeapSize(), scene.get());
 
         if(!configChange)
         {
-          m_sceneConfig = m_scene->m_config;
-          postInitNewScene();
+          m_sceneConfig = scene->m_config;
+          postInitNewScene(*scene);
           m_tweakLast       = m_tweak;
           m_sceneConfigLast = m_sceneConfig;
           m_sceneConfigEdit = m_sceneConfig;
@@ -353,7 +410,7 @@ void LodClusters::initScene(std::filesystem::path filePath, std::string cacheSuf
         // (not m_renderScene) so the concurrently-running UI never touches a half-constructed scene; the
         // main thread promotes it and finishes the GPU geometry setup via initRenderSceneGeometry().
         auto renderScene = std::make_unique<RenderScene>();
-        if(renderScene->initTextures(&m_resources, m_scene.get(), m_texturesConfig, m_sceneLoaderConfig.progressInfo))
+        if(renderScene->initTextures(&m_resources, scene.get(), m_texturesConfig, m_sceneLoaderConfig.progressInfo))
         {
           m_renderScenePending         = std::move(renderScene);
           m_renderSceneGeometryPending = true;
@@ -362,6 +419,9 @@ void LodClusters::initScene(std::filesystem::path filePath, std::string cacheSuf
         {
           LOGW("Loading scene textures failed\n");
         }
+
+        // hand over to the main thread, the m_sceneLoading store below publishes it
+        m_scenePending = std::move(scene);
       }
       m_sceneLoading = false;
     });
@@ -465,6 +525,13 @@ void LodClusters::deinitScene()
   }
 
   deinitRenderScene();
+
+  // a load may have finished without the main thread getting to install its scene
+  if(m_scenePending)
+  {
+    m_scenePending->deinit();
+    m_scenePending = nullptr;
+  }
 
   if(m_scene)
   {
@@ -570,23 +637,23 @@ void LodClusters::initRenderer(RendererType rtype)
   m_rendererFboChangeID = m_resources.m_fboChangeID;
 }
 
-void LodClusters::postInitNewScene()
+// `scene` rather than m_scene: this also runs on the loader thread, where the scene is not
+// installed yet
+void LodClusters::postInitNewScene(Scene& scene)
 {
-  assert(m_scene);
-
-  glm::vec3 extent         = m_scene->m_bbox.hi - m_scene->m_bbox.lo;
-  glm::vec3 center         = (m_scene->m_bbox.hi + m_scene->m_bbox.lo) * 0.5f;
+  glm::vec3 extent         = scene.m_bbox.hi - scene.m_bbox.lo;
+  glm::vec3 center         = (scene.m_bbox.hi + scene.m_bbox.lo) * 0.5f;
   float     sceneDimension = glm::length(extent);
 
   m_frameConfig.frameConstants.wLightPos = center + sceneDimension;
-  m_frameConfig.frameConstants.sceneSize = glm::length(m_scene->m_bbox.hi - m_scene->m_bbox.lo);
+  m_frameConfig.frameConstants.sceneSize = glm::length(scene.m_bbox.hi - scene.m_bbox.lo);
 
-  setSceneCamera(m_sceneFilePath);
+  setSceneCamera(m_sceneFilePath, scene);
 
-  m_frames                    = 0;
-  m_streamingConfig.maxGroups = std::max(m_streamingConfig.maxGroups, uint32_t(m_scene->getActiveGeometryCount()));
+  m_frames = 0;
+  clampStreamingConfig(scene);
 
-  if(!m_scene->m_hasVertexNormals)
+  if(!scene.m_hasVertexNormals)
     m_tweak.facetShading = true;
 
   m_frameConfig.frameConstants.skyParams.sunDirection = glm::normalize(m_frameConfig.frameConstants.skyParams.sunDirection);
@@ -677,6 +744,7 @@ void LodClusters::onAttach(nvapp::Application* app)
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_BLAS, "blas");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_BLAS_REUSE, "blas reuse");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_DEPTH_ONLY, "depth only (black)");
+    m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_DISCRETE_LOD, "discrete lod");
   }
 
   // Initialize core components
@@ -754,6 +822,10 @@ void LodClusters::onAttach(nvapp::Application* app)
   // --addcamerapath/--loadcamerapaths handlers set (also for config/sequence
   // parsing that happens after this point), so no snapshot is needed here
 
+  // baseline for onFileDrop, see m_sceneConfigBaseline
+  m_sceneConfigBaseline       = m_sceneConfig;
+  m_sceneLoaderConfigBaseline = m_sceneLoaderConfig;
+
   std::filesystem::path newFileDrop = m_sceneFilePathDropNew;
   onFileDrop(newFileDrop);
 
@@ -785,6 +857,16 @@ void LodClusters::onDetach()
   m_resources.deinit();
 
   m_profilerGpuTimer.deinit();
+}
+
+// The streamer needs a resident slot for every geometry's lowest detail group, so fewer groups
+// than geometries is not a legal setting. Enforced here rather than only at scene load, because
+// the ui, a config or a parameter sequence can lower it at any time.
+// `scene` rather than m_scene: this also runs on the loader thread, where the scene is not
+// installed yet
+void LodClusters::clampStreamingConfig(const Scene& scene)
+{
+  m_streamingConfig.maxGroups = std::max(m_streamingConfig.maxGroups, uint32_t(scene.getActiveGeometryCount()));
 }
 
 void LodClusters::applyMemoryBudgetArgs()
@@ -834,6 +916,64 @@ void LodClusters::applyMemoryBudgetArgs()
   }
 }
 
+// Settings that come with the app rather than with the model: after the scene's own
+// config file (if any) was parsed, we also run "scene_overrides/<scene name>.cfg" when
+// present. Must happen before the actual scene load, as it can alter loading behavior.
+void LodClusters::applySceneOverrides(const std::filesystem::path& filePath)
+{
+  if(filePath.empty())
+    return;
+
+  const std::filesystem::path              exeDirectoryPath = nvutils::getExecutablePath().parent_path();
+  const std::vector<std::filesystem::path> searchPaths      = {
+      // regular build
+      std::filesystem::absolute(exeDirectoryPath / TARGET_EXE_TO_SOURCE_DIRECTORY / "scene_overrides"),
+      // install build
+      std::filesystem::absolute(exeDirectoryPath / TARGET_NAME "_files" / "scene_overrides"),
+      std::filesystem::absolute(exeDirectoryPath / "scene_overrides"),
+  };
+
+  const std::filesystem::path overrideFileName = std::filesystem::path(filePath).stem().concat(".cfg");
+
+  std::filesystem::path overrideFilePath;
+  for(const std::filesystem::path& searchPath : searchPaths)
+  {
+    std::filesystem::path candidate = searchPath / overrideFileName;
+    if(std::filesystem::exists(candidate))
+    {
+      overrideFilePath = candidate;
+      break;
+    }
+  }
+
+  if(overrideFilePath.empty())
+    return;
+
+  std::string overrideFilePathString = nvutils::utf8FromPath(overrideFilePath);
+
+  LOGI("Loading scene override config: %s\n", overrideFilePathString.c_str());
+
+  std::vector<const char*> args;
+  args.push_back("--configfile");
+  args.push_back(overrideFilePathString.c_str());
+
+  // an override must not change which scene is loaded
+  std::filesystem::path oldFilePath = m_sceneFilePathDropNew;
+
+  m_info.parameterParser->parse(std::span(args), false, {}, {}, true);
+
+  m_sceneFilePathDropNew = oldFilePath;
+
+  // budgets from the override may be relative to the device local heap
+  applyMemoryBudgetArgs();
+
+  if(!m_cameraStringCommandLine.empty())
+  {
+    // override from command-line
+    m_cameraString = m_cameraStringCommandLine;
+  }
+}
+
 void LodClusters::saveCacheFile()
 {
   if(m_scene)
@@ -860,9 +1000,15 @@ void LodClusters::onFileDrop(const std::filesystem::path& filePath)
       m_cameraString            = {};
       m_cameraStringLast        = {};
       m_cameraStringCommandLine = {};
+
+      // drop what the previous scene's config file and scene_overrides had set
+      m_sceneConfig       = m_sceneConfigBaseline;
+      m_sceneLoaderConfig = m_sceneLoaderConfigBaseline;
     }
     m_sceneFilePathDropLast = filePath;
     m_sceneFilePathDropNew  = filePath;
+
+    addToRecentFiles(filePath);
   }
 
   if(filePath.extension() == ".cfg")
@@ -880,6 +1026,8 @@ void LodClusters::onFileDrop(const std::filesystem::path& filePath)
     // config parsing might change m_sceneFilePathDropNew
     // and m_cameraString
     m_info.parameterParser->parse(std::span(args), false, {}, {}, true);
+
+    applySceneOverrides(filePath);
 
     // budgets from the config may be relative to the device local heap
     applyMemoryBudgetArgs();
@@ -903,6 +1051,12 @@ void LodClusters::onFileDrop(const std::filesystem::path& filePath)
     }
 
     return;
+  }
+
+  if(!m_sceneLoadFromConfig)
+  {
+    // coming from a config file, the overrides were already applied for that config's name
+    applySceneOverrides(filePath);
   }
 
   LOGI("Loading model: %s\n", nvutils::utf8FromPath(filePath).c_str());
@@ -931,6 +1085,12 @@ void LodClusters::doProcessingOnly()
     // config parsing might change m_sceneFilePathDropNew
     // and m_cameraString
     m_info.parameterParser->parse(std::span(args), false, {}, {}, true);
+
+    applySceneOverrides(oldFilePath);
+  }
+  else
+  {
+    applySceneOverrides(m_sceneFilePathDropNew);
   }
 
   m_scene = std::make_unique<Scene>();
@@ -973,6 +1133,8 @@ void LodClusters::parameterSequenceCallback(const nvutils::ParameterSequencer::S
       message += fmt::format("Groups; {}; {};\n", stats.residentGroups, stats.maxGroups);
       message += fmt::format("Clusters; {}; {};\n", stats.residentClusters, stats.maxClusters);
       message += fmt::format("Triangles; {};\n", stats.residentTriangles);
+      message += fmt::format("Loads; {};\n", stats.loadCount);
+      message += fmt::format("Unloads; {};\n", stats.unloadCount);
       if(m_rendererConfig.useBlasCaching)
       {
         message += fmt::format("Cached BLAS; {};\n", stats.cachedBlasCount);
@@ -986,12 +1148,25 @@ void LodClusters::parameterSequenceCallback(const nvutils::ParameterSequencer::S
     message += fmt::format("Traversal Tasks; {}; {};\n", readback.numTraversalTasks, m_renderer->getMaxTraversalTasks());
     message += fmt::format("Traversal Clusters; {}; {};\n", readback.numRenderClusters, m_renderer->getMaxRenderClusters());
     message += fmt::format("BLAS builds; {}; {};\n", readback.numBlasBuilds, m_renderer->getMaxBlasBuilds());
+    if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD && m_rendererConfig.useCulling
+       && m_rendererConfig.useTwoPassCulling && m_rendererConfig.useTwoPassRejectLists)
+    {
+      // what the first cull pass handed to the second one, the node and group lists
+      // are capped by the traversal task limit, the instance list by the scene
+      message += fmt::format("Reject Nodes; {}; {};\n", readback.numRejectNodes, m_renderer->getMaxTraversalTasks());
+      message += fmt::format("Reject Groups; {}; {};\n", readback.numRejectGroups, m_renderer->getMaxTraversalTasks());
+      message += fmt::format("Reject Instances; {};\n", readback.numRejectInstances);
+    }
 
     if(m_rendererConfig.useRenderStats)
     {
       message += fmt::format("Enqueued; Actual;\n");
       message += fmt::format("Enqueued Tasks; {};\n", readback.numTraversedTasks);
       message += fmt::format("Enqueued Clusters; {};\n", readback.numRenderedClusters);
+      if(m_rendererConfig.useDiscreteLod)
+      {
+        message += fmt::format("Discrete Instances; {};\n", readback.numDiscreteInstances);
+      }
       if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD)
       {
         message += fmt::format("Enqueued Triangles; {};\n", readback.numRenderedTriangles);
@@ -1066,16 +1241,18 @@ void LodClusters::setFromClusterConfig(SceneConfig& sceneConfig, ClusterConfig c
   }
 }
 
-void LodClusters::updatedSceneGrid()
+// `scene` rather than m_scene: this also runs on the loader thread, where the scene is not
+// installed yet
+void LodClusters::updatedSceneGrid(const Scene& scene)
 {
   {
-    glm::vec3 gridExtent = m_scene->m_gridBbox.hi - m_scene->m_gridBbox.lo;
+    glm::vec3 gridExtent = scene.m_gridBbox.hi - scene.m_gridBbox.lo;
     float     gridRadius = glm::length(gridExtent) * 0.5f;
 
-    glm::vec3 modelExtent = m_scene->m_bbox.hi - m_scene->m_bbox.lo;
+    glm::vec3 modelExtent = scene.m_bbox.hi - scene.m_bbox.lo;
     float     modelRadius = glm::length(modelExtent) * 0.5f;
 
-    bool bigScene = m_scene->m_isBig;
+    bool bigScene = scene.m_isBig;
 
     if(!m_cameraSpeed)
       m_info.cameraManipulator->setSpeed(modelRadius * (bigScene ? 0.0025f : 0.25f));
@@ -1088,7 +1265,7 @@ void LodClusters::updatedSceneGrid()
 
   if(m_tweak.autoSharing)
   {
-    m_rendererConfig.useBlasSharing = (m_scene->m_instances.size() > m_scene->getActiveGeometryCount() * 3);
+    m_rendererConfig.useBlasSharing = (scene.m_instances.size() > scene.getActiveGeometryCount() * 3);
   }
 }
 
@@ -1096,6 +1273,22 @@ void LodClusters::handleChanges()
 {
   if(m_sceneLoading)
     return;
+
+  // install what the loader thread completed, everything else about the scene was already set up
+  // on that thread, only the pointer handover is deferred to here
+  if(m_scenePending)
+  {
+    m_scene = std::move(m_scenePending);
+  }
+
+  // budgets arrive as absolute or heap-relative arguments, so they need resolving before the
+  // streaming config below is compared. Without this a budget that changes after the scene was
+  // loaded (a parameter sequence, most of all) would be parsed and then silently ignored.
+  applyMemoryBudgetArgs();
+  if(m_scene)
+  {
+    clampStreamingConfig(*m_scene);
+  }
 
   if(m_scene && m_sceneLoaderConfig != m_sceneLoaderConfigLast)
   {
@@ -1142,13 +1335,6 @@ void LodClusters::handleChanges()
   if(m_rendererConfig.useBlasSharing && m_scene && m_scene->m_instances.size() > (1 << 27))
   {
     m_rendererConfig.useBlasSharing = false;
-  }
-
-  // merging and caching require streaming, but neither depends on the other nor on sharing
-  if(m_renderScene && !m_renderScene->useStreaming)
-  {
-    m_rendererConfig.useBlasMerging = false;
-    m_rendererConfig.useBlasCaching = false;
   }
 
   if((m_frameConfig.visualize == VISUALIZE_VIS_BUFFER || m_frameConfig.visualize == VISUALIZE_DEPTH_ONLY)
@@ -1232,7 +1418,8 @@ void LodClusters::handleChanges()
 
       deinitRenderer();
       m_scene->updateSceneGrid(m_sceneGridConfig);
-      updatedSceneGrid();
+      updatedSceneGrid(*m_scene);
+      m_resources.clearReadbackData();
     }
 
     bool streamingChanged = tweakChanged(m_tweak.useStreaming)
@@ -1267,11 +1454,13 @@ void LodClusters::handleChanges()
        || rendererCfgChanged(m_rendererConfig.useBlasMerging) || rendererCfgChanged(m_rendererConfig.useBlasCaching)
        || rendererCfgChanged(m_rendererConfig.useEXTmeshShader) || rendererCfgChanged(m_rendererConfig.useComputeRaster)
        || rendererCfgChanged(m_rendererConfig.usePrimitiveCulling) || rendererCfgChanged(m_rendererConfig.useTwoPassCulling)
-       || rendererCfgChanged(m_rendererConfig.useDepthOnly) || rendererCfgChanged(m_rendererConfig.useForcedInvisibleCulling)
-       || rendererCfgChanged(m_rendererConfig.usePersistentTraversal)
+       || rendererCfgChanged(m_rendererConfig.useTwoPassRejectLists) || rendererCfgChanged(m_rendererConfig.useDepthOnly)
+       || rendererCfgChanged(m_rendererConfig.useForcedInvisibleCulling)
+       || rendererCfgChanged(m_rendererConfig.usePersistentTraversal) || rendererCfgChanged(m_rendererConfig.useVulkanMemoryModel)
+       || rendererCfgChanged(m_rendererConfig.useAtomicLoadStore) || rendererCfgChanged(m_rendererConfig.useDiscreteLod)
        || rendererCfgChanged(m_rendererConfig.textureLodMode) || rendererCfgChanged(m_rendererConfig.usePathtrace))
     {
-      if(m_renderScene && rendererCfgChanged(m_rendererConfig.useBlasCaching))
+      if(m_renderScene && (rendererCfgChanged(m_rendererConfig.useBlasCaching) || rendererCfgChanged(m_rendererConfig.useDiscreteLod)))
       {
         m_renderScene->streamingReset();
       }
@@ -1569,23 +1758,11 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     frameConstants.projMatrixI          = glm::inverse(projection);
     frameConstants.pixelAngle = 2.0f * glm::abs(frameConstants.projMatrixI[1][1]) / glm::max(frameConstants.viewportf.y, 1.0f);
 
-    glm::vec4 hPos   = projection * glm::vec4(1.0f, 1.0f, -frameConstants.farPlane, 1.0f);
-    glm::vec2 hCoord = glm::vec2(hPos.x / hPos.w, hPos.y / hPos.w);
-    glm::vec2 dim    = glm::abs(hCoord);
-
-    // helper to quickly get footprint of a point at a given distance
-    //
-    // __.__hPos (far plane is width x height)
-    // \ | /
-    //  \|/
-    //   x camera
-    //
-    // here: viewPixelSize / point.w = size of point in pixels
-    // * 0.5f because renderWidth/renderHeight represents [-1,1] but we need half of frustum
-    frameConstants.viewPixelSize = dim * (glm::vec2(float(renderWidth), float(renderHeight)) * 0.5f) * frameConstants.farPlane;
-    // here: viewClipSize / point.w = size of point in clip-space units
-    // no extra scale as half clip space is 1.0 in extent
-    frameConstants.viewClipSize = dim * frameConstants.farPlane;
+    // ray cones and hardware derivatives are taken at render resolution, so when DLSS upscales,
+    // cancel the extra blur with the resolution ratio
+    frameConstants.texLodBias =
+        m_tweak.texLodBias + 0.5f * std::log2(float(renderWidth * renderHeight) / float(targetWidth * targetHeight));
+    frameConstants.texLodBiasScale = std::exp2(frameConstants.texLodBias);
 
     frameConstants.viewPos = frameConstants.viewMatrixI[3];  // position of eye in the world
     frameConstants.viewDir = -viewI[2];
@@ -1709,19 +1886,21 @@ void LodClusters::onRender(VkCommandBuffer cmd)
   m_frames++;
 }
 
-void LodClusters::setSceneCamera(const std::filesystem::path& filePath)
+// `scene` rather than m_scene: this runs on the loader thread, where the scene is not installed
+// yet (and its cameras are fixed up here)
+void LodClusters::setSceneCamera(const std::filesystem::path& filePath, Scene& scene)
 {
   nvgui::SetCameraJsonFile(filePath);
 
-  glm::vec3 modelExtent = m_scene->m_bbox.hi - m_scene->m_bbox.lo;
+  glm::vec3 modelExtent = scene.m_bbox.hi - scene.m_bbox.lo;
   float     modelRadius = glm::length(modelExtent) * 0.5f;
-  glm::vec3 modelCenter = (m_scene->m_bbox.hi + m_scene->m_bbox.lo) * 0.5f;
+  glm::vec3 modelCenter = (scene.m_bbox.hi + scene.m_bbox.lo) * 0.5f;
 
-  bool bigScene = m_scene->m_isBig;
+  bool bigScene = scene.m_isBig;
 
-  if(!m_scene->m_cameras.empty())
+  if(!scene.m_cameras.empty())
   {
-    auto& c = m_scene->m_cameras[0];
+    auto& c = scene.m_cameras[0];
     m_info.cameraManipulator->setFov(c.fovy);
 
 
@@ -1735,7 +1914,7 @@ void LodClusters::setSceneCamera(const std::filesystem::path& filePath)
     m_info.cameraManipulator->setCamera({c.eye, c.center, c.up, static_cast<float>(glm::degrees(c.fovy))});
 
     nvgui::SetHomeCamera({c.eye, c.center, c.up, static_cast<float>(glm::degrees(c.fovy))});
-    for(auto& cam : m_scene->m_cameras)
+    for(auto& cam : scene.m_cameras)
     {
       cam.eye            = glm::vec3(cam.worldMatrix[3]);
       float     distance = glm::length(modelCenter - cam.eye);

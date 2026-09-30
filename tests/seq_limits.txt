@@ -1,0 +1,154 @@
+# Running out of the user defined limits, on the oversubscribed scene in seq_limits.cfg.
+#
+# These are the limits the sample warns about in the viewport rather than enforcing at load
+# time, so exceeding them is a runtime state the renderers have to survive:
+#
+#   --renderclusterbits     "Render clusters limit exceeded"
+#   --rendertraversalbits   "Traversal task limit exceeded"
+#   --maxresidentgroups     "No resident groups left" (floored at the geometry count)
+#   --maxclasmegabytes      "Few CLAS groups left"
+#   --maxgeomegabytes       "Little geometry memory left"
+#
+# What is being tested is that each of them degrades the image and nothing else: no crash,
+# no device loss, no validation error, no shader that fails to build. Nothing here checks
+# what is actually drawn, and the screenshots are expected to be visibly incomplete.
+#
+# A first sequence with roomy settings comes first, so the later ones can be compared
+# against something, and each limit is squeezed on its own before they are combined.
+
+SEQUENCE "limits_baseline"
+--sequenceframes 32
+--sequenceresetframes 8
+--renderer 1
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--renderclusterbits 20
+--rendertraversalbits 20
+--maxresidentgroups 65536
+--maxframeloadrequests 128
+--maxgeomegabytes 1024
+--maxclasmegabytes 1024
+--startclasmegabytes 256
+--clasgrowmegabytes 128
+--visualize 5
+
+# 1 << 8 == 256 clusters can be enqueued per frame, the scene wants orders of magnitude more
+SEQUENCE "limits_renderclusters_raytrace"
+--renderclusterbits 8
+--visualize 5
+
+SEQUENCE "limits_renderclusters_raster"
+--renderer 0
+--renderclusterbits 8
+--visualize 5
+
+# the traversal runs out of intermediate task space, so it cannot even reach the clusters
+SEQUENCE "limits_traversaltasks_raster"
+--renderer 0
+--renderclusterbits 20
+--rendertraversalbits 8
+--visualize 5
+
+SEQUENCE "limits_traversaltasks_raytrace"
+--renderer 1
+--rendertraversalbits 8
+--visualize 5
+
+SEQUENCE "limits_traversaltasks_nonpersistent"
+--renderer 1
+--rendertraversalbits 8
+--persistenttraversal 0
+--visualize 5
+
+# resident group slots run out, so streaming has nowhere to put what traversal asks for.
+# 1024 is the floor for this scene rather than an arbitrary small number: every geometry needs a
+# slot for its lowest detail group, so the sample clamps anything below the geometry count.
+SEQUENCE "limits_residentgroups"
+--persistenttraversal 1
+--rendertraversalbits 20
+--maxresidentgroups 1024
+--visualize 5
+
+SEQUENCE "limits_residentgroups_raster"
+--renderer 0
+--maxresidentgroups 1024
+--visualize 5
+
+# below the floor, which has to be clamped rather than accepted - starving the streamer past
+# this point is the geometry budget's and the transfer budget's job, not this setting's
+SEQUENCE "limits_residentgroups_below_floor"
+--renderer 1
+--maxresidentgroups 16
+--visualize 5
+
+# the streamed geometry budget runs out before the group slots do
+SEQUENCE "limits_geometrymemory"
+--renderer 1
+--maxresidentgroups 65536
+--maxgeomegabytes 16
+--visualize 5
+
+# the CLAS budget runs out, which only ray tracing has
+SEQUENCE "limits_clasmemory"
+--maxgeomegabytes 1024
+--maxclasmegabytes 16
+--startclasmegabytes 8
+--clasgrowmegabytes 4
+--visualize 5
+
+# move based compaction on the same budget, blas caching stays on so the renderer has to ignore it
+SEQUENCE "limits_clasmemory_no_allocator"
+--maxclasmegabytes 16
+--clasallocator 0
+--visualize 5
+
+# BLAS caching on top of an already exhausted CLAS budget
+SEQUENCE "limits_clasmemory_blascaching"
+--clasallocator 1
+--maxclasmegabytes 16
+--maxblascachingmegabytes 1
+--blascaching 1
+--visualize 9
+
+# transfers throttled to a trickle, so residency grows far slower than traversal demands
+SEQUENCE "limits_transfer"
+--maxblascachingmegabytes 128
+--maxclasmegabytes 1024
+--startclasmegabytes 256
+--maxtransfermegabytes 1
+--maxframeloadrequests 1
+--visualize 5
+
+# everything at once, on both renderers
+SEQUENCE "limits_all_raytrace"
+--renderer 1
+--renderclusterbits 8
+--rendertraversalbits 8
+--maxresidentgroups 1024
+--maxframeloadrequests 1
+--maxtransfermegabytes 1
+--maxgeomegabytes 16
+--maxclasmegabytes 16
+--startclasmegabytes 8
+--clasgrowmegabytes 4
+--visualize 5
+
+SEQUENCE "limits_all_raster"
+--renderer 0
+--visualize 5
+
+# and back to roomy, to check the renderers recover rather than staying wedged
+SEQUENCE "limits_recover"
+--renderer 1
+--renderclusterbits 20
+--rendertraversalbits 20
+--maxresidentgroups 65536
+--maxframeloadrequests 128
+--maxtransfermegabytes 128
+--maxgeomegabytes 1024
+--maxclasmegabytes 1024
+--startclasmegabytes 256
+--clasgrowmegabytes 128
+--visualize 5

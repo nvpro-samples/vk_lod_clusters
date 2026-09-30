@@ -216,10 +216,10 @@ void main()
   if (threadID < streaming.update.patchCachedBlasCount)
   {
     StreamingGeometryPatch sgpatch = streaming.update.geometryPatches.d[threadID];
-    uint cachedBlasLodLevel        = sgpatch.cachedBlasLodLevel;
+    uint discreteLodLevel          = sgpatch.discreteLodLevel;
     uint geometryID                = sgpatch.geometryID;
-    geometries[geometryID].cachedBlasLodLevel = uint8_t(cachedBlasLodLevel);
-    geometries[geometryID].cachedBlasAddress  = sgpatch.cachedBlasAddress;
+    geometries[geometryID].discreteLodLevel  = uint8_t(discreteLodLevel);
+    geometries[geometryID].cachedBlasAddress = sgpatch.cachedBlasAddress;
   }
 #endif
 }

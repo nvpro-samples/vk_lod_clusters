@@ -200,23 +200,10 @@ void Scene::ProcessingInfo::init(float processingThreadsPct)
   }
 }
 
-void Scene::ProcessingInfo::setupParallelism(size_t geometryCount_, size_t geometryCompletedCount, int parallelismMode)
+void Scene::ProcessingInfo::setupParallelism(size_t geometryCount_)
 {
-  geometryCount = geometryCount_;
-
-  bool preferInnerParallelism = (geometryCount - geometryCompletedCount) < numPoolThreads;
-
-  if(parallelismMode < 0)
-  {
-    preferInnerParallelism = true;
-  }
-  if(parallelismMode > 0)
-  {
-    preferInnerParallelism = false;
-  }
-
-  numOuterThreads = preferInnerParallelism ? 1 : numPoolThreads;
-  numInnerThreads = preferInnerParallelism ? numPoolThreads : 1;
+  geometryCount   = geometryCount_;
+  numOuterThreads = numPoolThreads;
 }
 
 void Scene::ProcessingInfo::setupCompressedGltf(size_t bufferViewCount)
@@ -227,8 +214,7 @@ void Scene::ProcessingInfo::setupCompressedGltf(size_t bufferViewCount)
 
 void Scene::ProcessingInfo::logBegin(uint64_t totalTriangleCount)
 {
-  LOGI("... geometry load & processing: geometries %" PRIu64 ", threads outer %d inner %d\n", geometryCount,
-       numOuterThreads, numInnerThreads);
+  LOGI("... geometry load & processing: geometries %" PRIu64 ", threads %d\n", geometryCount, numOuterThreads);
 
   // baseline before any geometry work, so the processing cost can be told apart
   // from what parsing / buffer loading already committed
@@ -244,7 +230,7 @@ void Scene::ProcessingInfo::logBegin(uint64_t totalTriangleCount)
   progressLastPercentage      = 0;
 }
 
-uint32_t Scene::ProcessingInfo::logCompletedGeometry(uint64_t geometryTriangleCount)
+uint64_t Scene::ProcessingInfo::logCompletedGeometry(uint64_t geometryTriangleCount)
 {
   std::lock_guard lock(progressMutex);
 
@@ -277,8 +263,8 @@ uint32_t Scene::ProcessingInfo::logCompletedGeometry(uint64_t geometryTriangleCo
          double(usage.privateCommit) / (1024.0 * 1024.0), double(usage.workingSet) / (1024.0 * 1024.0));
   }
 
-  // the UI derives its own percentage from completed / total geometries
-  return progressGeometriesCompleted;
+  // same unit as the percentage logged above, so the ui progress matches the log
+  return triangleCount ? progressTrianglesCompleted : progressGeometriesCompleted;
 }
 
 void Scene::ProcessingInfo::logEnd()
@@ -330,6 +316,7 @@ void Scene::ProcessingInfo::logEnd()
     LOGI("Vertex TexCrd Bytes:     %12" PRIu64 "\n", (uint64_t)stats.vertexTexCoordBytes);
     LOGI("Vertex N&T Bytes:        %12" PRIu64 "\n", (uint64_t)stats.vertexNrmBytes);
     LOGI("Vertex Comp Bytes:       %12" PRIu64 "\n", (uint64_t)stats.vertexCompressedBytes);
+    LOGI("Triangle Comp Bytes:     %12" PRIu64 "\n", (uint64_t)stats.triangleCompressedBytes);
     LOGI("\n");
   }
 }
@@ -354,8 +341,9 @@ void Scene::fillGroupRuntimeData(const GroupInfo&       srcGroupInfo,
   {
     decompressGroup(srcGroupInfo, srcGroupView, dst, dstSize, scratch);
 
-    dstGroupInfo.sizeBytes       = dstGroupInfo.uncompressedSizeBytes;
-    dstGroupInfo.vertexDataCount = dstGroupInfo.uncompressedVertexDataCount;
+    dstGroupInfo.sizeBytes         = dstGroupInfo.uncompressedSizeBytes;
+    dstGroupInfo.vertexDataCount   = dstGroupInfo.uncompressedVertexDataCount;
+    dstGroupInfo.triangleDataCount = srcGroupInfo.getRuntimeTriangleDataCount();
   }
   else
   {
@@ -730,28 +718,51 @@ void Scene::computeInstanceBBoxes()
 {
   m_bbox = {{FLT_MAX, FLT_MAX, FLT_MAX}, {-FLT_MAX, -FLT_MAX, -FLT_MAX}, 0, 0};
 
-  for(auto& instance : m_instances)
+  for(size_t i = 0; i < m_instances.size(); i++)
   {
-    const GeometryView& geometry = getActiveGeometry(instance.geometryID);
+    Instance& instance = m_instances[i];
 
-    instance.bbox = {{FLT_MAX, FLT_MAX, FLT_MAX}, {-FLT_MAX, -FLT_MAX, -FLT_MAX}, 0, 0};
-
-    for(uint32_t v = 0; v < 8; v++)
-    {
-      bool x = (v & 1) != 0;
-      bool y = (v & 2) != 0;
-      bool z = (v & 4) != 0;
-
-      glm::bvec3 weight(x, y, z);
-      glm::vec3  corner = glm::mix(geometry.bbox.lo, geometry.bbox.hi, weight);
-      corner            = instance.matrix * glm::vec4(corner, 1.0f);
-      instance.bbox.lo  = glm::min(instance.bbox.lo, corner);
-      instance.bbox.hi  = glm::max(instance.bbox.hi, corner);
-    }
+    instance.bbox = getInstanceWorldBBox(instance);
 
     m_bbox.lo = glm::min(m_bbox.lo, instance.bbox.lo);
     m_bbox.hi = glm::max(m_bbox.hi, instance.bbox.hi);
   }
+}
+
+shaderio::BBox Scene::getInstanceWorldBBox(const Instance& instance) const
+{
+  shaderio::BBox bbox = {{FLT_MAX, FLT_MAX, FLT_MAX}, {-FLT_MAX, -FLT_MAX, -FLT_MAX}, 0, 0};
+
+  const KDopHull& hull = getActiveGeometryHull(instance.geometryID);
+
+  if(hull.vertexCount)
+  {
+    for(uint32_t v = 0; v < hull.vertexCount; v++)
+    {
+      glm::vec3 corner = instance.matrix * glm::vec4(hull.vertices[v], 1.0f);
+
+      bbox.lo = glm::min(bbox.lo, corner);
+      bbox.hi = glm::max(bbox.hi, corner);
+    }
+  }
+  else
+  {
+    // no hull, for example a geometry that was skipped during processing
+    const GeometryView& geometry = getActiveGeometry(instance.geometryID);
+
+    for(uint32_t v = 0; v < 8; v++)
+    {
+      glm::bvec3 weight((v & 1) != 0, (v & 2) != 0, (v & 4) != 0);
+      glm::vec3  corner = glm::mix(geometry.bbox.lo, geometry.bbox.hi, weight);
+
+      corner = instance.matrix * glm::vec4(corner, 1.0f);
+
+      bbox.lo = glm::min(bbox.lo, corner);
+      bbox.hi = glm::max(bbox.hi, corner);
+    }
+  }
+
+  return bbox;
 }
 
 void Scene::processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex, bool isCached)
@@ -816,6 +827,9 @@ void Scene::processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex
 
   // always reset
   geometryView.instanceReferenceCount = 0;
+
+  // derived rather than cached, so changing the extraction costs no `geoVersion` bump
+  kdopBuildHull(m_geometryHulls[geometryIndex], geometryView.kdop, geometryView.bbox.lo, geometryView.bbox.hi);
 
   if(m_processingOnlyFile)
   {
@@ -1017,8 +1031,15 @@ size_t Scene::GroupInfo::computeUncompressedSectionSize() const
   threadGroupSize        = nvutils::align_up(threadGroupSize, 16) + sizeof(shaderio::Cluster) * clusterCount;
   threadGroupSize        = nvutils::align_up(threadGroupSize, 4) + sizeof(uint32_t) * clusterCount;
   threadGroupSize        = nvutils::align_up(threadGroupSize, 16) + sizeof(shaderio::BBox) * clusterCount;
-  threadGroupSize        = threadGroupSize + sizeof(uint8_t) * triangleDataCount;
-  threadGroupSize        = nvutils::align_up(threadGroupSize, 8);
   return threadGroupSize;
+}
+
+size_t Scene::GroupInfo::computeRuntimeVerticesOffset() const
+{
+  size_t offset = computeUncompressedSectionSize();
+  // the runtime triangle region is never compressed
+  offset = offset + sizeof(uint8_t) * getRuntimeTriangleDataCount();
+  offset = nvutils::align_up(offset, 8);
+  return offset;
 }
 }  // namespace lodclusters

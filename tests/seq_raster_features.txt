@@ -1,0 +1,308 @@
+# Rasterization: the culling / two pass culling / discrete lod matrix.
+#
+# Run over both geometry layouts for the same reason as seq_raytrace_blas.txt: discrete lod
+# only triggers for instances that sit on a single fully resident lod level, so how the
+# geometries are shared across the grid changes which instances qualify.
+#
+# Two pass culling is only meaningful with culling enabled; the off/on combination is kept
+# in the matrix anyway, it has to be a no-op rather than a failure.
+#
+# Visualization is pinned to "discrete lod" so the screenshots of one block are comparable.
+
+SEQUENCE "raster_unique0_cull_off_twopass_off_discrete_off"
+# --sequenceframes only exists once the sequencer is initialized, so it cannot be
+# passed on the command line - it has to be set here, in the first sequence.
+--sequenceframes 32
+--sequenceresetframes 8
+--renderer 0
+--dlss 0
+--swraster 0
+--gridunique 0
+--streaming 1
+--culling 0
+--twopassculling 0
+--discretelod 0
+--visualize 11
+
+SEQUENCE "raster_unique0_cull_off_twopass_off_discrete_on"
+--renderer 0
+--dlss 0
+--swraster 0
+--gridunique 0
+--streaming 1
+--culling 0
+--twopassculling 0
+--discretelod 1
+--visualize 11
+
+SEQUENCE "raster_unique0_cull_off_twopass_on_discrete_off"
+--renderer 0
+--dlss 0
+--swraster 0
+--gridunique 0
+--streaming 1
+--culling 0
+--twopassculling 1
+--discretelod 0
+--visualize 11
+
+SEQUENCE "raster_unique0_cull_off_twopass_on_discrete_on"
+--renderer 0
+--dlss 0
+--swraster 0
+--gridunique 0
+--streaming 1
+--culling 0
+--twopassculling 1
+--discretelod 1
+--visualize 11
+
+SEQUENCE "raster_unique0_cull_on_twopass_off_discrete_off"
+--renderer 0
+--dlss 0
+--swraster 0
+--gridunique 0
+--streaming 1
+--culling 1
+--twopassculling 0
+--discretelod 0
+--visualize 11
+
+SEQUENCE "raster_unique0_cull_on_twopass_off_discrete_on"
+--renderer 0
+--dlss 0
+--swraster 0
+--gridunique 0
+--streaming 1
+--culling 1
+--twopassculling 0
+--discretelod 1
+--visualize 11
+
+SEQUENCE "raster_unique0_cull_on_twopass_on_discrete_off"
+--renderer 0
+--dlss 0
+--swraster 0
+--gridunique 0
+--streaming 1
+--culling 1
+--twopassculling 1
+--discretelod 0
+--visualize 11
+
+SEQUENCE "raster_unique0_cull_on_twopass_on_discrete_on"
+--renderer 0
+--dlss 0
+--swraster 0
+--gridunique 0
+--streaming 1
+--culling 1
+--twopassculling 1
+--discretelod 1
+--visualize 11
+
+SEQUENCE "raster_unique1_cull_off_twopass_off_discrete_off"
+--renderer 0
+--dlss 0
+--swraster 0
+--gridunique 1
+--streaming 1
+--culling 0
+--twopassculling 0
+--discretelod 0
+--visualize 11
+
+SEQUENCE "raster_unique1_cull_off_twopass_off_discrete_on"
+--renderer 0
+--dlss 0
+--swraster 0
+--gridunique 1
+--streaming 1
+--culling 0
+--twopassculling 0
+--discretelod 1
+--visualize 11
+
+SEQUENCE "raster_unique1_cull_off_twopass_on_discrete_off"
+--renderer 0
+--dlss 0
+--swraster 0
+--gridunique 1
+--streaming 1
+--culling 0
+--twopassculling 1
+--discretelod 0
+--visualize 11
+
+SEQUENCE "raster_unique1_cull_off_twopass_on_discrete_on"
+--renderer 0
+--dlss 0
+--swraster 0
+--gridunique 1
+--streaming 1
+--culling 0
+--twopassculling 1
+--discretelod 1
+--visualize 11
+
+SEQUENCE "raster_unique1_cull_on_twopass_off_discrete_off"
+--renderer 0
+--dlss 0
+--swraster 0
+--gridunique 1
+--streaming 1
+--culling 1
+--twopassculling 0
+--discretelod 0
+--visualize 11
+
+SEQUENCE "raster_unique1_cull_on_twopass_off_discrete_on"
+--renderer 0
+--dlss 0
+--swraster 0
+--gridunique 1
+--streaming 1
+--culling 1
+--twopassculling 0
+--discretelod 1
+--visualize 11
+
+SEQUENCE "raster_unique1_cull_on_twopass_on_discrete_off"
+--renderer 0
+--dlss 0
+--swraster 0
+--gridunique 1
+--streaming 1
+--culling 1
+--twopassculling 1
+--discretelod 0
+--visualize 11
+
+SEQUENCE "raster_unique1_cull_on_twopass_on_discrete_on"
+--renderer 0
+--dlss 0
+--swraster 0
+--gridunique 1
+--streaming 1
+--culling 1
+--twopassculling 1
+--discretelod 1
+--visualize 11
+
+SEQUENCE "raster_primitiveculling_on"
+--renderer 0
+--dlss 0
+--swraster 0
+--gridunique 0
+--streaming 1
+--culling 1
+--twopassculling 1
+--discretelod 1
+--primitiveculling 1
+--visualize 11
+
+SEQUENCE "raster_extmeshshader_on"
+--renderer 0
+--dlss 0
+--swraster 0
+--gridunique 0
+--streaming 1
+--culling 1
+--twopassculling 1
+--discretelod 1
+--primitiveculling 0
+--extmeshshader 1
+--visualize 11
+
+SEQUENCE "raster_swraster_on"
+--renderer 0
+--dlss 0
+--swraster 1
+--gridunique 0
+--streaming 1
+--culling 1
+--twopassculling 1
+--discretelod 1
+--extmeshshader 0
+--visualize 2
+
+SEQUENCE "raster_nostreaming"
+--renderer 0
+--dlss 0
+--swraster 0
+--gridunique 0
+--streaming 0
+--culling 1
+--twopassculling 1
+--discretelod 1
+--visualize 11
+
+# HBAO is the one post pass that only exists in shaded rasterization, and it has its own
+# framebuffer dependencies - once with it off is enough to prove it is not load bearing.
+SEQUENCE "raster_hbao_off"
+--renderer 0
+--dlss 0
+--swraster 0
+--gridunique 0
+--streaming 1
+--culling 1
+--twopassculling 1
+--discretelod 1
+--visualize 0
+--hbao 0
+
+SEQUENCE "raster_hbao_on_noblur"
+--renderer 0
+--visualize 0
+--hbao 1
+--hbaoblur 0
+
+SEQUENCE "raster_hbao_on"
+--renderer 0
+--visualize 0
+--hbao 1
+--hbaoblur 1
+
+# the bounding box overlays are their own draw pass on top of the regular one
+SEQUENCE "raster_bboxes_instance"
+--renderer 0
+--visualize 0
+--hbao 1
+--hbaoblur 1
+--instancebboxes 1
+--clusterbboxes 0
+
+SEQUENCE "raster_bboxes_cluster"
+--renderer 0
+--instancebboxes 0
+--clusterbboxes 1
+
+SEQUENCE "raster_bboxes_both"
+--renderer 0
+--instancebboxes 1
+--clusterbboxes 1
+
+SEQUENCE "raster_bboxes_off"
+--renderer 0
+--instancebboxes 0
+--clusterbboxes 0
+
+# the extra atomic counters are their own shader permutation (USE_RENDER_STATS)
+SEQUENCE "raster_renderstats"
+--renderer 0
+--dlss 0
+--swraster 0
+--gridunique 0
+--streaming 1
+--culling 1
+--twopassculling 1
+--discretelod 1
+--instancebboxes 0
+--clusterbboxes 0
+--visualize 0
+--renderstats 1
+
+SEQUENCE "raster_renderstats_off"
+--renderer 0
+--renderstats 0
+--visualize 0

@@ -53,30 +53,21 @@ The sample also showcases a ray tracing specific optimization for [BLAS Sharing]
 
 ### Model processing
 
-This sample uses a custom fork of [meshoptimizer's](https://github.com/zeux/meshoptimizer) single header [clusterlod.h](src/meshopt_clusterlod.h) to support "inner" parallelism.
+This sample uses a lightly modified copy of [meshoptimizer's](https://github.com/zeux/meshoptimizer) single header [clusterlod.h](src/meshopt_clusterlod.h). The local changes are listed at the top of the file.
 
-Inside [scene_cluster_lod.cpp](/src/scene_cluster_lod.cpp) the `Scene:buildGeometryLod(...)` function covers the usage of the libraries and what data we need to extract from them. The `Scene::storeGroup(...)` function takes the resulting cluster group and packs it into a binary blob used for the runtime representation. The geometry data is later saved into the cache file for faster loading and streaming.
+Inside [scene_cluster_lod.cpp](/src/scene_cluster_lod.cpp) the `Scene::buildGeometryLod(...)` function covers the usage of the libraries and what data we need to extract from them. The `Scene::storeGroup(...)` function takes the resulting cluster group and packs it into a binary blob used for the runtime representation. The geometry data is later saved into the cache file for faster loading and streaming.
 
 The cluster group can be compressed using a lossless compression scheme. However, we recommend the dropping of mantissa bits for both vertex positions and UV coordinates.
-The compression is done in the `Scene::compressGroup(...)` function inside [scene_cluster_compression.cpp](/src/scene_cluster_compression.cpp).
+The compression is done in the `Scene::compressGroup(...)` function inside [scene_cluster_compression.cpp](/src/scene_cluster_compression.cpp). Vertex positions and UV coordinates go through a bit-packing scheme, while the triangle indices of each cluster are encoded with `meshoptimizer`'s meshlet codec (`meshopt_encodeMeshlet`), which typically shrinks them by around 3x. Clusters that carry per-triangle materials store those through a per-cluster palette, as such a cluster usually mixes only two or three distinct values even when its geometry has many material slots. Groups are decoded back on the CPU in `Scene::decompressGroup(...)` before they are uploaded, which is fast enough to sit in the streaming path.
 
 In the UI you can influence the size of clusters and the LoD grouping of them in _"Clusters & LoDs generation"_.
 
+Per-mesh simplification overrides (`--simplifyoverrides`), the processing cache file and the options to control its memory and thread usage are covered in the [Scene Processing documentation](docs/scene_processing.md).
+
 > [!WARNING]
-> The processing of larger scenes can take a while, even on CPUs with many cores. Therefore the application will save
-> an uncompressed cache file of the results automatically. This file is a simple memory mappable binary file that can take a lot of space
-> and is placed next to the original file with a `.nvsngeo` file ending. During processing existing cache files will be overwritten without warning.
->
-> With the `--processingonly 1` command-line option one can reduce peak memory consumption during processing of scenes with many geometries.
-> In this mode saving to the cache file is interleaved with the processing and resources are deallocated immediately once saved.
-> At the end of the processing the app closes automatically.
-> In combination with the `--processingpartial 1` command-line option, the processing only mode can resume partial results. So one can terminate the app during processing and continue at a later time.
-> There is no consistency checking of settings or input meshes for this.
-> To reduce system resource usage during processing use: `--processingthreadpct <float 0.0 - 1.0>` (default is 0.5, half the systems supported concurrency) and `--processingmemorygigabytes < ==0 is default of 60%, <0 is percentage (-60 means 60%), >0 is absolute >`
->
-> If system memory usage after loading a cached file is a concern, then `--mappedcache 1` can be used to load data through memory mapping directly (forced for caches that are >= 2 GiB). However, we still have to improve the streaming logic a bit to avoid IO related hitches.
->
-> Be aware, there are currently only few compatibility checks for these cache files, therefore we recommend deleting if changes were made to the original input mesh.
+> The processing of larger scenes can take a while, even on CPUs with many cores. Therefore the application automatically saves
+> an uncompressed cache file next to the original file with a `.nvsngeo` file ending. This file can take a lot of space and existing
+> cache files are overwritten without warning. There are only few compatibility checks, we recommend deleting it if the original input mesh changed.
 
 The model loader can make use of these glTF 2.0 Extensions:
 - [EXT_meshopt_compression](https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Vendor/EXT_meshopt_compression/README.md)
@@ -108,11 +99,20 @@ Relevant files to traversal in their usage order:
 **Rasterization:**
 Does not need the BLAS and TLAS build steps and can render directly from `SceneBuilding::renderClusterInfos`.
 Frustum and occlusion culling can be done to reduce the number of rendered clusters during traversal.
+How the occlusion culling deals with the current frame's depth not existing yet is described in the
+[Rasterization Two-Pass Culling documentation](docs/raster_twopass_culling.md).
 * [shaders/render_raster_clusters.mesh.glsl](/shaders/render_raster_clusters.mesh.glsl): Mesh shader to render a cluster.
 * [shaders/render_raster_clusters_sw.comp.glsl](/shaders/render_raster_clusters.mesh.glsl): Compute shader to rasterize a cluster. It is only used when the "Allow SW-Raster" traversal option is active.
 * [shaders/render_raster.frag.glsl](/shaders/render_raster.frag.glsl)
 
 When `USE_DLSS` is enabled at build time, rasterization supports **DLSS Super Resolution (DLSS-SR)** to upscale a lower-resolution render target (requires `--renderer 0` or the rasterizer UI option). The motion-vector render target stays bound whenever DLSS-SR is active; only _shaded_ hardware rasterization writes motion vectors (SW-raster and other non-shaded modes disable color writes on that attachment and clear it each frame).
+
+Rasterization can optionally skip the LoD hierarchy traversal for distant instances through _"Discrete LoD"_
+(`--discretelod`, off by default): an instance that gets by with a single, fully resident, discrete LoD level seeds the
+traversal at that level's node and renders the level as a whole. It is the rasterization counterpart to
+[BLAS Caching](docs/blas_caching.md) and mostly interesting for a hybrid renderer, where it lets rasterization and ray
+tracing converge on the same resident geometry. Please have a look at the
+[Discrete LoD documentation](docs/raster_discrete_lod.md).
 
 In some conditions (visualize == visibility buffer, culling on) one can enable the usage of a basic compute-shader based rasterizer. However it hasn't been tuned yet and in typical usage scenarios is not faster than the mesh-shader because clusters tend to have larger than single pixel triangles. You can look for `USE_SW_RASTER` in the code where it does affect traversal.
 
@@ -158,7 +158,7 @@ The _"blas reuse"_ visualization shows which of these an instance ended up using
 * **orange**: the geometry's merged BLAS
 * **red**: a BLAS that was built for this instance alone in this frame
 
-The occlusion culling is kept basic, testing the footprint of the bounding box against the appropriate mip-level of last frame's HiZ buffer and last frame's matrices. This can cause artifacts on faster motion.
+The occlusion culling is kept basic, testing the footprint of the bounding box against the appropriate mip-level of last frame's HiZ buffer and last frame's matrices. This can cause artifacts on faster motion. Rasterization can avoid those with the two-pass variants, see [Rasterization Two-Pass Culling](docs/raster_twopass_culling.md).
 
 ### Streaming Operations
 
@@ -193,72 +193,21 @@ You can use the commandline to change some defaults, some examples:
 
 * `--renderer 0` starts with rasterization.
 * `--supersample 0` disables the super sampling that otherwise doubles rendering resolution in each dimension. 
-* `--clasallocator 0` disables the more complex gpu-driven allocator when streaming
+* `--clasallocator 0` disables the more complex gpu-driven allocator when streaming and uses the simple move based CLAS compaction instead. That scheme relocates all resident CLAS on every unload, so BLAS caching (which keeps a BLAS built from CLAS addresses across frames) has no effect while it is used.
 * `--gridcopies N` set the number of model copies in the scene.
-* `--gridunique 0` disables the generation of unique geometries for every model copy. Greatly reduces memory consumption by truly instancing everything. It's on for the sample bunny scene by default, but off otherwise.
-* `--streaming 0` disables streaming system and uses preloaded scene (warning this can use a lot of memory, use above `--gridunique 0` to reduce)
+* `--streaming 0` disables streaming system and uses preloaded scene (warning this can use a lot of memory, use `--gridunique 0` to reduce)
 * `--vsync 0` disable vsync. If changing vsync via UI does not work, try to use the driver's *NVIDIA Control Panel* and set `Vulkan/OpenGL present method: native`.
 * `--autoloadcache 0` disables loading scenes from cache file.
-* `--mappedcache 1` keeps memory mapped cache file persistently, otherwise loads cache to system memory. Useful to save RAM on very large scenes.
-* `--autosavecache 0` disables saving the cache file.
-* `--meshoptarena 0` disables the per-thread stack arena that serves `meshoptimizer`'s temporary allocations during cluster building. The arena is on by default; it removes most of the global allocator contention that otherwise limits how well lod processing scales with thread count. `--meshoptarenabudget <MiB>` caps how much each thread keeps between calls (default **8**), below which the arena starts thrashing on chunk churn.
-* `--forcepreprocessmegabytes 1024` if a scene's raw geometry (vertex & indices) is greater than this cutoff, use a dedicated preprocess pass. Can be quicker and allows using memory mapped cache file. Default is 2048 for 2 GiB.
-* `--multimaterials 1 --attributes 7 --texturedmaterials 1` enables textured PBR materials (see [Materials](#materials) below).
-* `--maxtexturemegabytes <MiB>` sets an upper VRAM budget for material textures (default **4096**; **0** = no limit). See [Materials](#materials).
-* All megabyte budgets (`--maxgeomegabytes`, `--maxclasmegabytes`, `--startclasmegabytes`, `--clasgrowmegabytes`, `--maxblascachingmegabytes`, `--maxtransfermegabytes`, `--maxtexturemegabytes`) also accept a **negative** value, which is interpreted as a percentage of the device local heap. For example `--maxgeomegabytes -10 --maxclasmegabytes -10` reserves 10 % of VRAM each, independent of the GPU in use.
-* `--dlss 1` enables DLSS when built with `USE_DLSS` (Super Resolution in rasterization, denoising in ray tracing). Use `--dlssquality <0-3>` to set quality (max performance through ultra performance).
-* `--camerastring "..."` sets the initial camera (copy/paste from the _Misc Settings → Camera_ widget).
-* `--addcamerapath "..."` defines a camera fly-through path (repeatable, see [Camera Path](#camera-path)).
-* `--loadcamerapaths "file.txt"` replaces all paths with the definitions from a text file (see [Camera Path](#camera-path)).
-* `--runcamerapath <index> <framecount>` deterministically plays back a defined path for benchmarking (see [Camera Path](#camera-path)).
+
+`--help` prints all available options, more noteworthy ones are described in the
+[Command-line Options documentation](docs/commandline.md).
 
 ## Camera Path
 
-A camera path is a keyframed fly-through defined entirely within this sample. It can be authored in the UI, is copy/paste friendly, and can be provided on the command line just like the camera string. Its main purpose is **deterministic benchmarking**: with fixed-step playback the camera visits the exact same positions every run, independent of frame rate or GPU speed.
+A camera path is a keyframed fly-through that can be authored in the UI, is copy/paste friendly and can be provided on the command line.
+Its main purpose is **deterministic benchmarking**: `--runcamerapath <index> <framecount>` spreads a path across exactly that many rendered frames, independent of frame rate or GPU speed.
 
-**UI** (_Misc Settings → Camera Paths_):
-
-* **File:** **Save** / **Load** write and read all paths to a text file stored **next to the model file**, named after it (`<model>.camerapaths.txt`, shown under the buttons). This file is **auto-loaded** whenever that scene is loaded.
-* **Path:** **New** / **Delete** add or remove a path, **Copy** / **Paste** exchange the selected path with the clipboard as a string; the dropdown below selects the active path (the index used by `--runcamerapath`).
-* **Key:** **New** captures the current camera as a keyframe (inserted after the selected one); **Update** / **Delete** edit the selection. The list below shows the keyframes — selecting one previews it.
-* **Smooth** uses Catmull-Rom interpolation (otherwise piecewise linear), **Loop** and **Duration (s)** affect real-time playback. When **Loop** is on and the first and last keyframes coincide, the smoothing wraps around the join for a seamless loop.
-* **Play** / **Stop** / **Restart** and the **t** slider drive a real-time preview.
-* **Run fixed** plays the path across **Fixed frames** frames, exactly as `--runcamerapath` does.
-
-**Command line / benchmarking:**
-
-Paths are defined with one or more `--addcamerapath` options; the index equals the order in which they were added (the first is `0`). `--loadcamerapaths "file.txt"` instead replaces the whole set with the paths from a text file (see the format below). Paths given on the command line are **global** and take precedence: when any are present the per-scene `<scene>.camerapaths.txt` file is not auto-loaded. `--runcamerapath <index> <framecount>` then spreads the selected path across exactly `<framecount>` rendered frames (frame `f` maps to path position `f / (framecount-1)`), so it is fully deterministic.
-
-> Note: the per-scene file is loaded only after its scene finishes loading (which is asynchronous), so a command-line `--runcamerapath` at startup cannot reference it yet. For benchmarking either provide the path on the command line with `--addcamerapath` / `--loadcamerapaths`, or place `--runcamerapath` inside the sequences of a `--sequencefile` (which run after the scene is resident).
-
-For benchmarking, put `--runcamerapath` in each sequence and match `--sequenceframes` to the frame count. For example a sequence script (`--sequencefile bench.txt`):
-
-```
-SEQUENCE "flythrough raytrace"
---renderer 1
---runcamerapath 0 256
-
-SEQUENCE "flythrough raster"
---renderer 0
---runcamerapath 0 256
-```
-
-with the path stored in a file `flythrough.camerapaths.txt`:
-
-```
-smooth 1 loop 0 dur 10 ;
-  {0, 2, 5}, {0, 0, 0}, {0, 1, 0}, {60} ;
-  {5, 2, 0}, {0, 0, 0}, {0, 1, 0}, {60} ;
-  {0, 2, -5}, {0, 0, 0}, {0, 1, 0}, {60}
-```
-
-run with:
-
-```
-vk_lod_clusters --sequenceframes 256 --loadcamerapaths flythrough.camerapaths.txt --sequencefile bench.txt
-```
-
-**String format** (also valid inside `.cfg` files as a single-line, quoted value): an optional header of `smooth <0/1> loop <0/1> dur <seconds>`, followed by `;`-separated keyframes each written as `{eye}, {center}, {up}, {fov}` (the per-keyframe fov is optional). The **Copy** button produces this canonical form. In the paths **file** a path may span any number of lines and is parsed until the next path begins (each path starts with the `smooth` header keyword); anything from a `#` to the end of a line is a comment.
+Please have a look at the [Camera Path documentation](docs/camera_paths.md) for the UI, the string format and a benchmarking setup.
 
 ## Materials
 
@@ -267,40 +216,10 @@ However, the shading quality is kept rather basic given the focus was geometry i
 shading with a lot more features please refer to [vk_gltf_renderer](https://github.com/nvpro-samples/vk_gltf_renderer)
 or [RTXMG SDK](https://github.com/NVIDIA-RTX/RTXMG).
 
-### Textured PBR (metallic-roughness)
+Textured PBR is disabled by default, enable it with `--multimaterials 1 --attributes 7 --texturedmaterials 1`.
+Textures must be external `dds` or `ktx2` files and are loaded at scene init, they are not streamed with the geometry.
 
-Textured PBR is **disabled by default**. When enabled, glTF **PBR metallic-roughness** materials can use base color, metallic-roughness, normal, occlusion, and emissive textures. **Specular-glossiness** materials are not supported for texturing (factor colors only).
-
-**Command line:**
-
-```
---multimaterials 1 --attributes 7 --texturedmaterials 1
-```
-
-**UI:**
-
-* _Scene Modifiers → Allow textured materials_
-* _Scene Modifiers → Max texture MiB_ — VRAM budget for material textures (default 4096; 0 = no limit). Reloads textures when changed.
-* _Cluster Settings → Other → Mesh Multi-Materials_
-* _Cluster Settings → Other → Enabled Attributes_: enable **NRM**, **TAN**, and **TEX 0** (equivalent to `--attributes 7`)
-* _Rendering Settings → Other → Facet shading_: disable it.
-
-Changing _Allow textured materials_ reloads the scene, but does not require new processing.
-
-**Restrictions:**
-
-* **Workflow:** metallic-roughness only (no specular-glossiness texturing).
-* **Vertex attributes:** meshes must provide `NORMAL`, `TANGENT`, and `TEXCOORD_0`. Tangents are required for normal mapping.
-* **Texture coordinates:** only `TEXCOORD_0` is used; glTF per-texture texcoord indices are ignored.
-* **File formats:** textures must be external `dds` or `ktx2` files (same as alpha-masked materials).
-* **Loading:** material textures are loaded at scene init and are **not** streamed with geometry. By default a **4 GiB** VRAM budget applies (`--maxtexturemegabytes 4096`): textures start at full resolution, and if the total exceeds the budget, finer mips are dropped in round-robin order until the limit is met. Each texture always retains at least its coarsest mip. Set `--maxtexturemegabytes 0` to load all mips unconditionally.
-* **Multi-material:** glTF meshes with multiple materials per mesh require `--multimaterials 1`.
-
-Shaders are compiled with texture sampling only when the loaded scene actually contains textured materials (`HAS_TEXTURED_MATERIALS`).
-
-### Alpha-masked materials
-
-Alpha-masked materials work independently of textured PBR and remain enabled by default when the glTF uses `alphaMode = MASK`. Their textures are also loaded at scene init (not streamed) and count toward the texture VRAM budget.
+Please have a look at the [Materials documentation](docs/materials.md) for the UI equivalents and the restrictions.
 
 ## Limitations
 
@@ -310,12 +229,12 @@ Alpha-masked materials work independently of textured PBR and remain enabled by 
 * The number of threads used in the persistent kernel is based on a crude heuristic for now and was not evaluated to be the optimal amount. The Persistent kernel is deactivated for non-NVIDIA hardware.
 * The bounding box visualizations don't show for ray tracing when DLSS denoising is active, and they will only show clusters that are part of BLAS builds in the current frame. Prefer using rasterization to see them.
 * DLSS Super Resolution (rasterization): motion-vector render target is always bound; only shaded HW raster writes it. HBAO is disabled while DLSS-SR is active.
-* Material textures (PBR and alpha-mask) are loaded at scene init and are not streamed, even when geometry streaming is enabled. Use `--maxtexturemegabytes` (default 4096) to cap total texture VRAM; see [Materials](#materials).
+* Material textures (PBR and alpha-mask) are loaded at scene init and are not streamed, even when geometry streaming is enabled. Use `--maxtexturemegabytes` (default 4096) to cap total texture VRAM; see [Materials](docs/materials.md).
 * Alpha-masked materials: 
   - Always uses texture coordinate 0 independent of glTF material's texcoord. 
   - Does require enabling texture coordinate loading (`--attributes <bitflag containing 4>` or ui).
   - May need multi-material support for glTF meshes (`--multimaterials 1` or ui). The textures must be provided as `ktx2` or `dds`. Textures are fully loaded into VRAM at scene init (not streamed).
-  - See also [Materials](#materials) for full PBR texturing restrictions.
+  - See also [Materials](docs/materials.md) for full PBR texturing restrictions.
 * `doubleSided` materials:
   - Are a lot slower with `EXT_mesh_shader` than with `NV_mesh_shader` on NVIDIA hardware. Primitive culling is still exclusive to NV_mesh_shader, given there is no reasonable portable and fast way for EXT_mesh_shader.
   - Are only accurately done for multi-material meshes if alpha-masking is properly enabled.
@@ -371,80 +290,22 @@ We also recommend having a look at [RTX Mega Geometry](https://github.com/NVIDIA
 
 ## Additional Scenes
 
+Downloads, hardware requirements, processing command lines and known issues for all of them are in the [Additional Scenes documentation](docs/scenes.md).
+
 ### Zorah Demo Scene
-
-This is a glTF export of the highly detailed raw geometry from the [NVIDIA RTX Kit - Zorah Sample](https://developer.nvidia.com/rtx-kit?sortBy=developer_learning_library) as [presented at GDC 2025](https://developer.nvidia.com/blog/nvidia-rtx-advances-with-neural-rendering-and-digital-human-technologies-at-gdc-2025/).
-
-Store these files on an SSD (ideally NVMe). A large render cache file is required next to them.
-
-We provide two versions:
-- with textures (`zorah_textured_public` ~ 130 GB on disk with render cache)
-- geometry-only (`zorah_main_public` ~ 35 GB on disk with render cache)
-
-You only need to download one of them.
 
 ![screenshot showing a highly detailed classical building with intricate ornaments with appropriate texture details](/docs/zorah_textured_scene.jpg)
 
-> [!IMPORTANT]
-> Open or Drag & Drop the `zorah_textured_public.v1.cfg` file within the vk_lod_clusters application and _NOT_ the `.gltf` directly.
-> Opening the glTF directly causes additional visual artifacts.
-
-- [zorah_textured_public.v1.7z](https://developer.download.nvidia.com/ProGraphics/nvpro-samples/zorah_textured_public.v1.7z)
-  - We recommend GPUs with at least 12 GB VRAM. 
-  - Textures default to a ~4 GiB budget, but the source supports much higher detail - raise it with `--maxtexturemegabytes <MB>`. (Texture streaming is planned.)
-  - Vertex Attributes: Positions, normals, tangents and texcoords.
-  - 1.63 G Triangles, with instancing 18.9 G Triangles
-  - 4418 Textures
-  - Cannot be pre-loaded must be streamed
-  - ** 70 GB 7z** - 2026/8/25, unpacks to **78 GB on disk**
-  - The render cache file will require **50 GB on disk** next to the gltf file, it will be generated on first opening of the scene.
-  - If you want to process it separately in the background use the following command-line:
-    - `vk_lod_clusters.exe "zorah_textured_public.v1.cfg" --processingonly 1 --processingthreadpct 0.5 --processingpartial 1 --processingmemorygigabytes -60`
-    - This will use 50% of the local PC's supported concurrency and around 60% of its RAM to process the model and allow to abort and resume the processing. On a 16-core Ryzen 9 a value of `0.5` will yield 16 threads, and takes around 5-7 minutes.
-  - For more advanced shading use this asset with the [RTXMG SDK](https://github.com/NVIDIA-RTX/RTXMG) which includes a lod system ported from this codebase.
-
-
-![screenshot showing a highly detailed classical building with intricate ornaments](/docs/zorah_scene.jpg)
-
-> [!IMPORTANT]
-> Open or Drag & Drop the `zorah_main_public.v2.cfg` or `zorah_main_public.v2.no_mountains.cfg` file within the vk_lod_clusters application and _NOT_ the `.gltf` directly. Opening the glTF directly causes additional visual artifacts.
-
-- [zorah_main_public.v2.gltf.7z](https://developer.download.nvidia.com/ProGraphics/nvpro-samples/zorah_main_public.v2.gltf.7z)
-  - We recommend GPUs with at least 8 GB VRAM
-  - Vertex Attributes: Positions and normals.
-  - 1.63 G Triangles, with instancing 18.9 G Triangles
-  - Cannot be pre-loaded must be streamed
-  - **7.22 GB 7z** - 2026/3/10, unpacks to **9.32 GB on disk**
-  - The render cache file will require **26 GB on disk** next to the gltf file, it will be generated on first opening of the scene.
-  - If you want to process it separately in the background use the following command-line:
-    - `vk_lod_clusters.exe "zorah_main_public.v2.gltf" --processingonly 1 --processingthreadpct 0.5 --processingpartial 1 --processingmemorygigabytes -60`
-    - This will use 50% of the local PC's supported concurrency and around 60% of its RAM to process the model and allow to abort and resume the processing. On a 16-core Ryzen 9 a value of `0.5` will yield 16 threads.
-  - **NOTE:** Older versions of this file were larger, this sample has changed the file format of its file cache. When loading an old version, the processing will be triggered automatically and the old cache file is overwritten. It can take a bit until the new file versions have been propagated to servers worldwide.
-
-Known Issues:
-* Compared to the original demo some of the vegetation had to be removed to make the sharing of the glTF possible (the asset itself is licensed under MIT License).
-* Some objects float a bit strangely in the air and lack animation, this is expected for this scene and sample.
-* The vegetation will appear to fade out a bit quickly, especially the grass. This is a known limitation for mesh-based simplifcation on
-  sparse geometry like this. We do not use any techniques that preserve volume during decimation.
-* Trees can appear a bit blurry with DLSS and very noisy without it. We will try to improve future versions of DLSS denoising this scenario.
-* The ray tracing performance does suffer from the background mountains overlapping with the primary buildings. Use `zorah_main_public.v2.no_mountains.cfg`.
+A glTF export of the highly detailed raw geometry from the [NVIDIA RTX Kit - Zorah Sample](https://developer.nvidia.com/rtx-kit?sortBy=developer_learning_library) as [presented at GDC 2025](https://developer.nvidia.com/blog/nvidia-rtx-advances-with-neural-rendering-and-digital-human-technologies-at-gdc-2025/).
+Available with textures (`zorah_textured_public` ~ 130 GB on disk with render cache) or geometry-only (`zorah_main_public` ~ 35 GB), you only need one of them.
+Must be streamed, cannot be pre-loaded. See [Additional Scenes](docs/scenes.md#zorah-demo-scene) for the download links and details.
 
 ### Threedscans Statues
 
 ![screenshot showing two separate renderings of statues for humans or animals arranged on a grid](/docs/otherscenes.jpg)
 
-These scenes are based on models from [https://threedscans.com/](https://threedscans.com/):
-- [threedscans_animals](https://developer.download.nvidia.com/ProGraphics/nvpro-samples/threedscans_animals.zip)
-  - 7.9 M Triangles
-  - ~ 1.4 GB preloaded memory
-  - 128 MB zip 2025/7/11 (original was 290 MB zip, slow to load)
-- [threedscans_statues](https://developer.download.nvidia.com/ProGraphics/nvpro-samples/threedscans_statues.zip)
-  - 6.9 M Triangles
-  - ~ 1.3 GB preloaded memory
-  - 116 MB zip 2025/7/11 (original was 280 MB zip, slow to load)
-
-On a "AMD Ryzen 9 7950X 16-Core Processor" processing time for `threedscans_animals` took around 10 seconds (5 unique geometries). That scene has few geometries and many triangles per geometry. Due to the few geometries the heuristic chose "inner" parallelism within operations for a single geometry at a time. Scenes with many objects will typically use "outer" parallelism over the unique geometries and tend to be processed faster overall.
-By default the application now stores a cache file of the last processing (`--autosavecache 1`).
+Two much smaller scenes based on models from [https://threedscans.com/](https://threedscans.com/), around 7 M triangles each.
+See [Additional Scenes](docs/scenes.md#threedscans-statues).
 
 ## Third Party
 

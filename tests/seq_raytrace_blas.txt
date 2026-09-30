@@ -1,0 +1,241 @@
+# Ray tracing: the full BLAS sharing / merging / caching matrix.
+#
+# Run twice over the geometry layout, because the three features pull in opposite directions:
+#   --gridunique 0 : all 256 instances share one geometry, which is what BLAS *sharing*
+#                    (and "blas reuse" visualization) is about.
+#   --gridunique 1 : every copy owns its geometry, which is what stresses streaming and
+#                    therefore BLAS *merging* and *caching*.
+#
+# --autosharing 0 comes from bunny_grid.cfg; without it the sample would pick --blassharing
+# itself from the scene's instancing and half of this matrix would silently collapse.
+#
+# Visualization is pinned to "blas reuse", so the screenshots of one block are directly
+# comparable; the visualization sweep itself lives in seq_visualize.txt.
+
+SEQUENCE "rt_unique0_share_off_merge_off_cache_off"
+# --sequenceframes only exists once the sequencer is initialized, so it cannot be
+# passed on the command line - it has to be set here, in the first sequence.
+--sequenceframes 32
+--sequenceresetframes 8
+--renderer 1
+--pathtrace 0
+--dlss 0
+--gridunique 0
+--streaming 1
+--culling 1
+--blassharing 0
+--blasmerging 0
+--blascaching 0
+--visualize 9
+
+SEQUENCE "rt_unique0_share_off_merge_off_cache_on"
+--renderer 1
+--pathtrace 0
+--dlss 0
+--gridunique 0
+--streaming 1
+--culling 1
+--blassharing 0
+--blasmerging 0
+--blascaching 1
+--visualize 9
+
+SEQUENCE "rt_unique0_share_off_merge_on_cache_off"
+--renderer 1
+--pathtrace 0
+--dlss 0
+--gridunique 0
+--streaming 1
+--culling 1
+--blassharing 0
+--blasmerging 1
+--blascaching 0
+--visualize 9
+
+SEQUENCE "rt_unique0_share_off_merge_on_cache_on"
+--renderer 1
+--pathtrace 0
+--dlss 0
+--gridunique 0
+--streaming 1
+--culling 1
+--blassharing 0
+--blasmerging 1
+--blascaching 1
+--visualize 9
+
+SEQUENCE "rt_unique0_share_on_merge_off_cache_off"
+--renderer 1
+--pathtrace 0
+--dlss 0
+--gridunique 0
+--streaming 1
+--culling 1
+--blassharing 1
+--blasmerging 0
+--blascaching 0
+--visualize 9
+
+SEQUENCE "rt_unique0_share_on_merge_off_cache_on"
+--renderer 1
+--pathtrace 0
+--dlss 0
+--gridunique 0
+--streaming 1
+--culling 1
+--blassharing 1
+--blasmerging 0
+--blascaching 1
+--visualize 9
+
+SEQUENCE "rt_unique0_share_on_merge_on_cache_off"
+--renderer 1
+--pathtrace 0
+--dlss 0
+--gridunique 0
+--streaming 1
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 0
+--visualize 9
+
+SEQUENCE "rt_unique0_share_on_merge_on_cache_on"
+--renderer 1
+--pathtrace 0
+--dlss 0
+--gridunique 0
+--streaming 1
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--visualize 9
+
+SEQUENCE "rt_unique1_share_off_merge_off_cache_off"
+--renderer 1
+--pathtrace 0
+--dlss 0
+--gridunique 1
+--streaming 1
+--culling 1
+--blassharing 0
+--blasmerging 0
+--blascaching 0
+--visualize 9
+
+SEQUENCE "rt_unique1_share_off_merge_off_cache_on"
+--renderer 1
+--pathtrace 0
+--dlss 0
+--gridunique 1
+--streaming 1
+--culling 1
+--blassharing 0
+--blasmerging 0
+--blascaching 1
+--visualize 9
+
+SEQUENCE "rt_unique1_share_off_merge_on_cache_off"
+--renderer 1
+--pathtrace 0
+--dlss 0
+--gridunique 1
+--streaming 1
+--culling 1
+--blassharing 0
+--blasmerging 1
+--blascaching 0
+--visualize 9
+
+SEQUENCE "rt_unique1_share_off_merge_on_cache_on"
+--renderer 1
+--pathtrace 0
+--dlss 0
+--gridunique 1
+--streaming 1
+--culling 1
+--blassharing 0
+--blasmerging 1
+--blascaching 1
+--visualize 9
+
+SEQUENCE "rt_unique1_share_on_merge_off_cache_off"
+--renderer 1
+--pathtrace 0
+--dlss 0
+--gridunique 1
+--streaming 1
+--culling 1
+--blassharing 1
+--blasmerging 0
+--blascaching 0
+--visualize 9
+
+SEQUENCE "rt_unique1_share_on_merge_off_cache_on"
+--renderer 1
+--pathtrace 0
+--dlss 0
+--gridunique 1
+--streaming 1
+--culling 1
+--blassharing 1
+--blasmerging 0
+--blascaching 1
+--visualize 9
+
+SEQUENCE "rt_unique1_share_on_merge_on_cache_off"
+--renderer 1
+--pathtrace 0
+--dlss 0
+--gridunique 1
+--streaming 1
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 0
+--visualize 9
+
+SEQUENCE "rt_unique1_share_on_merge_on_cache_on"
+--renderer 1
+--pathtrace 0
+--dlss 0
+--gridunique 1
+--streaming 1
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--visualize 9
+
+SEQUENCE "rt_nostreaming_share_on"
+--renderer 1
+--pathtrace 0
+--dlss 0
+--gridunique 0
+--streaming 0
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--visualize 9
+
+
+# the extra atomic counters are their own shader permutation (USE_RENDER_STATS)
+SEQUENCE "rt_renderstats"
+--renderer 1
+--pathtrace 0
+--dlss 0
+--gridunique 0
+--streaming 1
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--visualize 0
+--renderstats 1
+
+SEQUENCE "rt_renderstats_off"
+--renderer 1
+--renderstats 0
+--visualize 0

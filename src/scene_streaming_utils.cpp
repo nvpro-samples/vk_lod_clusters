@@ -191,7 +191,6 @@ const StreamingResident::Group* StreamingResident::initClas(Resources&          
   m_maxClasBytes       = config.maxClasMegaBytes * 1024 * 1024;
   m_allocatedClasBytes = config.startClasMegaBytes * 1024 * 1024;
 
-  assert(m_maxClasBytes > CLAS_CHUNK_SIZE);
   assert(m_allocatedClasBytes > 0 && m_allocatedClasBytes <= m_maxClasBytes);
   assert(config.startClasMegaBytes <= config.maxClasMegaBytes);
 
@@ -220,7 +219,10 @@ const StreamingResident::Group* StreamingResident::initClas(Resources&          
 
   const VkDeviceSize initialBytes =
       (config.usePersistentClasAllocator ? config.startClasMegaBytes : config.maxClasMegaBytes) * 1024 * 1024;
-  const uint32_t initialChunkCount = uint32_t((initialBytes + CLAS_CHUNK_SIZE - 1) / CLAS_CHUNK_SIZE);
+  // budgets that fit within a single chunk get a regular buffer that is allocated in full,
+  // only a sparse buffer can start with a partial allocation
+  const uint32_t initialChunkCount =
+      m_maxClasBytes <= CLAS_CHUNK_SIZE ? 0 : uint32_t((initialBytes + CLAS_CHUNK_SIZE - 1) / CLAS_CHUNK_SIZE);
 
   NVVK_CHECK(res.createLargeBuffer(m_clasDataBuffer, m_maxClasBytes,
                                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
@@ -1063,6 +1065,10 @@ size_t StreamingStorage::getOperationsSize() const
 
 size_t StreamingStorage::getMaxDataSize() const
 {
+  // may be queried before init, the ui can reach a storage that streaming never set up
+  if(!m_blockBytes)
+    return 0;
+
   return (m_maxSceneBytes / m_blockBytes) * m_blockBytes;
 }
 

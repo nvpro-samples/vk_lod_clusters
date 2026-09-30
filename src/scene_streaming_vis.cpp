@@ -135,31 +135,25 @@ bool StreamingAllocatorVis::initShadersAndPipelines(Resources& res)
   optionsGroups.AddMacroDefinition("STREAM_ALLOCATOR_VIS_PASS", "STREAM_ALLOCATOR_VIS_PASS_GROUPS");
   optionsHistogram.AddMacroDefinition("STREAM_ALLOCATOR_VIS_PASS", "STREAM_ALLOCATOR_VIS_PASS_HISTOGRAM");
 
-  res.compileShader(m_shaders.computeMemory, VK_SHADER_STAGE_COMPUTE_BIT, "stream_allocator_vis.comp.glsl", &optionsMemory);
-  res.compileShader(m_shaders.computeGroups, VK_SHADER_STAGE_COMPUTE_BIT, "stream_allocator_vis.comp.glsl", &optionsGroups);
-  res.compileShader(m_shaders.computeHistogram, VK_SHADER_STAGE_COMPUTE_BIT, "stream_allocator_vis.comp.glsl", &optionsHistogram);
+  res.compileShader(m_shaders.computeMemory, VK_SHADER_STAGE_COMPUTE_BIT, "stream_allocator_vis.comp.glsl", &optionsMemory, "memory");
+  res.compileShader(m_shaders.computeGroups, VK_SHADER_STAGE_COMPUTE_BIT, "stream_allocator_vis.comp.glsl", &optionsGroups, "groups");
+  res.compileShader(m_shaders.computeHistogram, VK_SHADER_STAGE_COMPUTE_BIT, "stream_allocator_vis.comp.glsl",
+                    &optionsHistogram, "histogram");
 
   if(!res.verifyShaders(m_shaders))
   {
     return false;
   }
 
-  VkComputePipelineCreateInfo compInfo   = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-  VkShaderModuleCreateInfo    shaderInfo = {};
-  compInfo.stage                         = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-  compInfo.stage.stage                   = VK_SHADER_STAGE_COMPUTE_BIT;
-  compInfo.stage.pName                   = "main";
-  compInfo.stage.pNext                   = &shaderInfo;
-  compInfo.layout                        = m_pipelineLayout;
+  VkComputePipelineCreateInfo compInfo = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+  compInfo.stage                       = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+  compInfo.stage.stage                 = VK_SHADER_STAGE_COMPUTE_BIT;
+  compInfo.stage.pName                 = "main";
+  compInfo.layout                      = m_pipelineLayout;
 
-  shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeMemory);
-  NVVK_CHECK(vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeMemory));
-
-  shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeGroups);
-  NVVK_CHECK(vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeGroups));
-
-  shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeHistogram);
-  NVVK_CHECK(vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeHistogram));
+  res.createComputePipeline(compInfo, m_shaders.computeMemory, m_pipelines.computeMemory);
+  res.createComputePipeline(compInfo, m_shaders.computeGroups, m_pipelines.computeGroups);
+  res.createComputePipeline(compInfo, m_shaders.computeHistogram, m_pipelines.computeHistogram);
 
   return true;
 }

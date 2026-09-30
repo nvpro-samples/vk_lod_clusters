@@ -130,7 +130,7 @@ void main()
   // Propagate the ray cone (from the payload) to this candidate hit and build the same TexLOD the ray-gen
   // uses for material sampling, so the cutout honors TEXTURE_LOD_MODE too. width(t) = coneWidth + coneSpread*t.
   float coneWidth    = rayHit.coneWidth + rayHit.coneSpread * gl_HitTEXT;
-  vec3  wGeoNormal   = normalize(cross(pos1 - pos0, pos2 - pos0) * mat3(instance.worldMatrixI));
+  vec3  wGeoNormal   = normalize(mat3(instance.worldMatrixI) * cross(pos1 - pos0, pos2 - pos0));
   float incidence    = abs(dot(wGeoNormal, gl_WorldRayDirectionEXT));
   float texelDensity = computeTexelDensity(gl_ObjectToWorldEXT, pos0, pos1, pos2, uv0, uv1, uv2);
   TexLOD texLod      = makeConeTexLOD(coneWidth, texelDensity, incidence);

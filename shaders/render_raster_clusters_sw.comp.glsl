@@ -140,13 +140,15 @@ void main()
 {
   uint workGroupID = getWorkGroupIndex(gl_WorkGroupID);
 #if USE_16BIT_DISPATCH
+  // the 2D launch grid is rounded up, so the trailing work groups have no cluster to
+  // rasterize. The load is kept uniform and the surplus groups exit after it.
 #if HAS_ALPHA_TEST
-  uint numRenderedClustersSW = build.numRenderedClustersAlphaSW
+  uint numRenderedClustersSW = build.numRenderedClustersAlphaSW;
 #else
   uint numRenderedClustersSW = build.numRenderedClustersSW;
 #endif
   bool isValid = workGroupID < numRenderedClustersSW;
-  uint loadID = min(workGroupID, numRenderedClustersSW - 1) ClusterInfo cinfo = build.renderClusterInfosSW.d[];
+  uint loadID  = min(workGroupID, numRenderedClustersSW - 1);
 #else
   uint loadID = workGroupID;
 #endif
@@ -202,7 +204,7 @@ void main()
     uint vertLoad = min(vert, vertMax);
 
     vec3 oPos = oVertices.d[vertLoad];
-    vec3 wPos = instance.worldMatrix * vec4(oPos, 1.0f);
+    vec3 wPos = vec4(oPos, 1.0f) * instance.worldMatrix;
 #if HAS_ALPHA_TEST
     vec2 oTex = oTexCoords.d[vertLoad];
 #endif
@@ -219,6 +221,11 @@ void main()
   barrier();
 
   uint numRasteredTriangles = 0;
+
+#if HAS_ALPHA_TEST
+  uint texIndex = 0;
+  bool texValid = false;
+#endif
 
 #if COMPUTE_WORKGROUP_SIZE < CLUSTER_TRIANGLE_COUNT
   for(uint tri = gl_LocalInvocationID.x; tri <= triMax; tri += COMPUTE_WORKGROUP_SIZE)
@@ -278,7 +285,9 @@ void main()
       float invTriArea = 1.0f / triArea;
 
 #if HAS_ALPHA_TEST
-      uint texIndex = resolveAlphaMaskTextureIndex(instance, clusterRef, triLoad);
+      uint alphaTex = resolveAlphaMaskTextureIndex(instance, clusterRef, triLoad);
+      texValid      = alphaTex != 0xFFFF;
+      texIndex      = texValid ? alphaTex : 0;
       vec2 texGradDdx;
       vec2 texGradDdy;
 #if SW_ANISOTROPIC_GRADIENT
@@ -309,7 +318,7 @@ void main()
 
 #if HAS_ALPHA_TEST
           vec2  oTexCoord = oTexCoordA * baryA + oTexCoordB * baryB + oTexCoordC * baryC;
-          float alpha     = texIndex != 0xFFFF ? textureGrad(bindlessTextures[nonuniformEXT(texIndex)], oTexCoord, texGradDdx, texGradDdy).a : 1.0;
+          float alpha     = texValid ? textureGrad(bindlessTextures[nonuniformEXT(texIndex)], oTexCoord, texGradDdx, texGradDdy).a : 1.0;
           if(alpha >= 0.333)
 #endif
           {

@@ -1,0 +1,79 @@
+# The 16 bit compute launch grid, on the dense scene from seq_16bit_dispatch.cfg.
+#
+# USE_16BIT_DISPATCH changes the shader source of every compute pass that is launched from
+# a linear work item count - traversal, build setup, streaming, and the compute rasterizer -
+# and normally never compiles at all on hardware whose maxComputeWorkGroupCount is large.
+#
+# Not a full matrix on purpose: what has to be covered is the set of passes that carry the
+# macro, not the feature permutations around them. Those are already covered by
+# seq_visualize.txt, seq_raster_features.txt and seq_raytrace_blas.txt.
+
+SEQUENCE "d16_raster_hw"
+--sequenceframes 32
+--sequenceresetframes 8
+--renderer 0
+--swraster 0
+--culling 1
+--twopassculling 1
+--discretelod 0
+--visualize 0
+
+# the compute rasterizer is the pass with the most 16 bit specific shader code
+SEQUENCE "d16_raster_sw"
+--renderer 0
+--swraster 1
+--culling 1
+--twopassculling 1
+--discretelod 0
+--visualize 2
+
+SEQUENCE "d16_raster_sw_twopass_off"
+--renderer 0
+--swraster 1
+--culling 1
+--twopassculling 0
+--discretelod 0
+--visualize 2
+
+SEQUENCE "d16_raster_discretelod"
+--renderer 0
+--swraster 0
+--culling 1
+--twopassculling 1
+--discretelod 1
+--visualize 11
+
+SEQUENCE "d16_raytrace"
+--renderer 1
+--swraster 0
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--visualize 0
+
+# the persistent traversal kernel has its own launch setup
+SEQUENCE "d16_raytrace_persistenttraversal_off"
+--renderer 1
+--persistenttraversal 0
+--visualize 0
+
+SEQUENCE "d16_raytrace_persistenttraversal_on"
+--renderer 1
+--persistenttraversal 1
+--visualize 6
+
+# streaming off takes the preloaded path, which sets up its dispatches differently
+SEQUENCE "d16_raytrace_nostreaming"
+--renderer 1
+--streaming 0
+--visualize 0
+
+SEQUENCE "d16_pathtrace"
+--renderer 1
+--streaming 1
+--pathtrace 1
+--visualize 0
+
+SEQUENCE "d16_pathtrace_off"
+--pathtrace 0

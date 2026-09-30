@@ -65,9 +65,11 @@ struct RendererConfig
   bool useRenderStats            = false;
   bool useCulling                = true;
   bool useTwoPassCulling         = false;
+  bool useTwoPassRejectLists     = true;
   bool useBlasSharing            = true;
   bool useBlasMerging            = true;
   bool useBlasCaching            = false;
+  bool useDiscreteLod            = false;
   bool useShading                = true;
   bool useDebugVisualization     = true;
   bool useEXTmeshShader          = false;
@@ -75,6 +77,8 @@ struct RendererConfig
   bool usePrimitiveCulling       = false;
   bool useDepthOnly              = false;
   bool usePersistentTraversal    = true;
+  bool useVulkanMemoryModel      = false;
+  bool useAtomicLoadStore        = true;
   int  textureLodMode            = 0;
 
   // basic path tracing: shading done in the ray-generation shader, 1 spp,
@@ -164,16 +168,16 @@ protected:
 
   struct BasicShaders
   {
-    shaderc::SpvCompilationResult fullScreenVertexShader;
-    shaderc::SpvCompilationResult fullScreenWriteDepthFragShader;
-    shaderc::SpvCompilationResult fullScreenBackgroundFragShader;
-    shaderc::SpvCompilationResult fullscreenAtomicRasterFragmentShader;
+    Shader fullScreenVertexShader;
+    Shader fullScreenWriteDepthFragShader;
+    Shader fullScreenBackgroundFragShader;
+    Shader fullscreenAtomicRasterFragmentShader;
 
-    shaderc::SpvCompilationResult renderInstanceBboxesFragmentShader;
-    shaderc::SpvCompilationResult renderInstanceBboxesMeshShader;
+    Shader renderInstanceBboxesFragmentShader;
+    Shader renderInstanceBboxesMeshShader;
 
-    shaderc::SpvCompilationResult renderClusterBboxesMeshShader;
-    shaderc::SpvCompilationResult renderClusterBboxesFragmentShader;
+    Shader renderClusterBboxesMeshShader;
+    Shader renderClusterBboxesFragmentShader;
   };
 
   struct BasicPipelines

@@ -68,6 +68,12 @@ enum ClusterStateBits
 #define USE_PERPRIMITIVE_OUT ((CLUSTER_TRIANGLE_COUNT <= CLUSTER_VERTEX_COUNT) && 1)
 #endif
 
+// Whether the cluster rasterization mesh shader passes the instance/cluster ids and the
+// primitive id on to the fragment shader.
+#ifndef NEEDS_PRIMITIVE_IDS
+#define NEEDS_PRIMITIVE_IDS (!USE_DEPTH_ONLY || HAS_ALPHA_TEST)
+#endif
+
 #endif
 
 #define SHADERIO_CLUSTER_TRIANGLE_TWOSIDED (1 << 6)
@@ -314,7 +320,10 @@ struct Geometry
   uint32_t instancesOffset;
   uint32_t instancesCount;
   uint8_t  lodLevelsCount;
-  uint8_t  cachedBlasLodLevel;  // for USE_BLAS_CACHING
+  // lod level from which on the geometry renders as a single discrete level.
+  // ray tracing: level the cached blas was built for (USE_BLAS_CACHING)
+  // rasterization: level from which on all levels are fully resident (USE_DISCRETE_LOD)
+  uint8_t discreteLodLevel;
 
   // lowest detail data is always available
   uint16_t lowDetailTriangles;
@@ -350,6 +359,7 @@ struct Geometry
 };
 BUFFER_REF_DECLARE(Geometry_in, Geometry, readonly, 16);
 BUFFER_REF_DECLARE(Geometry_inout, Geometry, , 16);
+BUFFER_REF_DECLARE_SIZE(Geometry_size, Geometry, 128);
 
 struct RenderMaterial
 {
@@ -381,8 +391,9 @@ BUFFER_REF_DECLARE_ARRAY(RenderMaterials_in, RenderMaterial, readonly, 16);
 
 struct RenderInstance
 {
-  mat4x3 worldMatrix;
-  mat4x3 worldMatrixI;
+  // row-major 3x4 (transposed mat4x3), loads as vec4s, same layout as VkTransformMatrixKHR
+  mat3x4 worldMatrix;
+  mat3x4 worldMatrixI;
 
   uint32_t geometryID;
 
@@ -400,8 +411,13 @@ struct RenderInstance
 
   // Copied from scene `GeometryBase::lowDetailClusterStateBits` (lowest-detail cluster state).
   uint8_t lowDetailClusterStateBits;
+
+  // stride must stay a multiple of 16 for vectorized loads
+  uint8_t  _pad8[3];
+  uint32_t _pad32[2];
 };
 BUFFER_REF_DECLARE_ARRAY(RenderInstances_in, RenderInstance, readonly, 16);
+BUFFER_REF_DECLARE_SIZE(RenderInstance_size, RenderInstance, 128);
 
 #ifdef __cplusplus
 }

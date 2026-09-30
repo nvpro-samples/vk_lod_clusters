@@ -89,6 +89,7 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
 
 ////////////////////////////////////////////
 
+#include "culling.glsl"
 #include "traversal.glsl"
 
 ////////////////////////////////////////////
@@ -106,7 +107,7 @@ void main()
     Geometry geometry      = geometries[geometryID];
     
   #if USE_BLAS_CACHING
-    uint cachedLevel       = geometry.cachedBlasLodLevel;
+    uint cachedLevel       = geometry.discreteLodLevel;
     uint cachedLevelNeeded = TRAVERSAL_INVALID_LOD_LEVEL;
   #endif
     uint shareLevelMin    = TRAVERSAL_INVALID_LOD_LEVEL;

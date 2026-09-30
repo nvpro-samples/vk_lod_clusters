@@ -7,6 +7,16 @@ With **Blas Caching** a BLAS is re-used over multiple frames and can therefore b
 
 ![image illustrating the benefits of BLAS caching](blas_caching_benefit.jpg)
 
+> [!IMPORTANT]
+> BLAS caching requires the persistent CLAS allocator (the default, `--clasallocator 1`).
+> A cached BLAS stores the addresses of the CLAS it was built from and outlives the frame
+> it was built in, so those CLAS have to stay where they are. Only the persistent allocator
+> gives a group's CLAS a fixed address for as long as it is resident. The alternative
+> [move based compaction](streaming.md) relocates *every* resident CLAS whenever any group
+> is unloaded, which would leave cached BLAS of untouched geometries pointing at other
+> geometries' CLAS. `RendererRayTraceClustersLod::init` therefore ignores the setting while
+> the allocator is off; the requested value is kept and takes effect again with the allocator.
+
 ## Algorithm
 
 When BLAS sharing it can be observed that the sharing level of detail (LoD) of a particular geometry might not change over multiple

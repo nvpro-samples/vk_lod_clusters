@@ -81,9 +81,9 @@ public:
 private:
   struct Shaders
   {
-    shaderc::SpvCompilationResult computeMemory;
-    shaderc::SpvCompilationResult computeGroups;
-    shaderc::SpvCompilationResult computeHistogram;
+    Shader computeMemory;
+    Shader computeGroups;
+    Shader computeHistogram;
   };
 
   struct Pipelines

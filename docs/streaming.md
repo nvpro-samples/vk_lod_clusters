@@ -177,6 +177,11 @@ scratch space before moving them to their resident location.
   
   We do not recommend this, but it is the easiest way to get going.
 
+  Because every resident CLAS can change its address whenever a group is unloaded,
+  this scheme is incompatible with ["BLAS Caching"](blas_caching.md), which keeps a
+  BLAS built from those addresses alive across frames. The ray tracing renderer ignores
+  the BLAS caching setting while the compaction scheme is active.
+
   See `stream_compaction...` shader files
 
 - **Persistent CLAS Allocator:**

@@ -1,0 +1,168 @@
+# Mesh and material states, on the materialtest.gltf fixture from seq_materials.cfg.
+#
+# This is the only file that reaches the attribute and material half of the shader
+# permutation space: vertex tangents and both texcoord sets, textured materials, the alpha
+# test any hit path, and two sided geometry. The bunny the other files use has none of it.
+#
+# Also where the path tracer gets its on/off comparison, because alpha masking and two
+# sided materials are exactly where it differs most from the ray tracer.
+
+SEQUENCE "materials_raster"
+--sequenceframes 32
+--sequenceresetframes 8
+--renderer 0
+--pathtrace 0
+--dlss 0
+--swraster 0
+--culling 1
+--twopassculling 1
+--discretelod 0
+--texturedmaterials 1
+--forcetwosided 0
+--flipwinding 0
+--visualize 0
+
+SEQUENCE "materials_raster_untextured"
+--renderer 0
+--texturedmaterials 0
+--visualize 0
+
+SEQUENCE "materials_raster_material_ids"
+--renderer 0
+--texturedmaterials 1
+--visualize 3
+
+# back face culling off for everything, not just the double sided materials
+SEQUENCE "materials_raster_forcetwosided"
+--renderer 0
+--forcetwosided 1
+--visualize 0
+
+SEQUENCE "materials_raster_flipwinding"
+--renderer 0
+--forcetwosided 0
+--flipwinding 1
+--visualize 0
+
+SEQUENCE "materials_raster_swraster"
+--renderer 0
+--flipwinding 0
+--swraster 1
+--swrasterthreshold 8
+--visualize 2
+
+# the default threshold only sends the clusters that cover few pixels to the compute
+# rasterizer, so on this fixture almost everything still goes through the mesh shader. A
+# threshold above any projected edge length forces every cluster through the SW path,
+# which is the only way its alpha test branch is reached at all.
+SEQUENCE "materials_raster_swraster_forced"
+--renderer 0
+--swraster 1
+--swrasterthreshold 100000
+--visualize 2
+
+SEQUENCE "materials_raster_swraster_forced_depthonly"
+--renderer 0
+--swraster 1
+--swrasterthreshold 100000
+--visualize 10
+
+SEQUENCE "materials_raster_swraster_forced_twosided"
+--renderer 0
+--swraster 1
+--swrasterthreshold 100000
+--forcetwosided 1
+--visualize 2
+
+SEQUENCE "materials_raytrace"
+--renderer 1
+--swraster 0
+--swrasterthreshold 8
+--forcetwosided 0
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--texturedmaterials 1
+--visualize 0
+
+SEQUENCE "materials_raytrace_untextured"
+--renderer 1
+--texturedmaterials 0
+--visualize 0
+
+SEQUENCE "materials_raytrace_forcetwosided"
+--renderer 1
+--texturedmaterials 1
+--forcetwosided 1
+--visualize 0
+
+# the ray tracer's texture lod modes, which only mean anything with textures present
+SEQUENCE "materials_raytrace_texlod_gradient"
+--renderer 1
+--forcetwosided 0
+--texlodmode 0
+--visualize 0
+
+SEQUENCE "materials_raytrace_texlod_explicit"
+--renderer 1
+--texlodmode 1
+--visualize 0
+
+SEQUENCE "materials_raytrace_texlod_mip0"
+--renderer 1
+--texlodmode 2
+--visualize 0
+
+# path tracing on and off, back to back, on the geometry that actually exercises the
+# difference: the alpha masked boxes go through the any hit shader in both, the two sided
+# ones through different ray flags
+SEQUENCE "materials_pathtrace_off"
+--renderer 1
+--texlodmode 0
+--pathtrace 0
+--visualize 0
+
+SEQUENCE "materials_pathtrace_on"
+--renderer 1
+--pathtrace 1
+--pathtracebounces 3
+--pathtraceautoexposure 1
+--visualize 0
+
+SEQUENCE "materials_pathtrace_on_untextured"
+--renderer 1
+--pathtrace 1
+--texturedmaterials 0
+--visualize 0
+
+SEQUENCE "materials_pathtrace_off_again"
+--renderer 1
+--pathtrace 0
+--texturedmaterials 1
+--visualize 0
+
+# compressed groups decode at streaming time, and the decoder handles positions, texcoords,
+# normals and tangents separately - so it needs a mesh that actually has all of them.
+# Changing this reprocesses the scene, which is why it sits on the fixture that takes about
+# a millisecond to build rather than on the bunny grid.
+SEQUENCE "materials_compressed_off_raster"
+--renderer 0
+--pathtrace 0
+--texturedmaterials 1
+--compressed 0
+--visualize 0
+
+SEQUENCE "materials_compressed_on_raster"
+--renderer 0
+--compressed 1
+--visualize 0
+
+SEQUENCE "materials_compressed_off_raytrace"
+--renderer 1
+--compressed 0
+--visualize 0
+
+SEQUENCE "materials_compressed_on_raytrace"
+--renderer 1
+--compressed 1
+--visualize 0

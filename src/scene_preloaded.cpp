@@ -104,18 +104,19 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
     m_geometrySize += preloadGeometry.lodNodeBboxes.bufferSize;
 
     // setup shaderio
-    shaderGeometry                    = {};
-    shaderGeometry.bbox               = sceneGeometry.bbox;
-    shaderGeometry.nodes              = preloadGeometry.lodNodes.address;
-    shaderGeometry.nodeBboxes         = preloadGeometry.lodNodeBboxes.address;
-    shaderGeometry.preloadedGroups    = preloadGeometry.groupAddresses.address;
-    shaderGeometry.preloadedClusters  = preloadGeometry.clusterAddresses.address;
-    shaderGeometry.lodLevelsCount     = uint32_t(numLodLevels);
-    shaderGeometry.lodLevels          = preloadGeometry.lodLevels.address;
-    shaderGeometry.cachedBlasAddress  = 0;
-    shaderGeometry.cachedBlasLodLevel = TRAVERSAL_INVALID_LOD_LEVEL;
-    shaderGeometry.instancesCount     = sceneGeometry.instanceReferenceCount * scene->getGeometryInstanceFactor();
-    shaderGeometry.instancesOffset    = instancesOffset;
+    shaderGeometry                   = {};
+    shaderGeometry.bbox              = sceneGeometry.bbox;
+    shaderGeometry.nodes             = preloadGeometry.lodNodes.address;
+    shaderGeometry.nodeBboxes        = preloadGeometry.lodNodeBboxes.address;
+    shaderGeometry.preloadedGroups   = preloadGeometry.groupAddresses.address;
+    shaderGeometry.preloadedClusters = preloadGeometry.clusterAddresses.address;
+    shaderGeometry.lodLevelsCount    = uint32_t(numLodLevels);
+    shaderGeometry.lodLevels         = preloadGeometry.lodLevels.address;
+    shaderGeometry.cachedBlasAddress = 0;
+    // all lod levels are resident
+    shaderGeometry.discreteLodLevel = 0;
+    shaderGeometry.instancesCount   = sceneGeometry.instanceReferenceCount * scene->getGeometryInstanceFactor();
+    shaderGeometry.instancesOffset  = instancesOffset;
 
     instancesOffset += shaderGeometry.instancesCount;
 
@@ -327,6 +328,9 @@ bool ScenePreloaded::initClas()
     uint32_t*                                                 geometryIndices = clasGeometryIndicesHost.data();
     size_t                                                    geometryOffset  = 0;
 
+    // per-triangle materials are palette encoded within a compressed group, decode space for one group
+    std::vector<uint8_t> triangleMaterialsScratch(SHADERIO_MAX_GROUP_CLUSTERS * SHADERIO_MAX_CLUSTER_TRIANGLES);
+
     size_t   groupOffset   = 0;
     uint32_t clusterOffset = 0;
     for(size_t g = 0; g < sceneGeometry.groupInfos.size(); g++)
@@ -336,6 +340,9 @@ bool ScenePreloaded::initClas()
       uint64_t               groupVA = preloadGeometry.groupData.address + groupOffset;
 
       size_t indexOffset = size_t(groupView.triangles.data()) - size_t(groupView.raw);
+
+      const uint8_t* clusterTriangleMaterials[SHADERIO_MAX_GROUP_CLUSTERS];
+      Scene::getGroupTriangleMaterials(groupInfo, groupView, triangleMaterialsScratch.data(), clusterTriangleMaterials);
 
       for(uint32_t c = 0; c < groupInfo.clusterCount; c++)
       {
@@ -380,8 +387,8 @@ bool ScenePreloaded::initClas()
           buildInfo.geometryIndexAndFlagsBuffer = clasGeometryIndicesHost.address + geometryOffset * sizeof(uint32_t);
           buildInfo.geometryIndexAndFlagsBufferStride = uint16_t(sizeof(uint32_t));
 
-          const uint8_t* clusterMaterialIndices = groupView.getClusterIndices(c) + 3 * buildInfo.triangleCount;
-          if(groupCluster.localMaterialID == SHADERIO_PER_TRIANGLE_MATERIALS)
+          const uint8_t* clusterMaterialIndices = clusterTriangleMaterials[c];
+          if(clusterMaterialIndices)
           {
             for(uint32_t t = 0; t < buildInfo.triangleCount; t++)
             {

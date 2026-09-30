@@ -93,14 +93,14 @@ void main()
   RenderInstance instance = instances[instanceLoad];
   Geometry geometry = geometries[instance.geometryID];
   
-  vec3 oPos = instance.worldMatrixI * vec4(view.viewPos.xyz,1);
+  vec3 oPos = vec4(view.viewPos.xyz,1) * instance.worldMatrixI;
   
   bool isInside = all(equal(greaterThanEqual(oPos, geometry.bbox.lo),lessThanEqual(oPos, geometry.bbox.hi)));
   
   vec3 oPosClamp = isInside ? (geometry.bbox.lo + geometry.bbox.hi) * 0.5 :
     clamp(oPos, geometry.bbox.lo, geometry.bbox.hi);
   
-  vec3 wPos = instance.worldMatrix * vec4(oPosClamp, 1);
+  vec3 wPos = vec4(oPosClamp, 1) * instance.worldMatrix;
   
   if (instanceID == instanceLoad) {
     build.instanceSortValues.d[instanceID] = instanceID;

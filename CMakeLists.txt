@@ -49,6 +49,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
   nvpro2::nvimageformats
   meshoptimizer
   cgltf
+  nlohmann_json
 )
 
 #####################################################################################
@@ -91,6 +92,7 @@ copy_to_runtime_and_install( ${PROJECT_NAME}
                     "${NVSHADERS_DIR}/nvshaders/tonemap_io.h.slang"
                     "${NVSHADERS_DIR}/nvshaders/tonemap_functions.h.slang"
     LOCAL_DIRS "${CMAKE_CURRENT_LIST_DIR}/shaders"
+               "${CMAKE_CURRENT_LIST_DIR}/scene_overrides"
     AUTO
 )
 

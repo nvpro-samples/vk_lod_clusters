@@ -25,35 +25,37 @@ private:
 
   struct Shaders
   {
-    shaderc::SpvCompilationResult graphicsMesh;
-    shaderc::SpvCompilationResult graphicsFragment;
+    Shader graphicsMesh;
+    Shader graphicsFragment;
 
-    shaderc::SpvCompilationResult graphicsMeshAlpha;
-    shaderc::SpvCompilationResult graphicsFragmentAlpha;
+    Shader graphicsMeshAlpha;
+    Shader graphicsFragmentAlpha;
 
-    shaderc::SpvCompilationResult computeTraversalPresort;
-    shaderc::SpvCompilationResult computeTraversalInit;
-    shaderc::SpvCompilationResult computeTraversalRun;
-    shaderc::SpvCompilationResult computeTraversalGroups;
+    Shader computeTraversalPresort;
+    Shader computeTraversalInit;
+    Shader computeTraversalRun;
+    Shader computeTraversalGroups;
+    Shader computeTraversalRejectClusters;
 
-    shaderc::SpvCompilationResult computeBuildSetup;
+    Shader computeBuildSetup;
 
-    shaderc::SpvCompilationResult computeRaster;
-    shaderc::SpvCompilationResult computeRasterAlpha;
+    Shader computeRaster;
+    Shader computeRasterAlpha;
   };
 
   struct Pipelines
   {
-    VkPipeline graphicsMesh            = nullptr;
-    VkPipeline graphicsMeshAlpha       = nullptr;
-    VkPipeline graphicsBboxes          = nullptr;
-    VkPipeline computeTraversalPresort = nullptr;
-    VkPipeline computeTraversalInit    = nullptr;
-    VkPipeline computeTraversalRun     = nullptr;
-    VkPipeline computeTraversalGroups  = nullptr;
-    VkPipeline computeBuildSetup       = nullptr;
-    VkPipeline computeRaster           = nullptr;
-    VkPipeline computeRasterAlpha      = nullptr;
+    VkPipeline graphicsMesh                   = nullptr;
+    VkPipeline graphicsMeshAlpha              = nullptr;
+    VkPipeline graphicsBboxes                 = nullptr;
+    VkPipeline computeTraversalPresort        = nullptr;
+    VkPipeline computeTraversalInit           = nullptr;
+    VkPipeline computeTraversalRun            = nullptr;
+    VkPipeline computeTraversalGroups         = nullptr;
+    VkPipeline computeTraversalRejectClusters = nullptr;
+    VkPipeline computeBuildSetup              = nullptr;
+    VkPipeline computeRaster                  = nullptr;
+    VkPipeline computeRasterAlpha             = nullptr;
   };
 
   Shaders            m_shaders;
@@ -68,6 +70,9 @@ private:
   nvvk::Buffer m_sceneDataBuffer;
 
   shaderio::SceneBuilding m_sceneBuildShaderio;
+
+  // two pass culling continues the second pass from what the first pass rejected
+  bool m_useRejectLists = false;
 };
 
 bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene)
@@ -100,6 +105,7 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene)
   options.AddMacroDefinition("USE_CULLING", m_config.useCulling ? "1" : "0");
   options.AddMacroDefinition("USE_PRIMITIVE_CULLING", m_config.useCulling && m_config.usePrimitiveCulling ? "1" : "0");
   options.AddMacroDefinition("USE_TWO_PASS_CULLING", m_config.useCulling && m_config.useTwoPassCulling ? "1" : "0");
+  options.AddMacroDefinition("USE_TWO_PASS_REJECT_LISTS", m_useRejectLists ? "1" : "0");
   options.AddMacroDefinition("USE_RENDER_STATS", m_config.useRenderStats ? "1" : "0");
   options.AddMacroDefinition("USE_DLSS", m_config.useDlss ? "1" : "0");
   options.AddMacroDefinition("USE_DLSS_GUIDE_BUFFERS", "0");
@@ -107,6 +113,7 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene)
   options.AddMacroDefinition("USE_BLAS_SHARING", "0");
   options.AddMacroDefinition("USE_BLAS_MERGING", "0");
   options.AddMacroDefinition("USE_BLAS_CACHING", "0");
+  options.AddMacroDefinition("USE_DISCRETE_LOD", m_config.useDiscreteLod ? "1" : "0");
   options.AddMacroDefinition("USE_EXT_MESH_SHADER", fmt::format("{}", m_config.useEXTmeshShader ? 1 : 0));
   options.AddMacroDefinition("MESHSHADER_WORKGROUP_SIZE", fmt::format("{}", m_meshShaderWorkgroupSize));
   options.AddMacroDefinition("MESHSHADER_BBOX_COUNT", fmt::format("{}", m_meshShaderBoxes));
@@ -124,28 +131,40 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene)
   options.AddMacroDefinition("USE_FORCED_TWO_SIDED", m_config.forceTwoSided ? "1" : "0");
   options.AddMacroDefinition("USE_FORCED_INVISIBLE_CULLING", "0");
   options.AddMacroDefinition("USE_PERSISTENT_TRAVERSAL_KERNEL", m_config.usePersistentTraversal ? "1" : "0");
+  options.AddMacroDefinition("TRAVERSAL_VULKAN_MEMORY_MODEL",
+                             m_config.usePersistentTraversal && m_config.useVulkanMemoryModel ? "1" : "0");
+  options.AddMacroDefinition("TRAVERSAL_ATOMIC_LOAD_STORE", m_config.useAtomicLoadStore ? "1" : "0");
   options.AddMacroDefinition("HAS_TEXTURED_MATERIALS", rscene.scene->m_hasTexturedMaterials ? "1" : "0");
 
   shaderc::CompileOptions optionsNoAlpha = options;
   optionsNoAlpha.AddMacroDefinition("HAS_ALPHA_TEST", "0");
   options.AddMacroDefinition("HAS_ALPHA_TEST", rscene.scene->m_hasAlphaMask ? "1" : "0");
 
-  res.compileShader(m_shaders.graphicsMesh, VK_SHADER_STAGE_MESH_BIT_NV, "render_raster_clusters.mesh.glsl", &optionsNoAlpha);
-  res.compileShader(m_shaders.graphicsFragment, VK_SHADER_STAGE_FRAGMENT_BIT, "render_raster.frag.glsl", &optionsNoAlpha);
+  res.compileShader(m_shaders.graphicsMesh, VK_SHADER_STAGE_MESH_BIT_NV, "render_raster_clusters.mesh.glsl",
+                    &optionsNoAlpha, "noalpha");
+  res.compileShader(m_shaders.graphicsFragment, VK_SHADER_STAGE_FRAGMENT_BIT, "render_raster.frag.glsl", &optionsNoAlpha, "noalpha");
 
-  res.compileShader(m_shaders.graphicsMeshAlpha, VK_SHADER_STAGE_MESH_BIT_NV, "render_raster_clusters.mesh.glsl", &options);
-  res.compileShader(m_shaders.graphicsFragmentAlpha, VK_SHADER_STAGE_FRAGMENT_BIT, "render_raster.frag.glsl", &options);
+  res.compileShader(m_shaders.graphicsMeshAlpha, VK_SHADER_STAGE_MESH_BIT_NV, "render_raster_clusters.mesh.glsl", &options, "alpha");
+  res.compileShader(m_shaders.graphicsFragmentAlpha, VK_SHADER_STAGE_FRAGMENT_BIT, "render_raster.frag.glsl", &options, "alpha");
 
   res.compileShader(m_shaders.computeTraversalPresort, VK_SHADER_STAGE_COMPUTE_BIT, "traversal_presort.comp.glsl", &options);
-  res.compileShader(m_shaders.computeTraversalInit, VK_SHADER_STAGE_COMPUTE_BIT, "traversal_init.comp.glsl", &options);
+  res.compileShader(m_shaders.computeTraversalInit, VK_SHADER_STAGE_COMPUTE_BIT,
+                    m_config.useDiscreteLod ? "traversal_init_discrete_lod.comp.glsl" : "traversal_init.comp.glsl", &options);
   res.compileShader(m_shaders.computeTraversalRun, VK_SHADER_STAGE_COMPUTE_BIT, "traversal_run.comp.glsl", &options);
   res.compileShader(m_shaders.computeTraversalGroups, VK_SHADER_STAGE_COMPUTE_BIT, "traversal_run_groups.comp.glsl", &options);
+  if(m_useRejectLists)
+  {
+    res.compileShader(m_shaders.computeTraversalRejectClusters, VK_SHADER_STAGE_COMPUTE_BIT,
+                      "traversal_reject_clusters.comp.glsl", &options);
+  }
   res.compileShader(m_shaders.computeBuildSetup, VK_SHADER_STAGE_COMPUTE_BIT, "build_setup.comp.glsl", &options);
 
   if(m_config.useComputeRaster)
   {
-    res.compileShader(m_shaders.computeRaster, VK_SHADER_STAGE_COMPUTE_BIT, "render_raster_clusters_sw.comp.glsl", &optionsNoAlpha);
-    res.compileShader(m_shaders.computeRasterAlpha, VK_SHADER_STAGE_COMPUTE_BIT, "render_raster_clusters_sw.comp.glsl", &options);
+    res.compileShader(m_shaders.computeRaster, VK_SHADER_STAGE_COMPUTE_BIT, "render_raster_clusters_sw.comp.glsl",
+                      &optionsNoAlpha, "noalpha");
+    res.compileShader(m_shaders.computeRasterAlpha, VK_SHADER_STAGE_COMPUTE_BIT, "render_raster_clusters_sw.comp.glsl",
+                      &options, "alpha");
   }
 
   return res.verifyShaders(m_shaders);
@@ -168,6 +187,13 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
 #endif
   m_maxRenderClusters = 1u << m_config.numRenderClusterBits;
   m_maxTraversalTasks = 1u << m_config.numTraversalTaskBits;
+  m_useRejectLists    = m_config.useCulling && m_config.useTwoPassCulling && m_config.useTwoPassRejectLists;
+
+  // the persistent kernel's Vulkan memory model variant uses device scope atomics
+  if(!res.m_physicalDeviceInfo.features12.vulkanMemoryModelDeviceScope)
+  {
+    m_config.useVulkanMemoryModel = false;
+  }
 
   if(!initShaders(res, rscene))
   {
@@ -192,11 +218,16 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
 
     memset(&m_sceneBuildShaderio, 0, sizeof(m_sceneBuildShaderio));
     m_sceneBuildShaderio.numRenderInstances = uint32_t(m_renderInstances.size());
+    m_sceneBuildShaderio.numGeometries      = uint32_t(rscene.scene->getActiveGeometryCount());
     m_sceneBuildShaderio.maxRenderClusters  = uint32_t(1u << m_config.numRenderClusterBits);
     m_sceneBuildShaderio.maxTraversalInfos  = uint32_t(1u << m_config.numTraversalTaskBits);
 
     m_sceneBuildShaderio.indirectDispatchGroups.gridY          = 1;
     m_sceneBuildShaderio.indirectDispatchGroups.gridZ          = 1;
+    m_sceneBuildShaderio.indirectDispatchRejectInstances.gridY = 1;
+    m_sceneBuildShaderio.indirectDispatchRejectInstances.gridZ = 1;
+    m_sceneBuildShaderio.indirectDispatchRejectClusters.gridY  = 1;
+    m_sceneBuildShaderio.indirectDispatchRejectClusters.gridZ  = 1;
     m_sceneBuildShaderio.indirectDrawClustersEXT.gridZ         = 1;
     m_sceneBuildShaderio.indirectDrawClustersNV.first          = 0;
     m_sceneBuildShaderio.indirectDispatchClustersSW.gridY      = 1;
@@ -234,9 +265,24 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
 
     m_sceneBuildShaderio.traversalGroupInfos = mem.append(sizeof(uint64_t) * m_sceneBuildShaderio.maxTraversalInfos, 8);
 
-    if(m_config.useTwoPassCulling && m_config.useCulling)
+    if(m_config.useDiscreteLod)
     {
-      m_sceneBuildShaderio.instanceVisibility = mem.append(sizeof(uint8_t) * m_renderInstances.size(), 4);
+      m_sceneBuildShaderio.geometryCachedInfos =
+          mem.append(sizeof(shaderio::GeometryCachedInfo) * m_sceneBuildShaderio.numGeometries, 8);
+    }
+
+    // two pass culling and VISUALIZE_DISCRETE_LOD both read the instance state
+    m_sceneBuildShaderio.instanceVisibility = mem.append(sizeof(uint8_t) * m_renderInstances.size(), 4);
+
+    // one reject bit per cluster of a group
+    const uint32_t rejectMaskWords = (rscene.scene->m_config.clusterGroupSize + 31) / 32;
+
+    if(m_useRejectLists)
+    {
+      m_sceneBuildShaderio.rejectInstances  = mem.append(sizeof(uint32_t) * m_renderInstances.size(), 4);
+      m_sceneBuildShaderio.rejectGroupInfos = mem.append(sizeof(uint64_t) * m_sceneBuildShaderio.maxTraversalInfos, 8);
+      m_sceneBuildShaderio.rejectClusterMasks =
+          mem.append(sizeof(uint32_t) * m_sceneBuildShaderio.maxTraversalInfos * rejectMaskWords, 4);
     }
 
     res.createBuffer(m_sceneDataBuffer, mem.getSize(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -253,6 +299,11 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     m_sceneBuildShaderio.instanceSortValues += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.traversalGroupInfos += m_sceneDataBuffer.address;
 
+    if(m_config.useDiscreteLod)
+    {
+      m_sceneBuildShaderio.geometryCachedInfos += m_sceneDataBuffer.address;
+    }
+
     if(m_config.useComputeRaster)
     {
       m_sceneBuildShaderio.renderClusterInfosSW += m_sceneDataBuffer.address;
@@ -261,17 +312,30 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
         m_sceneBuildShaderio.renderClusterInfosAlphaSW += m_sceneDataBuffer.address;
       }
     }
-    if(m_config.useTwoPassCulling && m_config.useCulling)
+    m_sceneBuildShaderio.instanceVisibility += m_sceneDataBuffer.address;
+    if(m_useRejectLists)
     {
-      m_sceneBuildShaderio.instanceVisibility += m_sceneDataBuffer.address;
+      m_sceneBuildShaderio.rejectInstances += m_sceneDataBuffer.address;
+      m_sceneBuildShaderio.rejectGroupInfos += m_sceneDataBuffer.address;
+      m_sceneBuildShaderio.rejectClusterMasks += m_sceneDataBuffer.address;
+      // `traversalGroupInfos` is swapped to the reject array for the second pass,
+      // the cluster reject masks stay indexed by the first pass' slots
+      m_sceneBuildShaderio.pass0GroupInfos = m_sceneBuildShaderio.traversalGroupInfos;
     }
 
-    res.createBuffer(m_sceneTraversalBuffer, sizeof(uint64_t) * m_sceneBuildShaderio.maxTraversalInfos,
+    // second pass gets its own node queue, both halves are covered by the per-frame
+    // clear that the persistent traversal kernel's read-ahead depends on
+    res.createBuffer(m_sceneTraversalBuffer,
+                     sizeof(uint64_t) * m_sceneBuildShaderio.maxTraversalInfos * (m_useRejectLists ? 2 : 1),
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     NVVK_DBG_NAME(m_sceneTraversalBuffer.buffer);
     m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sceneTraversalBuffer.bufferSize, "operations", "build traversal");
 
     m_sceneBuildShaderio.traversalNodeInfos = m_sceneTraversalBuffer.address;
+    if(m_useRejectLists)
+    {
+      m_sceneBuildShaderio.rejectNodeInfos = m_sceneTraversalBuffer.address + sizeof(uint64_t) * m_sceneBuildShaderio.maxTraversalInfos;
+    }
   }
 
   updateBasicDescriptors(res, rscene, &m_sceneBuildBuffer);
@@ -331,8 +395,10 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
 
   {
     nvvk::GraphicsPipelineCreator graphicsGen;
-    nvvk::GraphicsPipelineState   state              = res.m_basicGraphicsState;
-    graphicsGen.pipelineInfo.layout                  = m_pipelineLayout;
+    nvvk::GraphicsPipelineState   state = res.m_basicGraphicsState;
+    graphicsGen.pipelineInfo.layout     = m_pipelineLayout;
+    graphicsGen.pipelineInfo.flags      = res.getPipelineCreateFlags();
+
     graphicsGen.renderingState.depthAttachmentFormat = res.m_frameBuffer.pipelineRenderingInfo.depthAttachmentFormat;
     graphicsGen.renderingState.stencilAttachmentFormat = res.m_frameBuffer.pipelineRenderingInfo.stencilAttachmentFormat;
 #if USE_DLSS
@@ -368,47 +434,45 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
       graphicsGen.addShader(VK_SHADER_STAGE_FRAGMENT_BIT, "main", nvvkglsl::GlslCompiler::getSpirvData(m_shaders.graphicsFragment));
     }
     graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_pipelines.graphicsMesh);
+    res.dumpPipelineInternals(m_pipelines.graphicsMesh, m_shaders.graphicsMesh);
 
     graphicsGen.clearShaders();
     graphicsGen.addShader(VK_SHADER_STAGE_MESH_BIT_NV, "main", nvvkglsl::GlslCompiler::getSpirvData(m_shaders.graphicsMeshAlpha));
     graphicsGen.addShader(VK_SHADER_STAGE_FRAGMENT_BIT, "main", nvvkglsl::GlslCompiler::getSpirvData(m_shaders.graphicsFragmentAlpha));
     graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_pipelines.graphicsMeshAlpha);
+    res.dumpPipelineInternals(m_pipelines.graphicsMeshAlpha, m_shaders.graphicsMeshAlpha);
   }
 
   {
-    VkComputePipelineCreateInfo compInfo   = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    VkShaderModuleCreateInfo    shaderInfo = {};
-    compInfo.stage                         = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-    compInfo.stage.stage                   = VK_SHADER_STAGE_COMPUTE_BIT;
-    compInfo.stage.pName                   = "main";
-    compInfo.stage.pNext                   = &shaderInfo;
-    compInfo.layout                        = m_pipelineLayout;
+    VkComputePipelineCreateInfo compInfo = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    compInfo.stage                       = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    compInfo.stage.stage                 = VK_SHADER_STAGE_COMPUTE_BIT;
+    compInfo.stage.pName                 = "main";
+    compInfo.layout                      = m_pipelineLayout;
 
     if(m_config.useSorting)
     {
-      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeTraversalPresort);
-      vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTraversalPresort);
+      res.createComputePipeline(compInfo, m_shaders.computeTraversalPresort, m_pipelines.computeTraversalPresort);
     }
 
-    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeBuildSetup);
-    vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeBuildSetup);
+    res.createComputePipeline(compInfo, m_shaders.computeBuildSetup, m_pipelines.computeBuildSetup);
 
-    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeTraversalInit);
-    vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTraversalInit);
+    res.createComputePipeline(compInfo, m_shaders.computeTraversalInit, m_pipelines.computeTraversalInit);
 
-    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeTraversalRun);
-    vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTraversalRun);
+    res.createComputePipeline(compInfo, m_shaders.computeTraversalRun, m_pipelines.computeTraversalRun);
 
-    shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeTraversalGroups);
-    vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeTraversalGroups);
+    res.createComputePipeline(compInfo, m_shaders.computeTraversalGroups, m_pipelines.computeTraversalGroups);
+
+    if(m_useRejectLists)
+    {
+      res.createComputePipeline(compInfo, m_shaders.computeTraversalRejectClusters, m_pipelines.computeTraversalRejectClusters);
+    }
 
     if(m_config.useComputeRaster)
     {
-      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeRaster);
-      vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeRaster);
+      res.createComputePipeline(compInfo, m_shaders.computeRaster, m_pipelines.computeRaster);
 
-      shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.computeRasterAlpha);
-      vkCreateComputePipelines(res.m_device, nullptr, 1, &compInfo, nullptr, &m_pipelines.computeRasterAlpha);
+      res.createComputePipeline(compInfo, m_shaders.computeRasterAlpha, m_pipelines.computeRasterAlpha);
     }
   }
 
@@ -433,11 +497,21 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
   m_sceneBuildShaderio.frameIndex        = m_frameIndex;
   m_sceneBuildShaderio.swRasterThreshold = frame.swRasterThreshold;
 
+  m_sceneBuildShaderio.discreteEnabledLevels = frame.discreteEnabledLevels;
+  m_sceneBuildShaderio.discreteLodRange      = frame.discreteLodRange;
+
   vkCmdUpdateBuffer(cmd, res.m_commonBuffers.frameConstants.buffer, 0, sizeof(shaderio::FrameConstants),
                     (const uint32_t*)&frame.frameConstants);
   vkCmdUpdateBuffer(cmd, m_sceneBuildBuffer.buffer, 0, sizeof(shaderio::SceneBuilding), (const uint32_t*)&m_sceneBuildShaderio);
   vkCmdFillBuffer(cmd, res.m_commonBuffers.readBack.buffer, 0, sizeof(shaderio::Readback), 0);
   vkCmdFillBuffer(cmd, m_sceneTraversalBuffer.buffer, 0, m_sceneTraversalBuffer.bufferSize, ~0);
+
+  if(m_config.useDiscreteLod)
+  {
+    // required start value for the atomicMin on `cachedLevel` in `traversal_init_discrete_lod.comp.glsl`
+    vkCmdFillBuffer(cmd, m_sceneDataBuffer.buffer, m_sceneBuildShaderio.geometryCachedInfos - m_sceneDataBuffer.address,
+                    sizeof(shaderio::GeometryCachedInfo) * m_sceneBuildShaderio.numGeometries, ~0);
+  }
 
   if(m_config.useComputeRaster)
   {
@@ -461,6 +535,7 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
     settings.ageThreshold    = frame.streamingAgeThreshold;
     settings.unloadThreshold = frame.streamingUnloadThreshold;
     settings.useBlasCaching  = false;
+    settings.useDiscreteLod  = m_config.useDiscreteLod;
 
     rscene.sceneStreaming.cmdBeginFrame(cmd, res.m_queueStates.primary, res.m_queueStates.transfer, settings, profiler);
   }
@@ -484,8 +559,14 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
   const uint32_t lastPass  = passCount - 1;
   for(uint32_t pass = 0; pass < passCount; pass++)
   {
+    // with two cull passes the same sections run twice, keep them apart in the
+    // profiler so each pass' cost is visible on its own
+    auto passSection = [&](const char* name) {
+      return passCount > 1 ? fmt::format("{} {}", name, pass) : std::string(name);
+    };
+
     {
-      auto timerSection = profiler.cmdFrameSection(cmd, "Traversal Preparation");
+      auto timerSection = profiler.cmdFrameSection(cmd, passSection("Traversal Preparation"));
       vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
       vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 1, 1,
                               rscene.sceneTextures.getDsetPack().getSetPtr(), 0, nullptr);
@@ -516,7 +597,15 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
       vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 1, 1,
                               rscene.sceneTextures.getDsetPack().getSetPtr(), 0, nullptr);
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalInit);
-      res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TRAVERSAL_INIT_WORKGROUP));
+      if(m_useRejectLists && pass != 0)
+      {
+        // only revisit the instances that the first pass rejected
+        vkCmdDispatchIndirect(cmd, m_sceneBuildBuffer.buffer, offsetof(shaderio::SceneBuilding, indirectDispatchRejectInstances));
+      }
+      else
+      {
+        res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TRAVERSAL_INIT_WORKGROUP));
+      }
 
       // this barrier covers init & streaming pre traversal
       memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -537,7 +626,7 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
     }
 
     {
-      auto timerSection = profiler.cmdFrameSection(cmd, "Traversal Run");
+      auto timerSection = profiler.cmdFrameSection(cmd, passSection("Traversal Run"));
 
       if(m_config.usePersistentTraversal)
       {
@@ -592,6 +681,15 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
         }
       }
 
+      if(m_useRejectLists && pass != 0)
+      {
+        // re-tests the clusters the first pass recorded as rejected. Independent of
+        // the traversal above, only the cluster counters are shared, so no barrier
+        // and it can overlap with the last group dispatch.
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalRejectClusters);
+        vkCmdDispatchIndirect(cmd, m_sceneBuildBuffer.buffer, offsetof(shaderio::SceneBuilding, indirectDispatchRejectClusters));
+      }
+
       memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
       memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
       vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
@@ -621,7 +719,7 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
     }
 
     {
-      auto timerSection = profiler.cmdFrameSection(cmd, "Draw");
+      auto timerSection = profiler.cmdFrameSection(cmd, passSection("Draw"));
 
       if(m_config.useComputeRaster)
       {

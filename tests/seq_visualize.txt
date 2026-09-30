@@ -1,0 +1,342 @@
+# All visualization modes on both renderers.
+#
+# Every mode is run on the rasterizer and on the ray tracer, including the modes that only
+# carry meaning for one of them (8/9 blas are ray tracing, 11 discrete lod is rasterization):
+# an inapplicable mode has to stay harmless, not fail the pipeline build.
+#
+# The tail adds the DLSS variants. DLSS changes the shader permutation
+# (USE_DLSS x ALLOW_SHADING x USE_DEPTH_ONLY), and visualize 0 / 2 / 10 are exactly the three
+# modes that select the three distinct combinations, so those are the ones repeated with DLSS on.
+
+SEQUENCE "raster_visualize_00_shaded"
+# --sequenceframes only exists once the sequencer is initialized, so it cannot be
+# passed on the command line - it has to be set here, in the first sequence.
+--sequenceframes 32
+--sequenceresetframes 8
+--renderer 0
+--dlss 0
+--swraster 0
+--culling 1
+--twopassculling 1
+--discretelod 1
+--visualize 0
+
+SEQUENCE "raster_visualize_01_grey"
+--renderer 0
+--dlss 0
+--swraster 0
+--culling 1
+--twopassculling 1
+--discretelod 1
+--visualize 1
+
+SEQUENCE "raster_visualize_02_visbuffer"
+--renderer 0
+--dlss 0
+--swraster 0
+--culling 1
+--twopassculling 1
+--discretelod 1
+--visualize 2
+
+SEQUENCE "raster_visualize_03_material"
+--renderer 0
+--dlss 0
+--swraster 0
+--culling 1
+--twopassculling 1
+--discretelod 1
+--visualize 3
+
+SEQUENCE "raster_visualize_04_clusters"
+--renderer 0
+--dlss 0
+--swraster 0
+--culling 1
+--twopassculling 1
+--discretelod 1
+--visualize 4
+
+SEQUENCE "raster_visualize_05_groups"
+--renderer 0
+--dlss 0
+--swraster 0
+--culling 1
+--twopassculling 1
+--discretelod 1
+--visualize 5
+
+SEQUENCE "raster_visualize_06_lodlevels"
+--renderer 0
+--dlss 0
+--swraster 0
+--culling 1
+--twopassculling 1
+--discretelod 1
+--visualize 6
+
+SEQUENCE "raster_visualize_07_triangles"
+--renderer 0
+--dlss 0
+--swraster 0
+--culling 1
+--twopassculling 1
+--discretelod 1
+--visualize 7
+
+SEQUENCE "raster_visualize_08_blas"
+--renderer 0
+--dlss 0
+--swraster 0
+--culling 1
+--twopassculling 1
+--discretelod 1
+--visualize 8
+
+SEQUENCE "raster_visualize_09_blasreuse"
+--renderer 0
+--dlss 0
+--swraster 0
+--culling 1
+--twopassculling 1
+--discretelod 1
+--visualize 9
+
+SEQUENCE "raster_visualize_10_depthonly"
+--renderer 0
+--dlss 0
+--swraster 0
+--culling 1
+--twopassculling 1
+--discretelod 1
+--visualize 10
+
+SEQUENCE "raster_visualize_11_discretelod"
+--renderer 0
+--dlss 0
+--swraster 0
+--culling 1
+--twopassculling 1
+--discretelod 1
+--visualize 11
+
+SEQUENCE "raster_swraster_02_visbuffer"
+--renderer 0
+--dlss 0
+--swraster 1
+--culling 1
+--twopassculling 1
+--discretelod 1
+--visualize 2
+
+SEQUENCE "raster_swraster_10_depthonly"
+--renderer 0
+--dlss 0
+--swraster 1
+--culling 1
+--twopassculling 1
+--discretelod 1
+--visualize 10
+
+SEQUENCE "raytrace_visualize_00_shaded"
+--renderer 1
+--dlss 0
+--swraster 0
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--visualize 0
+
+SEQUENCE "raytrace_visualize_01_grey"
+--renderer 1
+--dlss 0
+--swraster 0
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--visualize 1
+
+SEQUENCE "raytrace_visualize_02_visbuffer"
+--renderer 1
+--dlss 0
+--swraster 0
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--visualize 2
+
+SEQUENCE "raytrace_visualize_03_material"
+--renderer 1
+--dlss 0
+--swraster 0
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--visualize 3
+
+SEQUENCE "raytrace_visualize_04_clusters"
+--renderer 1
+--dlss 0
+--swraster 0
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--visualize 4
+
+SEQUENCE "raytrace_visualize_05_groups"
+--renderer 1
+--dlss 0
+--swraster 0
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--visualize 5
+
+SEQUENCE "raytrace_visualize_06_lodlevels"
+--renderer 1
+--dlss 0
+--swraster 0
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--visualize 6
+
+SEQUENCE "raytrace_visualize_07_triangles"
+--renderer 1
+--dlss 0
+--swraster 0
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--visualize 7
+
+SEQUENCE "raytrace_visualize_08_blas"
+--renderer 1
+--dlss 0
+--swraster 0
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--visualize 8
+
+SEQUENCE "raytrace_visualize_09_blasreuse"
+--renderer 1
+--dlss 0
+--swraster 0
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--visualize 9
+
+SEQUENCE "raytrace_visualize_10_depthonly"
+--renderer 1
+--dlss 0
+--swraster 0
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--visualize 10
+
+SEQUENCE "raytrace_visualize_11_discretelod"
+--renderer 1
+--dlss 0
+--swraster 0
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--visualize 11
+
+SEQUENCE "raster_dlss_00_shaded"
+--renderer 0
+--dlss 1
+--dlssquality 2
+--swraster 0
+--culling 1
+--twopassculling 1
+--discretelod 1
+--visualize 0
+
+SEQUENCE "raster_dlss_02_visbuffer"
+--renderer 0
+--dlss 1
+--dlssquality 2
+--swraster 0
+--culling 1
+--twopassculling 1
+--discretelod 1
+--visualize 2
+
+SEQUENCE "raster_dlss_10_depthonly"
+--renderer 0
+--dlss 1
+--dlssquality 2
+--swraster 0
+--culling 1
+--twopassculling 1
+--discretelod 1
+--visualize 10
+
+SEQUENCE "raytrace_dlss_00_shaded"
+--renderer 1
+--dlss 1
+--dlssquality 2
+--swraster 0
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--visualize 0
+
+SEQUENCE "raytrace_dlss_02_visbuffer"
+--renderer 1
+--dlss 1
+--dlssquality 2
+--swraster 0
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--visualize 2
+
+SEQUENCE "raytrace_dlss_10_depthonly"
+--renderer 1
+--dlss 1
+--dlssquality 2
+--swraster 0
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--visualize 10
+
+SEQUENCE "pathtrace_dlss_off"
+--renderer 1
+--dlss 0
+--pathtrace 1
+--visualize 0
+--pathtracebounces 3
+
+SEQUENCE "pathtrace_dlss_on"
+--renderer 1
+--dlss 1
+--dlssquality 2
+--pathtrace 1
+--visualize 0
+--pathtracebounces 3
+
+SEQUENCE "pathtrace_off"
+--pathtrace 0
+--dlss 0
+

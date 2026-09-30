@@ -71,7 +71,7 @@ PathHit getHitAttributes(uint instanceID, uint clusterID, uint triangleID, vec2 
 
   vec3 baryWeight = vec3((1.f - barycentrics[0] - barycentrics[1]), barycentrics[0], barycentrics[1]);
 
-  mat3 worldMatrixI = mat3(instance.worldMatrixI);
+  mat3 worldMatrixI = transpose(mat3(instance.worldMatrixI));
 
   PathHit hit;
   // world position straight from the ray parameter (matches the depth we output)
@@ -127,7 +127,7 @@ PathHit getHitAttributes(uint instanceID, uint clusterID, uint triangleID, vec2 
     vec3  oHitPos  = baryWeight.x * pos0 + baryWeight.y * pos1 + baryWeight.z * pos2;
     vec3  oShadow  = pointOffset(oHitPos, pos0, pos1, pos2, triNormals[0] * sideFlip,
                                  triNormals[1] * sideFlip, triNormals[2] * sideFlip, baryWeight);
-    hit.wShadowPos = instance.worldMatrix * vec4(oShadow, 1.0);
+    hit.wShadowPos = vec4(oShadow, 1.0) * instance.worldMatrix;
 #endif
 
 #if ALLOW_VERTEX_TANGENTS
@@ -154,7 +154,7 @@ PathHit getHitAttributes(uint instanceID, uint clusterID, uint triangleID, vec2 
     vec2 uv2  = oTexCoords.d[triangleIndices.z];
     oTexCoord = baryWeight.x * uv0 + baryWeight.y * uv1 + baryWeight.z * uv2;
 #if PATHTRACE_HIT_POSITIONS
-    hit.texelDensity = computeTexelDensity(instance.worldMatrix, pos0, pos1, pos2, uv0, uv1, uv2);
+    hit.texelDensity = computeTexelDensity(transpose(instance.worldMatrix), pos0, pos1, pos2, uv0, uv1, uv2);
 #else
     // ray-cone texel density: uv area over world area (== length of the geometric normal)
     vec2  duv1       = uv1 - uv0;

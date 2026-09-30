@@ -437,12 +437,12 @@ bool uploadDdsImage(AsyncImageLoader&   loader,
   if(VK_SUCCESS != NVVK_FAIL_REPORT(loader.res.m_allocator.createImage(vkImage, imageCreateInfo, imageViewCreateInfo)))
     return false;
 
-  AsyncUploader& uploader = loader.res.m_asyncUploader;
+  nvvk::AsyncUploader& uploader = loader.res.m_asyncUploader;
 
   // Acquire one staging mapping per mip and decode the mip tail straight into staging (no extra copy).
-  std::vector<nv_dds::SubresourceTarget>        mipTargets(mipLevels);
-  std::vector<nvvk::BufferRange>                mipSpaces(mipLevels);
-  std::vector<UploaderInterface::MappingHandle> mipHandles(mipLevels, 0);
+  std::vector<nv_dds::SubresourceTarget>              mipTargets(mipLevels);
+  std::vector<nvvk::BufferRange>                      mipSpaces(mipLevels);
+  std::vector<nvvk::UploaderInterface::MappingHandle> mipHandles(mipLevels);
 
   size_t totalSize = 0;
   bool   acquired  = true;
@@ -472,7 +472,7 @@ bool uploadDdsImage(AsyncImageLoader&   loader,
   VkExtent3D uploadExtent = extent;
   for(uint32_t m = 0; m < mipLevels; m++)
   {
-    UploaderInterface::MappedImageSubs sub{};
+    nvvk::UploaderInterface::MappedImageSubs sub{};
     sub.offset       = {0, 0, 0};
     sub.extent       = uploadExtent;
     sub.subresource  = {VK_IMAGE_ASPECT_COLOR_BIT, m, 0, 1};
@@ -555,12 +555,12 @@ bool uploadKtxImage(AsyncImageLoader&   loader,
   if(VK_SUCCESS != NVVK_FAIL_REPORT(loader.res.m_allocator.createImage(vkImage, imageCreateInfo, imageViewCreateInfo)))
     return false;
 
-  AsyncUploader& uploader = loader.res.m_asyncUploader;
+  nvvk::AsyncUploader& uploader = loader.res.m_asyncUploader;
 
   // Acquire one staging mapping per mip and decode the mip tail straight into staging (no extra copy).
-  std::vector<nv_ktx::SubresourceTarget>        mipTargets(mipLevels);
-  std::vector<nvvk::BufferRange>                mipSpaces(mipLevels);
-  std::vector<UploaderInterface::MappingHandle> mipHandles(mipLevels, 0);
+  std::vector<nv_ktx::SubresourceTarget>              mipTargets(mipLevels);
+  std::vector<nvvk::BufferRange>                      mipSpaces(mipLevels);
+  std::vector<nvvk::UploaderInterface::MappingHandle> mipHandles(mipLevels);
 
   size_t totalSize = 0;
   bool   acquired  = true;
@@ -590,7 +590,7 @@ bool uploadKtxImage(AsyncImageLoader&   loader,
   VkExtent3D uploadExtent = extent;
   for(uint32_t m = 0; m < mipLevels; m++)
   {
-    UploaderInterface::MappedImageSubs sub{};
+    nvvk::UploaderInterface::MappedImageSubs sub{};
     sub.offset       = {0, 0, 0};
     sub.extent       = uploadExtent;
     sub.subresource  = {VK_IMAGE_ASPECT_COLOR_BIT, m, 0, 1};

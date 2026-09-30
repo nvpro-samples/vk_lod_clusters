@@ -380,8 +380,7 @@ bool Scene::beginProcessingOnly(size_t geometryCount)
 
   const char* mode = partialExists ? "ab" : "wb";
 
-  m_processingOnlyPartialCompleted = 0;
-  m_processingOnlyFileOffset       = sizeof(Scene::CacheFileHeader);
+  m_processingOnlyFileOffset = sizeof(Scene::CacheFileHeader);
 
   m_processingOnlyGeometryOffsets.resize(geometryCount * 2 + 1);
   m_processingOnlyGeometryOffsets[geometryCount * 2] = geometryCount;
@@ -407,8 +406,6 @@ bool Scene::beginProcessingOnly(size_t geometryCount)
         m_processingOnlyFileOffset = std::max(m_processingOnlyFileOffset, entry.offset + entry.dataSize);
       }
       mapping.close();
-
-      m_processingOnlyPartialCompleted = entryCount;
 
       // the cache file might have partial results of a geometry not valid/finished, reset its size
       std::filesystem::resize_file(m_cacheFilePath, m_processingOnlyFileOffset);
@@ -518,9 +515,8 @@ bool Scene::endProcessingOnly(bool hadError)
   m_geometryStorages.clear();
   m_geometryViews.clear();
 
-  m_processingOnlyFile             = nullptr;
-  m_processingOnlyPartialFile      = nullptr;
-  m_processingOnlyPartialCompleted = 0;
+  m_processingOnlyFile        = nullptr;
+  m_processingOnlyPartialFile = nullptr;
   m_processingOnlyGeometryOffsets.clear();
 
   std::string outFilename        = nvutils::utf8FromPath(m_cacheFilePath);

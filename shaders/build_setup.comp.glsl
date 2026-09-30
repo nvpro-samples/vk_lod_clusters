@@ -93,7 +93,13 @@ layout(local_size_x=1) in;
 #if USE_TWO_PASS_CULLING
 void setupSecondPass()
 {
-  // setup second pass  
+#if USE_TWO_PASS_REJECT_LISTS
+  // `rejectClusterMasks` is indexed by the first pass' group slot, grab the count
+  // before the counter is reset below
+  uint pass0Groups = min(buildRW.traversalGroupWriteCounter, build.maxTraversalInfos);
+#endif
+
+  // setup second pass
   buildRW.cullPass = 1;
   buildRW.traversalTaskCounter = 0;
   buildRW.traversalGroupWriteCounter = 0;
@@ -103,6 +109,47 @@ void setupSecondPass()
   buildRW.renderClusterCounterSW = 0;
   buildRW.renderClusterCounterAlpha = 0;
   buildRW.renderClusterCounterAlphaSW = 0;
+
+#if USE_TWO_PASS_REJECT_LISTS
+  // The second pass does not traverse from the roots again, it continues from what
+  // the first pass rejected. Point the traversal queues at the reject arrays and
+  // seed their counters, the traversal kernels themselves stay unchanged.
+  // `traversal_init` appends the roots of revived instances after the reject nodes,
+  // BUILD_SETUP_TRAVERSAL_RUN then derives the grids from the combined counters.
+  uint rejectNodes     = min(buildRW.rejectNodeCounter, build.maxTraversalInfos);
+  uint rejectGroups    = min(buildRW.rejectGroupCounter, build.maxTraversalInfos);
+  uint rejectInstances = min(buildRW.rejectInstanceCounter, build.numRenderInstances);
+
+  buildRW.pass0GroupCount = pass0Groups;
+
+  buildRW.traversalNodeInfos  = build.rejectNodeInfos;
+  buildRW.traversalGroupInfos = build.rejectGroupInfos;
+
+  buildRW.traversalNodeWriteCounter  = rejectNodes;
+  buildRW.traversalGroupWriteCounter = rejectGroups;
+
+  uint instancesGridCount = (rejectInstances + TRAVERSAL_INIT_WORKGROUP - 1) / TRAVERSAL_INIT_WORKGROUP;
+  uint clustersGridCount  = (pass0Groups + TRAVERSAL_REJECT_CLUSTERS_WORKGROUP - 1) / TRAVERSAL_REJECT_CLUSTERS_WORKGROUP;
+
+#if USE_16BIT_DISPATCH
+  uvec3 instancesGrid = fit16bitLaunchGrid(instancesGridCount);
+  uvec3 clustersGrid  = fit16bitLaunchGrid(clustersGridCount);
+#else
+  uvec3 instancesGrid = uvec3(instancesGridCount, 1, 1);
+  uvec3 clustersGrid  = uvec3(clustersGridCount, 1, 1);
+#endif
+  buildRW.indirectDispatchRejectInstances.gridX = instancesGrid.x;
+  buildRW.indirectDispatchRejectInstances.gridY = instancesGrid.y;
+  buildRW.indirectDispatchRejectInstances.gridZ = instancesGrid.z;
+  buildRW.indirectDispatchRejectClusters.gridX  = clustersGrid.x;
+  buildRW.indirectDispatchRejectClusters.gridY  = clustersGrid.y;
+  buildRW.indirectDispatchRejectClusters.gridZ  = clustersGrid.z;
+
+  // originals, for the array size warnings
+  readback.numRejectInstances = buildRW.rejectInstanceCounter;
+  readback.numRejectNodes     = buildRW.rejectNodeCounter;
+  readback.numRejectGroups    = buildRW.rejectGroupCounter;
+#endif
 }
 #endif
 
@@ -216,9 +263,9 @@ void main()
     buildRW.indirectDrawClustersEXT.gridZ = grid.z;
 
     grid = fit16bitLaunchGrid(numRenderedClustersAlpha);
-    buildRW.indirectDrawClustersEXT.gridX = grid.x;
-    buildRW.indirectDrawClustersEXT.gridY = grid.y;
-    buildRW.indirectDrawClustersEXT.gridZ = grid.z;
+    buildRW.indirectDrawClustersAlphaEXT.gridX = grid.x;
+    buildRW.indirectDrawClustersAlphaEXT.gridY = grid.y;
+    buildRW.indirectDrawClustersAlphaEXT.gridZ = grid.z;
     
     grid = fit16bitLaunchGrid((numRenderedClusters + MESHSHADER_BBOX_COUNT - 1) / MESHSHADER_BBOX_COUNT);
     buildRW.indirectDrawClusterBoxesEXT.gridX = grid.x;
@@ -226,9 +273,9 @@ void main()
     buildRW.indirectDrawClusterBoxesEXT.gridZ = grid.z;
     
     grid = fit16bitLaunchGrid((numRenderedClustersAlpha + MESHSHADER_BBOX_COUNT - 1) / MESHSHADER_BBOX_COUNT);
-    buildRW.indirectDrawClusterBoxesEXT.gridX = grid.x;
-    buildRW.indirectDrawClusterBoxesEXT.gridY = grid.y;
-    buildRW.indirectDrawClusterBoxesEXT.gridZ = grid.z;
+    buildRW.indirectDrawClusterBoxesAlphaEXT.gridX = grid.x;
+    buildRW.indirectDrawClusterBoxesAlphaEXT.gridY = grid.y;
+    buildRW.indirectDrawClusterBoxesAlphaEXT.gridZ = grid.z;
   #else
     buildRW.indirectDrawClustersNV.count = numRenderedClusters;
     buildRW.indirectDrawClustersNV.first = 0;
@@ -246,14 +293,17 @@ void main()
     buildRW.numRenderedClustersAlpha = numRenderedClustersAlpha;
     
   #if USE_16BIT_DISPATCH
-    uvec3 grid = fit16bitLaunchGrid(numRenderedClustersSW);
-    buildRW.indirectDrawClustersSW.gridX = grid.x;
-    buildRW.indirectDrawClustersSW.gridY = grid.y;
-    buildRW.indirectDrawClustersSW.gridZ = grid.z;
-    grid = fit16bitLaunchGrid(numRenderedClustersAlphaSW);
-    buildRW.indirectDispatchClustersAlphaSW.gridX = grid.x;
-    buildRW.indirectDispatchClustersAlphaSW.gridY = grid.y;
-    buildRW.indirectDispatchClustersAlphaSW.gridZ = grid.z;
+    // own scope, USE_EXT_MESH_SHADER declares a `grid` in this one as well
+    {
+      uvec3 grid = fit16bitLaunchGrid(numRenderedClustersSW);
+      buildRW.indirectDispatchClustersSW.gridX = grid.x;
+      buildRW.indirectDispatchClustersSW.gridY = grid.y;
+      buildRW.indirectDispatchClustersSW.gridZ = grid.z;
+      grid = fit16bitLaunchGrid(numRenderedClustersAlphaSW);
+      buildRW.indirectDispatchClustersAlphaSW.gridX = grid.x;
+      buildRW.indirectDispatchClustersAlphaSW.gridY = grid.y;
+      buildRW.indirectDispatchClustersAlphaSW.gridZ = grid.z;
+    }
   #else
     buildRW.indirectDispatchClustersSW.gridX      = numRenderedClustersSW;
     buildRW.indirectDispatchClustersAlphaSW.gridX = numRenderedClustersAlphaSW;
@@ -318,10 +368,13 @@ void main()
   #endif
   
   #if USE_EXT_MESH_SHADER
-    uvec3 grid = fit16bitLaunchGrid((numRenderedClusters + MESHSHADER_BBOX_COUNT - 1) / MESHSHADER_BBOX_COUNT);  
-    buildRW.indirectDrawClusterBoxesEXT.gridX = grid.x;
-    buildRW.indirectDrawClusterBoxesEXT.gridY = grid.y;
-    buildRW.indirectDrawClusterBoxesEXT.gridZ = grid.z;
+    // own scope, USE_16BIT_DISPATCH declares a `grid` in this one as well
+    {
+      uvec3 grid = fit16bitLaunchGrid((numRenderedClusters + MESHSHADER_BBOX_COUNT - 1) / MESHSHADER_BBOX_COUNT);
+      buildRW.indirectDrawClusterBoxesEXT.gridX = grid.x;
+      buildRW.indirectDrawClusterBoxesEXT.gridY = grid.y;
+      buildRW.indirectDrawClusterBoxesEXT.gridZ = grid.z;
+    }
   #else
     buildRW.indirectDrawClusterBoxesNV.count = (numRenderedClusters + MESHSHADER_BBOX_COUNT - 1) / MESHSHADER_BBOX_COUNT;
     buildRW.indirectDrawClusterBoxesNV.first = 0;

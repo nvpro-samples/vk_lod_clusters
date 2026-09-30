@@ -144,7 +144,7 @@ BUFFER_REF_DECLARE_ARRAY(StreamingPatchs_in, StreamingPatch, , 16);
 struct StreamingGeometryPatch
 {
   uint32_t geometryID;
-  uint16_t cachedBlasLodLevel;
+  uint16_t discreteLodLevel;  // see Geometry::discreteLodLevel
   uint16_t cachedBlasClustersCount;
   uint64_t cachedBlasAddress;
 };

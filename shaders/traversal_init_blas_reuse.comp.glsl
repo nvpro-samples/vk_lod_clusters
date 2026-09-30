@@ -9,6 +9,7 @@
   ==================
   
   Only used for TARGETS_RAY_TRACING && USE_BLAS_REUSE
+  (USE_BLAS_REUSE == USE_BLAS_SHARING || USE_BLAS_CACHING)
 
   This compute shader initializes the traversal queue with the
   root nodes of the lod hierarchy of rendered instances.

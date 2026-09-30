@@ -36,12 +36,23 @@
 #include "dlss_upscaler.hpp"
 #endif
 
-#include "async_uploader.hpp"
+#include <nvvk/async_uploader.hpp>
 #include "hbao_pass.hpp"
 #include "nvhiz_vk.hpp"
 #include "../shaders/shaderio.h"
 
 namespace lodclusters {
+
+// a compiled shader and the file it came from, the file name is used when dumping
+// pipeline internals. Implicitly converts, so it can be passed to the nvvkglsl getters.
+struct Shader
+{
+  shaderc::SpvCompilationResult compiled;
+  std::filesystem::path         fileName;
+
+  operator shaderc::SpvCompilationResult&() { return compiled; }
+  operator const shaderc::SpvCompilationResult&() const { return compiled; }
+};
 
 struct FrameConfig
 {
@@ -73,6 +84,11 @@ struct FrameConfig
 
   uint32_t cachingEnabledLevels = 8;
   uint32_t cachingAgeThreshold  = 16;
+
+  // rasterization: how many tail lod levels may skip the lod traversal and
+  // how many lod levels an instance's lod range may span (0 disables the test)
+  uint32_t discreteEnabledLevels = 8;
+  uint32_t discreteLodRange      = 16;
 
   HbaoPass::Settings hbaoSettings;
 
@@ -299,24 +315,49 @@ public:
   }
 
   void getReadbackData(shaderio::Readback& readback);
+  void clearReadbackData();
 
   //////////////////////////////////////////////////////////////////////////
 
   shaderc::CompileOptions makeCompilerOptions() { return shaderc::CompileOptions(m_glslCompiler.options()); }
 
+  // `dumpFileName` defaults to the file's stem, provide it when the same file is compiled
+  // more than once, so the dumped files stay unique
   bool compileShader(shaderc::SpvCompilationResult& compiled,
                      VkShaderStageFlagBits          shader,
                      const std::filesystem::path&   filePath,
-                     shaderc::CompileOptions*       options = nullptr);
+                     shaderc::CompileOptions*       options      = nullptr,
+                     const std::filesystem::path&   dumpFileName = {});
+
+  // `variant` must be provided when the same file is compiled more than once (different defines),
+  // it keeps the shader's file name, and therefore the dumped files, unique
+  bool compileShader(Shader&                      shader,
+                     VkShaderStageFlagBits        shaderStage,
+                     const std::filesystem::path& filePath,
+                     shaderc::CompileOptions*     options = nullptr,
+                     const char*                  variant = nullptr);
+
+  // flags all pipelines must be created with, so that `dumpPipelineInternals` can work
+  VkPipelineCreateFlags getPipelineCreateFlags() const
+  {
+    return m_dumpInternal ? VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR : 0;
+  }
+
+  // dumps the driver's internal representation (isa etc.) into the working directory,
+  // named after the shader's file. does nothing unless `m_dumpInternal` is active.
+  void dumpPipelineInternals(VkPipeline pipeline, const Shader& shader);
+
+  // sets up compInfo's stage.pNext and flags, and dumps the pipeline internals if enabled
+  void createComputePipeline(VkComputePipelineCreateInfo& compInfo, const Shader& shader, VkPipeline& pipeline);
 
   // tests if all shaders compiled well, returns false if not
   // also destroys all shaders if not all were successful.
-  bool verifyShaders(size_t numShaders, shaderc::SpvCompilationResult* shaders)
+  bool verifyShaders(size_t numShaders, const Shader* shaders)
   {
     for(size_t i = 0; i < numShaders; i++)
     {
-      if(shaders[i].GetCompilationStatus() != shaderc_compilation_status_null_result_object
-         && shaders[i].GetCompilationStatus() != shaderc_compilation_status_success)
+      if(shaders[i].compiled.GetCompilationStatus() != shaderc_compilation_status_null_result_object
+         && shaders[i].compiled.GetCompilationStatus() != shaderc_compilation_status_success)
         return false;
     }
 
@@ -325,7 +366,7 @@ public:
   template <typename T>
   bool verifyShaders(T& container)
   {
-    return verifyShaders(sizeof(T) / sizeof(shaderc::SpvCompilationResult), (shaderc::SpvCompilationResult*)&container);
+    return verifyShaders(sizeof(T) / sizeof(Shader), (const Shader*)&container);
   }
 
   void destroyPipelines(size_t numPipelines, VkPipeline* pipelines)
@@ -559,7 +600,7 @@ public:
   nvvk::StagingUploader   m_uploader         = {};
   // async transfer-queue uploader for load-time texture uploads (ownership transfer to graphics);
   // drained every frame in onRender via cmdDrainOwnershipBarriers()
-  AsyncUploader m_asyncUploader = {};
+  nvvk::AsyncUploader m_asyncUploader = {};
 
   FrameBuffer m_frameBuffer;
   struct CommonBuffers
@@ -580,12 +621,16 @@ public:
   VkPhysicalDeviceMeshShaderPropertiesEXT m_meshShaderPropsEXT = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT};
   VkPhysicalDeviceMeshShaderPropertiesNV m_meshShaderPropsNV = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_NV};
 
-  bool m_use16bitDispatch          = false;
-  bool m_supportsMeshShaderNV      = false;
-  bool m_supportsClusterRaytracing = false;
-  bool m_supportsBarycentrics      = false;
-  bool m_supportsSmBuiltinsNV      = false;
-  bool m_dumpSpirv                 = false;
+  bool m_use16bitDispatch = false;
+  // "force16bitdispatch", testing only: takes effect at `init` time
+  bool m_force16bitDispatch             = false;
+  bool m_supportsMeshShaderNV           = false;
+  bool m_supportsClusterRaytracing      = false;
+  bool m_supportsBarycentrics           = false;
+  bool m_supportsSmBuiltinsNV           = false;
+  bool m_supportsPipelineExecutableInfo = false;
+  bool m_dumpSpirv                      = false;
+  bool m_dumpInternal                   = false;
 
   HbaoPass        m_hbaoPass;
   HbaoPass::Frame m_hbaoFrame;

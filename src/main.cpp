@@ -30,6 +30,7 @@
 #include <nvapp/elem_default_menu.hpp>
 #include <nvapp/elem_default_title.hpp>
 #include <nvapp/elem_sequencer.hpp>
+#include <nvutils/logger.hpp>
 #include <nvutils/parameter_parser.hpp>
 
 #include "lodclusters.hpp"
@@ -59,6 +60,8 @@ int main(int argc, char** argv)
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_BARYCENTRIC_FEATURES_KHR};
   VkPhysicalDeviceShaderImageAtomicInt64FeaturesEXT shaderImageAtomic64Features{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_IMAGE_ATOMIC_INT64_FEATURES_EXT};
+  VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pipeExecutableKHR{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
 
   nvvk::ContextInitInfo vkSetup{
       .instanceExtensions = {VK_EXT_DEBUG_UTILS_EXTENSION_NAME},
@@ -92,6 +95,9 @@ int main(int argc, char** argv)
   vkSetup.deviceExtensions.push_back({VK_NV_MESH_SHADER_EXTENSION_NAME, &meshNV, false});
 
   vkSetup.deviceExtensions.push_back({VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME, &barycentricFeatures, false});
+
+  // optional, only used by the "dumpinternal" option
+  vkSetup.deviceExtensions.push_back({VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME, &pipeExecutableKHR, false});
 #endif
 
 
@@ -141,6 +147,11 @@ int main(int argc, char** argv)
   parameterParser.add(parameterRegistry);
   parameterParser.setVerbose(true);
   parameterParser.parse(argc, argv);
+
+  if(appInfo.headless)
+  {
+    nvutils::Logger::getInstance().setFileFlush(true);
+  }
 
   // must happen before any meshopt_ call, the setter is not thread safe
   if(useThreadLocalArena)
@@ -255,6 +266,8 @@ int main(int argc, char** argv)
   sampleElement->setSupportsBarycentrics(vkContext.hasExtensionEnabled(VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME));
   sampleElement->setSupportsMeshShaderNV(vkContext.hasExtensionEnabled(VK_NV_MESH_SHADER_EXTENSION_NAME));
   sampleElement->setSupportsSmBuiltinsNV(vkContext.hasExtensionEnabled(VK_NV_SHADER_SM_BUILTINS_EXTENSION_NAME));
+  sampleElement->setSupportsPipelineExecutableInfo(vkContext.hasExtensionEnabled(VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME)
+                                                   && pipeExecutableKHR.pipelineExecutableInfo);
 
   appInfo.instance       = vkContext.getInstance();
   appInfo.device         = vkContext.getDevice();
@@ -291,6 +304,9 @@ int main(int argc, char** argv)
   // Create the application
   nvapp::Application app;
   app.init(appInfo);
+
+  // needs the ImGui context from app.init
+  sampleElement->registerRecentFilesHandler();
 
   auto                  logger      = std::make_shared<nvapp::ElementLogger>();
   nvapp::ElementLogger* loggerDeref = logger.get();

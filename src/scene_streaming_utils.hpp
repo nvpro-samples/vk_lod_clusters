@@ -600,9 +600,9 @@ private:
     size_t   regionCount;
   };
 
-  size_t m_maxSceneBytes;
+  size_t m_maxSceneBytes = 0;
   size_t m_maxTransferBytes;
-  size_t m_blockBytes;
+  size_t m_blockBytes = 0;
 
   nvvk::Buffer                       m_transferHostBuffer;
   nvvk::BufferSubAllocator::InitInfo m_dataInfo;
