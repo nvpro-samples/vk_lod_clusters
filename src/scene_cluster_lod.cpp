@@ -384,8 +384,7 @@ uint32_t Scene::storeGroup(TempContext* context, const clodGroup& group, uint32_
 
         for(uint32_t v = 0; v < 3; v++)
         {
-          trianglePositions[v] =
-              geometry.vertexPositions[localVertices[groupTempStorage.triangles[(triangleOffset + t) * 3 + v]]];
+          trianglePositions[v] = geometry.vertexPositions[tempCluster.indices[t * 3 + v]];
         }
 
         for(uint32_t e = 0; e < 3; e++)

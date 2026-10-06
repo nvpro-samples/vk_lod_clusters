@@ -104,7 +104,7 @@ private:
   DlssRayReconstruction m_dlss{};
 
   std::vector<VkFormat> m_bufferInfos = {
-      {VK_FORMAT_R8G8B8A8_UNORM},       // #DLSS - Rendered image       : eDlssRenderImage
+      {VK_FORMAT_R16G16B16A16_SFLOAT},  // #DLSS - Rendered image       : eDlssRenderImage
       {VK_FORMAT_R8G8B8A8_UNORM},       // #DLSS - BaseColor            : eDlssAlbedo
       {VK_FORMAT_R16G16B16A16_SFLOAT},  // #DLSS - SpecAlbedo           : eDlssSpecAlbedo
       {VK_FORMAT_R16G16B16A16_SFLOAT},  // #DLSS - Normal / Roughness   : eDlssNormalRoughness

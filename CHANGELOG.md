@@ -1,4 +1,22 @@
 # Changelog for vk_lod_clusters
+* 2026-10-6:
+
+  * New `--cameraclipnear` and `--cameraclipfar` override the default camera clip planes, as fraction of the scene diagonal or absolute when negative, like `--aoradius`.
+  * Bugfix: scenes with glTF cameras used the camera's default clip planes instead of the ones derived from the scene size.
+  * New `--fogdistance` ("Lighting" UI) hazes the "shaded" visualization towards the sky in all renderers, scaled by the sky's haze. Off by default.
+  * Fixes from [Arseny Kapoulkine](https://github.com/zeux), thanks!
+    * Bugfix: the shortest/longest edge of a cluster was computed from the wrong triangles when an earlier cluster of the group had per-triangle materials, which could crash.
+    * Bugfix: vertex deduplication left attributes of some unique vertices uncopied, and compared vertices with attribute offsets that did not match the actual layout.
+
+* 2026-10-5:
+
+  * All renderers write linear HDR color, tonemapped by a shared pass after DLSS that also composites HBAO. `--pathtracetonemap`, `--pathtraceautoexposure` and `--pathtraceexposure` are now `--tonemap`, `--autoexposure` and `--exposure`.
+  * Rasterization and ray tracing light with the physical sky like the path tracer, from a prefiltered cube map baked whenever the sky changes. `--rasterskyscale` (default 0.6) dims raster's sky lighting to make up for the missing sun shadows.
+  * Grey and the palette visualizations are physically lit in all renderers, tuned for readable shapes in "Misc Settings > Debug Colorization". The visibility buffer stays raw.
+  * `--lightmixer` defaults to 0.85.
+  * Bugfix: the path tracer's diffuse BRDF lacked the `1/pi`, and its sky sampling ignored y-up scenes.
+  * Bugfix: changing `--supersample` kept a stale render scale, and with DLSS dropped the DLSS render size when the target size stayed the same.
+
 * 2026-9-30:
 
   * Improved matrix storage for aligned 128-bit loads.

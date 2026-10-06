@@ -14,13 +14,12 @@
 
   Lighting is the physical sky (evalPhysicalSky) with importance-sampled
   next-event estimation (samplePhysicalSky) and MIS against the BSDF. The BSDF
-  reuses this project's simplified material model (computeShading / GGX eval
+  reuses this project's simplified material model (computeBrdfCos / GGX eval
   helpers) with a stochastic diffuse/specular lobe split for indirect bounces.
 
   It is 1 sample-per-pixel and relies on DLSS Ray Reconstruction for temporal
-  denoising (no accumulation buffer). The final HDR radiance is tone-mapped and
-  an auto-exposure value is accumulated from a 16x16 pixel grid using float32
-  atomics into the readback buffer.
+  denoising (no accumulation buffer). The HDR radiance is tone-mapped by
+  `tonemap.comp.glsl` like the other renderers.
 
 */
 
@@ -94,7 +93,7 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
 layout(set = 0, binding = BINDINGS_TLAS) uniform accelerationStructureEXT asScene;
 
 layout(set = 0, binding = BINDINGS_RAYTRACING_DEPTH, r32f) uniform image2D imgRaytracingDepth;
-layout(set = 0, binding = BINDINGS_RENDER_TARGET, rgba8)   uniform image2D imgColor;
+layout(set = 0, binding = BINDINGS_RENDER_TARGET, rgba16f) uniform image2D imgColor;
 #if USE_DLSS
 layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssAlbedo, rgba8)             uniform image2D imgDlssAlbedo;
 layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssSpecAlbedo, rgba16f)       uniform image2D imgDlssSpecAlbedo;
@@ -128,6 +127,12 @@ layout(location = 1) rayPayloadEXT float          rayHitAO;
 float ptLuminance(vec3 c)
 {
   return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
+// y-up scenes swap y and z, its own inverse
+vec3 skyZUpDir(vec3 dir)
+{
+  return view.skyPhysical.yIsUp == 1 ? dir.xzy : dir;
 }
 
 float ptPowerHeuristic(float a, float b)
@@ -266,6 +271,15 @@ void main()
   vec3 rayDir    = direction.xyz;
 
   uint  seed        = xxhash32(uvec3(gl_LaunchIDEXT.xy, view.frame));
+
+  // The sky sampler works in z-up, so y-up scenes are swizzled into it the way
+  // evalPhysicalSky does internally. Its radiance stays identical.
+  SkyPhysicalParameters skyZUp = view.skyPhysical;
+  if(skyZUp.yIsUp == 1)
+  {
+    skyZUp.sunDirection = skyZUp.sunDirection.xzy;
+    skyZUp.yIsUp        = 0;
+  }
   vec3  radiance    = vec3(0);
   vec3  throughput  = vec3(1);
   float lastBsdfPdf = 0.0;
@@ -284,6 +298,9 @@ void main()
   // virtual mirror image doesn't move rigidly in screen space and would otherwise poison DLSS-RR's
   // temporal history for the reflection (matches render_raytrace.rgen.glsl's box-depth behavior).
   bool mirrorRedirected     = false;
+  // haze applies to the first segment, eye to first hit, mirror box included
+  vec3  fogDir      = rayDir;
+  float fogDistance = 0.0;
 #if DEBUG_VISUALIZATION && ALLOW_SHADING
   // primary-hit wireframe overlay, applied to the final radiance after the path loop
   vec3 wireBary   = vec3(0);
@@ -341,6 +358,7 @@ void main()
         tMin        = 1e-4;
         firstHitPos = mirrorHitPoint;  // stable box surface point, not the (non-rigidly reprojecting) reflected content
         mirrorRedirected = true;
+        fogDistance      = mirrorT;
 
 #if USE_DLSS
         // This redirect is itself a perfect-mirror reflection event, bypassing the BSDF-lobe capture
@@ -351,6 +369,11 @@ void main()
       }
     }
   }
+
+  // The palette visualizations are path traced with a neutral material and only take the color of
+  // the first hit, so bounce light and the tinted sky don't wash out the palette.
+  bool vizModulate = view.visualize != VISUALIZE_SHADED && view.visualize != VISUALIZE_GREY && view.visualize != VISUALIZE_VIS_BUFFER;
+  vec3 vizColor    = vec3(1);
 
   for(int bounce = 0; bounce < maxBounces; bounce++)
   {
@@ -373,13 +396,19 @@ void main()
       }
 #endif
 
+      if(view.visualize == VISUALIZE_VIS_BUFFER)
+        break;
+
       vec3  envColor = evalPhysicalSky(view.skyPhysical, rayDir);
       float misW     = 1.0;
       if(bounce > 0)
       {
-        float envPdf = samplePhysicalSkyPDF(view.skyPhysical, rayDir);
+        float envPdf = samplePhysicalSkyPDF(skyZUp, skyZUpDir(rayDir));
         misW         = ptPowerHeuristic(lastBsdfPdf, envPdf);
       }
+      // the sky behind the scene is not dimmed, only its lighting
+      if(bounce > 0 && dot(rayDir, view.skyPhysical.sunDirection) < cos(1.5 * 0.00465 * view.skyPhysical.sunDiskScale))
+        envColor *= view.skyAmbientScale;
       radiance += throughput * misW * envColor;
       break;
     }
@@ -401,6 +430,16 @@ void main()
 
     bool firstHit = (bounce == 0);
 
+    if(view.visualize == VISUALIZE_VIS_BUFFER)
+    {
+      // raw cluster ids, like raster and ray tracing
+      float relative = (float(rayHit.triangleID) / float(CLUSTER_TRIANGLE_COUNT - 1)) * 0.25 + 0.75;
+      radiance       = colorizeID(hit.visData) * relative;
+      hitValid       = true;
+      firstHitPos    = hit.wPos;
+      break;
+    }
+
 #if USE_DLSS
     if(captureSpecularHit)
     {
@@ -417,15 +456,26 @@ void main()
     }
     else
     {
-      vec3  viz  = visualizeColor(hit.visData, rayHit.instanceID);
-      float vl   = dot(viz, vec3(0.2126, 0.7152, 0.0722));
-      mat.albedo = clamp(mix(vec3(vl), viz, 1.4), 0.0, 1.0);   // 1.4 = saturation boost
-      mat.roughness = 0.3;  // glossier than the RT 0.4 so the sun gives a sharper glint that defines form
+      vec3 viz = visualizeColor(hit.visData, rayHit.instanceID);
+      if(vizModulate)
+      {
+        // the palette is meant for display, the tonemap's sRGB encode would wash it out. Normalized to
+        // full value, the grey lighting already gives the brightness.
+        if(firstHit)
+        {
+          vizColor = toLinear(viz);
+          vizColor *= view.debugPaletteGain > 0 ? view.debugPaletteGain :
+                                                  1.0 / max(max(vizColor.x, vizColor.y), max(vizColor.z, 1e-4));
+        }
+        viz = vec3(0.8);
+      }
+      mat.albedo    = viz;
+      mat.roughness = view.debugRoughness;
       mat.metallic  = 0.0;
       mat.emissive  = vec3(0);
       mat.occlusion = 1.0;
       mat.specularColor = vec3(1.0f);
-      mat.specular      = 1.0f;
+      mat.specular      = view.debugSpecular;
     }
 
     // For low-tessellated geometry the interpolated (or normal-mapped) shading normal can tilt far
@@ -443,6 +493,7 @@ void main()
       hitValid = true;
       if(!mirrorRedirected)
         firstHitPos = hit.wPos;
+      fogDistance += rayHit.hitT;
 
 #if DEBUG_VISUALIZATION && ALLOW_SHADING
       if(view.doWireframe != 0)
@@ -454,7 +505,7 @@ void main()
 #endif
 
 #if USE_DLSS
-      dlssAlbedo          = vec4(mat.albedo, 0);
+      dlssAlbedo          = vec4(vizModulate ? vizColor : mat.albedo, 0);
       dlssNormalRoughness = vec4(N, mat.roughness);
       dlssSpecular        = EnvBRDFApprox2(vec3(1), mat.roughness, dot(N, V));
 #endif
@@ -485,7 +536,7 @@ void main()
       vec3  flashDir           = normalize(view.wLightPos.xyz - hit.wPos);
       float skyBrightness      = ptLuminance(evalPhysicalSky(view.skyPhysical, normalize(view.wUpDir.xyz)));
       float ao                 = ptTraceAO(hit.wPos, hit.wGeoNormal, uint(view.ambientOcclusionSamples),
-                                           view.ambientOcclusionRadius * view.sceneSize, coneWidth, coneSpread, seed);
+                                           view.ambientOcclusionRadius, coneWidth, coneSpread, seed);
       radiance += throughput * (ao * flashIntensity * skyBrightness * flashVsSky) * computeShading(mat, N, flashDir, V, NdotV);
     }
 
@@ -504,10 +555,11 @@ void main()
     // Next-event estimation: importance-sample the physical sky
     // ---------------------------------------------------------
     {
-      SkySamplingResult sky = samplePhysicalSky(view.skyPhysical, vec2(rand(seed), rand(seed)));
+      SkySamplingResult sky = samplePhysicalSky(skyZUp, vec2(rand(seed), rand(seed)));
+      sky.direction         = skyZUpDir(sky.direction);
       if(sky.pdf > 0.0 && dot(N, sky.direction) > 0.0)
       {
-        vec3  f    = computeShading(mat, N, sky.direction, V, NdotV);  // BRDF * NdotL
+        vec3  f    = computeBrdfCos(mat, N, sky.direction, V, NdotV);
         float bp   = bsdfPdf(N, V, sky.direction, alphaRoughness, pSpec);
         float misW = ptPowerHeuristic(sky.pdf, bp);
         if(misW > 0.0 && (f.x + f.y + f.z) > 0.0)
@@ -519,7 +571,7 @@ void main()
           // (lightMixer==1 -> sun only; ->0 fades the sun out as the flashlight fades in, no overbright).
           float sunCosThreshold = cos(1.5 * 0.00465 * view.skyPhysical.sunDiskScale);
           bool  isSun    = dot(sky.direction, view.skyPhysical.sunDirection) >= sunCosThreshold;
-          float sunScale = isSun ? view.lightMixer : 1.0;
+          float sunScale = isSun ? view.lightMixer : view.skyAmbientScale;
           radiance += throughput * (sky.radiance / sky.pdf) * f * misW * visibility * sunScale;
         }
       }
@@ -553,7 +605,7 @@ void main()
     if(bp <= 0.0)
       break;
 
-    vec3 f = computeShading(mat, N, L, V, NdotV);  // BRDF * NdotL
+    vec3 f = computeBrdfCos(mat, N, L, V, NdotV);
     throughput *= f / bp;
     lastBsdfPdf = bp;
 
@@ -590,6 +642,16 @@ void main()
     dlssSpecularHitDist = 65504.0;
 #endif
 
+  if(vizModulate && hitValid)
+  {
+    radiance = vizColor * ptLuminance(radiance);
+  }
+
+  if(hitValid)
+  {
+    radiance = applyFog(radiance, fogDir, fogDistance);
+  }
+
 #if DEBUG_VISUALIZATION && ALLOW_SHADING
   // ---------------------------------------------------------
   // Primary-hit wireframe overlay (debug visualization)
@@ -610,41 +672,6 @@ void main()
       radiance *= view.pathtraceFireflyClamp / lum;
   }
 
-  // ---------------------------------------------------------
-  // Auto-exposure accumulation (pre-tonemap), one pixel per 16x16 tile
-  // ---------------------------------------------------------
-  // Accumulate log-luminance for a geometric-mean auto-exposure (the CPU converts back with exp2).
-  if((gl_LaunchIDEXT.x & 15u) == 0u && (gl_LaunchIDEXT.y & 15u) == 0u)
-  {
-    bool metered = true;
-    if(view.pathtraceTonemapper.enableCenterMetering != 0)
-    {
-      // only sample a centered box of the given relative size
-      vec2 centered = abs(vec2(gl_LaunchIDEXT.xy) / view.viewportf * 2.0 - 1.0);
-      metered       = max(centered.x, centered.y) <= view.pathtraceTonemapper.centerMeteringSize;
-    }
-    if(metered)
-    {
-      atomicAdd(readback.autoExposureLumaSum, log2(max(ptLuminance(radiance), 1e-3)));
-      atomicAdd(readback.autoExposureSampleCount, 1u);
-    }
-  }
-
-  // ---------------------------------------------------------
-  // Tone map + store
-  // ---------------------------------------------------------
-  // nvpro_core2's tonemapper, applied inline rather than as a post-process pass.
-  // Exposure and white balance come in through the host-computed inputMatrix.
-  vec3 mapped;
-  if(view.pathtraceTonemapper.isActive != 0)
-  {
-    mapped = applyTonemap(view.pathtraceTonemapper, radiance, vec2(gl_LaunchIDEXT.xy), view.viewportf);
-  }
-  else
-  {
-    mapped = toSrgb(clamp(radiance, vec3(0.0), vec3(1.0)));
-  }
-
   float hitDepth = 1.0;
   if(hitValid)
   {
@@ -652,7 +679,7 @@ void main()
     hitDepth       = screenPos.z / screenPos.w;
   }
 
-  imageStore(imgColor, screen, vec4(mapped, 1));
+  imageStore(imgColor, screen, vec4(radiance, 1));
   imageStore(imgRaytracingDepth, screen, vec4(hitDepth, 0.f, 0.f, 0.f));
 
 #if USE_DLSS
@@ -670,7 +697,7 @@ void main()
   }
   else
   {
-    imageStore(imgDlssAlbedo, screen, vec4(mapped, 1));
+    imageStore(imgDlssAlbedo, screen, vec4(clamp(radiance, vec3(0), vec3(1)), 1));
     imageStore(imgDlssSpecAlbedo, screen, vec4(vec3(0), 1.0f));
     imageStore(imgDlssNormalRoughness, screen, vec4(0));
     imageStore(imgDlssSpecHitDist, screen, vec4(0));

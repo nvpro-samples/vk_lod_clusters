@@ -888,41 +888,20 @@ void Scene::buildGeometryDedupVertices(ProcessingInfo& processingInfo, GeometryS
 
   size_t attributeStride = geometry.vertexAttributes.size() / geometry.vertexPositions.size();
 
-  if(geometry.attributeBits)
+  if(attributeStride)
   {
-    uint32_t       texOffset = 0;
-    meshopt_Stream streams[4];
-    uint32_t       streamCount = 1;
+    meshopt_Stream streams[2];
 
     streams[0].data   = geometry.vertexPositions.data();
     streams[0].size   = sizeof(float) * 3;
     streams[0].stride = sizeof(glm::vec3);
-    if(geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_NORMAL)
-    {
-      streams[1].data   = geometry.vertexAttributes.data();
-      streams[1].size   = sizeof(float) * 3;
-      streams[1].stride = sizeof(float) * attributeStride;
-      streamCount++;
-      texOffset = 3;
-    }
-    if(geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TEX_0)
-    {
-      streams[streamCount].data   = geometry.vertexAttributes.data() + texOffset;
-      streams[streamCount].size   = sizeof(float) * 2;
-      streams[streamCount].stride = sizeof(float) * attributeStride;
-      streamCount++;
-    }
-    if(geometry.attributeBits & shaderio::CLUSTER_ATTRIBUTE_VERTEX_TANGENT)
-    {
-      streams[streamCount].data   = geometry.vertexAttributes.data() + texOffset + 2;
-      streams[streamCount].size   = sizeof(float) * 4;
-      streams[streamCount].stride = sizeof(float) * attributeStride;
-      streamCount++;
-    }
+    streams[1].data   = geometry.vertexAttributes.data();
+    streams[1].size   = sizeof(float) * attributeStride;
+    streams[1].stride = sizeof(float) * attributeStride;
 
     uniqueVertices =
         meshopt_generateVertexRemapMulti(remap.data(), reinterpret_cast<const uint32_t*>(geometry.triangles.data()),
-                                         geometry.triangles.size() * 3, geometry.vertexPositions.size(), streams, streamCount);
+                                         geometry.triangles.size() * 3, geometry.vertexPositions.size(), streams, 2);
   }
   else
   {
@@ -938,10 +917,10 @@ void Scene::buildGeometryDedupVertices(ProcessingInfo& processingInfo, GeometryS
     geometry.vertexPositions = std::move(newPositions);
   }
 
-  if(geometry.attributeBits)
+  if(attributeStride)
   {
     std::vector<float> newAttributes(uniqueVertices * attributeStride);
-    meshopt_remapVertexBuffer(newAttributes.data(), geometry.vertexAttributes.data(), geometry.vertexPositions.size(),
+    meshopt_remapVertexBuffer(newAttributes.data(), geometry.vertexAttributes.data(), geometry.vertexAttributes.size() / attributeStride,
                               sizeof(float) * attributeStride, remap.data());
     geometry.vertexAttributes = std::move(newAttributes);
   }

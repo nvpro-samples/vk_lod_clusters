@@ -36,7 +36,7 @@ layout(scalar, binding = BINDINGS_RENDERMATERIALS_SSBO, set = 0) buffer renderMa
 layout(set = 0, binding = BINDINGS_TLAS) uniform accelerationStructureEXT asScene;
 
 layout(set = 0, binding = BINDINGS_RAYTRACING_DEPTH, r32f) uniform image2D imgRaytracingDepth;
-layout(set = 0, binding = BINDINGS_RENDER_TARGET, rgba8)   uniform image2D imgColor;
+layout(set = 0, binding = BINDINGS_RENDER_TARGET, rgba16f) uniform image2D imgColor;
 #if USE_DLSS
 layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssAlbedo, rgba8)             uniform image2D imgDlssAlbedo;
 layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssSpecAlbedo, rgba16f)       uniform image2D imgDlssSpecAlbedo;
@@ -57,6 +57,10 @@ layout(set = 0, binding = BINDINGS_RENDER_TARGET + SHADERIO_eDlssSpecHitDist, r1
 //////////////////////////////////////////////////////////////
 
 layout(location = 0) rayPayloadEXT RayPayload rayHit;
+
+#if ALLOW_SHADING
+#include "sky_fog.glsl"
+#endif
 
 //////////////////////////////////////////////////////////////
 
@@ -116,6 +120,7 @@ void main()
   vec3  mirrorNormal;
   bool  mirrorHit = false;
   float mirrorT;
+  bool  fogApplied = false;
 
   if(view.useMirrorBox != 0)
   {
@@ -173,12 +178,20 @@ void main()
 #endif
 
       rayHit.color.xyz *= max(0, dot(mirrorNormal, -direction.xyz)) * 0.5 + 0.5;
-      rayHit.hitT = mirrorT;
+      rayHit.color.xyz = applyFog(rayHit.color.xyz, direction.xyz, mirrorT + rayHit.hitT);
+      fogApplied       = true;
+      rayHit.hitT      = mirrorT;
     }
   }
 #endif
 
   bool  hitValid = rayHit.hitT != 0;
+#if ALLOW_SHADING
+  if(hitValid && !fogApplied)
+  {
+    rayHit.color.xyz = applyFog(rayHit.color.xyz, direction.xyz, rayHit.hitT);
+  }
+#endif
   vec3  hitPos   = origin.xyz + direction.xyz * (hitValid ? rayHit.hitT : view.farPlane * 0.99f);
   float hitDepth = 1;
 

@@ -239,7 +239,9 @@ public:
     bool  useRasterization = false;
     float pixelScale       = 1;
 
-    VkFormat colorFormat           = VK_FORMAT_R8G8B8A8_UNORM;
+    // linear HDR, tonemapped into `imgColorLdr`
+    VkFormat colorFormat           = VK_FORMAT_R16G16B16A16_SFLOAT;
+    VkFormat ldrColorFormat        = VK_FORMAT_R8G8B8A8_UNORM;
     VkFormat raytracingDepthFormat = VK_FORMAT_R32_SFLOAT;
     VkFormat depthStencilFormat;
 
@@ -248,6 +250,7 @@ public:
     VkImageView viewDepth = VK_NULL_HANDLE;
 
     nvvk::Image imgColor           = {};
+    nvvk::Image imgColorLdr        = {};
     nvvk::Image imgColorResolved   = {};
     nvvk::Image imgDepthStencil    = {};
     nvvk::Image imgRaytracingDepth = {};
@@ -292,8 +295,19 @@ public:
   void emptyFrame(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler);
   void endFrame();
 
+  // re-bakes the physical sky lighting if its parameters changed
+  void cmdUpdateSkyLighting(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler);
+  // sampled by the raster and ray tracing shading, see `BINDINGS_SKY_ENV_TEX` etc.
+  const VkDescriptorImageInfo& getSkyEnvDescriptor() const { return m_skyLighting.env.descriptor; }
+  const VkDescriptorImageInfo& getSkyIrradianceDescriptor() const { return m_skyLighting.irradiance.descriptor; }
+
+  bool reloadShadingShaders();
+  // renderers cannot run without the tonemap and sky bake pipelines
+  bool hasShadingPasses() const;
+
   void cmdBuildHiz(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler, uint32_t idx);
-  void cmdHBAO(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler);
+  // without `apply` the tonemap pass composites the result
+  void cmdHBAO(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler, bool apply = true);
 
   // some vulkan implementations only support 16 bit per grid component
   // need to convert the 1D intended launch into a grid.
@@ -643,6 +657,41 @@ public:
   VrdxSorter        m_vrdxSorter{};
 
 private:
+  void initShadingPasses();
+  void deinitShadingPasses();
+  void updateTonemapDescriptors();
+  void cmdTonemap(VkCommandBuffer cmd, nvvk::ProfilerGpuTimer& profiler, uint32_t variant);
+
+  struct TonemapPass
+  {
+    // without HBAO, compositing raw HBAO, compositing blurred HBAO
+    static const uint32_t VARIANT_PLAIN     = 0;
+    static const uint32_t VARIANT_HBAO      = 1;
+    static const uint32_t VARIANT_HBAO_BLUR = 2;
+    static const uint32_t VARIANTS          = 3;
+
+    Shader               shaders[VARIANTS];
+    nvvk::DescriptorPack dset;
+    VkPipelineLayout     pipelineLayout{};
+    VkPipeline           pipelines[VARIANTS]{};
+  } m_tonemap;
+
+  struct SkyLightingPass
+  {
+    Shader               shader;
+    nvvk::DescriptorPack dset;
+    VkPipelineLayout     pipelineLayout{};
+    VkPipeline           pipeline{};
+
+    nvvk::Image env;
+    nvvk::Image irradiance;
+    VkImageView envMipViews[SKY_ENV_MIPS]{};
+    VkImageView irradianceStorageView{};
+
+    // what is currently baked
+    shaderio::SkyBakePush baked{};
+    bool                  valid = false;
+  } m_skyLighting;
 };
 
 

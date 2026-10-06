@@ -127,6 +127,12 @@ bool Renderer::initBasicShaders(Resources& res, RenderScene& rscene, bool isRast
 {
   m_isRaster = isRaster;
 
+  if(!res.hasShadingPasses())
+  {
+    LOGE("Renderer: tonemap or sky bake shaders failed to compile\n");
+    return false;
+  }
+
   uint32_t maxPrimitiveOutputs = m_config.useEXTmeshShader ? res.m_meshShaderPropsEXT.maxMeshOutputPrimitives :
                                                              res.m_meshShaderPropsNV.maxMeshOutputPrimitives;
   uint32_t maxVertexOutputs    = m_config.useEXTmeshShader ? res.m_meshShaderPropsEXT.maxMeshOutputVertices :

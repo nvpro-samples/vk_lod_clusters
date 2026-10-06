@@ -707,6 +707,18 @@ void LodClusters::uiSettingsRendering()
       return m_ui.enumCombobox(GUI_VISUALIZE, "visualize", &m_frameConfig.visualize);
     });
 
+    PE::entry(
+        "Tonemapper",
+        [&]() {
+          if(ImGui::Button("Misc Settings > Tonemapper"))
+          {
+            m_revealTonemapper = true;
+            ImGui::SetWindowFocus("Misc Settings");
+          }
+          return false;
+        },
+        "The tone map operator, exposure and color grading live in the \"Misc Settings\" window.");
+
     if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
     {
       PE::Checkbox("Path tracing", &m_rendererConfig.usePathtrace,
@@ -717,17 +729,6 @@ void LodClusters::uiSettingsRendering()
       {
         PE::SliderInt("Bounces", &m_frameConfig.frameConstants.pathtraceNumBounces, 1, 8);
         PE::SliderFloat("Firefly clamp", &m_frameConfig.frameConstants.pathtraceFireflyClamp, 0.0f, 100.0f, "%.1f");
-        PE::entry(
-            "Tonemapper",
-            [&]() {
-              if(ImGui::Button("Misc Settings > Tonemapper"))
-              {
-                m_revealTonemapper = true;
-                ImGui::SetWindowFocus("Misc Settings");
-              }
-              return false;
-            },
-            "The tone map operator, exposure and color grading live in the \"Misc Settings\" window.");
       }
       else
       {
@@ -761,7 +762,8 @@ void LodClusters::uiSettingsRendering()
     {  // conditional UI, declutters the UI, prevents presenting many sections in disabled state
       if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
       {
-        PE::SliderFloat("Radius", &m_frameConfig.frameConstants.ambientOcclusionRadius, 0.001f, 1.f, "%.7f");
+        PE::InputFloat("Radius", &m_tweak.aoRadius, 0.01f, 0, "%.6f", 0,
+                       "Fraction of scene size, negative is absolute world-space radius");
         if(PE::SliderInt("Rays", &m_frameConfig.frameConstants.ambientOcclusionSamples, 1, 64))
         {
           if(m_frameConfig.frameConstants.ambientOcclusionSamples)
@@ -777,7 +779,8 @@ void LodClusters::uiSettingsRendering()
       if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD)
       {
         PE::Checkbox("Blur", &m_frameConfig.hbaoSettings.blur);
-        PE::InputFloat("Radius", &m_tweak.hbaoRadius, 0.01f, 0, "%.6f");
+        PE::InputFloat("Radius", &m_tweak.hbaoRadius, 0.01f, 0, "%.6f", 0,
+                       "Fraction of scene size, negative is absolute world-space radius");
         PE::InputFloat("Sharpness", &m_frameConfig.hbaoSettings.powerExponent, 1.0f);
         PE::InputFloat("Intensity", &m_frameConfig.hbaoSettings.intensity, 0.1f);
         PE::InputFloat("Bias", &m_frameConfig.hbaoSettings.bias, 0.01f);
@@ -1870,22 +1873,13 @@ void LodClusters::uiMiscSettings(bool pickingValid, const glm::dvec3& hitPos)
       namespace PE = nvgui::PropertyEditor;
       PE::begin("misc", ImGuiTableFlags_Resizable);
       PE::SliderFloat("Light Mixer", &m_frameConfig.frameConstants.lightMixer, 0.0f, 1.0f, "%.3f", 0,
-                      "Raster / ray-trace: mix between flashlight and sun light.\n"
-                      "Path tracer: camera flashlight brightness added on top of the sky (1 = sky brightness).");
+                      "Sun strength, the camera flashlight fades in over the sky as it lowers.");
+      PE::InputFloat("Fog distance", &m_tweak.fogDistance, 0.01f, 0, "%.4f", 0,
+                     "Shaded only: distance at which the haze halves the light, scaled by the sky's haze. Fraction of "
+                     "scene size, negative is absolute, 0 disables");
       PE::end();
-      // Path tracing lights from the physical sky; raster / ray tracing use the simple analytic sky.
-      // Show the editor for whichever is active. The sun direction is shared across both models (synced
-      // in LodClusters::onRender), so switching renderers keeps the sun in place.
-      const bool pathtraceActive = m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD && m_rendererConfig.usePathtrace;
-      ImGui::Text(pathtraceActive ? "Sun & Sky (physical)" : "Sun & Sky (simple)");
-      if(pathtraceActive)
-      {
-        nvgui::skyPhysicalParameterUI(m_frameConfig.frameConstants.skyPhysical);
-      }
-      else
-      {
-        nvgui::skySimpleParametersUI(m_frameConfig.frameConstants.skyParams, "misc");
-      }
+      ImGui::Text("Sun & Sky");
+      nvgui::skyPhysicalParameterUI(m_frameConfig.frameConstants.skyPhysical);
     }
 
     const float tonemapperPosY = ImGui::GetCursorScreenPos().y - ImGui::GetWindowPos().y;
@@ -1894,10 +1888,17 @@ void LodClusters::uiMiscSettings(bool pickingValid, const glm::dvec3& hitPos)
       ImGui::SetNextItemOpen(true);
       ImGui::SetScrollFromPosY(tonemapperPosY, 0.0f);
     }
-    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD && m_rendererConfig.usePathtrace
-       && ImGui::CollapsingHeader("Tonemapper", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
+    if(ImGui::CollapsingHeader("Tonemapper", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {
-      shaderio::TonemapperData& tonemapper = m_frameConfig.frameConstants.pathtraceTonemapper;
+      if(m_frameConfig.frameConstants.tonemapMode == TONEMAP_MODE_BYPASS)
+      {
+        ImGui::TextDisabled("Bypassed in this visualization.");
+      }
+      else if(m_frameConfig.frameConstants.tonemapMode == TONEMAP_MODE_CLIP)
+      {
+        ImGui::TextDisabled("Clip operator in this visualization.");
+      }
+      shaderio::TonemapperData& tonemapper = m_frameConfig.frameConstants.tonemapper;
       nvgui::tonemapperWidget(tonemapper);
       // Auto-exposure is driven by the grid-sampled log luminance from the readback, not by a
       // histogram pass, so only the mean is available and metering is limited to that grid.
@@ -1905,6 +1906,25 @@ void LodClusters::uiMiscSettings(bool pickingValid, const glm::dvec3& hitPos)
       ImGui::TextDisabled("Auto exposure: mean of grid samples, no histogram.");
     }
     m_revealTonemapper = false;
+
+    if(ImGui::CollapsingHeader("Debug Colorization"))
+    {
+      namespace PE = nvgui::PropertyEditor;
+      PE::begin("misc", ImGuiTableFlags_Resizable);
+      PE::SliderFloat("Raster sky scale", &m_tweak.rasterSkyScale, 0.0f, 1.0f, "%.2f", 0,
+                      "Rasterization, all modes: sky lighting scale, compensates for the missing sun shadows");
+      ImGui::TextDisabled("Grey and palette visualizations:");
+      PE::SliderFloat("Exposure", &m_tweak.debugExposure, -2.0f, 3.0f, "%+.1f stops", 0, "Exposure boost");
+      PE::SliderFloat("Sky scale", &m_tweak.debugSkyScale, 0.0f, 1.0f, "%.2f", 0, "Sky lighting scale against the sun");
+      PE::SliderFloat("Contrast", &m_tweak.debugContrast, 0.5f, 2.0f, "%.2f", 0, "Multiplies the tonemapper's contrast");
+      PE::SliderFloat("Saturation", &m_tweak.debugSaturation, 0.0f, 2.0f, "%.2f", 0,
+                      "Multiplies the tonemapper's saturation, not applied to grey");
+      PE::SliderFloat("Roughness", &m_tweak.debugRoughness, 0.0f, 1.0f, "%.2f");
+      PE::SliderFloat("Specular", &m_tweak.debugSpecular, 0.0f, 4.0f, "%.2f", 0, "1 is F0 0.04");
+      PE::SliderFloat("Palette gain", &m_tweak.debugPaletteGain, 0.0f, 4.0f, "%.2f", 0,
+                      "Gain on the linear palette, 0 scales each color to full value");
+      PE::end();
+    }
 
     if(ImGui::CollapsingHeader("Mirror Box", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {
@@ -2148,9 +2168,10 @@ void LodClusters::onUIRender()
         auto        now      = std::chrono::system_clock::now();
         std::string filename = fmt::format("screenshot_{:%Y_%m_%d_%H_%M_%S}.{}", now, screenShotJpg ? "jpg" : "png");
 
-        VkExtent2D extent = {m_resources.m_frameBuffer.imgColor.extent.width, m_resources.m_frameBuffer.imgColor.extent.height};
+        VkExtent2D extent = {m_resources.m_frameBuffer.imgColorLdr.extent.width,
+                             m_resources.m_frameBuffer.imgColorLdr.extent.height};
 
-        m_app->saveImageToFile(m_resources.m_frameBuffer.imgColor.image, extent, filename, screenShotJpg ? 90 : 100,
+        m_app->saveImageToFile(m_resources.m_frameBuffer.imgColorLdr.image, extent, filename, screenShotJpg ? 90 : 100,
                                m_resources.m_frameBuffer.useResolved ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL :
                                                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
       }

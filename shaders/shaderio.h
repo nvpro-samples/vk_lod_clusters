@@ -66,9 +66,41 @@
 #define BINDINGS_RASTER_ATOMIC 12
 // DLSS buffers start here as well
 #define BINDINGS_RENDER_TARGET 13
+// physical sky lighting for raster and ray tracing, baked by `sky_bake.comp.glsl`
+#define BINDINGS_SKY_ENV_TEX 20
+#define BINDINGS_SKY_IRRADIANCE_TEX 21
 
 // dedicated descriptor set of the clas allocator visualization
 #define BINDINGS_ALLOCATOR_VIS_IMAGE 0
+
+// dedicated descriptor set of the tonemap pass, also uses FRAME_UBO and READBACK_SSBO
+#define BINDINGS_TONEMAP_IN 2
+#define BINDINGS_TONEMAP_OUT 3
+// HBAO composite, see `hbao_apply.glsl`
+#define BINDINGS_TONEMAP_HBAO_UBO 4
+#define BINDINGS_TONEMAP_HBAO_DEPTHARRAY 5
+#define BINDINGS_TONEMAP_HBAO_RESULTARRAY 6
+
+// dedicated descriptor set of the sky bake
+#define BINDINGS_SKYBAKE_ENV 0
+#define BINDINGS_SKYBAKE_IRRADIANCE 1
+// the frame constants, to write `FrameConstants::skyLighting`
+#define BINDINGS_SKYBAKE_FRAME_SSBO 2
+
+#define SKY_ENV_SIZE 128
+#define SKY_ENV_MIPS 6
+#define SKY_IRRADIANCE_SIZE 16
+#define SKY_BAKE_WORKGROUP 8
+#define SKY_BAKE_ENV 0
+#define SKY_BAKE_IRRADIANCE 1
+#define SKY_BAKE_SUN 2
+
+#define TONEMAP_WORKGROUP 16
+#define TONEMAP_MODE_FULL 0
+// visualization modes of raster and ray tracing, written as-is
+#define TONEMAP_MODE_BYPASS 1
+// visualization modes of the path tracer, exposed but without a curve that would desaturate the palette
+#define TONEMAP_MODE_CLIP 2
 
 /////////////////////////////////////////
 
@@ -350,6 +382,14 @@ struct PathRayPayload
 
 #endif
 
+struct SkyLighting
+{
+  // sun disk integrated over the path tracer's sun cone, for a surface facing it
+  vec3 sunIrradiance;
+  // flashlight scale, matches the path tracer
+  float upLuminance;
+};
+
 struct FrameConstants
 {
   // jittered version for DLSS
@@ -390,7 +430,7 @@ struct FrameConstants
 
   float   nearPlane;
   float   farPlane;
-  float   ambientOcclusionRadius;
+  float   ambientOcclusionRadius;  // world-space
   int32_t ambientOcclusionSamples;
 
   vec2 jitter;
@@ -430,16 +470,42 @@ struct FrameConstants
   float pixelAngle;
   int   facetShading;
 
-  SkySimpleParameters skyParams;
-
-  // physical sky used by the basic path tracer
+  // lights all visualizations except the raw ones, in all renderers
   SkyPhysicalParameters skyPhysical;
 
   // basic path tracing
   int   pathtraceNumBounces;
   float pathtraceFireflyClamp;
 
-  TonemapperData pathtraceTonemapper;
+  TonemapperData tonemapper;
+  uint           tonemapMode;
+  // grey and palette visualizations dim the sky lighting for more contrast
+  float skyAmbientScale;
+  // rasterization has no sun shadows, a dimmer sky keeps the sun's shaping
+  float rasterSkyScale;
+  // material of the physically lit grey and palette visualizations
+  float debugRoughness;
+  float debugSpecular;
+  // palette visualizations: constant gain on the linear palette, 0 scales each color to full value
+  float debugPaletteGain;
+  // grey and palette visualizations: multipliers on the tonemapper's grading
+  float debugContrast;
+  float debugSaturation;
+
+  // haze along the primary ray, per world unit, 0 disables
+  float fogDensity;
+
+  // written by `sky_bake.comp.glsl` when the sky changes, the host upload stops before it.
+  // must stay last.
+  SkyLighting skyLighting;
+};
+
+struct SkyBakePush
+{
+  SkyPhysicalParameters sky;
+  vec3                  upDir;
+  uint                  mode;
+  uint                  mip;
 };
 
 struct Readback
@@ -470,7 +536,7 @@ struct Readback
 
   uint64_t blasActualSizes;
 
-  // path tracer auto-exposure: grid-sampled luminance accumulation (float32 atomics)
+  // auto-exposure: grid-sampled luminance accumulation in the tonemap pass (float32 atomics)
   float autoExposureLumaSum;
   uint  autoExposureSampleCount;
 

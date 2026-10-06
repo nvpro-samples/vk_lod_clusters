@@ -97,7 +97,15 @@ public:
 
   // before: must do appropriate barriers for color write access and depth read access
   // after:  from compute write to whatever output image needs
-  void cmdCompute(VkCommandBuffer cmd, const Frame& frame, const Settings& settings) const;
+  // without `apply` the target color is left untouched, the caller composites with `hbao_apply.glsl`
+  void cmdCompute(VkCommandBuffer cmd, const Frame& frame, const Settings& settings, bool apply = true) const;
+
+  VkDescriptorBufferInfo getUboInfo(const Frame& frame) const
+  {
+    VkDescriptorBufferInfo info = m_uboInfo;
+    info.offset                 = m_uboInfo.range * frame.slot;
+    return info;
+  }
 
 private:
   struct Shaders

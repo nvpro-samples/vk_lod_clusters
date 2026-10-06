@@ -36,7 +36,7 @@ void main()
 {
 #if RAYTRACING_PAYLOAD_INDEX == 0
 #if ALLOW_SHADING
-  vec3 skyColor = evalSimpleSky(view.skyParams, gl_WorldRayDirectionEXT);
+  vec3 skyColor = evalPhysicalSky(view.skyPhysical, gl_WorldRayDirectionEXT);
   rayHit.color = skyColor;
   rayHit.hitT  = 0;
   #if USE_DLSS

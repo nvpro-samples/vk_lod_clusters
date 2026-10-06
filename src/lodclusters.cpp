@@ -17,6 +17,7 @@
 #include <nvgui/camera.hpp>
 
 #include "lodclusters.hpp"
+#include <nvshaders/tonemap_functions.h.slang>
 #if USE_DLSS
 #include "../shaders/dlss_util.h"
 #endif
@@ -59,11 +60,12 @@ LodClusters::LodClusters(const Info& info)
                                 &m_resources.m_dumpInternal);
   m_info.parameterRegistry->add({"camerastring", "initial camera, copy/paste from the Misc Settings -> Camera widget"}, &m_cameraString);
   m_info.parameterRegistry->add({"cameraspeed", "camera movement speed, 0 derives it from the scene size"}, &m_cameraSpeed);
+  m_info.parameterRegistry->add({"cameraclipnear", "default camera near clip plane as fraction of the scene diagonal, negative is absolute, 0 derives it from the scene size"},
+                                &m_cameraClipNear);
+  m_info.parameterRegistry->add({"cameraclipfar", "default camera far clip plane as fraction of the scene diagonal, negative is absolute, 0 derives it from the scene size"},
+                                &m_cameraClipFar);
   registerCameraPathParameters();
-  m_info.parameterRegistry->addVector({"sundirection", "sun direction, shared by the simple and physical sky"},
-                                      &m_frameConfig.frameConstants.skyParams.sunDirection);
-  m_info.parameterRegistry->addVector({"suncolor", "sun color of the simple sky"},
-                                      &m_frameConfig.frameConstants.skyParams.sunColor);
+  m_info.parameterRegistry->addVector({"sundirection", "sun direction"}, &m_frameConfig.frameConstants.skyPhysical.sunDirection);
 
   m_info.parameterRegistry->add({"streaming", "stream geometry on demand, 0 preloads the whole scene and can need a lot of memory. default true"},
                                 &m_tweak.useStreaming);
@@ -136,10 +138,28 @@ LodClusters::LodClusters(const Info& info)
                                  "the lod error growing with distance. 0 uses a constant offset. default 1"},
                                 &m_frameConfig.frameConstants.shadowRayDistanceBias);
   m_info.parameterRegistry->add({"ao", "ambient occlusion, same setting as hbao. default true"}, &m_tweak.hbaoActive);  // use same as hbao
-  m_info.parameterRegistry->add({"aoradius", "ray traced ambient occlusion radius as percentage to scene bounding radius. default 0.1"},
-                                &m_frameConfig.frameConstants.ambientOcclusionRadius);
+  m_info.parameterRegistry->add({"aoradius", "ray traced ambient occlusion radius as percentage to scene bounding radius, negative is absolute world-space radius. default 0.1"},
+                                &m_tweak.aoRadius);
   m_info.parameterRegistry->add({"hbao", "ambient occlusion in rasterization (HBAO). default true"}, &m_tweak.hbaoActive);
-  m_info.parameterRegistry->add({"hbaoradius", "HBAO radius as percentage to scene bounding radius. default 0.05"},
+  m_info.parameterRegistry->add({"fogdistance", "distance at which haze halves the light of the shaded visualization, as fraction of the scene diagonal, negative is absolute. scaled by the sky's haze, 0 disables (default)"},
+                                &m_tweak.fogDistance);
+  m_info.parameterRegistry->add({"debugexposure", "grey and palette visualizations: exposure boost in stops. default 0.6"},
+                                &m_tweak.debugExposure);
+  m_info.parameterRegistry->add({"debugskyscale", "grey and palette visualizations: sky lighting scale against the sun. default 0.35"},
+                                &m_tweak.debugSkyScale);
+  m_info.parameterRegistry->add({"rasterskyscale", "rasterization: sky lighting scale, compensates for the missing sun shadows. default 0.6"},
+                                &m_tweak.rasterSkyScale);
+  m_info.parameterRegistry->add({"debugroughness", "grey and palette visualizations: material roughness. default 0.5"},
+                                &m_tweak.debugRoughness);
+  m_info.parameterRegistry->add({"debugspecular", "grey and palette visualizations: specular strength, 1 is F0 0.04. default 1"},
+                                &m_tweak.debugSpecular);
+  m_info.parameterRegistry->add({"debugpalettegain", "palette visualizations: gain on the linear palette, 0 scales each color to full value. default 1.5"},
+                                &m_tweak.debugPaletteGain);
+  m_info.parameterRegistry->add({"debugcontrast", "grey and palette visualizations: contrast multiplier. default 1.2"},
+                                &m_tweak.debugContrast);
+  m_info.parameterRegistry->add({"debugsaturation", "palette visualizations: saturation multiplier. default 1.15"},
+                                &m_tweak.debugSaturation);
+  m_info.parameterRegistry->add({"hbaoradius", "HBAO radius as percentage to scene bounding radius, negative is absolute world-space radius. default 0.05"},
                                 &m_tweak.hbaoRadius);
   m_info.parameterRegistry->add({"hbaoblur", "blur the HBAO result. default true"}, &m_frameConfig.hbaoSettings.blur);
   m_info.parameterRegistry->add({"claspositionbits", "CLAS position mantissa bits to drop to save memory, 0 to 22. default 0"},
@@ -187,15 +207,21 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"pathtrace", "basic path tracing (shading in ray-gen). default false"},
                                 &m_rendererConfig.usePathtrace);
   m_info.parameterRegistry->add({"pathtracebounces", "1 to 8, default 3"}, &m_frameConfig.frameConstants.pathtraceNumBounces);
-  m_info.parameterRegistry->add({"pathtracetonemap", "0 Filmic, 1 Uncharted2, 2 Clip (no curve), 3 ACES, 4 AgX, 5 Khronos PBR"},
-                                &m_frameConfig.frameConstants.pathtraceTonemapper.method);
-  m_info.parameterRegistry->add({"pathtraceautoexposure", "adapt exposure to scene luminance, default 1. Disable for deterministic captures"},
-                                &m_frameConfig.frameConstants.pathtraceTonemapper.autoExposure);
-  m_info.parameterRegistry->add({"pathtraceexposure", "exposure multiplier, scaled by auto-exposure when enabled. default 1"},
-                                &m_frameConfig.frameConstants.pathtraceTonemapper.exposure);
+  m_info.parameterRegistry->add({"tonemap", "0 Filmic, 1 Uncharted2, 2 Clip (no curve), 3 ACES, 4 AgX, 5 Khronos PBR"},
+                                &m_frameConfig.frameConstants.tonemapper.method);
+  m_info.parameterRegistry->add({"autoexposure", "adapt exposure to scene luminance, default 1. Disable for deterministic captures"},
+                                &m_frameConfig.frameConstants.tonemapper.autoExposure);
+  m_info.parameterRegistry->add({"exposure", "exposure multiplier, scaled by auto-exposure when enabled. default 1"},
+                                &m_frameConfig.frameConstants.tonemapper.exposure);
+  m_info.parameterRegistry->add({"pathtracetonemap", "deprecated - use tonemap"},
+                                &m_frameConfig.frameConstants.tonemapper.method);
+  m_info.parameterRegistry->add({"pathtraceautoexposure", "deprecated - use autoexposure"},
+                                &m_frameConfig.frameConstants.tonemapper.autoExposure);
+  m_info.parameterRegistry->add({"pathtraceexposure", "deprecated - use exposure"},
+                                &m_frameConfig.frameConstants.tonemapper.exposure);
   m_info.parameterRegistry->add({"pathtracefireflyclamp", "clamp per-bounce radiance, 0 disables. default 20"},
                                 &m_frameConfig.frameConstants.pathtraceFireflyClamp);
-  m_info.parameterRegistry->add({"lightmixer", "raster/ray tracing: mix of flashlight and sun. path tracer: flashlight brightness over the sky. default 0.5"},
+  m_info.parameterRegistry->add({"lightmixer", "sun strength, the camera flashlight fades in over the sky as it lowers. default 0.85"},
                                 &m_frameConfig.frameConstants.lightMixer);
   m_info.parameterRegistry->add({"blassharing", "share BLAS between distant instances, see autosharing. default true"},
                                 &m_rendererConfig.useBlasSharing);
@@ -308,7 +334,9 @@ LodClusters::LodClusters(const Info& info)
     m_info.parameterRegistry->add({"twosided", "deprecated - now detecting doubleSided materials - there is a new forcetwosided"},
                                   &dummy);
     m_info.parameterRegistry->add({"hbaofullres", "deprecated - now always using full resolution"}, &dummy);
-    m_info.parameterRegistry->add({"pathtraceexposurebias", "deprecated - use pathtraceexposure"}, &dummy);
+    m_info.parameterRegistry->add({"pathtraceexposurebias", "deprecated - use exposure"}, &dummy);
+    static glm::vec3 dummyVec;
+    m_info.parameterRegistry->addVector({"suncolor", "deprecated - the simple sky was removed"}, &dummyVec);
   }
 
   m_frameConfig.frameConstants                         = {};
@@ -323,24 +351,23 @@ LodClusters::LodClusters(const Info& info)
   m_frameConfig.frameConstants.shadowRayMinT           = 0.001f;
   m_frameConfig.frameConstants.shadowRayDistanceBias   = 1.0f;
   m_frameConfig.frameConstants.doWireframe             = 0;
-  m_frameConfig.frameConstants.ambientOcclusionRadius  = 0.1f;
   m_frameConfig.frameConstants.ambientOcclusionSamples = 2;
   m_frameConfig.frameConstants.visualize               = VISUALIZE_LOD;
   m_frameConfig.frameConstants.facetShading            = 1;
   m_frameConfig.frameConstants.wMirrorBox              = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
   m_frameConfig.frameConstants.texGradScale            = 1.0f;
 
-  m_frameConfig.frameConstants.lightMixer = 0.5f;
-  m_frameConfig.frameConstants.skyParams  = {};
+  m_frameConfig.frameConstants.lightMixer = 0.85f;
 
+  m_frameConfig.frameConstants.skyPhysical             = {};
+  m_frameConfig.frameConstants.skyPhysical.groundColor = {0.62f, 0.59f, 0.55f};
   // basic path tracer defaults
-  m_frameConfig.frameConstants.skyPhysical           = {};
   m_frameConfig.frameConstants.pathtraceNumBounces   = 3;
   m_frameConfig.frameConstants.pathtraceFireflyClamp = 20.0f;
   // nvpro_core2 tonemapper defaults, auto-exposure on and mean averaging (no histogram pass)
-  m_frameConfig.frameConstants.pathtraceTonemapper              = {};
-  m_frameConfig.frameConstants.pathtraceTonemapper.autoExposure = 1;
-  m_frameConfig.frameConstants.pathtraceTonemapper.averageMode  = 0;
+  m_frameConfig.frameConstants.tonemapper              = {};
+  m_frameConfig.frameConstants.tonemapper.autoExposure = 1;
+  m_frameConfig.frameConstants.tonemapper.averageMode  = 0;
 
   m_lastAmbientOcclusionSamples = m_frameConfig.frameConstants.ambientOcclusionSamples;
 
@@ -560,8 +587,9 @@ void LodClusters::updateImguiImage()
     m_imguiTexture = nullptr;
   }
 
-  VkImageView imageView = m_resources.m_frameBuffer.useResolved ? m_resources.m_frameBuffer.imgColorResolved.descriptor.imageView :
-                                                                  m_resources.m_frameBuffer.imgColor.descriptor.imageView;
+  VkImageView imageView = m_resources.m_frameBuffer.useResolved ?
+                              m_resources.m_frameBuffer.imgColorResolved.descriptor.imageView :
+                              m_resources.m_frameBuffer.imgColorLdr.descriptor.imageView;
 
   assert(imageView);
 
@@ -656,13 +684,8 @@ void LodClusters::postInitNewScene(Scene& scene)
   if(!scene.m_hasVertexNormals)
     m_tweak.facetShading = true;
 
-  m_frameConfig.frameConstants.skyParams.sunDirection = glm::normalize(m_frameConfig.frameConstants.skyParams.sunDirection);
-  // The physical sky (path tracer) is edited on its own but shares the same-meaning values with the simple
-  // sky; seed them from the simple sky so --sundirection / defaults apply to both and the azimuth/elevation
-  // UI reads correctly.
-  m_frameConfig.frameConstants.skyPhysical.sunDirection = m_frameConfig.frameConstants.skyParams.sunDirection;
-  m_frameConfig.frameConstants.skyPhysical.groundColor  = m_frameConfig.frameConstants.skyParams.groundColor;
-  m_frameConfig.frameConstants.skyPhysical.yIsUp = (m_frameConfig.frameConstants.skyParams.directionUp.y > 0.5f) ? 1 : 0;
+  // the azimuth/elevation UI expects it normalized
+  m_frameConfig.frameConstants.skyPhysical.sunDirection = glm::normalize(m_frameConfig.frameConstants.skyPhysical.sunDirection);
 }
 
 
@@ -997,6 +1020,8 @@ void LodClusters::onFileDrop(const std::filesystem::path& filePath)
       m_sceneGridConfig.uniqueGeometriesForCopies = false;
 
       m_cameraSpeed             = 0;
+      m_cameraClipNear          = 0;
+      m_cameraClipFar           = 0;
       m_cameraString            = {};
       m_cameraStringLast        = {};
       m_cameraStringCommandLine = {};
@@ -1203,7 +1228,7 @@ void LodClusters::saveScreenshot(ScreenshotMode mode, const std::string& filenam
   else if(mode == SCREENSHOT_VIEWPORT)
   {
     m_app->saveImageToFile(m_resources.m_frameBuffer.useResolved ? m_resources.m_frameBuffer.imgColorResolved.image :
-                                                                   m_resources.m_frameBuffer.imgColor.image,
+                                                                   m_resources.m_frameBuffer.imgColorLdr.image,
                            m_resources.m_frameBuffer.windowSize, filename, 100, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
   }
 }
@@ -1258,9 +1283,15 @@ void LodClusters::updatedSceneGrid(const Scene& scene)
       m_info.cameraManipulator->setSpeed(modelRadius * (bigScene ? 0.0025f : 0.25f));
 
     if(m_cameraString.empty())
-      m_info.cameraManipulator->setClipPlanes(
-          glm::vec2((bigScene ? 0.0001f : 0.01F) * modelRadius,
-                    bigScene ? gridRadius * 1.2f : std::max(50.0f * modelRadius, gridRadius * 1.2f)));
+    {
+      glm::vec2 clip((bigScene ? 0.0001f : 0.01F) * modelRadius,
+                     bigScene ? gridRadius * 1.2f : std::max(50.0f * modelRadius, gridRadius * 1.2f));
+      if(m_cameraClipNear)
+        clip.x = m_cameraClipNear < 0 ? -m_cameraClipNear : m_cameraClipNear * gridRadius * 2.0f;
+      if(m_cameraClipFar)
+        clip.y = m_cameraClipFar < 0 ? -m_cameraClipFar : m_cameraClipFar * gridRadius * 2.0f;
+      m_info.cameraManipulator->setClipPlanes(clip);
+    }
   }
 
   if(m_tweak.autoSharing)
@@ -1463,6 +1494,12 @@ void LodClusters::handleChanges()
       if(m_renderScene && (rendererCfgChanged(m_rendererConfig.useBlasCaching) || rendererCfgChanged(m_rendererConfig.useDiscreteLod)))
       {
         m_renderScene->streamingReset();
+      }
+
+      // the renderer checks for these
+      if(shaderChanged)
+      {
+        m_resources.reloadShadingShaders();
       }
 
       initRenderer(m_tweak.renderer);
@@ -1718,7 +1755,15 @@ void LodClusters::onRender(VkCommandBuffer cmd)
       // clusterTriangleId low 32 bits = (clusterID << 8) | triangleID,
       // matching packedClusterTriangleId in the picking shaders.
       frameConstants.pickedClusterID = valid ? (lastReadback.clusterTriangleId >> 8) : ~0u;
+
+      updateExposure(lastReadback);
     }
+    if(isRawVisualize())
+      frameConstants.tonemapMode = TONEMAP_MODE_BYPASS;
+    else if(m_frameConfig.visualize != VISUALIZE_SHADED && m_frameConfig.visualize != VISUALIZE_GREY)
+      frameConstants.tonemapMode = TONEMAP_MODE_CLIP;
+    else
+      frameConstants.tonemapMode = TONEMAP_MODE_FULL;
 
     frameConstants.visFilterInstanceID = m_tweak.filterInstanceID < 0 ? ~0u : uint32_t(m_tweak.filterInstanceID);
     frameConstants.visFilterClusterID  = m_tweak.filterClusterID < 0 ? ~0u : uint32_t(m_tweak.filterClusterID);
@@ -1771,24 +1816,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     frameConstants.viewPlane.w = -glm::dot(glm::vec3(frameConstants.viewPos), glm::vec3(frameConstants.viewDir));
 
     frameConstants.wLightPos = frameConstants.viewMatrixI[3];  // place light at position of eye in the world
-
-    // The simple sky (raster / RT) and the physical sky (path tracer) are edited independently via their
-    // own UIs, but they share the values that mean the same thing (and use the same scale) in both models
-    // - sun direction and ground color - so switching renderers doesn't move the sun or recolor the ground.
-    // These are propagated from whichever sky is currently being edited. Model-specific params (haze,
-    // saturation, horizon, sun disk, sky/horizon colors, and the differently-scaled sun intensity/size)
-    // stay independent.
-    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD && m_rendererConfig.usePathtrace)
-    {
-      frameConstants.skyParams.sunDirection = glm::normalize(frameConstants.skyPhysical.sunDirection);
-      frameConstants.skyParams.groundColor  = frameConstants.skyPhysical.groundColor;
-    }
-    else
-    {
-      frameConstants.skyPhysical.sunDirection = glm::normalize(frameConstants.skyParams.sunDirection);
-      frameConstants.skyPhysical.groundColor  = frameConstants.skyParams.groundColor;
-    }
-    frameConstants.skyPhysical.yIsUp = (frameConstants.skyParams.directionUp.y > 0.5f) ? 1 : 0;
+    frameConstants.skyPhysical.sunDirection = glm::normalize(frameConstants.skyPhysical.sunDirection);
 
     {
       // hiz
@@ -1805,7 +1833,20 @@ void LodClusters::onRender(VkCommandBuffer cmd)
       hbaoView.viewMatrix       = view;
       hbaoView.tanFovy          = tanf(frameConstants.fov * 0.5f);
 
-      m_frameConfig.hbaoSettings.radius = glm::length(m_scene->m_bbox.hi - m_scene->m_bbox.lo) * m_tweak.hbaoRadius;
+      // negative radius is absolute world-space
+      float sceneSize                   = glm::length(m_scene->m_bbox.hi - m_scene->m_bbox.lo);
+      m_frameConfig.hbaoSettings.radius = m_tweak.hbaoRadius < 0 ? -m_tweak.hbaoRadius : sceneSize * m_tweak.hbaoRadius;
+      frameConstants.ambientOcclusionRadius = m_tweak.aoRadius < 0 ? -m_tweak.aoRadius : sceneSize * m_tweak.aoRadius;
+    }
+
+    frameConstants.fogDensity = 0;
+    if(m_tweak.fogDistance != 0 && m_frameConfig.visualize == VISUALIZE_SHADED)
+    {
+      // relative to the default haze of the physical sky, 2 + haze is its turbidity
+      float gridSize            = glm::length(m_scene->m_gridBbox.hi - m_scene->m_gridBbox.lo);
+      float distance            = m_tweak.fogDistance < 0 ? -m_tweak.fogDistance : gridSize * m_tweak.fogDistance;
+      float hazeScale           = std::max(2.0f, 2.0f + frameConstants.skyPhysical.haze) / 2.1f;
+      frameConstants.fogDensity = hazeScale * glm::ln_two<float>() / distance;
     }
 
     if(!m_frames)
@@ -1838,6 +1879,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
         m_equalFrames++;
     }
 
+    m_resources.cmdUpdateSkyLighting(cmd, m_frameConfig, m_profilerGpuTimer);
     m_renderer->render(cmd, m_resources, *m_renderScene, m_frameConfig, m_profilerGpuTimer);
 
     // after all streaming operations of this frame, so it reflects the state the
@@ -1900,6 +1942,9 @@ void LodClusters::setSceneCamera(const std::filesystem::path& filePath, Scene& s
 
   if(!scene.m_cameras.empty())
   {
+    // keep the clip planes updatedSceneGrid derived, the camera's defaults would replace them
+    glm::dvec2 clipPlanes = m_info.cameraManipulator->getClipPlanes();
+
     auto& c = scene.m_cameras[0];
     m_info.cameraManipulator->setFov(c.fovy);
 
@@ -1911,9 +1956,9 @@ void LodClusters::setSceneCamera(const std::filesystem::path& filePath, Scene& s
     c.center           = c.eye + (rotMat * c.center);
     c.up               = {0, 1, 0};
 
-    m_info.cameraManipulator->setCamera({c.eye, c.center, c.up, static_cast<float>(glm::degrees(c.fovy))});
+    m_info.cameraManipulator->setCamera({c.eye, c.center, c.up, static_cast<float>(glm::degrees(c.fovy)), clipPlanes});
 
-    nvgui::SetHomeCamera({c.eye, c.center, c.up, static_cast<float>(glm::degrees(c.fovy))});
+    nvgui::SetHomeCamera({c.eye, c.center, c.up, static_cast<float>(glm::degrees(c.fovy)), clipPlanes});
     for(auto& cam : scene.m_cameras)
     {
       cam.eye            = glm::vec3(cam.worldMatrix[3]);
@@ -1924,7 +1969,7 @@ void LodClusters::setSceneCamera(const std::filesystem::path& filePath, Scene& s
       cam.up             = {0, 1, 0};
 
 
-      nvgui::AddCamera({cam.eye, cam.center, cam.up, static_cast<float>(glm::degrees(cam.fovy))});
+      nvgui::AddCamera({cam.eye, cam.center, cam.up, static_cast<float>(glm::degrees(cam.fovy)), clipPlanes});
     }
   }
   else
@@ -1964,6 +2009,39 @@ float LodClusters::decodePickingDepth(const shaderio::Readback& readback)
 bool LodClusters::isPickingValid(const shaderio::Readback& readback)
 {
   return readback._packedDepth0 != 0u;
+}
+
+void LodClusters::updateExposure(const shaderio::Readback& readback)
+{
+  shaderio::TonemapperData& tm = m_frameConfig.frameConstants.tonemapper;
+
+  if(readback.autoExposureSampleCount > 0)
+  {
+    // geometric-mean (log-average) luminance -> exposure that maps it to the middle-grey key,
+    // with the measured luminance restricted to the tonemapper's EV100 window
+    float avgLogLuma = readback.autoExposureLumaSum / float(readback.autoExposureSampleCount);
+    float ev100      = std::clamp(shaderio::luminanceEv100(std::exp2(avgLogLuma)), tm.evMinValue, tm.evMaxValue);
+    float avgLuma    = shaderio::ev100Luminance(ev100);
+
+    const float key       = 0.18f;
+    float       target    = std::clamp(key / std::max(avgLuma, 1e-4f), 0.01f, 100.0f);
+    float       adaptRate = std::clamp(tm.autoExposureSpeed * float(m_exposureTimer.getSeconds()), 0.0f, 1.0f);
+    m_exposure += (target - m_exposure) * adaptRate;
+  }
+  m_exposureTimer.reset();
+
+  bool  debugLighting = m_frameConfig.visualize != VISUALIZE_SHADED;
+  float autoScale     = tm.autoExposure != 0 ? m_exposure : 1.0f;
+  float debugScale    = debugLighting ? std::exp2(m_tweak.debugExposure) : 1.0f;
+  tm.inputMatrix = shaderio::getColorCorrectionMatrix(tm.exposure * autoScale * debugScale, tm.temperature, tm.tint);
+
+  m_frameConfig.frameConstants.skyAmbientScale  = debugLighting ? m_tweak.debugSkyScale : 1.0f;
+  m_frameConfig.frameConstants.rasterSkyScale   = m_tweak.rasterSkyScale;
+  m_frameConfig.frameConstants.debugRoughness   = m_tweak.debugRoughness;
+  m_frameConfig.frameConstants.debugSpecular    = m_tweak.debugSpecular;
+  m_frameConfig.frameConstants.debugPaletteGain = m_tweak.debugPaletteGain;
+  m_frameConfig.frameConstants.debugContrast    = m_tweak.debugContrast;
+  m_frameConfig.frameConstants.debugSaturation  = m_tweak.debugSaturation;
 }
 
 }  // namespace lodclusters

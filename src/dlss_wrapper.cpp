@@ -415,7 +415,8 @@ NVSDK_NGX_Result DlssRayReconstruction::cmdInit(VkCommandBuffer cmd, NgxContext&
   dlssdParams.InTargetHeight = info.outputSize.height;
 
   // Though marked as 'optional', these are absolutely needed
-  dlssdParams.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
+  dlssdParams.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes
+                                     | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
 
 
   // Always use Default (Transformer) == Preset_D. The other ones are deprecated.

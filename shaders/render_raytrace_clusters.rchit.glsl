@@ -276,10 +276,10 @@ void main()
   vec4 shaded;
   {
     float ambientOcclusion =
-        ambientOcclusion(wPos, wNormal, view.ambientOcclusionSamples, view.ambientOcclusionRadius * view.sceneSize);
+        ambientOcclusion(wPos, wNormal, view.ambientOcclusionSamples, view.ambientOcclusionRadius);
 
     float sunContribution  = 1.0;
-    vec3  directionToLight = view.skyParams.sunDirection;
+    vec3  directionToLight = view.skyPhysical.sunDirection;
     if(view.doShadow == 1)
       sunContribution = traceShadowRay(wShadowPos, wGeoNormal, directionToLight);
 

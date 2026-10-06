@@ -484,6 +484,14 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
       {
         material.color = glm::make_vec4(gltfMaterial.pbr_specular_glossiness.diffuse_factor);
       }
+
+      // HACK the bundled bunny leaves metallic and roughness at the glTF default of 1, a dull rough metal
+      if(filePath.filename() == "bunny.gltf" && m_materialNames[m] == "BunnyMaterial")
+      {
+        material.color           = glm::vec4(0.8f, 0.8f, 0.8f, 1.0f);
+        material.metallicFactor  = 0.0f;
+        material.roughnessFactor = 0.5f;
+      }
       material.emissive = glm::vec4(glm::make_vec3(gltfMaterial.emissive_factor), 1.0f);
 
       if(gltfMaterial.has_specular)

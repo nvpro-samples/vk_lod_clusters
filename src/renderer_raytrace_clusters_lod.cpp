@@ -9,7 +9,6 @@
 #include <nvutils/alignment.hpp>
 #include <nvutils/logger.hpp>
 #include <nvutils/timers.hpp>
-#include <nvshaders/tonemap_functions.h.slang>
 #include <fmt/format.h>
 
 #include <algorithm>
@@ -128,10 +127,6 @@ private:
   nvvk::AccelerationStructure                 m_tlas;
 
   nvvk::Buffer m_scratchBuffer;
-
-  // path tracer auto-exposure: smoothed exposure derived from the grid-sampled scene luminance readback
-  float                     m_ptExposure = 1.0f;
-  nvutils::PerformanceTimer m_ptExposureTimer;
 };
 
 bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscene)
@@ -506,6 +501,8 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     }
     bindings.addBinding(BINDINGS_TLAS, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_RAYTRACING_DEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_stageFlags);
+    bindings.addBinding(BINDINGS_SKY_ENV_TEX, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, m_stageFlags);
+    bindings.addBinding(BINDINGS_SKY_IRRADIANCE_TEX, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_RENDER_TARGET, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_stageFlags);
 #if USE_DLSS
     if(m_config.useDlss)
@@ -541,6 +538,8 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_TLAS), m_tlas);
 
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_RAYTRACING_DEPTH), res.m_frameBuffer.imgRaytracingDepth);
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_SKY_ENV_TEX), res.getSkyEnvDescriptor());
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_SKY_IRRADIANCE_TEX), res.getSkyIrradianceDescriptor());
 #if USE_DLSS
     if(m_config.useDlss)
     {
@@ -642,16 +641,9 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
   m_sceneBuildShaderio.sharingTolerantLevels = frame.sharingTolerantLevels;
   m_sceneBuildShaderio.sharingEnabledLevels  = frame.sharingEnabledLevels;
 
-  shaderio::FrameConstants frameConstants = frame.frameConstants;
-  if(m_config.usePathtrace)
-  {
-    shaderio::TonemapperData& tm        = frameConstants.pathtraceTonemapper;
-    float                     autoScale = tm.autoExposure != 0 ? m_ptExposure : 1.0f;
-    tm.inputMatrix = shaderio::getColorCorrectionMatrix(tm.exposure * autoScale, tm.temperature, tm.tint);
-  }
-
-  vkCmdUpdateBuffer(cmd, res.m_commonBuffers.frameConstants.buffer, 0, sizeof(shaderio::FrameConstants),
-                    (const uint32_t*)&frameConstants);
+  // skyLighting is baked on the device
+  vkCmdUpdateBuffer(cmd, res.m_commonBuffers.frameConstants.buffer, 0, offsetof(shaderio::FrameConstants, skyLighting),
+                    (const uint32_t*)&frame.frameConstants);
   vkCmdFillBuffer(cmd, res.m_commonBuffers.readBack.buffer, 0, sizeof(shaderio::Readback), 0);
   vkCmdFillBuffer(cmd, m_sceneTraversalBuffer.buffer, 0, m_sceneTraversalBuffer.bufferSize, ~0);
 
@@ -1141,25 +1133,6 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     shaderio::Readback readback;
     res.getReadbackData(readback);
     m_resourceActualUsage.rtBlasMemBytes = readback.blasActualSizes + rscene.getBlasSize(false);
-
-    // Path tracer auto-exposure: adapt the smoothed exposure towards a middle-grey key value based on
-    // the grid-sampled average scene luminance (accumulated with float atomics in the ray-gen shader).
-    if(m_config.usePathtrace && readback.autoExposureSampleCount > 0)
-    {
-      const shaderio::TonemapperData& tm = frame.frameConstants.pathtraceTonemapper;
-
-      // geometric-mean (log-average) luminance -> exposure that maps it to the middle-grey key,
-      // with the measured luminance restricted to the tonemapper's EV100 window
-      float avgLogLuma = readback.autoExposureLumaSum / float(readback.autoExposureSampleCount);
-      float ev100      = std::clamp(shaderio::luminanceEv100(std::exp2(avgLogLuma)), tm.evMinValue, tm.evMaxValue);
-      float avgLuma    = shaderio::ev100Luminance(ev100);
-
-      const float key       = 0.18f;
-      float       target    = std::clamp(key / std::max(avgLuma, 1e-4f), 0.01f, 100.0f);
-      float       adaptRate = std::clamp(tm.autoExposureSpeed * float(m_ptExposureTimer.getSeconds()), 0.0f, 1.0f);
-      m_ptExposure += (target - m_ptExposure) * adaptRate;
-    }
-    m_ptExposureTimer.reset();
   }
 
   m_frameIndex++;

@@ -9,6 +9,8 @@
 #include "nvshaders/pbr_ggx_microfacet.h.slang"
 #include "nvshaders/tonemap_functions.h.slang"
 
+#include "sky_fog.glsl"
+
 // Approximates the batlow color ramp from the scientific color ramps package.
 // Input will be clamped to [0, 1]; output is sRGB.
 vec3 batlow(float t)
@@ -218,7 +220,9 @@ ShadingMaterial loadMaterial(uint materialID, vec2 oTexCoord, inout vec3 wNormal
   return shadingMaterial;
 }
 
-vec3 computeShading(ShadingMaterial material, vec3 N, vec3 L, vec3 V, float NdotV)
+// diffuseScale 1 keeps the flat look of the visualization modes and the flashlight,
+// physically lit shading uses `computeBrdfCos`
+vec3 computeShadingScaled(ShadingMaterial material, vec3 N, vec3 L, vec3 V, float NdotV, float diffuseScale)
 {
   L = normalize(L);
 
@@ -240,10 +244,58 @@ vec3 computeShading(ShadingMaterial material, vec3 N, vec3 L, vec3 V, float Ndot
   float D   = D_GGX(NdotH, alphaRoughness);
   float Vis = V_GGX(NdotL, NdotV, alphaRoughness);
 
-  vec3 l_diffuse  = (vec3(1.0f) - F) * (1.0f - material.metallic) * (material.albedo) * NdotL;
+  vec3 l_diffuse  = (vec3(1.0f) - F) * (1.0f - material.metallic) * (material.albedo) * (NdotL * diffuseScale);
   vec3 l_specular = F * (Vis * NdotL) * D;
 
   return l_diffuse + l_specular;
+}
+
+vec3 computeShading(ShadingMaterial material, vec3 N, vec3 L, vec3 V, float NdotV)
+{
+  return computeShadingScaled(material, N, L, V, NdotV, 1.0f);
+}
+
+// BRDF * NdotL
+vec3 computeBrdfCos(ShadingMaterial material, vec3 N, vec3 L, vec3 V, float NdotV)
+{
+  return computeShadingScaled(material, N, L, V, NdotV, M_1_PI);
+}
+
+// [Karis 2014, "Physically Based Shading on Mobile"], scale and bias to F0 and F90
+vec2 envBRDFApprox(float roughness, float NdotV)
+{
+  const vec4 c0   = vec4(-1, -0.0275, -0.572, 0.022);
+  const vec4 c1   = vec4(1, 0.0425, 1.04, -0.04);
+  vec4       r    = roughness * c0 + c1;
+  float      a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
+  return vec2(-1.04, 1.04) * a004 + r.zw;
+}
+
+// Lit like the path tracer: the sky dome always, the sun scaled by the light mixer,
+// and the camera flashlight fading in on top of them.
+vec3 shadingPhysicalSky(ShadingMaterial material, vec3 wPos, vec3 N, vec3 V, float NdotV, float sunVisibility, float ambientOcclusion)
+{
+  vec3 sunDir = normalize(view.skyPhysical.sunDirection);
+  vec3 color  = view.skyLighting.sunIrradiance * (view.lightMixer * sunVisibility) * computeBrdfCos(material, N, sunDir, V, NdotV);
+
+  float perceptualRoughness = max(material.roughness, 0.04f);
+  vec2  envBrdf             = envBRDFApprox(perceptualRoughness, NdotV);
+  vec3  specularWeight      = materialF0(material) * envBrdf.x + materialF90(material) * envBrdf.y;
+  vec3  specular = textureLod(texSkyEnv, reflect(-V, N), perceptualRoughness * float(SKY_ENV_MIPS - 1)).xyz;
+  vec3  diffuse  = texture(texSkyIrradiance, N).xyz * material.albedo * (1.0f - material.metallic);
+  color += ((vec3(1.0f) - specularWeight) * diffuse + specularWeight * specular)
+           * (ambientOcclusion * material.occlusion * view.skyAmbientScale
+#if TARGETS_RASTERIZATION
+              * view.rasterSkyScale
+#endif
+           );
+
+  const float flashVsSky = 0.5;
+  vec3        flashDir   = normalize(view.wLightPos.xyz - wPos);
+  color += (ambientOcclusion * (1.0 - view.lightMixer) * view.skyLighting.upLuminance * flashVsSky)
+           * computeShading(material, N, flashDir, V, NdotV);
+
+  return color;
 }
 
 vec4 shading(uint instanceID, uint materialID, vec3 wPos, vec3 wNormal, vec4 wTangent, vec2 oTexCoord, uint visData, float overheadLight, float ambientOcclusion, TexLOD texLod
@@ -252,8 +304,6 @@ vec4 shading(uint instanceID, uint materialID, vec3 wPos, vec3 wNormal, vec4 wTa
 #endif
 )
 {
-  const vec3 skyColor    = (view.skyParams.skyColor);
-  const vec3 groundColor = (view.skyParams.groundColor);
   ShadingMaterial shadingMaterial;
   shadingMaterial.roughness = 0.4f;
   shadingMaterial.metallic = 0.0f;
@@ -271,6 +321,12 @@ vec4 shading(uint instanceID, uint materialID, vec3 wPos, vec3 wNormal, vec4 wTa
   {
     shadingMaterial.albedo = (visualizeColor(visData, instanceID));
   }
+  if (view.visualize != VISUALIZE_SHADED)
+  {
+    // same as the path tracer
+    shadingMaterial.roughness = view.debugRoughness;
+    shadingMaterial.specular  = view.debugSpecular;
+  }
 
   vec4 color   = vec4(0.f);
   vec3 normal  = wNormal.xyz;
@@ -284,46 +340,22 @@ vec4 shading(uint instanceID, uint materialID, vec3 wPos, vec3 wNormal, vec4 wTa
   dlssSpecular = EnvBRDFApprox2(vec3(1), shadingMaterial.roughness, dot(wNormal, eyeDir));
 #endif
 
-  // Ambient
-  float ambientIntensity = shadingMaterial.occlusion * view.skyParams.brightness;
-  vec3  ambientLighting  = ambientOcclusion * shadingMaterial.albedo * ambientIntensity
-                         * mix(mix(groundColor, skyColor, dot(normal, view.wUpDir.xyz) * 0.5 + 0.5), vec3(0.5), 0.5) ;
-
-  // Light mixer
-  float lightMixer             = view.lightMixer;
-  float flashlightIntensity    = 1.0f - lightMixer;
-  float overheadLightIntensity = lightMixer;
-
-  // Flashlight
-  vec3  flashlightLighting  = vec3(0.f);
+  // palette visualizations are lit with a neutral material and only take its hue, like the path tracer
+  bool palette  = view.visualize != VISUALIZE_SHADED && view.visualize != VISUALIZE_GREY;
+  vec3 vizColor = toLinear(shadingMaterial.albedo);
+  vizColor *= view.debugPaletteGain > 0 ? view.debugPaletteGain : 1.0 / max(max(vizColor.x, vizColor.y), max(vizColor.z, 1e-4));
+  if(palette)
   {
-    // Use a flashlight intensity similar to the sky color for average luminance consistency
-    flashlightIntensity *= 0.9;
-    vec3 lightDir = normalize(view.wLightPos.xyz - wPos.xyz);
-    flashlightLighting = flashlightIntensity * computeShading(shadingMaterial, normal, lightDir, eyeDir, NdotV);
+    shadingMaterial.albedo = vec3(0.8);
   }
 
-  // Sky light
-  vec3 overheadLightColor = view.skyParams.sunColor * view.skyParams.sunIntensity;
-  vec3 overheadLighting   = vec3(overheadLightIntensity * overheadLight * overheadLightColor);
+  color.xyz = shadingPhysicalSky(shadingMaterial, wPos, normal, eyeDir, NdotV, overheadLight, ambientOcclusion)
+              + shadingMaterial.emissive;
+  if(palette)
   {
-    vec3 lightDir = normalize(view.skyParams.sunDirection);
-    overheadLighting = overheadLighting * computeShading(shadingMaterial, normal, lightDir, eyeDir, NdotV);
+    color.xyz = vizColor * dot(color.xyz, vec3(0.2126, 0.7152, 0.0722));
   }
-
-  color.xyz = overheadLighting + flashlightLighting + ambientLighting;
-  if(view.visualize == VISUALIZE_SHADED)
-  {
-    color.xyz += shadingMaterial.emissive;
-    color.xyz = toSrgb(color.xyz);
-  }
-  color.w   = 1.0;
-
-
-#if 0
-  color.xyz = materialAlbedo;
-#endif
-
+  color.w = 1.0;
   return color;
 }
 

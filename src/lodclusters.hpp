@@ -86,6 +86,17 @@ public:
 
     bool  hbaoActive = true;
     float hbaoRadius = 0.05f;
+    // grey and palette visualizations: exposure boost in stops, sky lighting scale
+    float debugExposure    = 0.6f;
+    float debugSkyScale    = 0.35f;
+    float rasterSkyScale   = 0.6f;
+    float debugRoughness   = 0.5f;
+    float debugSpecular    = 1.0f;
+    float debugPaletteGain = 1.5f;
+    float debugContrast    = 1.2f;
+    float debugSaturation  = 1.15f;
+    float aoRadius         = 0.1f;
+    float fogDistance      = 0.0f;
 
     float mirrorBoxScale  = 0.2f;
     float clickSpeedScale = 0.33f;
@@ -195,6 +206,10 @@ private:
 
   bool m_reloadShaders    = false;
   bool m_revealTonemapper = false;
+
+  // auto-exposure, adapts towards the luminance the tonemap pass sampled
+  float                     m_exposure = 1.0f;
+  nvutils::PerformanceTimer m_exposureTimer;
 #ifndef NDEBUG
   bool m_showDebugUI = true;
 #else
@@ -248,7 +263,9 @@ private:
   std::string m_cameraString;
   std::string m_cameraStringLast;
   std::string m_cameraStringCommandLine;
-  float       m_cameraSpeed = 0;
+  float       m_cameraSpeed    = 0;
+  float       m_cameraClipNear = 0;
+  float       m_cameraClipFar  = 0;
   //std::filesystem::path  m_cameraFilePath;
 
   // Fixed camera paths (fly-through), see camera_path.hpp.
@@ -365,6 +382,12 @@ private:
 
   float decodePickingDepth(const shaderio::Readback& readback);
   bool  isPickingValid(const shaderio::Readback& readback);
+  void  updateExposure(const shaderio::Readback& readback);
+  // unlit and not tonemapped
+  bool isRawVisualize() const
+  {
+    return m_frameConfig.visualize == VISUALIZE_VIS_BUFFER || m_frameConfig.visualize == VISUALIZE_DEPTH_ONLY;
+  }
 
   void viewportUI(ImVec2 corner, ImVec2 imageSize);
 

@@ -323,7 +323,7 @@ void HbaoPass::updateUbo(VkCommandBuffer cmd, const Frame& frame, const Settings
   vkCmdUpdateBuffer(cmd, m_uboInfo.buffer, m_uboInfo.range * frame.slot, sizeof(hbaoData), &hbaoData);
 }
 
-void HbaoPass::cmdCompute(VkCommandBuffer cmd, const Frame& frame, const Settings& settings) const
+void HbaoPass::cmdCompute(VkCommandBuffer cmd, const Frame& frame, const Settings& settings, bool apply) const
 {
   uint32_t width  = frame.width;
   uint32_t height = frame.height;
@@ -333,7 +333,7 @@ void HbaoPass::cmdCompute(VkCommandBuffer cmd, const Frame& frame, const Setting
 
   glm::uvec2 gridInput((width + 7) / 8, (height + 7) / 8);
   glm::uvec2 gridQuarter((quarterWidth + 7) / 8, (quarterHeight + 7) / 8);
-  glm::uvec2 gridBlur((width + 15) / 16, (width + 15) / 16);
+  glm::uvec2 gridBlur((width + 15) / 16, (height + 15) / 16);
 
   VkMemoryBarrier memBarrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
   memBarrier.srcAccessMask   = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -360,6 +360,11 @@ void HbaoPass::cmdCompute(VkCommandBuffer cmd, const Frame& frame, const Setting
 
   vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
                        &memBarrier, 0, nullptr, 0, nullptr);
+
+  if(!apply)
+  {
+    return;
+  }
 
   if(settings.blur)
   {

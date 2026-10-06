@@ -52,7 +52,7 @@ void main()
   vec4 clipRay = view.projMatrixI * vec4(screenPos, 1.0, 1.0);
   vec3 rayDir  = normalize((view.viewMatrixI * vec4(normalize(clipRay.xyz), 0.0)).xyz);
 
-  vec3 skyColor = evalSimpleSky(view.skyParams, rayDir);
+  vec3 skyColor = evalPhysicalSky(view.skyPhysical, rayDir);
 
   out_Color = vec4(skyColor, 1);
 

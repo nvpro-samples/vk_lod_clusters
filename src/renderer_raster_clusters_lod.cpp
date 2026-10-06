@@ -359,6 +359,8 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     bindings.addBinding(BINDINGS_HIZ_TEX, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                         m_config.useCulling && m_config.useTwoPassCulling ? 2 : 1, m_stageFlags);
     bindings.addBinding(BINDINGS_RASTER_ATOMIC, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_stageFlags);
+    bindings.addBinding(BINDINGS_SKY_ENV_TEX, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, m_stageFlags);
+    bindings.addBinding(BINDINGS_SKY_IRRADIANCE_TEX, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, m_stageFlags);
     if(rscene.useStreaming)
     {
       bindings.addBinding(BINDINGS_STREAMING_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
@@ -385,6 +387,8 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
       writeSets.append(m_dsetPack.makeWrite(BINDINGS_HIZ_TEX, 0, 1), &res.m_hizUpdate[1].farImageInfo);
     }
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_RASTER_ATOMIC), &res.m_frameBuffer.imgRasterAtomic);
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_SKY_ENV_TEX), res.getSkyEnvDescriptor());
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_SKY_IRRADIANCE_TEX), res.getSkyIrradianceDescriptor());
     if(rscene.useStreaming)
     {
       writeSets.append(m_dsetPack.makeWrite(BINDINGS_STREAMING_SSBO), rscene.sceneStreaming.getShaderStreamingBuffer());
@@ -500,7 +504,8 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
   m_sceneBuildShaderio.discreteEnabledLevels = frame.discreteEnabledLevels;
   m_sceneBuildShaderio.discreteLodRange      = frame.discreteLodRange;
 
-  vkCmdUpdateBuffer(cmd, res.m_commonBuffers.frameConstants.buffer, 0, sizeof(shaderio::FrameConstants),
+  // skyLighting is baked on the device
+  vkCmdUpdateBuffer(cmd, res.m_commonBuffers.frameConstants.buffer, 0, offsetof(shaderio::FrameConstants, skyLighting),
                     (const uint32_t*)&frame.frameConstants);
   vkCmdUpdateBuffer(cmd, m_sceneBuildBuffer.buffer, 0, sizeof(shaderio::SceneBuilding), (const uint32_t*)&m_sceneBuildShaderio);
   vkCmdFillBuffer(cmd, res.m_commonBuffers.readBack.buffer, 0, sizeof(shaderio::Readback), 0);

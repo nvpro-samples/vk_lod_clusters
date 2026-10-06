@@ -324,6 +324,10 @@ void main()
     const float ambientLight  = 0.7f;
 
     out_Color = shading(instanceID, materialID, IN.wPos, wNormal, wTangent, oTexCoord, visData, overHeadLight, ambientLight, texLodImplicit());
+
+    vec3 eyeToPos = IN.wPos - view.viewMatrixI[3].xyz;
+    float eyeDist = length(eyeToPos);
+    out_Color.xyz = applyFog(out_Color.xyz, eyeToPos / eyeDist, eyeDist);
   #if DEBUG_VISUALIZATION
     if(view.doWireframe != 0)
     {

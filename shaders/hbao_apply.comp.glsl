@@ -24,107 +24,22 @@ layout(binding=NVHBAO_MAIN_TEX_DEPTHARRAY) uniform sampler2DArray texDepthArray;
 layout(binding=NVHBAO_MAIN_TEX_RESULTARRAY) uniform sampler2DArray texResultArray;
 
 
-void divrem(float a, float b, out float div, out float rem)
-{
-  a = (a + 0.5) / b;
-  div = floor(a);
-  rem = floor(fract(a) * b);
-}
-
 #ifndef NVHBAO_BLUR
 #define NVHBAO_BLUR 0
 #endif
 
 #if NVHBAO_BLUR
-// Warning: do not change the group size or shared array dimensions without a complete understanding of the data loading method.
-shared vec2 s_DepthAndSSAO[24][24];
 layout(local_size_x = 16, local_size_y = 16) in;
 #else
 layout(local_size_x = 8, local_size_y = 8) in;
 #endif
 
+#include "hbao_apply.glsl"
+
 void main()
 {
-  uvec2 groupId = gl_WorkGroupID.xy;
-  uvec2 threadId = gl_LocalInvocationID.xy;
-  uvec2 globalId = gl_GlobalInvocationID.xy;
-
-#if NVHBAO_BLUR
-  int linearIdx = int((threadId.y << 4) + threadId.x);
-
-  if (linearIdx < 144)
-  {
-    // Rename the threads to a 3x3x16 grid where X and Y are "offsetUV" and Z is "slice"
-
-    vec2 offsetUVf;
-    float a, slice;
-    divrem(linearIdx, 3.0, a, offsetUVf.x);
-    divrem(a, 3.0, slice, offsetUVf.y);
-
-    offsetUVf *= 8;
-    ivec2 offsetUV = ivec2(offsetUVf);
-
-    ivec2 pixelPos = (ivec2(groupId.xy) * 16) + offsetUV;
-
-    vec2 UV = (vec2(pixelPos) + 1.0) * g_Ssao.invQuantizedGbufferSize.xy;
-
-    // Load 4 pixels from each texture, overall the thread group loads a 24x24 block of pixels.
-    // For a 16x16 thread group, 20x20 pixels would be enough, but it's impossible to do that with Gather.
-    
-    // Each Gather instruction loads 4 adjacent pixels from a deinterleaved array, and the
-    // screen-space distance between those pixels is 4, not 1.
-
-    offsetUV.x += int(slice) & 3;
-    offsetUV.y += int(slice) >> 2;
-
-    vec4 depths = textureGather(texDepthArray, vec3(UV, slice));
-    vec4 occlusions = textureGather(texResultArray, vec3(UV, slice));
-
-    s_DepthAndSSAO[offsetUV.y + 4][offsetUV.x + 0] = vec2(depths.x, occlusions.x);
-    s_DepthAndSSAO[offsetUV.y + 4][offsetUV.x + 4] = vec2(depths.y, occlusions.y);
-    s_DepthAndSSAO[offsetUV.y + 0][offsetUV.x + 4] = vec2(depths.z, occlusions.z);
-    s_DepthAndSSAO[offsetUV.y + 0][offsetUV.x + 0] = vec2(depths.w, occlusions.w);
-  }
-
-  barrier();
-
-  float totalWeight = 0;
-
-  float totalOcclusion = 0;
-  float pixelDepth = s_DepthAndSSAO[threadId.y + 4][threadId.x + 4].x;
-
-  float rcpPixelDepth = 1.0 / (pixelDepth);
-
-  const bool enableFilter = true;
-  const int filterLeft = enableFilter ? 3 : 4;
-  const int filterRight = enableFilter ? 6 : 4;
-  ivec2 filterOffset;
-  for (filterOffset.y = filterLeft; filterOffset.y <= filterRight; filterOffset.y++)
-  {
-    for (filterOffset.x = filterLeft; filterOffset.x <= filterRight; filterOffset.x++)
-    {
-      vec2 sampleDAO = s_DepthAndSSAO[threadId.y + filterOffset.y][threadId.x + filterOffset.x].xy;
-      float sampleDepth = sampleDAO.x;
-      float sampleOcclusion = sampleDAO.y;
-      
-      float weight = clamp(1.0 - abs(pixelDepth - sampleDepth) * rcpPixelDepth * g_Ssao.radiusWorld, 0 , 1);
-      totalOcclusion += sampleOcclusion * weight;
-      totalWeight += weight;
-    }
-  }
-  
-  totalOcclusion *= 1.0 / (totalWeight);
-#else
-  float totalOcclusion = 0;
-  ivec2 quarterResPos = ivec2(globalId.xy) / 4;
-  ivec2 subPos        = ivec2(globalId.xy & 3);
-  int   slicePos      = subPos.y * 4 + subPos.x;
-  
-  totalOcclusion = texelFetch(texResultArray, ivec3(quarterResPos, slicePos), 0).x;    
-#endif
-  
-  totalOcclusion = pow(clamp(1.0 - totalOcclusion, 0, 1), g_Ssao.powerExponent);
-  ivec2 storePos = ivec2(globalId.xy);
+  float totalOcclusion = hbaoOcclusion(gl_WorkGroupID.xy, gl_LocalInvocationID.xy, gl_GlobalInvocationID.xy);
+  ivec2 storePos = ivec2(gl_GlobalInvocationID.xy);
 
   if (all(lessThan(storePos, g_Ssao.view.viewportSize.xy)))
   {

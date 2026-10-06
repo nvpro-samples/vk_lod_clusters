@@ -24,14 +24,29 @@ void Resources::postProcessFrame(VkCommandBuffer cmd, const FrameConfig& frame, 
 {
   auto sec = profiler.cmdFrameSection(cmd, "Post-process");
 
-  // do hbao on the full-res input image
-  bool runHbao = frame.hbaoActive && m_hbaoFrame.slot != ~0u;
-#if USE_DLSS
-  runHbao = runHbao && m_frameBuffer.dlssMode != DlssMode::eSuperResolution;
-#endif
-  if(runHbao)
+  if(frame.visualize == VISUALIZE_DEPTH_ONLY)
   {
-    cmdHBAO(cmd, frame, profiler);
+    // no color was rendered, tonemapping would show a stale image
+    cmdImageTransition(cmd, m_frameBuffer.imgColorLdr, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkClearColorValue       clear = {.float32 = {0, 0, 0, 1}};
+    VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdClearColorImage(cmd, m_frameBuffer.imgColorLdr.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear, 1, &range);
+  }
+  else
+  {
+    // do hbao on the full-res input image
+    bool runHbao = frame.hbaoActive && m_hbaoFrame.slot != ~0u;
+#if USE_DLSS
+    runHbao = runHbao && m_frameBuffer.dlssMode != DlssMode::eSuperResolution;
+#endif
+    uint32_t tonemapVariant = TonemapPass::VARIANT_PLAIN;
+    if(runHbao)
+    {
+      cmdHBAO(cmd, frame, profiler, false);
+      tonemapVariant = frame.hbaoSettings.blur ? TonemapPass::VARIANT_HBAO_BLUR : TonemapPass::VARIANT_HBAO;
+    }
+
+    cmdTonemap(cmd, profiler, tonemapVariant);
   }
 
   if(m_frameBuffer.useResolved)
@@ -49,17 +64,17 @@ void Resources::postProcessFrame(VkCommandBuffer cmd, const FrameConfig& frame, 
     region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     region.srcSubresource.layerCount = 1;
 
-    cmdImageTransition(cmd, m_frameBuffer.imgColor, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    cmdImageTransition(cmd, m_frameBuffer.imgColorLdr, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     cmdImageTransition(cmd, m_frameBuffer.imgColorResolved, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
-    vkCmdBlitImage(cmd, m_frameBuffer.imgColor.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+    vkCmdBlitImage(cmd, m_frameBuffer.imgColorLdr.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                    m_frameBuffer.imgColorResolved.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_LINEAR);
 
     cmdImageTransition(cmd, m_frameBuffer.imgColorResolved, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
   }
   else
   {
-    cmdImageTransition(cmd, m_frameBuffer.imgColor, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    cmdImageTransition(cmd, m_frameBuffer.imgColorLdr, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
   }
 
   {
@@ -175,7 +190,8 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
   // common resources
   {
     m_allocator.createBuffer(m_commonBuffers.frameConstants, sizeof(shaderio::FrameConstants),
-                             VK_BUFFER_USAGE_2_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
+                             VK_BUFFER_USAGE_2_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT,
+                             VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
 
     m_allocator.createBuffer(m_commonBuffers.readBack, sizeof(shaderio::Readback),
                              VK_BUFFER_USAGE_2_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_2_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT,
@@ -212,6 +228,8 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
     m_frameBuffer.dlssUpscaler.initUpscaler();
   }
 #endif
+  initShadingPasses();
+
   {
     NVHizVK::Config config;
     config.msaaSamples             = 0;
@@ -258,6 +276,7 @@ void Resources::deinit()
   vkDestroyCommandPool(m_device, m_tempCommandPool, nullptr);
 
   deinitFramebuffer();
+  deinitShadingPasses();
   m_hbaoPass.deinit();
   m_hiz.deinit();
 #if USE_DLSS
@@ -344,8 +363,7 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
       supersample                     = std::min(supersample, FrameBuffer::MAX_SUPERSAMPLE);
       m_frameBuffer.targetSize.width  = windowSize.width * supersample;
       m_frameBuffer.targetSize.height = windowSize.height * supersample;
-      m_frameBuffer.renderScale       = glm::vec2(m_frameBuffer.renderSize.width, m_frameBuffer.renderSize.height)
-                                  / glm::vec2(m_frameBuffer.windowSize.width, m_frameBuffer.windowSize.height);
+      m_frameBuffer.renderScale       = glm::vec2(float(supersample));
       break;
   }
 
@@ -353,14 +371,25 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
                                       float(m_frameBuffer.targetSize.height) / float(referenceSize.height));
   m_basicGraphicsState.rasterizationState.lineWidth = m_frameBuffer.pixelScale;
 
-  // may be lowered due to DLSS
-  m_frameBuffer.renderSize = m_frameBuffer.targetSize;
-  m_frameBuffer.windowSize = windowSize;
-
+  m_frameBuffer.windowSize  = windowSize;
   m_frameBuffer.supersample = supersample;
 
   bool targetChanged = m_frameBuffer.targetSize.width != m_frameBuffer.targetSizeLast.width
                        || m_frameBuffer.targetSize.height != m_frameBuffer.targetSizeLast.height;
+
+#if USE_DLSS
+  if(!targetChanged && m_frameBuffer.dlssMode != DlssMode::eNone)
+  {
+    // DLSS resources stay, keep rendering at their size
+    m_frameBuffer.renderScale = glm::vec2(m_frameBuffer.renderSize.width, m_frameBuffer.renderSize.height)
+                                / glm::vec2(windowSize.width, windowSize.height);
+  }
+  else
+#endif
+  {
+    // may be lowered due to DLSS
+    m_frameBuffer.renderSize = m_frameBuffer.targetSize;
+  }
 
 
   m_frameBuffer.useResolved = supersample > 1;
@@ -369,6 +398,7 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
   if(targetChanged)
   {
     m_allocator.destroyImage(m_frameBuffer.imgColor);
+    m_allocator.destroyImage(m_frameBuffer.imgColorLdr);
 
     // color
     VkImageCreateInfo cbImageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -383,8 +413,7 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
     cbImageInfo.tiling            = VK_IMAGE_TILING_OPTIMAL;
     cbImageInfo.flags             = 0;
     cbImageInfo.initialLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
-    cbImageInfo.usage             = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT
-                        | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    cbImageInfo.usage             = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
 
     VkImageViewCreateInfo cbImageViewInfo           = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     cbImageViewInfo.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
@@ -403,6 +432,15 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
     NVVK_CHECK(m_allocator.createImage(m_frameBuffer.imgColor, cbImageInfo, cbImageViewInfo));
     NVVK_DBG_NAME(m_frameBuffer.imgColor.image);
     NVVK_DBG_NAME(m_frameBuffer.imgColor.descriptor.imageView);
+
+    cbImageInfo.format     = m_frameBuffer.ldrColorFormat;
+    cbImageInfo.usage      = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+    cbImageViewInfo.format = m_frameBuffer.ldrColorFormat;
+    NVVK_CHECK(m_allocator.createImage(m_frameBuffer.imgColorLdr, cbImageInfo, cbImageViewInfo));
+    NVVK_DBG_NAME(m_frameBuffer.imgColorLdr.image);
+    NVVK_DBG_NAME(m_frameBuffer.imgColorLdr.descriptor.imageView);
+
+    updateTonemapDescriptors();
   }
 
   if(m_frameBuffer.useResolved)
@@ -410,7 +448,7 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
     // resolve image
     VkImageCreateInfo resImageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     resImageInfo.imageType         = VK_IMAGE_TYPE_2D;
-    resImageInfo.format            = m_frameBuffer.colorFormat;
+    resImageInfo.format            = m_frameBuffer.ldrColorFormat;
     resImageInfo.extent.width      = windowSize.width;
     resImageInfo.extent.height     = windowSize.height;
     resImageInfo.extent.depth      = 1;
@@ -418,14 +456,13 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
     resImageInfo.arrayLayers       = 1;
     resImageInfo.samples           = VK_SAMPLE_COUNT_1_BIT;
     resImageInfo.tiling            = VK_IMAGE_TILING_OPTIMAL;
-    resImageInfo.usage             = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
-                         | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
-    resImageInfo.flags         = 0;
+    resImageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    resImageInfo.flags = 0;
     resImageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     VkImageViewCreateInfo resImageViewInfo           = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     resImageViewInfo.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
-    resImageViewInfo.format                          = m_frameBuffer.colorFormat;
+    resImageViewInfo.format                          = m_frameBuffer.ldrColorFormat;
     resImageViewInfo.components.r                    = VK_COMPONENT_SWIZZLE_R;
     resImageViewInfo.components.g                    = VK_COMPONENT_SWIZZLE_G;
     resImageViewInfo.components.b                    = VK_COMPONENT_SWIZZLE_B;
@@ -554,7 +591,7 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
     imageInfo.tiling            = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.flags             = 0;
     imageInfo.initialLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
-    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    imageInfo.usage             = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
     VkImageViewCreateInfo imageViewInfo           = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     imageViewInfo.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
@@ -591,8 +628,7 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
     imageInfo.tiling            = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.flags             = 0;
     imageInfo.initialLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
-    imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
-                      | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    imageInfo.usage             = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
 
     VkImageViewCreateInfo imageViewInfo           = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     imageViewInfo.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
@@ -677,6 +713,7 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
     config.targetColor.sampler = VK_NULL_HANDLE;
 
     m_hbaoPass.initFrame(m_hbaoFrame, config, cmd);
+    updateTonemapDescriptors();
   }
 
   cmdImageTransition(cmd, m_frameBuffer.imgHizFar[0], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
@@ -854,6 +891,7 @@ void Resources::deinitFramebuffer()
   NVVK_CHECK(vkDeviceWaitIdle(m_device));
 
   m_allocator.destroyImage(m_frameBuffer.imgColor);
+  m_allocator.destroyImage(m_frameBuffer.imgColorLdr);
   m_allocator.destroyImage(m_frameBuffer.imgColorResolved);
 
   deinitFramebufferRenderSizeDependent();
@@ -906,7 +944,7 @@ static void cmdTransitionImageLayout(VkCommandBuffer cmd, VkImage image, VkImage
 }
 #endif
 
-void Resources::cmdHBAO(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler)
+void Resources::cmdHBAO(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler, bool apply)
 {
   auto timerSection = profiler.cmdFrameSection(cmd, "HBAO");
 
@@ -928,10 +966,273 @@ void Resources::cmdHBAO(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::Pro
   cmdImageTransition(cmd, m_frameBuffer.imgDepthStencil, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-  m_hbaoPass.cmdCompute(cmd, m_hbaoFrame, frame.hbaoSettings);
+  // darkening linear color, 2.2 keeps the strength it has on the display values of the visualizations
+  HbaoPass::Settings settings = frame.hbaoSettings;
+  if(frame.frameConstants.tonemapMode != TONEMAP_MODE_BYPASS)
+  {
+    settings.powerExponent *= 2.2f;
+  }
+  m_hbaoPass.cmdCompute(cmd, m_hbaoFrame, settings, apply);
 
   nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                          VK_ACCESS_2_SHADER_WRITE_BIT, VK_ACCESS_2_MEMORY_READ_BIT);
+}
+
+void Resources::initShadingPasses()
+{
+  // tonemap
+  {
+    nvvk::DescriptorBindings bindings;
+    bindings.addBinding(BINDINGS_FRAME_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(BINDINGS_READBACK_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(BINDINGS_TONEMAP_IN, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(BINDINGS_TONEMAP_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(BINDINGS_TONEMAP_HBAO_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(BINDINGS_TONEMAP_HBAO_DEPTHARRAY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(BINDINGS_TONEMAP_HBAO_RESULTARRAY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    m_tonemap.dset.init(bindings, m_device);
+
+    nvvk::createPipelineLayout(m_device, &m_tonemap.pipelineLayout, {m_tonemap.dset.getLayout()});
+
+    nvvk::WriteSetContainer writeSets;
+    writeSets.append(m_tonemap.dset.makeWrite(BINDINGS_FRAME_UBO), m_commonBuffers.frameConstants);
+    writeSets.append(m_tonemap.dset.makeWrite(BINDINGS_READBACK_SSBO), m_commonBuffers.readBack);
+    vkUpdateDescriptorSets(m_device, writeSets.size(), writeSets.data(), 0, nullptr);
+  }
+
+  // sky lighting
+  {
+    VkImageCreateInfo imageInfo = DEFAULT_VkImageCreateInfo;
+    imageInfo.flags             = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+    imageInfo.format            = VK_FORMAT_R16G16B16A16_SFLOAT;
+    imageInfo.extent            = {SKY_ENV_SIZE, SKY_ENV_SIZE, 1};
+    imageInfo.mipLevels         = SKY_ENV_MIPS;
+    imageInfo.arrayLayers       = 6;
+    imageInfo.usage             = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+
+    VkImageViewCreateInfo viewInfo = DEFAULT_VkImageViewCreateInfo;
+    viewInfo.viewType              = VK_IMAGE_VIEW_TYPE_CUBE;
+    viewInfo.format                = imageInfo.format;
+    viewInfo.subresourceRange      = {VK_IMAGE_ASPECT_COLOR_BIT, 0, SKY_ENV_MIPS, 0, 6};
+
+    NVVK_CHECK(m_allocator.createImage(m_skyLighting.env, imageInfo, viewInfo));
+    NVVK_DBG_NAME(m_skyLighting.env.image);
+
+    imageInfo.extent                     = {SKY_IRRADIANCE_SIZE, SKY_IRRADIANCE_SIZE, 1};
+    imageInfo.mipLevels                  = 1;
+    viewInfo.subresourceRange.levelCount = 1;
+    NVVK_CHECK(m_allocator.createImage(m_skyLighting.irradiance, imageInfo, viewInfo));
+    NVVK_DBG_NAME(m_skyLighting.irradiance.image);
+
+    // the bake writes 2d array views of the individual mips
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    viewInfo.image    = m_skyLighting.env.image;
+    for(uint32_t mip = 0; mip < SKY_ENV_MIPS; mip++)
+    {
+      viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, 6};
+      NVVK_CHECK(vkCreateImageView(m_device, &viewInfo, nullptr, &m_skyLighting.envMipViews[mip]));
+    }
+    viewInfo.image            = m_skyLighting.irradiance.image;
+    viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 6};
+    NVVK_CHECK(vkCreateImageView(m_device, &viewInfo, nullptr, &m_skyLighting.irradianceStorageView));
+
+    m_skyLighting.env.descriptor.sampler        = m_samplerTriLinear;
+    m_skyLighting.irradiance.descriptor.sampler = m_samplerTriLinear;
+
+    VkCommandBuffer cmd = createTempCmdBuffer();
+    cmdImageTransition(cmd, m_skyLighting.env, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    cmdImageTransition(cmd, m_skyLighting.irradiance, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    tempSyncSubmit(cmd);
+
+    nvvk::DescriptorBindings bindings;
+    bindings.addBinding(BINDINGS_SKYBAKE_ENV, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, SKY_ENV_MIPS, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(BINDINGS_SKYBAKE_IRRADIANCE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(BINDINGS_SKYBAKE_FRAME_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    m_skyLighting.dset.init(bindings, m_device);
+
+    nvvk::createPipelineLayout(m_device, &m_skyLighting.pipelineLayout, {m_skyLighting.dset.getLayout()},
+                               {{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(shaderio::SkyBakePush)}});
+
+    VkDescriptorImageInfo mipInfos[SKY_ENV_MIPS];
+    for(uint32_t mip = 0; mip < SKY_ENV_MIPS; mip++)
+    {
+      mipInfos[mip] = {VK_NULL_HANDLE, m_skyLighting.envMipViews[mip], VK_IMAGE_LAYOUT_GENERAL};
+    }
+    VkDescriptorImageInfo irradianceInfo = {VK_NULL_HANDLE, m_skyLighting.irradianceStorageView, VK_IMAGE_LAYOUT_GENERAL};
+
+    nvvk::WriteSetContainer writeSets;
+    writeSets.append(m_skyLighting.dset.makeWrite(BINDINGS_SKYBAKE_ENV, 0, 0, SKY_ENV_MIPS), mipInfos);
+    writeSets.append(m_skyLighting.dset.makeWrite(BINDINGS_SKYBAKE_IRRADIANCE), irradianceInfo);
+    writeSets.append(m_skyLighting.dset.makeWrite(BINDINGS_SKYBAKE_FRAME_SSBO), m_commonBuffers.frameConstants);
+    vkUpdateDescriptorSets(m_device, writeSets.size(), writeSets.data(), 0, nullptr);
+  }
+
+  reloadShadingShaders();
+}
+
+bool Resources::hasShadingPasses() const
+{
+  for(VkPipeline pipeline : m_tonemap.pipelines)
+  {
+    if(!pipeline)
+      return false;
+  }
+  return m_skyLighting.pipeline != VK_NULL_HANDLE;
+}
+
+bool Resources::reloadShadingShaders()
+{
+  Shader shaders[TonemapPass::VARIANTS + 1];
+  for(uint32_t v = 0; v < TonemapPass::VARIANTS; v++)
+  {
+    shaderc::CompileOptions options = makeCompilerOptions();
+    options.AddMacroDefinition("TONEMAP_HBAO", v != TonemapPass::VARIANT_PLAIN ? "1" : "0");
+    options.AddMacroDefinition("NVHBAO_BLUR", v == TonemapPass::VARIANT_HBAO_BLUR ? "1" : "0");
+    compileShader(shaders[v], VK_SHADER_STAGE_COMPUTE_BIT, "tonemap.comp.glsl", &options, std::to_string(v).c_str());
+  }
+  compileShader(shaders[TonemapPass::VARIANTS], VK_SHADER_STAGE_COMPUTE_BIT, "sky_bake.comp.glsl");
+
+  if(!verifyShaders(TonemapPass::VARIANTS + 1, shaders))
+  {
+    return false;
+  }
+
+  for(uint32_t v = 0; v < TonemapPass::VARIANTS; v++)
+  {
+    vkDestroyPipeline(m_device, m_tonemap.pipelines[v], nullptr);
+    m_tonemap.shaders[v] = std::move(shaders[v]);
+  }
+  vkDestroyPipeline(m_device, m_skyLighting.pipeline, nullptr);
+  m_skyLighting.shader = std::move(shaders[TonemapPass::VARIANTS]);
+
+  VkComputePipelineCreateInfo compInfo = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+  compInfo.stage                       = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+  compInfo.stage.stage                 = VK_SHADER_STAGE_COMPUTE_BIT;
+  compInfo.stage.pName                 = "main";
+
+  compInfo.layout = m_tonemap.pipelineLayout;
+  for(uint32_t v = 0; v < TonemapPass::VARIANTS; v++)
+  {
+    createComputePipeline(compInfo, m_tonemap.shaders[v], m_tonemap.pipelines[v]);
+  }
+  compInfo.layout = m_skyLighting.pipelineLayout;
+  createComputePipeline(compInfo, m_skyLighting.shader, m_skyLighting.pipeline);
+
+  // the bake itself may have changed
+  m_skyLighting.valid = false;
+
+  return true;
+}
+
+void Resources::deinitShadingPasses()
+{
+  for(VkPipeline pipeline : m_tonemap.pipelines)
+  {
+    vkDestroyPipeline(m_device, pipeline, nullptr);
+  }
+  vkDestroyPipelineLayout(m_device, m_tonemap.pipelineLayout, nullptr);
+  m_tonemap.dset.deinit();
+
+  vkDestroyPipeline(m_device, m_skyLighting.pipeline, nullptr);
+  vkDestroyPipelineLayout(m_device, m_skyLighting.pipelineLayout, nullptr);
+  m_skyLighting.dset.deinit();
+  for(VkImageView view : m_skyLighting.envMipViews)
+  {
+    vkDestroyImageView(m_device, view, nullptr);
+  }
+  vkDestroyImageView(m_device, m_skyLighting.irradianceStorageView, nullptr);
+  m_allocator.destroyImage(m_skyLighting.env);
+  m_allocator.destroyImage(m_skyLighting.irradiance);
+
+  m_tonemap     = {};
+  m_skyLighting = {};
+}
+
+void Resources::updateTonemapDescriptors()
+{
+  VkDescriptorImageInfo inInfo = {VK_NULL_HANDLE, m_frameBuffer.imgColor.descriptor.imageView, VK_IMAGE_LAYOUT_GENERAL};
+  VkDescriptorImageInfo outInfo = {VK_NULL_HANDLE, m_frameBuffer.imgColorLdr.descriptor.imageView, VK_IMAGE_LAYOUT_GENERAL};
+
+  nvvk::WriteSetContainer writeSets;
+  writeSets.append(m_tonemap.dset.makeWrite(BINDINGS_TONEMAP_IN), inInfo);
+  writeSets.append(m_tonemap.dset.makeWrite(BINDINGS_TONEMAP_OUT), outInfo);
+  if(m_hbaoFrame.slot != ~0u)
+  {
+    writeSets.append(m_tonemap.dset.makeWrite(BINDINGS_TONEMAP_HBAO_UBO), m_hbaoPass.getUboInfo(m_hbaoFrame));
+    writeSets.append(m_tonemap.dset.makeWrite(BINDINGS_TONEMAP_HBAO_DEPTHARRAY), m_hbaoFrame.images.linearDepthArray);
+    writeSets.append(m_tonemap.dset.makeWrite(BINDINGS_TONEMAP_HBAO_RESULTARRAY), m_hbaoFrame.images.resultArray);
+  }
+  vkUpdateDescriptorSets(m_device, writeSets.size(), writeSets.data(), 0, nullptr);
+}
+
+void Resources::cmdTonemap(VkCommandBuffer cmd, nvvk::ProfilerGpuTimer& profiler, uint32_t variant)
+{
+  // also runs without a renderer, which fails to init without these
+  if(!m_tonemap.pipelines[variant])
+  {
+    return;
+  }
+
+  auto timerSection = profiler.cmdFrameSection(cmd, "Tonemap");
+
+  cmdImageTransition(cmd, m_frameBuffer.imgColor, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL, true);
+  cmdImageTransition(cmd, m_frameBuffer.imgColorLdr, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
+
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_tonemap.pipelineLayout, 0, 1, m_tonemap.dset.getSetPtr(), 0, nullptr);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_tonemap.pipelines[variant]);
+  vkCmdDispatch(cmd, (m_frameBuffer.targetSize.width + TONEMAP_WORKGROUP - 1) / TONEMAP_WORKGROUP,
+                (m_frameBuffer.targetSize.height + TONEMAP_WORKGROUP - 1) / TONEMAP_WORKGROUP, 1);
+
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                         VK_ACCESS_2_SHADER_WRITE_BIT, VK_ACCESS_2_MEMORY_READ_BIT);
+}
+
+void Resources::cmdUpdateSkyLighting(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler)
+{
+  shaderio::SkyBakePush push{};
+  push.sky   = frame.frameConstants.skyPhysical;
+  push.upDir = glm::normalize(frame.frameConstants.wUpDir);
+
+  if(m_skyLighting.valid && memcmp(&push, &m_skyLighting.baked, sizeof(push)) == 0)
+  {
+    return;
+  }
+
+  auto timerSection = profiler.cmdFrameSection(cmd, "Sky Bake");
+
+  cmdImageTransition(cmd, m_skyLighting.env, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
+  cmdImageTransition(cmd, m_skyLighting.irradiance, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                         VK_ACCESS_2_MEMORY_READ_BIT, VK_ACCESS_2_SHADER_WRITE_BIT);
+
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_skyLighting.pipelineLayout, 0, 1,
+                          m_skyLighting.dset.getSetPtr(), 0, nullptr);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_skyLighting.pipeline);
+
+  auto dispatch = [&](uint32_t mode, uint32_t mip, uint32_t size, uint32_t faces) {
+    push.mode = mode;
+    push.mip  = mip;
+    vkCmdPushConstants(cmd, m_skyLighting.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+    uint32_t groups = (size + SKY_BAKE_WORKGROUP - 1) / SKY_BAKE_WORKGROUP;
+    vkCmdDispatch(cmd, groups, groups, faces);
+  };
+
+  for(uint32_t mip = 0; mip < SKY_ENV_MIPS; mip++)
+  {
+    dispatch(SKY_BAKE_ENV, mip, SKY_ENV_SIZE >> mip, 6);
+  }
+  dispatch(SKY_BAKE_IRRADIANCE, 0, SKY_IRRADIANCE_SIZE, 6);
+  dispatch(SKY_BAKE_SUN, 0, 1, 1);
+
+  nvvk::cmdMemoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                         VK_ACCESS_2_SHADER_WRITE_BIT, VK_ACCESS_2_MEMORY_READ_BIT);
+  cmdImageTransition(cmd, m_skyLighting.env, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  cmdImageTransition(cmd, m_skyLighting.irradiance, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+  push.mode           = 0;
+  push.mip            = 0;
+  m_skyLighting.baked = push;
+  m_skyLighting.valid = true;
 }
 
 bool Resources::compileShader(shaderc::SpvCompilationResult& compiled,
@@ -1278,6 +1579,7 @@ void Resources::updateFramebufferMemBytes()
   VkDeviceSize bytes = 0;
 
   bytes += getImageMemBytes(m_allocator, m_frameBuffer.imgColor);
+  bytes += getImageMemBytes(m_allocator, m_frameBuffer.imgColorLdr);
   bytes += getImageMemBytes(m_allocator, m_frameBuffer.imgColorResolved);
   bytes += getImageMemBytes(m_allocator, m_frameBuffer.imgDepthStencil);
   bytes += getImageMemBytes(m_allocator, m_frameBuffer.imgRaytracingDepth);

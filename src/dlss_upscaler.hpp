@@ -72,8 +72,8 @@ private:
   DlssSuperResolution m_dlss{};
 
   std::vector<VkFormat> m_bufferInfos = {
-      {VK_FORMAT_R8G8B8A8_UNORM},  // DLSS input color
-      {VK_FORMAT_R16G16_SFLOAT},   // motion vectors
+      {VK_FORMAT_R16G16B16A16_SFLOAT},  // DLSS input color
+      {VK_FORMAT_R16G16_SFLOAT},        // motion vectors
   };
 
   nvvk::GBuffer m_dlssGBuffers{};
