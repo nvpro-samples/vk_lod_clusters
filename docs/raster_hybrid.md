@@ -173,6 +173,14 @@ Weaknesses:
 * The partition early-out processes every partition in the frustum, 1.7 - 2.7 times as many as PT.
 * Disoccluded regions and regions entering the view show coarser detail for one frame.
 
+The views as `--camerastring`, the scene's clip planes unchanged:
+
+```
+Caldera   "{366.9366948140463, 15.5753170790398, 1298.4168259129406}, {1855.7385927806326, -67.63717141502805, 883.2545715043068}, {0, 1, 0}, {60}"
+junkworld "{859.35, 40.67, -752.48}, {936.92, 11.66, -886.90}, {0, 1, 0}, {60}"
+Zorah     "{7.729438781716869, 2.278317616701172, -11.146185904338534}, {-0.48448207571498436, 4.16349113944963, -8.020231954707505}, {0, 1, 0}, {60}"
+```
+
 ## Implementation
 
 In the source look for `USE_HYBRIDPATH` and `m_hybrid`.

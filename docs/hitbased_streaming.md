@@ -41,9 +41,7 @@ Every resident group has one `uint32` in `groupHitFrames` that the closest-hit s
 Sun shadow rays register their hits up to a path depth, _"Shadow hit depth"_ (`--hitstreamingshadowdepth`). 1, the
 default, registers them from the primary hits, all the ray tracer has, 2 also from the first bounce. They then run a
 minimal closest-hit shader (the path tracer runs its own) instead of skipping it. Ambient occlusion and sky samples
-register nothing, their random directions would keep far groups resident. With the default single bounce, over not
-registering them, depth 1 costs the path tracer up to 0.03 ms per frame in the scenes below and depth 2 up to 0.08 ms.
-Both keep up to 2% more groups resident.
+register nothing, their random directions would keep far groups resident.
 Any-hit shaders register nothing, a candidate may not be kept. All age tests compare cyclic deltas, a once per frame
 pass rewrites stale entries around the counter's wrap. The demand descent only rewrites the groups it visits, so it
 clears the demand of a slice of geometries per frame, each one within 8192 frames.
@@ -118,8 +116,7 @@ below a magnification of 2 nothing changes.
 
 After a fast camera turn, regions no ray reached yet stay at the coarsest level until hits arrive and the levels
 stream in one after another. _"LoD camera floor"_ (`--hitstreamingcamerascale K`, 0 by default, off) also opens a group
-while the camera metric at `K` times the error wants it. On a camera path of fast turns `K = 2` halved the pixels
-not yet at their final detail after a turn and cut loads by about 30%.
+while the camera metric at `K` times the error wants it.
 
 ### Propagation modes
 
@@ -138,30 +135,33 @@ same way, they differ in reach and cost:
   width arrives. _"Persistent demand"_ (`--persistenthitdemand 1`, on by default) drains it in a single dispatch.
 * _All levels_ sweeps every group once per frame, coarse to fine, and writes zero where there is no demand. Demand therefore drops in
   one frame once its hits leave the 32 frame window, while the descent lets it age out level by level.
-* _Resident levels_ settles about one level coarser than the other modes in places (4-5% of the pixels).
-
-Filling a static view took 42 frames with resident levels against 6 with the other modes on the bunny.
+* _Resident levels_ settles about one level coarser than the other modes in places.
 
 ## Results and limitations
 
-Measured with the path tracer and the ray tracing pipeline on an NVIDIA RTX PRO 5000 Blackwell with clocks locked, without DLSS,
-from a static view with each scene's settings. Each configuration starts from a streaming reset and is averaged over the last 128 of 250
-frames, three repetitions interleaved within one process. Hit streaming off / on:
+Measured with the path tracer and the ray tracing pipeline on an NVIDIA RTX PRO 5000 Blackwell with clocks locked,
+DLSS Ray Reconstruction rendering 2560x1440 for 3840x2160, from the static views below with each scene's settings. Each
+configuration starts from a streaming reset and is averaged over the last 128 of 250 frames, three repetitions
+interleaved within one process. Hit streaming off / on:
 
 | | Caldera | junkworld | Zorah |
 | --- | --- | --- | --- |
-| resident groups | 41015 / 38168 | 15960 / 12179 | 18354 / 10963 |
-| geometry memory (MiB) | 95 / 86 | 139 / 110 | 593 / 408 |
-| frame (us) | 6193 / 6424 | 3797 / 4014 | 5609 / 5884 |
-| _"Stream"_ sections (us) | 16 / 113 | 18 / 47 | 20 / 246 |
-| _"Hit Propagation"_ + _"Hit Demand"_ (us) | - / 117 | - / 141 | - / 189 |
-| frames changing residency, of 128 | 0 / 98 | 7 / 36 | 0 / 128 |
+| resident groups | 45870 / 39247 | 21080 / 14352 | 32641 / 18188 |
+| geometry memory (MiB) | 117 / 96 | 195 / 146 | 1049 / 648 |
+| frame (us) | 17541 / 18221 | 12038 / 12193 | 16449 / 16549 |
+| _"Stream"_ sections (us) | 27 / 159 | 93 / 124 | 203 / 332 |
+| _"Hit Propagation"_ + _"Hit Demand"_ (us) | - / 124 | - / 136 | - / 207 |
+| frames changing residency, of 128 | 10 / 115 | 15 / 94 | 17 / 128 |
 
-* Residency drops by 7-40%. The savings come from the LoD adjustment: without it (`--hitstreaminglod 0`) residency
-  is the same as with hit streaming off, and the frame is slower than without hit streaming in all three scenes.
-* The frame gets 0.22-0.28 ms slower. _"Hit Propagation"_ and _"Hit Demand"_ take 0.12-0.19 ms, and the path tracer never
-  lets residency settle: its random bounces keep moving the demand between groups, so groups are loaded and unloaded
-  on most frames in Caldera and Zorah, about a quarter of them in junkworld.
+![the measured views of Caldera, junkworld and Zorah](hit_streaming_views.jpg)
+
+* Residency drops by 14-44%. Caldera's geometry is coarse overall, there is little to win. In junkworld it depends
+  on how close the camera is to higher resolution geometry, and Zorah surrounds it with very high resolution
+  geometry. The savings come from the LoD adjustment: without it (`--hitstreaminglod 0`) residency is the same as
+  with hit streaming off, and the frame is slower than without hit streaming in all three scenes.
+* The frame gets 0.10-0.68 ms slower. _"Hit Propagation"_ and _"Hit Demand"_ take 0.12-0.21 ms, and the path tracer
+  never lets residency settle: its random bounces keep moving the demand between groups, so groups are loaded and
+  unloaded on most frames.
 * Feedback lags by a frame plus a streaming round trip. Disoccluded regions start coarse until they are hit, see the
   camera floor.
 * Loads are not ordered coarse to fine yet. When a whole chain is requested at once and an intermediate level
@@ -169,6 +169,14 @@ frames, three repetitions interleaved within one process. Hit streaming off / on
 * The per geometry hit data means the most demanding instance sets the detail for all instances of a geometry,
   including those using a shared BLAS.
 * The overlap links address 2^20 groups per geometry. A geometry with more gets none and streams by the camera.
+
+The views as `--camerastring`, the scene's clip planes unchanged:
+
+```
+Caldera   "{690.1246257306618, 21.979730082655777, 1179.0123433164108}, {1997.0935996914304, 76.46908365012216, 351.55955398780935}, {0, 1, 0}, {60}"
+junkworld "{-263.6224072799334, 61.00552986824552, -395.2818213486655}, {-273.4497652773918, 41.79866004229981, -329.415378171124}, {0, 1, 0}, {60}"
+Zorah     "{7.729438781716869, 2.278317616701172, -11.146185904338534}, {-0.48448207571498436, 4.16349113944963, -8.020231954707505}, {0, 1, 0}, {60}"
+```
 
 ## Implementation
 
