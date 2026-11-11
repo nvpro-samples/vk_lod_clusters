@@ -850,6 +850,12 @@ void StreamingUpdates::initClas(Resources& res, const StreamingConfig& config, c
   m_shaderData.moveClasDstAddresses += m_clasBuffer.address;
   m_shaderData.moveClasSrcAddresses += m_clasBuffer.address;
 
+  // persistent positions are read by the CLAS build directly
+  if(config.keepPersistentPositions)
+  {
+    return;
+  }
+
   // per-frame scratch for streamed CLAS-build vertex positions (fixed slot per per-frame load index,
   // per-task ring slices when async transfer pipelines tasks)
   m_clasVerticesGroupStride = uint32_t(sceneConfig.clusterGroupSize * sceneConfig.clusterVertices * 3u * sizeof(float));

@@ -1,0 +1,103 @@
+# Hybrid path: --hitstreaming / --hitstreaminglod over both geometry layouts, a residency budget
+# that cannot hold the grid, and the magnifying lens. The rasterized primary hit registers like a
+# traced one.
+#
+# Every configuration runs twice: from a static close view into the grid, where most
+# instances are hidden behind the nearest bunnies, and as `_motion` along a sideways
+# camera path, which is what reaches the second raster pass (disocclusion). The static
+# view is camera path 1, a held path overrides --camerastring.
+# --hybridmatchcheck traces the primary ray as well and logs an error when more pixels
+# disagree with the raster than edge rounding explains.
+
+SEQUENCE "hy_unique0_hit0_hitlod0"
+--sequenceframes 32
+--sequenceresetframes 8
+--renderer 3
+--hybridmatchcheck 1
+--dlss 0
+--culling 1
+--streaming 1
+--gridunique 0
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--hitstreaming 0
+--addcamerapath "smooth 1 loop 1 dur 4 ; {0.185, 1.860, 1.199}, {-0.691, 1.203, 0.323}, {0, 1, 0}, {60} ; {0.893, 1.860, 0.491}, {0.017, 1.203, -0.385}, {0, 1, 0}, {60} ; {0.185, 1.860, 1.199}, {-0.691, 1.203, 0.323}, {0, 1, 0}, {60}"
+--addcamerapath "smooth 0 loop 0 dur 1 ; {0.539, 1.860, 0.845}, {-0.337, 1.203, -0.031}, {0, 1, 0}, {60} ; {0.539, 1.860, 0.845}, {-0.337, 1.203, -0.031}, {0, 1, 0}, {60}"
+--gridunique 0
+--hitstreaming 0
+--hitstreaminglod 0
+--maxresidentgroups 65536
+--runcamerapath 1 1
+
+SEQUENCE "hy_unique0_hit0_hitlod0_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_unique0_hit1_hitlod0"
+--gridunique 0
+--hitstreaming 1
+--hitstreaminglod 0
+--maxresidentgroups 65536
+--runcamerapath 1 1
+
+SEQUENCE "hy_unique0_hit1_hitlod0_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_unique0_hit1_hitlod1"
+--gridunique 0
+--hitstreaming 1
+--hitstreaminglod 1
+--maxresidentgroups 65536
+--runcamerapath 1 1
+
+SEQUENCE "hy_unique0_hit1_hitlod1_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_unique1_hit0_hitlod0"
+--gridunique 1
+--hitstreaming 0
+--hitstreaminglod 0
+--maxresidentgroups 65536
+--runcamerapath 1 1
+
+SEQUENCE "hy_unique1_hit0_hitlod0_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_unique1_hit1_hitlod0"
+--gridunique 1
+--hitstreaming 1
+--hitstreaminglod 0
+--maxresidentgroups 65536
+--runcamerapath 1 1
+
+SEQUENCE "hy_unique1_hit1_hitlod0_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_unique1_hit1_hitlod1"
+--gridunique 1
+--hitstreaming 1
+--hitstreaminglod 1
+--maxresidentgroups 65536
+--runcamerapath 1 1
+
+SEQUENCE "hy_unique1_hit1_hitlod1_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_hitlod_tightbudget"
+--gridunique 1
+--hitstreaming 1
+--hitstreaminglod 1
+--maxresidentgroups 2048
+--runcamerapath 1 1
+
+SEQUENCE "hy_hitlod_tightbudget_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_hitlod_lens"
+--gridunique 0
+--maxresidentgroups 65536
+--opticalmode 3
+--runcamerapath 1 1
+
+SEQUENCE "hy_hitlod_lens_motion"
+--runcamerapath 0 32

@@ -244,6 +244,7 @@ static uint32_t getUsagePct(uint64_t requested, uint64_t reserved)
 struct UsagePercentages
 {
   uint32_t pctClusters  = 0;
+  uint32_t pctHybrid    = 0;
   uint32_t pctTasks     = 0;
   uint32_t pctResident  = 0;
   uint32_t pctBlas      = 0;
@@ -255,8 +256,11 @@ struct UsagePercentages
     pctClusters = getUsagePct(std::max(std::max(readback.numRenderClusters, readback.numRenderClustersSW),
                                        std::max(readback.numRenderClustersAlpha, readback.numRenderClustersAlphaSW)),
                               maxRenderClusters);
-    pctTasks    = getUsagePct(readback.numTraversalTasks, maxTraversalTasks);
-    pctBlas     = getUsagePct(readback.numBlasBuilds, maxBlasBuilds);
+    // the hybrid lists have the same capacity
+    pctHybrid = getUsagePct(std::max(std::max(readback.numHybridClusters, readback.numHybridRejectClusters), readback.numHybridClusters2),
+                            maxRenderClusters);
+    pctTasks = getUsagePct(readback.numTraversalTasks, maxTraversalTasks);
+    pctBlas  = getUsagePct(readback.numBlasBuilds, maxBlasBuilds);
   }
 
   void setupPercentages(StreamingStats& stats, const StreamingConfig& streamingConfig)
@@ -270,6 +274,8 @@ struct UsagePercentages
   {
     if(pctClusters > 100)
       return "WARNING: Scene: Render clusters limit exceeded";
+    if(pctHybrid > 100)
+      return "WARNING: Scene: Hybrid raster clusters limit exceeded";
     if(pctTasks > 100)
       return "WARNING: Scene: Traversal task limit exceeded";
     if(pctResident == 100)
@@ -661,13 +667,18 @@ void LodClusters::uiSettingsRendering()
   {
 
     PE::begin("##Rendering", ImGuiTableFlags_Resizable);
-    PE::entry("Renderer", [&]() { return m_ui.enumCombobox(GUI_RENDERER, "renderer", &m_tweak.renderer); });
+    if(PE::entry("Renderer", [&]() { return m_ui.enumCombobox(GUI_RENDERER, "renderer", &m_tweak.renderer); })
+       && m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+    {
+      // see resolvePathtraceRenderer
+      m_rendererConfig.usePathtrace = false;
+    }
     PE::entry("Super Resolution", [&]() { return m_ui.enumCombobox(GUI_SUPERSAMPLE, "sampling", &m_tweak.supersample); });
 #if USE_DLSS
     bool        dlssAvailable = false;
     bool        dlssLoading   = false;
     const char* dlssLabel     = "DLSS";
-    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+    if(usesRayTracing())
     {
       // NGX is only initialized once DLSS is requested
       dlssAvailable = !m_resources.m_frameBuffer.dlssDenoiser.isInitialized()
@@ -740,13 +751,20 @@ void LodClusters::uiSettingsRendering()
         },
         "The tone map operator, exposure and color grading live in the \"Misc Settings\" window.");
 
-    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+    if(usesRayTracing())
     {
-      PE::Checkbox("Path tracing", &m_rendererConfig.usePathtrace,
-                   "Basic path tracer: shade in the ray-generation shader with multi-bounce GI under the "
-                   "physical sky (1 spp). Best with DLSS Ray Reconstruction; noisy otherwise.");
+      PE::Checkbox("Ray query", &m_rendererConfig.useRayQuery,
+                   "Generate the image in a compute shader with ray queries instead of the ray tracing pipeline.");
+      if(m_tweak.renderer == RENDERER_HYBRID_CLUSTERS_LOD)
+      {
+        PE::Checkbox("Hybrid discrete LoD", &m_rendererConfig.useHybridDiscreteLod,
+                     "In the blas caching tail rasterize a whole cached level, its cached blas matches the raster.");
+        PE::InputIntClamped("Hybrid cached levels", (int*)&m_rendererConfig.hybridCachingLevels, 1,
+                            GEOMETRY_CACHED_BLAS_STRIDE - 1, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
+                            "cached blas lod levels per geometry with the hybrid renderer, see Cached levels");
+      }
 
-      if(m_rendererConfig.usePathtrace)
+      if(usesPathTracing())
       {
         PE::SliderInt("Indirect bounces", &m_frameConfig.frameConstants.pathtraceNumBounces, 0, 7, "%d", 0, "0 is direct lighting only.");
         PE::SliderFloat("Firefly clamp", &m_frameConfig.frameConstants.pathtraceFireflyClamp, 0.0f, 100.0f, "%.1f");
@@ -781,7 +799,7 @@ void LodClusters::uiSettingsRendering()
     }
     if(PE::treeNode("AO settings"))
     {  // conditional UI, declutters the UI, prevents presenting many sections in disabled state
-      if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+      if(usesRayTracing())
       {
         PE::InputFloat("Radius", &m_tweak.aoRadius, 0.01f, 0, "%.6f", 0,
                        "Fraction of scene size, negative is absolute world-space radius");
@@ -796,7 +814,7 @@ void LodClusters::uiSettingsRendering()
         {
           m_lastAmbientOcclusionSamples = m_frameConfig.frameConstants.ambientOcclusionSamples;
         }
-        if(m_rendererConfig.usePathtrace)
+        if(usesPathTracing())
         {
           PE::Checkbox("Ambient last bounce", (bool*)&m_frameConfig.frameConstants.pathtraceAmbientTail,
                        "Path tracing: light the last path vertex like ray tracing, sun shadow ray plus the baked "
@@ -888,11 +906,13 @@ void LodClusters::uiSettingsTraversal()
 
     m_frameConfig.lodPixelError = std::max(0.001f, m_frameConfig.lodPixelError);
 
-    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+    if(usesRayTracing())
     {
       ImGui::BeginDisabled(!m_rendererConfig.useCulling);
       PE::InputFloat("Culled error scale", &m_frameConfig.culledErrorScale, 1.f, 1.f, "%.3f",
                      ImGuiInputTextFlags_EnterReturnsTrue, "scale the pixel error for occluded objects in ray tracing");
+      PE::Checkbox("Culled group lod", &m_rendererConfig.useCulledGroupLod,
+                   "also apply the culled error scale to occluded parts of visible instances, always on for the hybrid renderer");
       ImGui::EndDisabled();
 
       m_frameConfig.culledErrorScale = std::max(1.0f, m_frameConfig.culledErrorScale);
@@ -1012,7 +1032,13 @@ void LodClusters::uiSettingsTraversal()
       PE::Checkbox("Blas Caching", &m_rendererConfig.useBlasCaching,
                    "(only when streaming) builds a cached blas depending on highest fully resident lod level. Independent "
                    "of blas sharing. Has no effect without the persistent CLAS allocator.");
+      PE::InputIntClamped("Cached levels", (int*)&m_rendererConfig.cachingLevels, 1, GEOMETRY_CACHED_BLAS_STRIDE - 1, 1,
+                          1, ImGuiInputTextFlags_EnterReturnsTrue,
+                          "cached blas lod levels per geometry, a chain from the coarsest tail level up, refined one level "
+                          "per frame. An instance uses its own level, else the closest finer one");
       ImGui::EndDisabled();
+      PE::Checkbox("Blas Dedup", &m_rendererConfig.useBlasDedup,
+                   "skips building a blas when another blas in the same frame references the same clusters. Independent of blas sharing");
 
       const bool useBlasReuse = m_rendererConfig.useBlasSharing || m_rendererConfig.useBlasCaching;
 
@@ -1048,11 +1074,24 @@ void LodClusters::uiSettingsTraversal()
                      "culled instances artificially pushed by one lod level, increases sharing and caching likelihood");
         ImGui::EndDisabled();
 
-        if(m_rendererConfig.useBlasCaching && m_renderScene && m_renderScene->useStreaming)
+        const bool hasCachedStats = m_rendererConfig.useBlasCaching && m_renderScene && m_renderScene->useStreaming;
+
+        if(hasCachedStats || m_rendererConfig.useBlasDedup)
         {
           ImGui::Separator();
+        }
+        if(hasCachedStats)
+        {
           PE::Text("Cached blas", fmt::format("{}", stats.cachedBlasCount));
           PE::Text("Cached blas memory", fmt::format("{}", formatMemorySize(stats.usedCachedBlasBytes)));
+        }
+        if(m_rendererConfig.useBlasDedup)
+        {
+          uint32_t candidates = readback.numBlasCandidates;
+          PE::Text("Deduplicated blas", fmt::format("{} of {}", readback.numBlasDeduped, candidates));
+          PE::Text("Dedup hash probes", fmt::format("{:.2f} per blas, {} out of probes",
+                                                    candidates ? double(readback.numBlasDedupProbes) / double(candidates) : 0.0,
+                                                    readback.numBlasDedupMissed));
         }
         PE::treePop();
       }
@@ -1118,8 +1157,23 @@ void LodClusters::uiSettingsTraversal()
       }
       else
       {
-        PE::Checkbox("Force Invisible Culling", (bool*)&m_rendererConfig.useForcedInvisibleCulling,
-                     "Even ray tracing will cull based on primary visibility alone. Warning BLAS Sharing techniques may cause artifacts.");
+        if(m_tweak.renderer == RENDERER_HYBRID_CLUSTERS_LOD)
+        {
+          bool hybridTwoPass = m_rendererConfig.useCulling;
+          ImGui::BeginDisabled(true);
+          PE::Checkbox("Use TwoPass Culling", &hybridTwoPass,
+                       "The hybrid renderer always rasterizes in two passes with culling, the setting is rasterization only");
+          ImGui::EndDisabled();
+          ImGui::BeginDisabled(m_rendererConfig.useEXTmeshShader || !m_resources.m_supportsMeshShaderNV);
+          PE::Checkbox("Use Primitive Culling", (bool*)&m_rendererConfig.usePrimitiveCulling, "Use primitive culling in NV mesh shader");
+          ImGui::EndDisabled();
+          ImGui::BeginDisabled(!m_rendererConfig.useCulling);
+          PE::Checkbox("Allow SW-Raster", (bool*)&m_rendererConfig.useComputeRaster,
+                       "Small opaque clusters are rasterized by a compute shader");
+          PE::InputFloat("SW-Raster threshold", &m_frameConfig.swRasterThreshold, 1.0f, 1.0f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue,
+                         "cluster uses SW-Raster if its longest edge has less than the specified projected pixels");
+          ImGui::EndDisabled();
+        }
         ImGui::EndDisabled();
       }
       PE::treePop();
@@ -1426,7 +1480,7 @@ void LodClusters::uiSettingsClusterGeneration()
     PE::end();
 
 
-    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+    if(usesRayTracing())
     {
       ImGui::Separator();
       PE::begin("##CLAS", ImGuiTableFlags_Resizable);
@@ -1473,7 +1527,7 @@ void LodClusters::uiSettingsStreaming()
       ImGui::PopStyleColor();
     }
 
-    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+    if(usesRayTracing())
     {
       PE::Checkbox("Hit streaming", &m_rendererConfig.useHitStreaming,
                    "If enabled we are using ray tracing hits to guide loading and unloading");
@@ -1543,7 +1597,7 @@ void LodClusters::uiSettingsStreaming()
 
     PE::InputIntClamped("Max Geometry MiB", (int*)&m_streamingConfig.maxGeometryMegaBytes, 16, 1024 * 48, 128, 128,
                         ImGuiInputTextFlags_EnterReturnsTrue);
-    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+    if(usesRayTracing())
     {
       PE::InputIntClamped("Max CLAS MiB", (int*)&m_streamingConfig.maxClasMegaBytes, 16, 1024 * 48, 128, 128,
                           ImGuiInputTextFlags_EnterReturnsTrue);
@@ -1612,7 +1666,7 @@ void LodClusters::uiSettingsStreaming()
       ImGui::TextColored(stats.couldNotStore ? warn_color : text_color, "%d %%", getUsagePct(stats.usedDataBytes, stats.maxDataBytes));
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
-      if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+      if(usesRayTracing())
       {
         ImGui::Text("CLAS memory");
         ImGui::TableNextColumn();
@@ -1792,7 +1846,7 @@ void LodClusters::uiStreamingMemory()
       uint32_t mbClas     = uint32_t((stats.usedClasBytes + divisor - 1) / divisor);
       uint32_t mbCombined = mbGeometry;
 
-      if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+      if(usesRayTracing())
       {
         mbCombined = mbGeometry + mbClas;
       }
@@ -1803,8 +1857,7 @@ void LodClusters::uiStreamingMemory()
       m_streamGeometryHistory[(m_streamHistoryOffset + maxSlots - 1) % maxSlots] = mbGeometry;
       m_streamClasHistory[(m_streamHistoryOffset + maxSlots - 1) % maxSlots]     = mbCombined;
 
-      const std::vector<uint32_t>* clasHistogram =
-          (m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD) ? &m_streamClasHistory : nullptr;
+      const std::vector<uint32_t>* clasHistogram = usesRayTracing() ? &m_streamClasHistory : nullptr;
       uiPlotStreamingMemory(std::string(MEMORY_MB), m_streamGeometryHistory, clasHistogram, m_streamHistoryMax, m_streamHistoryOffset);
     }
   }
@@ -1907,6 +1960,28 @@ void LodClusters::uiStatistics()
                            formatMetric(readback.numRenderClusters).c_str());
         ImGui::TableNextColumn();
         ImGui::TextColored(pct.pctClusters > 100 ? warn_color : text_color, "%d %%", pct.pctClusters);
+        if(m_tweak.renderer == RENDERER_HYBRID_CLUSTERS_LOD)
+        {
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+          ImGui::Text("Hybrid Clusters");
+          ImGui::TableNextColumn();
+          ImGui::TextColored(pct.pctHybrid > 100 ? warn_color : text_color, "%s",
+                             formatMetric(std::max(std::max(readback.numHybridClusters, readback.numHybridRejectClusters),
+                                                   readback.numHybridClusters2))
+                                 .c_str());
+          ImGui::TableNextColumn();
+          ImGui::TextColored(pct.pctHybrid > 100 ? warn_color : text_color, "%d %%", pct.pctHybrid);
+          if(m_rendererConfig.useComputeRaster)
+          {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::Text("Hybrid SW Clusters");
+            ImGui::TableNextColumn();
+            ImGui::Text("%s", formatMetric(readback.numHybridClustersSW).c_str());
+            ImGui::TableNextColumn();
+          }
+        }
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         ImGui::Text("BLAS Builds");

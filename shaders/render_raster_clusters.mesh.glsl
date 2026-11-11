@@ -169,7 +169,9 @@ void main()
 {
   // EXT mesh shader's launch grid can overshoot actual work
   uint workGroupID = getWorkGroupIndexLinearized(gl_WorkGroupID);
-#if HAS_ALPHA_TEST
+#if USE_HYBRIDPATH
+  uint numRenderedClusters = build.numHybridClusters;
+#elif HAS_ALPHA_TEST
   uint numRenderedClusters = build.numRenderedClustersAlpha;
 #else
   uint numRenderedClusters = build.numRenderedClusters;
@@ -177,7 +179,10 @@ void main()
   bool isValid = workGroupID < numRenderedClusters;
   uint loadID  = min(workGroupID, numRenderedClusters - 1);
 
-#if HAS_ALPHA_TEST
+#if USE_HYBRIDPATH
+  // one list, opaque and alpha tested
+  ClusterInfo cinfo = build.hybridClusterInfos.d[loadID];
+#elif HAS_ALPHA_TEST
   ClusterInfo cinfo = build.renderClusterInfosAlpha.d[loadID];
 #else
   ClusterInfo cinfo = build.renderClusterInfos.d[loadID];
@@ -230,6 +235,10 @@ void main()
     uint vertLoad = min(vert, vertMax);
 
     vec3 oPos = oVertices.d[vertLoad];
+#if USE_HYBRIDPATH && HYBRID_POSITION_TRUNCATE_BITS
+    // as the CLAS build
+    oPos = uintBitsToFloat(floatBitsToUint(oPos) & ~((1u << HYBRID_POSITION_TRUNCATE_BITS) - 1u));
+#endif
     vec3 wPos = vec4(oPos, 1.0f) * instance.worldMatrix;
 
     if(vert <= vertMax)

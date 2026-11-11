@@ -93,6 +93,13 @@
 // HDRI environment, lat-long with the sampling pdf in alpha, and its alias table, see `environment.glsl`
 #define BINDINGS_ENV_HDRI_TEX 22
 #define BINDINGS_ENV_HDRI_ACCEL_SSBO 23
+// hybrid path: rasterized ids, see `HYBRIDPATH_VISBUFFER_*`
+#define BINDINGS_VISIBILITY_BUFFER 24
+
+// hybrid path visibility buffer texel: x = instanceID, y = clusterID << 8 | triangle,
+// cleared to empty where nothing was rasterized
+#define HYBRIDPATH_VISBUFFER_EMPTY 0xFFFFFFFFu
+#define HYBRIDPATH_VISBUFFER_TRIANGLE_BITS 8
 
 // dedicated descriptor set of the clas allocator visualization
 #define BINDINGS_ALLOCATOR_VIS_IMAGE 0
@@ -121,6 +128,8 @@
 #define SKY_BAKE_SUN 2
 
 #define TONEMAP_WORKGROUP 16
+// --rayquery, the ray tracer's image generation as compute, square tiles
+#define RAYQUERY_WORKGROUP 8
 #define TONEMAP_MODE_FULL 0
 // visualization modes of raster and ray tracing, written as-is
 #define TONEMAP_MODE_BYPASS 1
@@ -140,6 +149,7 @@
 #define BUILD_SETUP_HIT_DEMAND_INIT 8       // reset the demand queue counters (before seeding)
 #define BUILD_SETUP_HIT_DEMAND_RUN 9        // first frontier range from the seeds
 #define BUILD_SETUP_HIT_DEMAND_RUN_PASS 10  // advance the frontier one BFS level
+#define BUILD_SETUP_HYBRID_DRAW 11          // hybrid path: second raster pass
 
 /////////////////////////////////////////
 
@@ -156,8 +166,12 @@
 #define TRAVERSAL_RUN_WORKGROUP 64
 #define TRAVERSAL_GROUPS_WORKGROUP 64
 #define TRAVERSAL_REJECT_CLUSTERS_WORKGROUP 64
+#define HYBRIDPATH_CULL_WORKGROUP 64
 #define TRAVERSAL_BLAS_MERGING_WORKGROUP 64
 #define BLAS_SETUP_INSERTION_WORKGROUP 64
+#define BLAS_DEDUP_SCAN_WORKGROUP 64
+// number of buckets a blas candidate tries before it gives up and builds its own blas
+#define BLAS_DEDUP_PROBE_COUNT 8
 #define BLAS_INSERT_CLUSTERS_WORKGROUP 64
 #define INSTANCES_ASSIGN_BLAS_WORKGROUP 64
 #define INSTANCES_CLASSIFY_LOD_WORKGROUP 64
@@ -200,12 +214,6 @@
 // not exposed in UI, but can be modified and tested via
 // shader reload ("R" key)
 
-// for ray tracing only:
-// if USE_FORCED_INVISIBLE_CULLING is active and this setting is active as well, then instances
-// are removed from the TLAS if invisible. Otherwise they use the low detail BLAS.
-// Both options yield different sorts of artifacts, but removing yields better performance.
-#define FORCE_INVISIBLE_CULLED_REMOVES_INSTANCE 1
-
 // in the second pass of two pass culling, passing instances below this size are culled. Much
 // bigger than the lossless `FrameConstants::cullMinPixelSize`: re-traversal only refreshes lod and
 // visibility over a few pixels, yet costs as much as any other instance.
@@ -243,6 +251,13 @@ using namespace glm;
 #define USE_SW_RASTER 0
 #endif
 
+#ifndef USE_HYBRID_SW_RASTER
+#define USE_HYBRID_SW_RASTER 0
+#endif
+
+// compute raster: clusters per workgroup, 32 threads each. More in flight hide their loads.
+#define SW_RASTER_CLUSTERS_PER_WORKGROUP 4
+
 #ifndef USE_RENDER_STATS
 #define USE_RENDER_STATS 1
 #endif
@@ -265,10 +280,6 @@ using namespace glm;
 
 #ifndef USE_CLUSTER_OCCLUSION_CULLING
 #define USE_CLUSTER_OCCLUSION_CULLING 1
-#endif
-
-#ifndef USE_FORCED_INVISIBLE_CULLING
-#define USE_FORCED_INVISIBLE_CULLING 1
 #endif
 
 // the host pre-ands these with USE_CULLING, like USE_PRIMITIVE_CULLING below,
@@ -307,6 +318,10 @@ using namespace glm;
 
 #ifndef USE_BLAS_REUSE
 #define USE_BLAS_REUSE (USE_BLAS_SHARING || USE_BLAS_CACHING)
+#endif
+
+#ifndef USE_BLAS_DEDUP
+#define USE_BLAS_DEDUP 0
 #endif
 
 #ifndef USE_STREAMING
@@ -618,22 +633,31 @@ struct SkyBakePush
 
 struct Readback
 {
-  uint     numRenderClusters;
-  uint     numRenderClustersSW;
-  uint     numRenderClustersAlpha;
-  uint     numRenderClustersAlphaSW;
-  uint     numTraversalTasks;
-  uint     numHitDemandTasks;  // peak demand-BFS queue usage (shares the traversalNodeInfos array)
-  uint     numTraversedTasks;
-  uint     numRejectInstances;
-  uint     numRejectNodes;
-  uint     numRejectGroups;
-  uint     numBlasBuilds;
-  uint     numRenderedClusters;
-  uint     numRenderedClustersSW;
-  uint     numRenderedClustersAlpha;
-  uint     numRenderedClustersAlphaSW;
-  uint     numDiscreteInstances;
+  uint numRenderClusters;
+  uint numRenderClustersSW;
+  uint numRenderClustersAlpha;
+  uint numRenderClustersAlphaSW;
+  uint numTraversalTasks;
+  uint numHitDemandTasks;  // peak demand-BFS queue usage (shares the traversalNodeInfos array)
+  uint numTraversedTasks;
+  uint numRejectInstances;
+  uint numRejectNodes;
+  uint numRejectGroups;
+  uint numBlasBuilds;
+  uint numBlasCandidates;
+  uint numBlasDeduped;
+  uint numBlasDedupProbes;
+  uint numBlasDedupMissed;
+  uint numRenderedClusters;
+  uint numRenderedClustersSW;
+  uint numRenderedClustersAlpha;
+  uint numRenderedClustersAlphaSW;
+  uint numDiscreteInstances;
+  // hybrid raster lists: first pass, rejected by last frame's hiz, second pass
+  uint     numHybridClusters;
+  uint     numHybridRejectClusters;
+  uint     numHybridClusters2;
+  uint     numHybridClustersSW;
   uint64_t numRenderedTriangles;
   uint64_t numRenderedTrianglesSW;
   uint64_t numRenderedTrianglesAlpha;

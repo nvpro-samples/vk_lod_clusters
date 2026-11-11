@@ -105,16 +105,27 @@ void main()
   #if USE_STREAMING
     uint64_t clusterAddress   = streaming.resident.clasAddresses.d[clusterID];
   #else
-    Geometry geometry         = geometries[instances[instanceID].geometryID];
+    uint     geometryID       = instances[instanceID].geometryID;
+    Geometry geometry         = geometries[geometryID];
     uint64_t clusterAddress   = geometry.preloadedClusterClasAddresses.d[clusterID];
   #endif
-    
+
     uint buildIndex = build.instanceBuildInfos.d[instanceID].blasBuildIndex;
-    
+
+  #if USE_BLAS_DEDUP
+    // `buildIndex` is a candidate index, `blas_dedup_scan.comp.glsl` picks the actual build
+    uint idx = atomicAdd(build.blasCandidateInfos.d[buildIndex].clusterReferencesCount,1);
+    uint64_t clusterReferences = build.blasCandidateInfos.d[buildIndex].clusterReferences;
+    uint64s_inout(clusterReferences).d[idx] = clusterAddress;
+    // the key is hashed per slot afterwards, see `blas_dedup_keys.comp.glsl`
+    uint slot = uint((clusterReferences - uint64_t(build.blasClusterAddresses)) / 8) + idx;
+    build.blasCandidateSlots.d[slot] = buildIndex;
+  #else
     uint idx = atomicAdd(build.blasBuildInfos.d[buildIndex].clusterReferencesCount,1);
     uint64s_inout clusterReferences = uint64s_inout(build.blasBuildInfos.d[buildIndex].clusterReferences);
     clusterReferences.d[idx] = clusterAddress;
-    
+  #endif
+
   #if USE_RENDER_STATS
     #if USE_STREAMING
       uint numTriangles = Cluster_in(streaming.resident.clusters.d[clusterID]).d.triangleCountMinusOne + 1;

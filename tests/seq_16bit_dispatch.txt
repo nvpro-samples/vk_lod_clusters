@@ -72,8 +72,18 @@ SEQUENCE "d16_raytrace_nostreaming"
 SEQUENCE "d16_pathtrace"
 --renderer 1
 --streaming 1
+# legacy --pathtrace 1 on the ray tracer resolves to --renderer 2
 --pathtrace 1
 --visualize 0
 
 SEQUENCE "d16_pathtrace_off"
---pathtrace 0
+--renderer 1
+
+# the hybrid path adds a compute rasterizer launch per raster pass
+SEQUENCE "d16_hybrid_sw"
+--renderer 3
+--swraster 1
+--swrasterthreshold 64
+--culling 1
+--twopassculling 1
+--visualize 0

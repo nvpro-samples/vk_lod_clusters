@@ -171,7 +171,10 @@ void main()
 {
   uint workGroupID = gl_WorkGroupID.x;
 
-#if HAS_ALPHA_TEST
+#if USE_HYBRIDPATH
+  // one list, opaque and alpha tested
+  ClusterInfo cinfo = build.hybridClusterInfos.d[workGroupID];
+#elif HAS_ALPHA_TEST
   ClusterInfo cinfo = build.renderClusterInfosAlpha.d[workGroupID];
 #else
   ClusterInfo cinfo = build.renderClusterInfos.d[workGroupID];
@@ -235,6 +238,10 @@ void main()
     uint vertLoad = min(vert, vertMax);
 
     vec3 oPos = oVertices.d[vertLoad];
+#if USE_HYBRIDPATH && HYBRID_POSITION_TRUNCATE_BITS
+    // as the CLAS build
+    oPos = uintBitsToFloat(floatBitsToUint(oPos) & ~((1u << HYBRID_POSITION_TRUNCATE_BITS) - 1u));
+#endif
     vec3 wPos = vec4(oPos, 1.0f) * instance.worldMatrix;
 
     if(vert <= vertMax)

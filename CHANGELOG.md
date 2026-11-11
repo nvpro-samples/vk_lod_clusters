@@ -3,10 +3,21 @@
 
   **WARNING** Old cache files are not compatible anymore (`geoVersion` 16). Cluster group overlap information added for hit-based streaming propagation.
 
+  **WARNING** The ray and path tracing profiler timer "Render" is now "Trace", scripts that parse the timers have to follow.
+
+  **WARNING** `--pathtrace` deprecated use `--renderer 2`
+
   * New hit-based streaming for ray tracing (`--hitstreaming 1`, off by default): what rays hit decides which cluster groups are loaded and unloaded and, with `--hitstreaminglod`, the level of detail. See [docs/hitbased_streaming.md](docs/hitbased_streaming.md). Thanks Jan Schmid and Christian Rouet for help.
   * _"Optical Effect"_ (`--opticalmode`) replaces the reflective box checkbox in ray and path tracing: 1 mirror box (`M`), 2 mirror sphere, 3 magnifier lens (`L`, `--lenszoom`).
   * `--streamingagethreshold` sets the unload frame delay, `--memoryreportframes` logs a memory report every N frames.
   * `--autosavecache` is removed, a processed scene always stores its cache file. Large scenes already wrote it during processing.
+  * New hybrid renderer (`--renderer 3`): primary visibility is rasterized into a visibility buffer and path tracing continues from there. `--renderer 2` is the path tracer, `--pathtrace` remains for older command lines. `--swraster` applies to its raster passes as well. See [docs/raster_hybrid.md](docs/raster_hybrid.md).
+  * New `--rayquery` (UI: "Ray query") generates the ray traced and path traced image in a compute shader with ray queries instead of the ray tracing pipeline. Same images. With DLSS-RR, path traced frames are 0.5-1.1 ms faster on Caldera, junkworld and Zorah, ray traced ones within ±0.03 ms.
+  * New **BLAS deduplication** ("Blas Dedup" checkbox, `--blasdedup`, default off) skips building a BLAS when another BLAS in the same frame references the same set of CLAS, which happens a lot for instanced props that top or bottom out in the LoD DAG. It is orthogonal to the BLAS sharing family and can be combined with it. On 256 copies of one geometry with sharing disabled it takes 256 BLAS builds down to 17. New [blas_dedup_scan.comp.glsl](shaders/blas_dedup_scan.comp.glsl), described in a [separate document](docs/blas_dedup.md). The "blas reuse" visualization shows deduplicated instances in pink. The algorithm originates from Evan Hart.
+  * `--forcedinvisculling` (UI: "Force Invisible Culling") is removed. _"Culled group lod"_ (`--culledgrouplod`) applies the culled error scale to occluded parts of visible instances in ray tracing.
+  * _"Cached levels"_ (`--cachinglevels`, default 1) keeps a chain of cached BLAS lod levels per geometry, refined by one level per frame.
+  * The compute rasterizer (`--swraster`) runs four clusters per workgroup, on junkworld its pass is up to 20% faster at the default threshold.
+  * Bugfix: `--swraster` judged a cluster at the viewport border by its visible part and could rasterize large triangles in compute. Non-uniform instance scaling is taken into account as well.
 
 * 2026-11-10:
 
@@ -448,7 +459,7 @@
   * Updated `nv_cluster_lod_library` submodule, which brings performance improvements to "inner" parallelism, the `threedscans_animals` processing improved from 26 to 11 seconds on a windows test system.
 * 2025-7-10:
   * Reduce number of BLAS builds by introducing a per-geometry `lowDetailBlas` that is built once at scene preparation time.
-    A new compute shader step was added [shaders/tlas_instances_blas.comp.glsl](/shaders/tlas_instances_blas.comp.glsl) and
+    A new compute shader step was added `shaders/tlas_instances_blas.comp.glsl` (now [shaders/instance_assign_blas.comp.glsl](/shaders/instance_assign_blas.comp.glsl)) and
     the number of BLAS build operations is now sourced indirectly from the GPU.
   * Reduce system memory consumption greatly after building the cluster and LoD data.
 * 2025-7-9:

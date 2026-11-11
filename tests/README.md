@@ -1,6 +1,6 @@
 # Render permutation tests
 
-**171 sequences in 9 files** for a full pass with the validation layers on. Most of the
+**483 sequences in 22 files** for a full pass with the validation layers on. Most of the
 time is pipeline compilation, not rendering.
 
 Parameter sequences that drive the sample through the permutations that are easy to break
@@ -59,13 +59,20 @@ frame.
 | --- | --- | --- |
 | `seq_visualize.txt` | 35 | visualization modes 0-11 on both renderers, compute rasterization, the DLSS shader permutations, path tracing |
 | `seq_raster_features.txt` | 29 | `--culling` x `--twopassculling` x `--discretelod` over both geometry layouts, plus primitive culling, EXT mesh shader, compute rasterization, streaming off, HBAO, bbox overlays, render stats |
-| `seq_materials.txt` + `.cfg` | 24 | vertex attribute sets, textured materials, alpha mask and blend, two sided, EXT mesh shader, multi material, texture lod modes, forced compute rasterization, `--compressed`, path tracing on/off |
-| `seq_raytrace_blas.txt` | 19 | `--blassharing` x `--blasmerging` x `--blascaching` over both geometry layouts, plus render stats |
+| `seq_materials.txt` + `.cfg` | 29 | vertex attribute sets, textured materials, alpha mask and blend, two sided, EXT mesh shader, multi material, texture lod modes, forced compute rasterization, `--compressed`, path tracing on/off, `--rayquery` |
+| `seq_raytrace_blas.txt` | 22 | `--blassharing` x `--blasmerging` x `--blascaching` over both geometry layouts, plus render stats and `--blasdedup` |
 | `seq_limits.txt` + `.cfg` | 17 | every limit the sample warns about rather than enforces, exceeded one at a time and together |
 | `seq_traversal.txt` | 12 | `--persistenttraversal` off/on against both renderers, crossed with instance sorting, discrete lod and culling |
 | `seq_ptlas.txt` + `.cfg` | 15 | `--partitions` x `--partitionearlyout` x `--ptlas`, the early-out's retention knobs, the two partition visualizations and hit streaming with a magnifying lens |
 | `seq_streaming.txt` | 10 | streaming against preloaded, the CLAS allocator, async and decoupled transfers |
-| `seq_16bit_dispatch.txt` + `.cfg` | 10 | the 16 bit compute launch grid, on its own denser scene |
+| `seq_16bit_dispatch.txt` + `.cfg` | 11 | the 16 bit compute launch grid, on its own denser scene |
+| `seq_rayquery.txt` | 31 | `--rayquery` for ray and path tracing: visualizations, DLSS, optical modes, AO and shadows, hit streaming |
+| `seq_hybrid_*.txt` | 272 | the hybrid path against BLAS reuse, culling, traversal, streaming, ptlas, materials, visualization, limits, `--rayquery` and compute rasterization, see `docs/raster_hybrid.md` |
+
+The hybrid files run `--hybridmatchcheck`, which traces the primary ray as well and logs an error when more
+pixels disagree with the raster than edge rounding explains. Alpha masked surfaces are counted apart, their
+cutouts depend on the texture lod. Every configuration runs from a still camera path and along a moving one,
+only motion reaches the second raster pass. `python tests/make_hybrid_sequences.py` regenerates them.
 
 A sequence file can bring its own scene as `<same name>.cfg`; the scripts pick that up
 automatically. That is for settings a sequence cannot change on its own because they are

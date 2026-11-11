@@ -30,7 +30,10 @@ not culling within an object.
 ![image showing instances with different lod levels but similar frame to frame](blas_caching_instances.png)
 
 A single fully loaded LoD level can be used in a rotational invariant way for all instances whose minimum LoD level is equal or greater to
-a discrete LoD level. Therefore the cached BLAS is based on a single discrete LoD level.
+a discrete LoD level. Therefore the cached BLAS is based on a single discrete LoD level. With _"Cached levels"_
+(`--cachinglevels`) at its default of 1, `SceneStreaming::handleBlasCaching` builds it directly from the finest
+fully resident level that fits. Above 1, `SceneStreaming::handleBlasCachingLevels` keeps a chain of them per
+geometry, from the coarsest tail level towards the finest resident one, refined by one level per frame.
 
 A lot of the cached BLAS logic can be implemented on the host, as the host already handles the streaming requests. The
 streaming system can detect which LoD levels have been loaded completely and see if an update to the cached BLAS is necessary.

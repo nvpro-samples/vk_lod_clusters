@@ -151,7 +151,7 @@ void main()
       uint newBuildOffset = spatch.clasBuildOffset;
     #if TARGETS_RAY_TRACING
       // positions are streamed to CLAS-build scratch at a fixed per-group slot, tightly packed
-      // per cluster (runningPosByteOffset)
+      // per cluster (runningPosByteOffset), unless they are kept persistent
       uint64_t groupPositionsBase =
           streaming.update.clasVerticesBuffer + uint64_t(loadGroupIndex) * streaming.update.clasVerticesGroupStride;
       uint runningPosByteOffset = 0;
@@ -189,7 +189,9 @@ void main()
         buildInfo.geometryIndexAndFlagsBufferStride = uint16_t(0);
         buildInfo.opacityMicromapIndexBufferStride  = uint16_t(0);
         
-        buildInfo.vertexBuffer = groupPositionsBase + uint64_t(runningPosByteOffset);
+        buildInfo.vertexBuffer = streaming.update.clasVerticesBuffer != 0 ?
+                                     groupPositionsBase + uint64_t(runningPosByteOffset) :
+                                     uint64_t(Cluster_getVertexPositions(clusterRef));
         buildInfo.indexBuffer  = uint64_t(Cluster_getTriangleIndices(Cluster_in(clusterRef)));
         
         buildInfo.geometryIndexAndFlagsBuffer = 0;
@@ -232,12 +234,16 @@ void main()
   if (threadID < streaming.update.patchCachedBlasCount)
   {
     StreamingGeometryPatch sgpatch = streaming.update.geometryPatches.d[threadID];
-    uint discreteLodLevel          = sgpatch.discreteLodLevel;
     uint geometryID                = sgpatch.geometryID;
-    geometries[geometryID].discreteLodLevel  = uint8_t(discreteLodLevel);
-    streaming.cachedBlasAddresses.d[geometryID * GEOMETRY_CACHED_BLAS_STRIDE
-                                    + GEOMETRY_CACHED_BLAS_SLOT(geometries[geometryID].lodLevelsCount,
-                                                                sgpatch.discreteLodLevel)] = sgpatch.cachedBlasAddress;
+    geometries[geometryID].discreteLodLevel = uint8_t(sgpatch.discreteLodLevel);
+    geometries[geometryID].cachedLevelMask  = sgpatch.cachedLevelMask;
+    // an invalid level would clamp to the last slot
+    if (sgpatch.cachedLevel != TRAVERSAL_INVALID_LOD_LEVEL)
+    {
+      streaming.cachedBlasAddresses.d[geometryID * GEOMETRY_CACHED_BLAS_STRIDE
+                                      + GEOMETRY_CACHED_BLAS_SLOT(geometries[geometryID].lodLevelsCount,
+                                                                  sgpatch.cachedLevel)] = sgpatch.cachedBlasAddress;
+    }
   }
 #endif
 }

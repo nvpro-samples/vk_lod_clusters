@@ -1,0 +1,207 @@
+# Hybrid path: every visualization, DLSS, the optical modes and bounce counts.
+#
+# Every configuration runs twice: from a static close view into the grid, where most
+# instances are hidden behind the nearest bunnies, and as `_motion` along a sideways
+# camera path, which is what reaches the second raster pass (disocclusion). The static
+# view is camera path 1, a held path overrides --camerastring.
+# --hybridmatchcheck traces the primary ray as well and logs an error when more pixels
+# disagree with the raster than edge rounding explains.
+
+SEQUENCE "hy_vis0"
+--sequenceframes 32
+--sequenceresetframes 8
+--renderer 3
+--hybridmatchcheck 1
+--dlss 0
+--culling 1
+--streaming 1
+--gridunique 0
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--hitstreaming 0
+--addcamerapath "smooth 1 loop 1 dur 4 ; {0.185, 1.860, 1.199}, {-0.691, 1.203, 0.323}, {0, 1, 0}, {60} ; {0.893, 1.860, 0.491}, {0.017, 1.203, -0.385}, {0, 1, 0}, {60} ; {0.185, 1.860, 1.199}, {-0.691, 1.203, 0.323}, {0, 1, 0}, {60}"
+--addcamerapath "smooth 0 loop 0 dur 1 ; {0.539, 1.860, 0.845}, {-0.337, 1.203, -0.031}, {0, 1, 0}, {60} ; {0.539, 1.860, 0.845}, {-0.337, 1.203, -0.031}, {0, 1, 0}, {60}"
+--visualize 0
+--dlss 0
+--opticalmode 0
+--runcamerapath 1 1
+
+SEQUENCE "hy_vis0_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_vis1"
+--visualize 1
+--dlss 0
+--opticalmode 0
+--runcamerapath 1 1
+
+SEQUENCE "hy_vis1_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_vis2"
+--visualize 2
+--dlss 0
+--opticalmode 0
+--runcamerapath 1 1
+
+SEQUENCE "hy_vis2_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_vis3"
+--visualize 3
+--dlss 0
+--opticalmode 0
+--runcamerapath 1 1
+
+SEQUENCE "hy_vis3_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_vis4"
+--visualize 4
+--dlss 0
+--opticalmode 0
+--runcamerapath 1 1
+
+SEQUENCE "hy_vis4_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_vis5"
+--visualize 5
+--dlss 0
+--opticalmode 0
+--runcamerapath 1 1
+
+SEQUENCE "hy_vis5_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_vis6"
+--visualize 6
+--dlss 0
+--opticalmode 0
+--runcamerapath 1 1
+
+SEQUENCE "hy_vis6_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_vis7"
+--visualize 7
+--dlss 0
+--opticalmode 0
+--runcamerapath 1 1
+
+SEQUENCE "hy_vis7_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_vis8"
+--visualize 8
+--dlss 0
+--opticalmode 0
+--runcamerapath 1 1
+
+SEQUENCE "hy_vis8_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_vis9"
+--visualize 9
+--dlss 0
+--opticalmode 0
+--runcamerapath 1 1
+
+SEQUENCE "hy_vis9_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_vis10"
+--visualize 10
+--dlss 0
+--opticalmode 0
+--runcamerapath 1 1
+
+SEQUENCE "hy_vis10_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_vis11"
+--visualize 11
+--dlss 0
+--opticalmode 0
+--runcamerapath 1 1
+
+SEQUENCE "hy_vis11_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_dlss_q0"
+--visualize 0
+--dlss 1
+--dlssquality 0
+--opticalmode 0
+--runcamerapath 1 1
+
+SEQUENCE "hy_dlss_q0_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_dlss_q2"
+--visualize 0
+--dlss 1
+--dlssquality 2
+--opticalmode 0
+--runcamerapath 1 1
+
+SEQUENCE "hy_dlss_q2_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_dlss_q5"
+--visualize 0
+--dlss 1
+--dlssquality 5
+--opticalmode 0
+--runcamerapath 1 1
+
+SEQUENCE "hy_dlss_q5_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_optical1"
+--visualize 0
+--dlss 0
+--opticalmode 1
+--runcamerapath 1 1
+
+SEQUENCE "hy_optical1_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_optical2"
+--visualize 0
+--dlss 0
+--opticalmode 2
+--runcamerapath 1 1
+
+SEQUENCE "hy_optical2_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_optical3"
+--visualize 0
+--dlss 0
+--opticalmode 3
+--runcamerapath 1 1
+
+SEQUENCE "hy_optical3_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_bounces0"
+--visualize 0
+--dlss 0
+--opticalmode 0
+--pathtracebounces 0
+--runcamerapath 1 1
+
+SEQUENCE "hy_bounces0_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_bounces3"
+--visualize 0
+--dlss 0
+--opticalmode 0
+--pathtracebounces 3
+--runcamerapath 1 1
+
+SEQUENCE "hy_bounces3_motion"
+--runcamerapath 0 32

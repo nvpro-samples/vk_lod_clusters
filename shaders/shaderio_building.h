@@ -21,9 +21,21 @@ using namespace glm;
 #define INSTANCE_USES_DISCRETE_BIT 4
 // tags a traversal item that was seeded at a discrete lod level. Its nodes are
 // always descended and all clusters of its groups are rendered.
-// Stored in `TraversalInfo::instanceID`, which leaves 31 bits for the instance.
+// Stored in `TraversalInfo::instanceID`, which leaves 30 bits for the instance.
 #define TRAVERSAL_DISCRETE_BIT 0x80000000u
+// tags a traversal item whose lod metric sphere failed last frame's hiz,
+// see `USE_CULLED_GROUP_LOD`
+#define TRAVERSAL_OCCLUDED_BIT 0x40000000u
+#ifndef USE_CULLED_GROUP_LOD
+#define USE_CULLED_GROUP_LOD 0
+#endif
 #define INSTANCE_USES_LOWDETAIL_BIT 8
+// hybrid path: the instance is traversed for rasterization only, its blas is a reused one
+#define INSTANCE_HYBRID_RASTER_ONLY_BIT 16
+// hybrid path: in the frustum but occluded in last frame's hiz, rasterized in the second pass
+#define INSTANCE_HYBRID_OCCLUDED_BIT 32
+// hybrid path: keeps a cached blas within `hybridCachedTolerance` levels, a known mismatch
+#define INSTANCE_HYBRID_TOLERANCE_BIT 64
 
 // one reject bit per cluster of a group, `GROUP_CLUSTER_COUNT` comes from the renderer
 #ifndef GROUP_CLUSTER_COUNT
@@ -33,6 +45,8 @@ using namespace glm;
 
 // `GeometryBuildInfo::flags`, only maintained for the "blas reuse" visualization
 #define GEOMETRY_HAS_SHARING_INSTANCES 1
+
+#define BLAS_CANDIDATE_HAS_DUPLICATES 1
 
 #define BLAS_BUILD_INDEX_LOWDETAIL (uint(~0))
 #define BLAS_BUILD_INDEX_SHARE_BIT (uint(1 << 31))
@@ -79,6 +93,30 @@ struct BlasBuildInfo
   uint64_t clusterReferences;
 };
 BUFFER_REF_DECLARE_ARRAY(BlasBuildInfo_inout, BlasBuildInfo, , 16);
+
+// Only used for USE_BLAS_DEDUP
+//
+// A BLAS candidate is what an instance would build on its own. When multiple candidates
+// reference the same set of CLAS, only the representative is built.
+// Unlike `BlasBuildInfo` this struct isn't read by the driver, so the dedup key and
+// result can live next to the reference list.
+struct BlasCandidateInfo
+{
+  // start address of the CLAS reference array, sub-allocated from `blasClusterAddresses`
+  uint64_t clusterReferences;
+  // the number of CLAS that this BLAS references, also third component of the key
+  uint32_t clusterReferencesCount;
+  // order-invariant accumulation of the per-CLAS hashes
+  uint32_t keyXor;
+  uint32_t keyAdd;
+  // candidate index of the unique BLAS to use, itself when unique
+  uint32_t representative;
+  // index into the build arrays, only written by representatives
+  uint32_t buildIndex;
+  // BLAS_CANDIDATE_HAS_DUPLICATES if others resolved to this candidate
+  uint32_t flags;
+};
+BUFFER_REF_DECLARE_ARRAY(BlasCandidateInfos_inout, BlasCandidateInfo, , 32);
 
 // Indirect build information for a TLAS instance
 struct TlasInstance
@@ -185,6 +223,8 @@ struct SceneBuilding
   uint cachingPushLevels;
   // additional levels granted to an instance already on the cached blas, keeps it there
   uint cachingStickyLevels;
+  // hybrid path: a visible instance keeps a cached blas within this many levels of its cut, -1 off
+  int hybridCachedTolerance;
 
   // Retention value the streaming age filter reads, one per geometry: the minimum of
   // `cachedLevel` over a revalidation cycle, not of a single frame, so a skipped partition
@@ -325,6 +365,21 @@ struct SceneBuilding
 
   DispatchIndirectCommand indirectDispatchBlasInsertion;
 
+  // hybrid path (USE_HYBRIDPATH): the clusters rasterized for primary visibility.
+  // A primary visible instance's own blas is built from the same cut.
+  // Array size is [maxRenderClusters]
+  BUFFER_REF(ClusterInfos_inout) hybridClusterInfos;
+  uint                            hybridClusterCounter;
+  uint                            numHybridClusters;
+  DrawMeshTasksIndirectCommandNV  indirectDrawHybridNV;
+  DrawMeshTasksIndirectCommandEXT indirectDrawHybridEXT;
+  // the clusters occluded in last frame's hiz, the second raster pass draws those passing
+  // the first pass' hiz. Array size is [maxRenderClusters]
+  BUFFER_REF(ClusterInfos_inout) hybridRejectClusterInfos;
+  uint                    hybridRejectCounter;
+  uint                    numHybridRejectClusters;
+  DispatchIndirectCommand indirectDispatchHybridReject;
+
   // Computed dynamically, total number of CLAS that are referenced
   // across all BLAS built in a frame.
   uint blasClasCounter;
@@ -385,6 +440,24 @@ struct SceneBuilding
   // `blas_setup_insertion.comp.glsl`
   // array size is [maxRenderClusters]
   BUFFER_REF(uint64s_inout) blasClusterAddresses;
+
+  // for USE_BLAS_DEDUP
+  // ------------------
+
+  // configured in `blas_setup_insertion.comp.glsl`
+  // and resolved in `blas_dedup_scan.comp.glsl`
+  BUFFER_REF(BlasCandidateInfos_inout) blasCandidateInfos;
+  // candidate index per `blasClusterAddresses` entry, written during insertion
+  BUFFER_REF(uint32s_inout) blasCandidateSlots;
+
+  // finds equivalent candidates, `blasDedupTableMask + 1` entries.
+  // stores `candidateIndex + 1`, so zero means empty and a fill clears it.
+  BUFFER_REF(uint32s_inout) blasDedupTable;
+  uint32_t blasDedupTableMask;
+
+  // Computed dynamically, number of BLAS candidates in a frame.
+  // `blasBuildCounter` is how many of those are unique.
+  uint32_t blasCandidateCounter;
 
   // per scene geometry
   // ------------

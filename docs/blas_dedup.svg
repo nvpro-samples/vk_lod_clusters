@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1900 620" width="1900" height="620" font-family="'NVIDIA Sans', 'NVIDIA Sans Regular', Arial, sans-serif">
+<defs><marker id="aP" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c2187a"/></marker></defs>
+<rect width="1900" height="620" fill="#ffffff"/>
+ <rect x="420.0" y="20" width="129.4" height="40" fill="#c9daf8"/>
+ <text x="484.4" y="50.0" font-size="22" fill="#000000" text-anchor="middle" font-weight="normal">0</text>
+ <rect x="548.9" y="20" width="129.4" height="40" fill="#b8d4c8"/>
+ <text x="613.3" y="50.0" font-size="22" fill="#000000" text-anchor="middle" font-weight="normal">1</text>
+ <rect x="677.8" y="20" width="129.4" height="40" fill="#b6d7a8"/>
+ <text x="742.2" y="50.0" font-size="22" fill="#000000" text-anchor="middle" font-weight="normal">2</text>
+ <rect x="806.7" y="20" width="129.4" height="40" fill="#cfd48a"/>
+ <text x="871.1" y="50.0" font-size="22" fill="#000000" text-anchor="middle" font-weight="normal">3</text>
+ <rect x="935.6" y="20" width="129.4" height="40" fill="#e9c46a"/>
+ <text x="1000.0" y="50.0" font-size="22" fill="#000000" text-anchor="middle" font-weight="normal">4</text>
+ <rect x="1064.4" y="20" width="129.4" height="40" fill="#f6b26b"/>
+ <text x="1128.9" y="50.0" font-size="22" fill="#000000" text-anchor="middle" font-weight="normal">5</text>
+ <rect x="1193.3" y="20" width="129.4" height="40" fill="#ff9900"/>
+ <text x="1257.8" y="50.0" font-size="22" fill="#000000" text-anchor="middle" font-weight="normal">6</text>
+ <rect x="1322.2" y="20" width="129.4" height="40" fill="#ff5a1f"/>
+ <text x="1386.7" y="50.0" font-size="22" fill="#000000" text-anchor="middle" font-weight="normal">7</text>
+ <rect x="1451.1" y="20" width="129.4" height="40" fill="#ff0000"/>
+ <text x="1515.6" y="50.0" font-size="22" fill="#000000" text-anchor="middle" font-weight="normal">8</text>
+ <text x="1610.0" y="48.0" font-size="21" fill="#7f7f7f" text-anchor="start" font-weight="normal">LoD level over distance</text>
+ <text x="50.0" y="152.0" font-size="32" fill="#000000" text-anchor="start" font-weight="normal">Traversal</text>
+ <rect x="284.0" y="122.0" width="46.0" height="36.0" fill="#4a86e8"/>
+ <path d="M330.0 140.0 L350.0 122.0 L350.0 158.0 Z" fill="#4a86e8"/>
+ <path d="M431.5 122.1 L454.1 113.9 L467.8 151.4 L501.6 139.1 L508.5 157.9 L452.1 178.5 Z" fill="#c9daf8" stroke="#000000" stroke-width="3" stroke-linejoin="round"/>
+ <path d="M578.2 105.2 L601.8 109.4 L594.9 148.8 L630.3 155.1 L626.8 174.8 L567.7 164.3 Z" fill="#c9daf8" stroke="#000000" stroke-width="3" stroke-linejoin="round"/>
+ <path d="M727.6 98.2 L747.3 112.0 L724.3 144.8 L753.8 165.4 L742.4 181.8 L693.2 147.4 Z" fill="#b6d7a8" stroke="#000000" stroke-width="3" stroke-linejoin="round"/>
+ <path d="M832.7 115.7 L856.4 111.5 L863.3 150.9 L898.8 144.6 L902.3 164.3 L843.2 174.8 Z" fill="#cfd48a" stroke="#000000" stroke-width="3" stroke-linejoin="round"/>
+ <path d="M978.8 103.3 L1002.0 109.5 L991.6 148.1 L1026.4 157.4 L1021.2 176.7 L963.3 161.2 Z" fill="#e9c46a" stroke="#000000" stroke-width="3" stroke-linejoin="round"/>
+ <path d="M1091.5 129.0 L1112.3 117.0 L1132.3 151.7 L1163.5 133.7 L1173.5 151.0 L1121.5 181.0 Z" fill="#f6b26b" stroke="#000000" stroke-width="3" stroke-linejoin="round"/>
+ <path d="M1237.7 107.5 L1261.6 109.6 L1258.2 149.4 L1294.0 152.6 L1292.3 172.5 L1232.5 167.3 Z" fill="#ff0000" stroke="#000000" stroke-width="3" stroke-linejoin="round"/>
+ <path d="M1383.0 100.1 L1404.7 110.3 L1387.8 146.5 L1420.5 161.7 L1412.0 179.9 L1357.6 154.5 Z" fill="#ff0000" stroke="#000000" stroke-width="3" stroke-linejoin="round"/>
+ <path d="M1493.3 118.8 L1516.4 112.6 L1526.8 151.2 L1561.6 141.9 L1566.7 161.2 L1508.8 176.7 Z" fill="#ff0000" stroke="#000000" stroke-width="3" stroke-linejoin="round"/>
+ <text x="420.0" y="225.0" font-size="22" fill="#000000" text-anchor="start" font-weight="normal">Every instance traverses the LoD and builds a BLAS from its cut, also when several</text>
+ <text x="420.0" y="255.0" font-size="22" fill="#000000" text-anchor="start" font-weight="normal">cuts topped or bottomed out in the same clusters.</text>
+ <line x1="60" y1="290" x2="1840" y2="290" stroke="#d0d0d0" stroke-width="2"/>
+ <text x="50.0" y="397.0" font-size="32" fill="#000000" text-anchor="start" font-weight="normal">BLAS Dedup</text>
+ <rect x="284.0" y="367.0" width="46.0" height="36.0" fill="#4a86e8"/>
+ <path d="M330.0 385.0 L350.0 367.0 L350.0 403.0 Z" fill="#4a86e8"/>
+ <path d="M431.5 367.1 L454.1 358.9 L467.8 396.4 L501.6 384.1 L508.5 402.9 L452.1 423.5 Z" fill="#c9daf8" stroke="#000000" stroke-width="3" stroke-linejoin="round"/>
+ <path d="M578.2 350.2 L601.8 354.4 L594.9 393.8 L630.3 400.1 L626.8 419.8 L567.7 409.3 Z" fill="#f4a6d7" stroke="#000000" stroke-width="3" stroke-linejoin="round" stroke-dasharray="3 4"/>
+ <path d="M727.6 343.2 L747.3 357.0 L724.3 389.8 L753.8 410.4 L742.4 426.8 L693.2 392.4 Z" fill="#b6d7a8" stroke="#000000" stroke-width="3" stroke-linejoin="round"/>
+ <path d="M832.7 360.7 L856.4 356.5 L863.3 395.9 L898.8 389.6 L902.3 409.3 L843.2 419.8 Z" fill="#cfd48a" stroke="#000000" stroke-width="3" stroke-linejoin="round"/>
+ <path d="M978.8 348.3 L1002.0 354.5 L991.6 393.1 L1026.4 402.4 L1021.2 421.7 L963.3 406.2 Z" fill="#e9c46a" stroke="#000000" stroke-width="3" stroke-linejoin="round"/>
+ <path d="M1091.5 374.0 L1112.3 362.0 L1132.3 396.7 L1163.5 378.7 L1173.5 396.0 L1121.5 426.0 Z" fill="#f6b26b" stroke="#000000" stroke-width="3" stroke-linejoin="round"/>
+ <path d="M1237.7 352.5 L1261.6 354.6 L1258.2 394.4 L1294.0 397.6 L1292.3 417.5 L1232.5 412.3 Z" fill="#ff0000" stroke="#000000" stroke-width="3" stroke-linejoin="round"/>
+ <path d="M1383.0 345.1 L1404.7 355.3 L1387.8 391.5 L1420.5 406.7 L1412.0 424.9 L1357.6 399.5 Z" fill="#f4a6d7" stroke="#000000" stroke-width="3" stroke-linejoin="round" stroke-dasharray="3 4"/>
+ <path d="M1493.3 363.8 L1516.4 357.6 L1526.8 396.2 L1561.6 386.9 L1566.7 406.2 L1508.8 421.7 Z" fill="#f4a6d7" stroke="#000000" stroke-width="3" stroke-linejoin="round" stroke-dasharray="3 4"/>
+ <path d="M602.5 431.0 Q536.2 475.0 478.0 433.0" fill="none" stroke="#c2187a" stroke-width="2" marker-end="url(#aP)"/>
+ <path d="M1397.5 431.0 Q1331.2 475.0 1273.0 433.0" fill="none" stroke="#c2187a" stroke-width="2" marker-end="url(#aP)"/>
+ <path d="M1530.0 431.0 Q1397.5 475.0 1273.0 433.0" fill="none" stroke="#c2187a" stroke-width="2" marker-end="url(#aP)"/>
+ <text x="420.0" y="510.0" font-size="22" fill="#000000" text-anchor="start" font-weight="normal">Cuts that resolve to the same set of CLAS build one BLAS, the others reference it</text>
+ <text x="420.0" y="540.0" font-size="22" fill="#000000" text-anchor="start" font-weight="normal">(pink, as in the “blas reuse” visualization). The traversal still runs for all.</text>
+ <text x="1610.0" y="360.0" font-size="20" fill="#7f7f7f" text-anchor="start" font-weight="normal">Key per BLAS: each</text>
+ <text x="1610.0" y="384.0" font-size="20" fill="#7f7f7f" text-anchor="start" font-weight="normal">CLAS address hashed,</text>
+ <text x="1610.0" y="408.0" font-size="20" fill="#7f7f7f" text-anchor="start" font-weight="normal">combined by xor and</text>
+ <text x="1610.0" y="432.0" font-size="20" fill="#7f7f7f" text-anchor="start" font-weight="normal">add, plus the count</text>
+</svg>

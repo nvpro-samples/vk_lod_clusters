@@ -89,6 +89,43 @@ layout(local_size_x=1) in;
 #define MESHSHADER_BBOX_COUNT 8
 #endif
 
+uint swRasterWorkGroups(uint numClusters)
+{
+  return (numClusters + SW_RASTER_CLUSTERS_PER_WORKGROUP - 1) / SW_RASTER_CLUSTERS_PER_WORKGROUP;
+}
+
+
+#if USE_HYBRIDPATH
+// draw arguments of a hybrid raster pass from the list's counter
+void setupHybridDraw()
+{
+  uint numHybridClusters = min(buildRW.hybridClusterCounter, build.maxRenderClusters);
+#if USE_EXT_MESH_SHADER
+  uvec3 grid = fit16bitLaunchGrid(numHybridClusters);
+  buildRW.indirectDrawHybridEXT.gridX = grid.x;
+  buildRW.indirectDrawHybridEXT.gridY = grid.y;
+  buildRW.indirectDrawHybridEXT.gridZ = grid.z;
+#else
+  buildRW.indirectDrawHybridNV.count = numHybridClusters;
+  buildRW.indirectDrawHybridNV.first = 0;
+#endif
+  buildRW.numHybridClusters = numHybridClusters;
+
+#if USE_HYBRID_SW_RASTER
+  uint numClustersSW = min(buildRW.renderClusterCounterSW, build.maxRenderClusters);
+  uint workGroupsSW  = swRasterWorkGroups(numClustersSW);
+  #if USE_16BIT_DISPATCH
+  uvec3 gridSW = fit16bitLaunchGrid(workGroupsSW);
+  buildRW.indirectDispatchClustersSW.gridX = gridSW.x;
+  buildRW.indirectDispatchClustersSW.gridY = gridSW.y;
+  buildRW.indirectDispatchClustersSW.gridZ = gridSW.z;
+  #else
+  buildRW.indirectDispatchClustersSW.gridX = workGroupsSW;
+  #endif
+  buildRW.numRenderedClustersSW = numClustersSW;
+#endif
+}
+#endif
 
 #if USE_TWO_PASS_CULLING
 void setupSecondPass()
@@ -374,18 +411,18 @@ void main()
   #if USE_16BIT_DISPATCH
     // own scope, USE_EXT_MESH_SHADER declares a `grid` in this one as well
     {
-      uvec3 grid = fit16bitLaunchGrid(numRenderedClustersSW);
+      uvec3 grid = fit16bitLaunchGrid(swRasterWorkGroups(numRenderedClustersSW));
       buildRW.indirectDispatchClustersSW.gridX = grid.x;
       buildRW.indirectDispatchClustersSW.gridY = grid.y;
       buildRW.indirectDispatchClustersSW.gridZ = grid.z;
-      grid = fit16bitLaunchGrid(numRenderedClustersAlphaSW);
+      grid = fit16bitLaunchGrid(swRasterWorkGroups(numRenderedClustersAlphaSW));
       buildRW.indirectDispatchClustersAlphaSW.gridX = grid.x;
       buildRW.indirectDispatchClustersAlphaSW.gridY = grid.y;
       buildRW.indirectDispatchClustersAlphaSW.gridZ = grid.z;
     }
   #else
-    buildRW.indirectDispatchClustersSW.gridX      = numRenderedClustersSW;
-    buildRW.indirectDispatchClustersAlphaSW.gridX = numRenderedClustersAlphaSW;
+    buildRW.indirectDispatchClustersSW.gridX      = swRasterWorkGroups(numRenderedClustersSW);
+    buildRW.indirectDispatchClustersAlphaSW.gridX = swRasterWorkGroups(numRenderedClustersAlphaSW);
   #endif
     buildRW.numRenderedClustersSW      = numRenderedClustersSW;
     buildRW.numRenderedClustersAlphaSW = numRenderedClustersAlphaSW;
@@ -459,6 +496,42 @@ void main()
     buildRW.indirectDrawClusterBoxesNV.first = 0;
   #endif
     buildRW.numRenderedClusters = numRenderedClusters;
+
+  #if USE_HYBRIDPATH
+    {
+      setupHybridDraw();
+      readback.numHybridClusters = buildRW.hybridClusterCounter;
+      // `render_hybridpath_cull.comp.glsl` refills the lists for the second pass
+      buildRW.hybridClusterCounter = 0;
+    #if USE_HYBRID_SW_RASTER
+      readback.numHybridClustersSW   = buildRW.renderClusterCounterSW;
+      buildRW.renderClusterCounterSW = 0;
+    #endif
+
+      uint numRejectClusters = min(buildRW.hybridRejectCounter, build.maxRenderClusters);
+      uint numWorkGroups     = (numRejectClusters + HYBRIDPATH_CULL_WORKGROUP - 1) / HYBRIDPATH_CULL_WORKGROUP;
+    #if USE_16BIT_DISPATCH
+      uvec3 grid = fit16bitLaunchGrid(numWorkGroups);
+      buildRW.indirectDispatchHybridReject.gridX = grid.x;
+      buildRW.indirectDispatchHybridReject.gridY = grid.y;
+      buildRW.indirectDispatchHybridReject.gridZ = grid.z;
+    #else
+      buildRW.indirectDispatchHybridReject.gridX = numWorkGroups;
+    #endif
+      buildRW.numHybridRejectClusters = numRejectClusters;
+      readback.numHybridRejectClusters = buildRW.hybridRejectCounter;
+    }
+  #endif
+  }
+#endif
+#if USE_HYBRIDPATH
+  else if (push.setup == BUILD_SETUP_HYBRID_DRAW)
+  {
+    setupHybridDraw();
+    readback.numHybridClusters2 = buildRW.hybridClusterCounter;
+  #if USE_HYBRID_SW_RASTER
+    readback.numHybridClustersSW += buildRW.renderClusterCounterSW;
+  #endif
   }
 #endif
 #if USE_PARTITION_EARLY_OUT

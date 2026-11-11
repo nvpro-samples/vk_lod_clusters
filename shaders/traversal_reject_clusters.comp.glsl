@@ -117,6 +117,7 @@ bool queryIsVisible(mat4x3 instanceTransform, BBox bbox, inout bool outRenderClu
 
   vec4 clipMin;
   vec4 clipMax;
+  vec2 clipExtent;
   bool clipValid;
 
 #if USE_CLUSTER_OCCLUSION_CULLING
@@ -125,16 +126,16 @@ bool queryIsVisible(mat4x3 instanceTransform, BBox bbox, inout bool outRenderClu
   bool useOcclusion = false;
 #endif
 
-  bool inFrustum = intersectFrustum(build.cullViewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
+  bool inFrustum = intersectFrustum(build.cullViewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid, clipExtent);
   bool isVisible = inFrustum &&
     (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, view.cullMinPixelSize) && intersectHiz(clipMin, clipMax, 1)));
 
 #if USE_SW_RASTER
   // check if sw rasterization is okay to use (not near/far clipped and smaller than threshold)
   vec3 bboxDim       = bboxMax - bboxMin;
-  float relativeSize = bbox.longestEdge / length(bboxDim);
+  float relativeSize = swRasterRelativeSize(bbox.longestEdge / length(bboxDim), instanceTransform);
 
-  if (isVisible && clipMin.z > 0 && clipMax.z < 1 && clipValid && !intersectSize(clipMin, clipMax, build.swRasterThreshold, relativeSize))
+  if (isVisible && clipMin.z > 0 && clipMax.z < 1 && clipValid && !intersectSize(clipExtent, build.swRasterThreshold, relativeSize))
   {
     outRenderClusterSW = true;
   }

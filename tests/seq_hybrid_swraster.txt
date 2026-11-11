@@ -1,0 +1,173 @@
+# Hybrid path: --swraster x --swrasterthreshold, small opaque clusters of both raster passes
+# go to the compute raster. A large threshold sends nearly all clusters there.
+#
+# Every configuration runs twice: from a static close view into the grid, where most
+# instances are hidden behind the nearest bunnies, and as `_motion` along a sideways
+# camera path, which is what reaches the second raster pass (disocclusion). The static
+# view is camera path 1, a held path overrides --camerastring.
+# --hybridmatchcheck traces the primary ray as well and logs an error when more pixels
+# disagree with the raster than edge rounding explains.
+
+SEQUENCE "hy_sw_t8"
+--sequenceframes 32
+--sequenceresetframes 8
+--renderer 3
+--hybridmatchcheck 1
+--dlss 0
+--culling 1
+--streaming 1
+--gridunique 0
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--hitstreaming 0
+--addcamerapath "smooth 1 loop 1 dur 4 ; {0.185, 1.860, 1.199}, {-0.691, 1.203, 0.323}, {0, 1, 0}, {60} ; {0.893, 1.860, 0.491}, {0.017, 1.203, -0.385}, {0, 1, 0}, {60} ; {0.185, 1.860, 1.199}, {-0.691, 1.203, 0.323}, {0, 1, 0}, {60}"
+--addcamerapath "smooth 0 loop 0 dur 1 ; {0.539, 1.860, 0.845}, {-0.337, 1.203, -0.031}, {0, 1, 0}, {60} ; {0.539, 1.860, 0.845}, {-0.337, 1.203, -0.031}, {0, 1, 0}, {60}"
+--swraster 1
+--swrasterthreshold 8
+--culling 1
+--rayquery 0
+--dlss 0
+--visualize 0
+--loderror 1
+--hybridmatchcheck 1
+--renderclusterbits 20
+--runcamerapath 1 1
+
+SEQUENCE "hy_sw_t8_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_sw_t8_err01"
+--swraster 1
+--swrasterthreshold 8
+--culling 1
+--rayquery 0
+--dlss 0
+--visualize 0
+--loderror 0.1
+--hybridmatchcheck 1
+--renderclusterbits 20
+--runcamerapath 1 1
+
+SEQUENCE "hy_sw_t8_err01_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_sw_t64"
+--swraster 1
+--swrasterthreshold 64
+--culling 1
+--rayquery 0
+--dlss 0
+--visualize 0
+--loderror 1
+--hybridmatchcheck 1
+--renderclusterbits 20
+--runcamerapath 1 1
+
+SEQUENCE "hy_sw_t64_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_sw_t64_rayquery"
+--swraster 1
+--swrasterthreshold 64
+--culling 1
+--rayquery 1
+--dlss 0
+--visualize 0
+--loderror 1
+--hybridmatchcheck 1
+--renderclusterbits 20
+--runcamerapath 1 1
+
+SEQUENCE "hy_sw_t64_rayquery_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_sw_t64_dlss"
+--swraster 1
+--swrasterthreshold 64
+--culling 1
+--rayquery 0
+--dlss 1
+--visualize 0
+--loderror 1
+--hybridmatchcheck 1
+--renderclusterbits 20
+--runcamerapath 1 1
+
+SEQUENCE "hy_sw_t64_dlss_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_sw_t64_vis2"
+--swraster 1
+--swrasterthreshold 64
+--culling 1
+--rayquery 0
+--dlss 0
+--visualize 2
+--loderror 1
+--hybridmatchcheck 1
+--renderclusterbits 20
+--runcamerapath 1 1
+
+SEQUENCE "hy_sw_t64_vis2_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_sw_t64_vis4"
+--swraster 1
+--swrasterthreshold 64
+--culling 1
+--rayquery 0
+--dlss 0
+--visualize 4
+--loderror 1
+--hybridmatchcheck 1
+--renderclusterbits 20
+--runcamerapath 1 1
+
+SEQUENCE "hy_sw_t64_vis4_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_sw_t64_vis10"
+--swraster 1
+--swrasterthreshold 64
+--culling 1
+--rayquery 0
+--dlss 0
+--visualize 10
+--loderror 1
+--hybridmatchcheck 1
+--renderclusterbits 20
+--runcamerapath 1 1
+
+SEQUENCE "hy_sw_t64_vis10_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_sw_t64_limit"
+--swraster 1
+--swrasterthreshold 64
+--culling 1
+--rayquery 0
+--dlss 0
+--visualize 0
+--loderror 1
+--hybridmatchcheck 0
+--renderclusterbits 12
+--runcamerapath 1 1
+
+SEQUENCE "hy_sw_t64_limit_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_sw_t64_cull0"
+--swraster 1
+--swrasterthreshold 64
+--culling 0
+--rayquery 0
+--dlss 0
+--visualize 0
+--loderror 1
+--hybridmatchcheck 1
+--renderclusterbits 20
+--runcamerapath 1 1
+
+SEQUENCE "hy_sw_t64_cull0_motion"
+--runcamerapath 0 32

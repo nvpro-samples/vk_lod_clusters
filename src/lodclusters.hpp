@@ -29,6 +29,8 @@ public:
   {
     RENDERER_RASTER_CLUSTERS_LOD,
     RENDERER_RAYTRACE_CLUSTERS_LOD,
+    RENDERER_PATHTRACE_CLUSTERS_LOD,
+    RENDERER_HYBRID_CLUSTERS_LOD,
   };
 
   enum ClusterConfig
@@ -239,6 +241,7 @@ private:
 #endif
   bool           m_dlssDelayLoad          = true;
   bool           m_streamingResetRequest  = false;  // one-shot, cleared once applied
+  bool           m_streamingKeepPositions = false;
   int            m_frames                 = 0;
   double         m_animTime               = 0;
   ScreenshotMode m_sequenceScreenshotMode = SCREENSHOT_OFF;
@@ -260,6 +263,9 @@ private:
   uint32_t             m_statsSampleCount    = 0;
   Renderer::FrameStats m_statsTotal          = {};
   uint64_t             m_statsProfilerResets = 0;
+  // --hybridmatchcheck frames over the edge budget since the last report
+  uint32_t m_hybridMatchFailedFrames = 0;
+  uint32_t m_hybridMatchWorst        = 0;
 
   Tweak m_tweak;
   Tweak m_tweakLast;
@@ -405,6 +411,15 @@ private:
 
   void initRenderer(RendererType rtype);
   void deinitRenderer();
+  // path tracing and hybrid are the ray tracing renderer with path tracing
+  bool usesRayTracing() const { return m_tweak.renderer != RENDERER_RASTER_CLUSTERS_LOD; }
+  bool usesPathTracing() const
+  {
+    return m_tweak.renderer == RENDERER_PATHTRACE_CLUSTERS_LOD || m_tweak.renderer == RENDERER_HYBRID_CLUSTERS_LOD;
+  }
+  void resolvePathtraceRenderer();
+  // set when --pathtrace was parsed, see resolvePathtraceRenderer
+  bool m_pathtraceParsed = false;
 
   void updateImguiImage();
 
@@ -413,6 +428,7 @@ private:
   void          updatedSceneGrid(const Scene& scene);
 
   void handleChanges();
+  void updateDerivedStreamingConfig();
   void applyCameraString();
 
   // Camera path (see camera_path.hpp)

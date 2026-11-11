@@ -202,3 +202,42 @@ void computeRasterTextureGradients(vec2 pos0,
   texGradDdx = interpolateTexCoord(baryDdx, uv0, uv1, uv2) * view.texGradScale * view.texLodBiasScale;
   texGradDdy = interpolateTexCoord(baryDdy, uv0, uv1, uv2) * view.texGradScale * view.texLodBiasScale;
 }
+
+// clip-space vertex as rasterized
+vec4 instanceClipPos(RenderInstance instance, vec3 oPos)
+{
+  vec3 wPos = vec4(oPos, 1.0) * instance.worldMatrix;
+  return view.viewProjMatrixRender * vec4(wPos, 1.0);
+}
+
+// Texture LOD of a rasterized triangle at a pixel center: analytic perspective correct barycentric
+// derivatives from the clip-space vertices (2D homogeneous, vertices behind the eye are fine).
+// The hybrid raster alpha test and the visibility buffer resolve evaluate the same, so both pick one lod.
+TexLOD makePixelTexLOD(vec4 hPos0, vec4 hPos1, vec4 hPos2, vec2 pixel, vec2 uv0, vec2 uv1, vec2 uv2)
+{
+  // edge functions, the adjugate of the vertex matrix; bary = e / sum(e)
+  vec3 r0 = cross(hPos1.xyw, hPos2.xyw);
+  vec3 r1 = cross(hPos2.xyw, hPos0.xyw);
+  vec3 r2 = cross(hPos0.xyw, hPos1.xyw);
+
+  vec2  ndcPerPixel = 2.0 / view.viewportf;
+  vec3  ndc         = vec3(pixel * ndcPerPixel - 1.0, 1.0);
+  vec3  e           = vec3(dot(r0, ndc), dot(r1, ndc), dot(r2, ndc));
+  vec3  ex          = vec3(r0.x, r1.x, r2.x) * ndcPerPixel.x;
+  vec3  ey          = vec3(r0.y, r1.y, r2.y) * ndcPerPixel.y;
+  float s           = e.x + e.y + e.z;
+  vec3  baryDdx     = (ex * s - e * (ex.x + ex.y + ex.z)) / (s * s);
+  vec3  baryDdy     = (ey * s - e * (ey.x + ey.y + ey.z)) / (s * s);
+
+  vec2 gradX = interpolateTexCoord(baryDdx, uv0, uv1, uv2) * view.texGradScale;
+  vec2 gradY = interpolateTexCoord(baryDdy, uv0, uv1, uv2) * view.texGradScale;
+
+  TexLOD tl;
+#if TEXTURE_LOD_MODE == TEXLODMODE_LOD
+  tl.lodBase = 0.5 * log2(max(max(dot(gradX, gradX), dot(gradY, gradY)), 1e-38)) + view.texLodBias;
+#else
+  tl.gradX = gradX * view.texLodBiasScale;
+  tl.gradY = gradY * view.texLodBiasScale;
+#endif
+  return tl;
+}

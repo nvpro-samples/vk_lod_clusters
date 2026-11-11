@@ -155,19 +155,40 @@ vec3 visualizeColor(uint visData, uint instanceID)
         return vec3(0.9, 0.9, 0.1);
       }
     #endif
+    #if USE_BLAS_DEDUP
+      BlasCandidateInfo candidate = build.blasCandidateInfos.d[blasBuildIndex];
+      if (candidate.representative != blasBuildIndex || (candidate.flags & BLAS_CANDIDATE_HAS_DUPLICATES) != 0)
+      {
+        // another instance's blas as well, but found after traversal via deduplication.
+        return vec3(0.95, 0.45, 0.75);
+      }
+    #endif
       // own blas, built for this instance alone in this frame
       return vec3(0.9, 0.1, 0.1);
     }
+
+    bool usesOwnBlas = !lowDetail;
 
   #if USE_BLAS_REUSE
     if (!lowDetail && (blasBuildIndex & (BLAS_BUILD_INDEX_SHARE_BIT | BLAS_BUILD_INDEX_CACHE_BIT)) != 0)
     {
       // intentionally keep CACHE_BIT here for colorization
-      instanceID = blasBuildIndex & ~(BLAS_BUILD_INDEX_SHARE_BIT);
+      instanceID  = blasBuildIndex & ~(BLAS_BUILD_INDEX_SHARE_BIT);
+      usesOwnBlas = false;
     }
   #endif
-  #if !USE_BLAS_SHARING
-    // every instance builds its own blas, so color by geometry to show which copies are unique
+  #if USE_BLAS_DEDUP
+    if (usesOwnBlas)
+    {
+      // instances that were deduplicated onto the same blas get its color.
+      // This is a candidate index, not an instanceID, so the colors differ from
+      // a run without deduplication.
+      instanceID = build.blasCandidateInfos.d[blasBuildIndex].representative;
+    }
+  #endif
+  #if !USE_BLAS_SHARING && !USE_BLAS_DEDUP
+    // every instance builds its own blas, so color by geometry to show which copies are unique,
+    // dedup colors by its representative instead
     if (!lowDetail && (blasBuildIndex & BLAS_BUILD_INDEX_CACHE_BIT) == 0)
     {
       instanceID = instances[instanceID].geometryID;
@@ -461,6 +482,15 @@ vec3 addWireframe(vec3 color, vec3 barycentrics, bool frontFacing, vec3 barycent
 
 #if SUPPORTS_RT == 1
 
+#ifndef USE_RAYQUERY
+#define USE_RAYQUERY 0
+#endif
+// the pixel, a ray query compute shader defines its own
+#ifndef RT_LAUNCH_ID
+#define RT_LAUNCH_ID gl_LaunchIDEXT.xy
+#define RT_LAUNCH_SIZE gl_LaunchSizeEXT.xy
+#endif
+
 uint wangHash(uint seed)
 {
   seed = (seed ^ 61) ^ (seed >> 16);
@@ -575,9 +605,9 @@ float ambientOcclusion(vec3 wPos, vec3 wNormal, uint32_t sampleCount, float radi
 {
   if (sampleCount == 0) return 0.7f;
 #if USE_DLSS
-  uint32_t seed = xxhash32(uvec3(gl_LaunchIDEXT.x, gl_LaunchIDEXT.y, view.frame));
+  uint32_t seed = xxhash32(uvec3(RT_LAUNCH_ID.x, RT_LAUNCH_ID.y, view.frame));
 #else
-  uint32_t seed = wangHash(gl_LaunchIDEXT.x) ^ wangHash(gl_LaunchIDEXT.y);
+  uint32_t seed = wangHash(RT_LAUNCH_ID.x) ^ wangHash(RT_LAUNCH_ID.y);
 #endif
   
   vec3     z    = wNormal;
@@ -595,6 +625,14 @@ float ambientOcclusion(vec3 wPos, vec3 wNormal, uint32_t sampleCount, float radi
     vec3 wDirection  = vec3(cos(r1) * sq, sin(r1) * sq, sqrt(r2));
     wDirection       = wDirection.x * x + wDirection.y * y + wDirection.z * z;
     RAYHITAO_HIT     = 1.f;
+  #if USE_RAYQUERY
+    uint  flags      = gl_RayFlagsTerminateOnFirstHitEXT;
+    #if !HAS_ALPHA_TEST
+      flags |= gl_RayFlagsOpaqueEXT;
+    #endif
+    if(!rqTraceOcclusion(flags, offsetRay(wPos, wDirection, wNormal), 1e-4f, wDirection, radius, false))
+      RAYHITAO_HIT = 0.f;
+  #else
     uint mask        = 0xFF;
     uint  flags      = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT;
     #if !HAS_ALPHA_TEST
@@ -602,6 +640,7 @@ float ambientOcclusion(vec3 wPos, vec3 wNormal, uint32_t sampleCount, float radi
     #endif
     traceRayEXT(accelerationStructureEXT(build.tlasAddress), flags,
                 mask /*0xFF*/, 0, 1, 1, offsetRay(wPos, wDirection, wNormal), 1e-4f, wDirection, radius, 1);
+  #endif
     if(RAYHITAO_HIT > 0.f)
     {
       occlusion++;
@@ -628,7 +667,14 @@ float traceShadowRay(vec3 wPos, vec3 wNormal, vec3 wDirection
   float minT       = view.shadowRayMinT * (1.0f + distance(wPos, view.viewMatrixI[3].xyz) * view.shadowRayDistanceBias);
   float maxT       = 10000000.0f;
 
-  #if USE_AO_HITGROUP
+  #if USE_RAYQUERY
+    uint  flags      = gl_RayFlagsTerminateOnFirstHitEXT;
+    #if !HAS_ALPHA_TEST
+      flags |= gl_RayFlagsOpaqueEXT;
+    #endif
+    if(!rqTraceOcclusion(flags, offsetRay(wPos, wDirection, wNormal), minT, wDirection, maxT, true))
+      RAYHITAO_HIT = 0.f;
+  #elif USE_AO_HITGROUP
     uint  flags      = gl_RayFlagsTerminateOnFirstHitEXT;
     #if !HAS_ALPHA_TEST
       flags |= gl_RayFlagsOpaqueEXT;
@@ -698,7 +744,7 @@ ivec2 objectToPixel(vec3 objectPos)
 
   pPos /= pPos.w;
   pPos.xy = pPos.xy * vec2(0.5f) + vec2(0.5f);
-  pPos.xy *= vec2(gl_LaunchSizeEXT.xy);
+  pPos.xy *= vec2(RT_LAUNCH_SIZE);
   return ivec2(pPos.xy);
 }
 #endif

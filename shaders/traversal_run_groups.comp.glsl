@@ -51,6 +51,9 @@
 
 #include "shaderio.h"
 
+// counts inherited occlusion that an explicit test disagrees with in readback.debugA[6]
+#define DEBUG_CULLED_GROUP_LOD 0
+
 ////////////////////////////////////////////
 
 layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuffer
@@ -133,6 +136,9 @@ void main()
   // pull required inputs
   TraversalInfo traversalInfo = unpackTraversalInfo(build.traversalGroupInfos.d[threadReadIndex]);
   uint instanceID             = traversalInfo.instanceID;
+  // the group's metric was occluded, so are the finer metrics of its generating groups
+  bool groupOccluded          = unpackTraversalOccluded(instanceID);
+  traversalInfo.instanceID    = traversalInfo.instanceID & ~TRAVERSAL_OCCLUDED_BIT;
   // seeded at a discrete lod level, all clusters of this group are rendered
   bool forceTraverse          = unpackTraversalDiscrete(instanceID);
   uint groupIndex             = PACKED_GET(traversalInfo.packedNode, Node_packed_groupIndex);
@@ -143,16 +149,16 @@ void main()
 
   // retrieve traversal & culling related information from the child node or cluster
   TraversalMetric traversalMetric;
-#if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
+#if USE_CULLING && TARGETS_RASTERIZATION
   BBox bbox;
 #endif
 
   mat4x3 worldMatrix = transpose(instances[instanceID].worldMatrix);
   float uniformScale = computeUniformScale(worldMatrix);
   float errorScale   = 1.0;
-#if USE_CULLING && TARGETS_RAY_TRACING
+#if (USE_CULLING || USE_HYBRIDPATH) && TARGETS_RAY_TRACING
   uint visibilityState = build.instanceVisibility.d[instanceID];
-  #if USE_CULLING && !USE_FORCED_INVISIBLE_CULLING
+  #if USE_CULLING
   // instance is not primary visible, apply different error scale
   if ((visibilityState & INSTANCE_VISIBLE_BIT) == 0) errorScale = build.culledErrorScale;
   #endif
@@ -161,7 +167,29 @@ void main()
   // must match the errorScale used in traversal_run.comp.glsl so the cluster
   // render decision (which uses the negated metric test) agrees with which
   // groups the node pass opened for this instance.
-  errorScale = min(errorScale, instanceHitErrorScale(build.instanceHitScale, instanceID));
+#if USE_HYBRIDPATH
+  bool hitDemandLod = (visibilityState & INSTANCE_VISIBLE_BIT) == 0;
+#else
+  bool hitDemandLod = true;
+#endif
+  if (hitDemandLod)
+  {
+    errorScale = min(errorScale, instanceHitErrorScale(build.instanceHitScale, instanceID));
+  }
+#endif
+#if USE_CULLED_GROUP_LOD
+  // must match traversal_run.comp.glsl
+  float occludedErrorScale = build.culledErrorScale;
+  #if USE_HIT_STREAMING_LOD
+  if (hitDemandLod)
+  {
+    occludedErrorScale = min(occludedErrorScale, instanceHitErrorScale(build.instanceHitScale, instanceID));
+  }
+  #endif
+  bool testOcclusion = (visibilityState & INSTANCE_VISIBLE_BIT) != 0;
+  // clusters of a group mostly share their generating group
+  uint lastGeneratingGroup         = SHADERIO_ORIGINAL_MESH_GROUP;
+  bool lastGeneratingGroupOccluded = false;
 #endif
   mat4x3 traversalMatrix = mat4x3(build.traversalViewMatrix * toMat4(worldMatrix));
 
@@ -204,7 +232,11 @@ void main()
   Group_in groupRef = Group_in(groupAddress);
   Group group = groupRef.d;
   #if USE_BLAS_MERGING && TARGETS_RAY_TRACING
-    // handled in traversal_run
+    // handled in traversal_run, except for discrete seeds placed straight into this queue
+    if (forceTraverse)
+    {
+      streamingRegisterTraversed(group.residentID);
+    }
   #else
     streamingRegisterTraversed(group.residentID);
   #endif
@@ -230,7 +262,7 @@ void main()
     uint32_t clusterGeneratingGroup = SHADERIO_ORIGINAL_MESH_GROUP;
 
     {
-    #if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
+    #if USE_CULLING && TARGETS_RASTERIZATION
       bbox        = Group_getClusterBBox(groupRef, clusterIndex);
     #endif
       
@@ -293,22 +325,40 @@ void main()
   #endif
 
     // perform traversal & culling logic
-  #if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
+  #if USE_CULLING && TARGETS_RASTERIZATION
     bool isVisible     = queryClusterWasVisible(worldMatrix, bbox, useSW);
     isValid            = isValid && isVisible;
   #else
     const bool isVisible = true;
   #endif
-    bool traverse      = testForTraversal(traversalMatrix, uniformScale, traversalMetric, errorScale);
+    float clusterErrorScale = errorScale;
+#if USE_CULLED_GROUP_LOD
+    if (!forceCluster && testOcclusion)
+    {
+      if (clusterGeneratingGroup != lastGeneratingGroup)
+      {
+        lastGeneratingGroup         = clusterGeneratingGroup;
+        lastGeneratingGroupOccluded = groupOccluded || queryMetricOccluded(worldMatrix, traversalMetric);
+      #if DEBUG_CULLED_GROUP_LOD
+        if (groupOccluded && !queryMetricOccluded(worldMatrix, traversalMetric))
+        {
+          atomicAdd(readback.debugA[6], 1);
+        }
+      #endif
+      }
+      if (lastGeneratingGroupOccluded) clusterErrorScale = occludedErrorScale;
+    }
+#endif
+    bool traverse      = testForTraversal(traversalMatrix, uniformScale, traversalMetric, clusterErrorScale);
 #if USE_HIT_STREAMING_LOD
-    if (traverse && !forceCluster)
+    if (traverse && !forceCluster && hitDemandLod)
     {
       // lod clamp: mirrors the group-node clamp in traversal_run.comp.glsl —
       // the finer generating group only suppresses this cluster if it would
       // actually have been opened there
       traverse = streamingDemandsFiner(clusterGeneratingGroup, geometry.groupOverlapInfos,
                                        geometry.groupDemand, traversalMetric.maxQuadricError)
-                 || testForHitCameraFloor(traversalMatrix, uniformScale, traversalMetric, errorScale);
+                 || testForHitCameraFloor(traversalMatrix, uniformScale, traversalMetric, clusterErrorScale);
     }
 #endif
     bool lodAccept     = !traverse || forceCluster;                  // clusters use negated test or are forced
@@ -336,6 +386,10 @@ void main()
   #else
     // Ray tracing: single renderClusterInfos queue (no alpha / SW raster lists).
     bool renderCluster = renderClusterAny;
+  #if USE_HYBRIDPATH
+    // the instance keeps a reused blas
+    renderCluster = renderCluster && (visibilityState & INSTANCE_HYBRID_RASTER_ONLY_BIT) == 0;
+  #endif
 
     uvec4 voteClusters = subgroupBallot(renderCluster);
     uint countClusters = subgroupBallotBitCount(voteClusters);
@@ -367,6 +421,32 @@ void main()
       uint writeIndex       = offsetClusters;
       uint64s_inout(build.renderClusterInfos).d[writeIndex] = packTraversalInfo(traversalInfo);
     }
+
+  #if USE_HYBRIDPATH
+    // primary visible instances are rasterized, occluded ones only in the second pass.
+    // The blas list is not frustum culled.
+    bool hybridCluster = renderClusterAny && (visibilityState & (INSTANCE_VISIBLE_BIT | INSTANCE_HYBRID_OCCLUDED_BIT)) != 0;
+    bool hybridReject  = (visibilityState & INSTANCE_HYBRID_OCCLUDED_BIT) != 0;
+    bool hybridSW      = false;
+    #if USE_CULLING
+    if (hybridCluster)
+    {
+      BBox clusterBBox = Group_getClusterBBox(groupRef, clusterIndex);
+      #if USE_HYBRID_SW_RASTER
+      vec4 clipMin;
+      vec4 clipMax;
+      vec2 clipExtent;
+      bool clipValid;
+      hybridCluster = intersectFrustum(build.cullViewProjMatrix, clusterBBox.lo, clusterBBox.hi, worldMatrix, clipMin, clipMax, clipValid, clipExtent);
+      hybridSW      = hybridClusterUsesSW(clipMin, clipMax, clipExtent, clipValid, clusterBBox, worldMatrix, instanceID, Group_getClusterState(groupRef, clusterIndex));
+      #else
+      hybridCluster = intersectFrustumOnly(build.cullViewProjMatrix, clusterBBox.lo, clusterBBox.hi, worldMatrix);
+      #endif
+      hybridReject = hybridReject || (hybridCluster && !testForHybridFirstPass(worldMatrix, clusterBBox));
+    }
+    #endif
+    hybridAppendCluster(hybridCluster, hybridReject, hybridSW, instanceID, traversalInfo.packedNode);
+  #endif
   #endif
   }
 

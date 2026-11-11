@@ -11,6 +11,9 @@
   This compute shader rasterizes a single cluster using 64-bit atomics.
   It is a very basic implementation.
 
+  With USE_HYBRIDPATH it stores the list index and triangle instead of a color,
+  `render_hybridpath_raster_atomic.frag.glsl` turns them into visibility buffer ids.
+
 */
 
 
@@ -28,6 +31,7 @@
 #extension GL_EXT_shader_image_int64 : enable
 #extension GL_EXT_control_flow_attributes : require
 #extension GL_KHR_shader_subgroup_ballot : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
 
 
 #include "shaderio.h"
@@ -98,16 +102,17 @@ layout(set = 1, binding = 0) uniform sampler2D bindlessTextures[];
 
 ////////////////////////////////////////////
 
-#if CLUSTER_TRIANGLE_COUNT > 64
-#define COMPUTE_WORKGROUP_SIZE CLUSTER_TRIANGLE_COUNT
+// threads per cluster, a workgroup holds SW_RASTER_CLUSTERS_PER_WORKGROUP of them
+#if SW_RASTER_CLUSTERS_PER_WORKGROUP > 1
+#define SW_CLUSTER_THREADS 32
 #else
-#define COMPUTE_WORKGROUP_SIZE CLUSTER_TRIANGLE_COUNT
+#define SW_CLUSTER_THREADS CLUSTER_TRIANGLE_COUNT
 #endif
+#define COMPUTE_WORKGROUP_SIZE (SW_CLUSTER_THREADS * SW_RASTER_CLUSTERS_PER_WORKGROUP)
 
 layout(local_size_x = COMPUTE_WORKGROUP_SIZE) in;
 
-const uint MESHLET_VERTEX_ITERATIONS = ((CLUSTER_VERTEX_COUNT + COMPUTE_WORKGROUP_SIZE - 1) / COMPUTE_WORKGROUP_SIZE);
-const uint MESHLET_TRIANGLE_ITERATIONS = ((CLUSTER_TRIANGLE_COUNT + COMPUTE_WORKGROUP_SIZE - 1) / COMPUTE_WORKGROUP_SIZE);
+const uint MESHLET_VERTEX_ITERATIONS = ((CLUSTER_VERTEX_COUNT + SW_CLUSTER_THREADS - 1) / SW_CLUSTER_THREADS);
 
 ////////////////////////////////////////////
 
@@ -131,26 +136,31 @@ float edgeFunction(vec2 a, vec2 b, vec2 c, float winding)
 
 ////////////////////////////////////////////
 
-shared RasterVertex s_vertices[CLUSTER_VERTEX_COUNT];
+shared RasterVertex s_vertices[CLUSTER_VERTEX_COUNT * SW_RASTER_CLUSTERS_PER_WORKGROUP];
 #if HAS_ALPHA_TEST
-shared vec2 s_texcoords[CLUSTER_VERTEX_COUNT];
+shared vec2 s_texcoords[CLUSTER_VERTEX_COUNT * SW_RASTER_CLUSTERS_PER_WORKGROUP];
 #endif
 
 void main()
 {
-  uint workGroupID = getWorkGroupIndex(gl_WorkGroupID);
-#if USE_16BIT_DISPATCH
-  // the 2D launch grid is rounded up, so the trailing work groups have no cluster to
-  // rasterize. The load is kept uniform and the surplus groups exit after it.
+  uint workGroupID  = getWorkGroupIndex(gl_WorkGroupID);
+  uint slot         = gl_LocalInvocationID.x / SW_CLUSTER_THREADS;
+  uint lane         = gl_LocalInvocationID.x % SW_CLUSTER_THREADS;
+  uint sharedBase   = slot * CLUSTER_VERTEX_COUNT;
+  uint clusterIndex = workGroupID * SW_RASTER_CLUSTERS_PER_WORKGROUP + slot;
+#if USE_16BIT_DISPATCH || SW_RASTER_CLUSTERS_PER_WORKGROUP > 1
+  // the launch grid is rounded up, so trailing slots have no cluster to rasterize. They
+  // load a valid one and skip the work, the barrier needs all threads.
 #if HAS_ALPHA_TEST
   uint numRenderedClustersSW = build.numRenderedClustersAlphaSW;
 #else
   uint numRenderedClustersSW = build.numRenderedClustersSW;
 #endif
-  bool isValid = workGroupID < numRenderedClustersSW;
-  uint loadID  = min(workGroupID, numRenderedClustersSW - 1);
+  bool isValid = clusterIndex < numRenderedClustersSW;
+  uint loadID  = min(clusterIndex, numRenderedClustersSW - 1);
 #else
-  uint loadID = workGroupID;
+  bool isValid = true;
+  uint loadID  = clusterIndex;
 #endif
 
 #if HAS_ALPHA_TEST
@@ -159,10 +169,6 @@ void main()
   ClusterInfo cinfo = build.renderClusterInfosSW.d[loadID];
 #endif
 
-#if USE_16BIT_DISPATCH
-  if(!isValid)
-    return;
-#endif
 
   uint instanceID = cinfo.instanceID;
   uint clusterID  = cinfo.clusterID;
@@ -184,36 +190,45 @@ void main()
   vec2s_in oTexCoords = Cluster_getVertexTexCoords(clusterRef);
 #endif
 
-  uint vertMax = cluster.vertexCountMinusOne;
-  uint triMax  = cluster.triangleCountMinusOne;
+  uint vertMax  = cluster.vertexCountMinusOne;
+  uint numVerts = isValid ? vertMax + 1 : 0;
+  uint numTris  = isValid ? uint(cluster.triangleCountMinusOne) + 1 : 0;
 
 #if USE_RENDER_STATS
-  if(gl_LocalInvocationID.x == 0)
+  if(lane == 0 && isValid)
   {
   #if HAS_ALPHA_TEST
-    atomicAdd(readback.numRenderedTrianglesAlphaSW, uint(triMax + 1));
+    atomicAdd(readback.numRenderedTrianglesAlphaSW, numTris);
   #else
-    atomicAdd(readback.numRenderedTrianglesSW, uint(triMax + 1));
+    atomicAdd(readback.numRenderedTrianglesSW, numTris);
   #endif
   }
 #endif
 
   [[unroll]] for(uint i = 0; i < uint(MESHLET_VERTEX_ITERATIONS); i++)
   {
-    uint vert     = gl_LocalInvocationID.x + i * COMPUTE_WORKGROUP_SIZE;
+    uint vert     = lane + i * SW_CLUSTER_THREADS;
     uint vertLoad = min(vert, vertMax);
 
     vec3 oPos = oVertices.d[vertLoad];
+#if USE_HYBRIDPATH && HYBRID_POSITION_TRUNCATE_BITS
+    // as the CLAS build
+    oPos = uintBitsToFloat(floatBitsToUint(oPos) & ~((1u << HYBRID_POSITION_TRUNCATE_BITS) - 1u));
+#endif
     vec3 wPos = vec4(oPos, 1.0f) * instance.worldMatrix;
 #if HAS_ALPHA_TEST
     vec2 oTex = oTexCoords.d[vertLoad];
 #endif
 
-    if(vert <= vertMax)
+    if(vert < numVerts)
     {
-      s_vertices[vert] = getRasterVertex(view.viewProjMatrix * vec4(wPos, 1));
+#if USE_HYBRIDPATH
+      s_vertices[sharedBase + vert] = getRasterVertex(view.viewProjMatrixRender * vec4(wPos, 1));
+#else
+      s_vertices[sharedBase + vert] = getRasterVertex(view.viewProjMatrix * vec4(wPos, 1));
+#endif
 #if HAS_ALPHA_TEST
-      s_texcoords[vert] = oTex;
+      s_texcoords[sharedBase + vert] = oTex;
 #endif
     }
   }
@@ -227,15 +242,15 @@ void main()
   bool texValid = false;
 #endif
 
-#if COMPUTE_WORKGROUP_SIZE < CLUSTER_TRIANGLE_COUNT
-  for(uint tri = gl_LocalInvocationID.x; tri <= triMax; tri += COMPUTE_WORKGROUP_SIZE)
+#if SW_CLUSTER_THREADS < CLUSTER_TRIANGLE_COUNT
+  for(uint tri = lane; tri < numTris; tri += SW_CLUSTER_THREADS)
 #else
-  uint tri = gl_LocalInvocationID.x;
-  if(tri <= triMax)
+  uint tri = lane;
+  if(tri < numTris)
 #endif
   {
     uint triLoad = tri;
-    uvec3 indices = uvec3(localIndices.d[triLoad * 3 + 0], localIndices.d[triLoad * 3 + 1], localIndices.d[triLoad * 3 + 2]);
+    uvec3 indices = uvec3(localIndices.d[triLoad * 3 + 0], localIndices.d[triLoad * 3 + 1], localIndices.d[triLoad * 3 + 2]) + sharedBase;
 #if !USE_FORCED_TWO_SIDED
   #if USE_TWO_SIDED
     bool effectiveTwoSided = resolveTriangleTwoSided(instance, clusterRef, triLoad);
@@ -266,6 +281,10 @@ void main()
     float triArea;
 
     bool  visible = testTriangleSW(a, b, c, pixelMin, pixelMax, triArea);
+    // the cluster test projects without the jitter, a triangle at the border can reach past it
+    pixelMin = max(pixelMin, vec2(0));
+    pixelMax = min(pixelMax, view.viewportf.xy);
+    visible  = visible && all(lessThan(pixelMin, pixelMax));
     float winding = 1.0;
 #if USE_FORCED_TWO_SIDED
     if(triArea < 0)
@@ -276,7 +295,9 @@ void main()
 #endif
     if(visible)
     {
-#if USE_DEPTH_ONLY
+#if USE_HYBRIDPATH
+      uint packedColor = (loadID << HYBRIDPATH_VISBUFFER_TRIANGLE_BITS) | tri;
+#elif USE_DEPTH_ONLY
       uint packedColor = packUnorm4x8(vec4(0, 0, 0, 1));
 #else
       uint  triangleCountMinusOne = CLUSTER_TRIANGLE_COUNT - 1;
@@ -340,11 +361,12 @@ void main()
       }
 
 #if USE_RENDER_STATS
-      numRasteredTriangles += subgroupBallotBitCount(subgroupBallot(true));
+      numRasteredTriangles++;
 #endif
     }
   }
 #if USE_RENDER_STATS
+  numRasteredTriangles = subgroupAdd(numRasteredTriangles);
   if(subgroupElect())
   {
   #if HAS_ALPHA_TEST

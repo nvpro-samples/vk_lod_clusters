@@ -185,9 +185,9 @@ space. The node regex layout keeps the order of the glTF nodes.
 
 Measured on Caldera, 3 million instances of 37 thousand geometries, with the ray tracing renderer at 1600x1200 and
 clocks locked, along a walking pace camera path. The configurations are interleaved within one process, 240 frames
-each, three repetitions. Summing the render, TLAS and traversal preparation timers:
+each, three repetitions. Summing the trace, TLAS and traversal preparation timers:
 
-| | sum (us) | Render | TLAS Build | Traversal Prep |
+| | sum (us) | Trace | TLAS Build | Traversal Prep |
 | --- | --- | --- | --- | --- |
 | no BLAS caching, no early-out | 3981 | 1245 | 1931 | 805 |
 | BLAS caching and early-out | 3360 | 1263 | 1944 | 152 |

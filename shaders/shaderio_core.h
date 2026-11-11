@@ -67,6 +67,34 @@ uint murmurHash(uint idx)
   return h;
 }
 
+// murmur3 32-bit, split into the per-value mixing step and the finalizer.
+// Unlike `murmurHash` above (debug colors) this gives full avalanche, which matters
+// when the hashes are accumulated into a key that is compared for equality.
+uint murmurHash3Combine(uint h, uint k)
+{
+  k *= 0xcc9e2d51u;
+  k = (k << 15) | (k >> 17);
+  k *= 0x1b873593u;
+
+  h ^= k;
+  h = (h << 13) | (h >> 19);
+  h = h * 5u + 0xe6546b64u;
+
+  return h;
+}
+
+uint murmurHash3Finalize(uint h, uint numBytes)
+{
+  h ^= numBytes;
+  h ^= h >> 16;
+  h *= 0x85ebca6bu;
+  h ^= h >> 13;
+  h *= 0xc2b2ae35u;
+  h ^= h >> 16;
+
+  return h;
+}
+
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int32 : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable

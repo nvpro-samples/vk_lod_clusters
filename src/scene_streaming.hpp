@@ -153,6 +153,9 @@ public:
     // pin alone is a closed loop: the groups cannot age out, so the blas is never rebuilt, so
     // the pin never lifts. See `appendCachedBlasRetires`.
     bool blasCacheRetire = false;
+    // cached blas entries per geometry. 1 is the single entry that is rebuilt as residency changes,
+    // more keep a chain of immutable entries, one per level from the coarsest tail level up.
+    uint32_t blasCacheLevels = 1;
   };
 
   // called by render thread
@@ -317,6 +320,11 @@ private:
     // the age filter asked for a group this cached blas is built from, so the entry is
     // queued for retirement, see `appendCachedBlasRetires`
     bool cachedBlasRetirePending = false;
+    // `blasCacheLevels` > 1: one entry per level, `cachedBlasLevel` is the finest of them
+    uint32_t                  cachedBlasLevelMask                                 = 0;
+    nvvk::BufferSubAllocation cachedBlasLevelAllocations[SHADERIO_MAX_LOD_LEVELS] = {};
+    // retired levels are not cached again until they leave residency
+    uint32_t cachedBlasRetiredMask = 0;
   };
 
   std::vector<PersistentGeometry>       m_persistentGeometries;
@@ -410,6 +418,8 @@ private:
   size_t m_deferredCachedBlasMax = 0;
   // geometries whose live cached blas the age filter wants the groups of
   std::vector<uint32_t> m_cachedBlasRetires;
+  // `blasCacheLevels` > 1: geometries with a level left to build, one build per geometry and frame
+  std::vector<uint32_t> m_cachedBlasPending;
   // unloads refused this frame because a cached blas is built from that group
   uint32_t m_framePinnedUnloads = 0;
   // subset of those held only by a deferred cached blas, not by the live one
@@ -421,6 +431,12 @@ private:
   // built from are no longer resident - holding the allocation does not help then, its cluster
   // references are already dangling, and the early-out has to be told.
   void deferCachedBlasFree(uint32_t geometryID, PersistentGeometry& geometry, const FrameSettings& settings, bool stillBacked);
+  void deferCachedBlasFree(uint32_t                   geometryID,
+                           PersistentGeometry&        geometry,
+                           nvvk::BufferSubAllocation& allocation,
+                           uint32_t                   level,
+                           const FrameSettings&       settings,
+                           bool                       stillBacked);
   // return everything whose hold has expired
   void releaseDeferredCachedBlasFrees(const FrameSettings& settings);
   void flagUnsafeCachedBlasFree();
@@ -436,6 +452,7 @@ private:
 
 private:
   void handleBlasCaching(StreamingUpdates::TaskInfo& updateTask, const FrameSettings& settings);
+  void handleBlasCachingLevels(StreamingUpdates::TaskInfo& updateTask, const FrameSettings& settings);
   // rasterization: publishes the lod level from which on all levels are fully resident
   void handleDiscreteLod(StreamingUpdates::TaskInfo& updateTask);
   // ui convenience only, see definition

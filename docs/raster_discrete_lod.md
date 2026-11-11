@@ -15,7 +15,7 @@ The reason to do it anyway is a **hybrid renderer**, where the same scene is bot
 rasterizing primary visibility and tracing secondary rays. There the two paths have to agree on what geometry is
 resident, and that is much easier when they want the *same* geometry:
 
-* BLAS caching pins one (can be extended to multiple) discrete LoD level of a geometry in memory for as long as any instance uses the cached BLAS.
+* BLAS caching pins one discrete LoD level of a geometry, or a chain of them with `--cachinglevels`, in memory for as long as any instance uses the cached BLAS.
   If rasterization meanwhile walks the LoD DAG for a continuous cut, it pulls in a different, finer set of clusters causing divergence
   between the two and is most likely causing self-shadow or self-reflection artifacts.
 * If rasterization instead renders from the same discrete levels, the clusters it uses are the ones the cached BLAS
@@ -93,7 +93,7 @@ the device never sees a `discreteLodLevel` that disagrees with the group address
 
 ## Results and limitations
 
-The technique is off by default (`--discretelod`) as this sample doesn't yet implement a hybrid renderer.
+The technique is off by default (`--discretelod`). The [hybrid renderer](raster_hybrid.md) has its own `--hybriddiscretelod`.
 
 The *"discrete lod"* visualization (`--visualize 11`) colors each instance by how it built its cluster list:
 

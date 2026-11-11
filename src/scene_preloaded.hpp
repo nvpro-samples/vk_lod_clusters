@@ -46,6 +46,8 @@ public:
   size_t getGeometrySize() const { return m_geometrySize; }
   size_t getOperationsSize() const { return m_operationsSize + m_clasOperationsSize; }
 
+  const Config& getConfig() const { return m_config; }
+
 private:
   struct Geometry
   {

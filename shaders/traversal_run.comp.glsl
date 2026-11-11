@@ -103,6 +103,8 @@
 #include "shaderio.h"
 
 #define DEBUG_TRAVERSAL 0
+// counts inherited occlusion that an explicit test disagrees with in readback.debugA[5]
+#define DEBUG_CULLED_GROUP_LOD 0
 
 ////////////////////////////////////////////
 
@@ -216,6 +218,7 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   traversalInfo.packedNode               = subgroupShuffle(subgroupTasks.packedNode, taskID);
   
   uint instanceID     = traversalInfo.instanceID;
+  bool parentOccluded = unpackTraversalOccluded(instanceID);
   bool forceCluster   = false;
   // seeded at a discrete lod level, all nodes below are descended
   bool forceTraverse  = unpackTraversalDiscrete(instanceID);
@@ -225,7 +228,7 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
 
   // retrieve traversal & culling related information from the child node or cluster
   TraversalMetric traversalMetric;
-#if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
+#if USE_CULLING && TARGETS_RASTERIZATION
   BBox bbox;
 #endif
 
@@ -235,7 +238,7 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
 
     Node childNode      = geometry.nodes.d[childNodeIndex];
     traversalMetric     = childNode.traversalMetric;
-  #if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
+  #if USE_CULLING && TARGETS_RASTERIZATION
     bbox                = geometry.nodeBboxes.d[childNodeIndex];
   #endif
     // prepare to enqueue this child node later, if metric evaluates properly
@@ -247,17 +250,36 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   mat4x3 worldMatrix = transpose(instances[instanceID].worldMatrix);
   float uniformScale = computeUniformScale(worldMatrix);
   float errorScale   = 1.0;
-#if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
+#if (USE_CULLING || USE_BLAS_MERGING || USE_HYBRIDPATH) && TARGETS_RAY_TRACING
+  uint visibilityState = build.instanceVisibility.d[instanceID];
+  #if USE_CULLING
+    // instance is not primary visible, apply different error scale
+    if ((visibilityState & INSTANCE_VISIBLE_BIT) == 0) errorScale = build.culledErrorScale;
+  #endif
+#endif
+#if USE_CULLING && TARGETS_RASTERIZATION
   bool threadValid   = isValid;
   bool isVisible     = queryWasVisible(worldMatrix, bbox.lo, bbox.hi);
   isValid            = isValid && isVisible;
 #endif
-#if (USE_CULLING || USE_BLAS_MERGING) && TARGETS_RAY_TRACING
-  uint visibilityState = build.instanceVisibility.d[instanceID];
-  #if USE_CULLING && !USE_FORCED_INVISIBLE_CULLING
-    // instance is not primary visible, apply different error scale
-    if ((visibilityState & INSTANCE_VISIBLE_BIT) == 0) errorScale = build.culledErrorScale;
+#if USE_CULLED_GROUP_LOD
+  // occluded parts of a visible instance, children of an occluded node are occluded
+  bool occluded = parentOccluded;
+  if (!occluded && !forceTraverse && (visibilityState & INSTANCE_VISIBLE_BIT) != 0)
+  {
+    occluded = queryMetricOccluded(worldMatrix, traversalMetric);
+  }
+  #if DEBUG_CULLED_GROUP_LOD
+  if (isValid && parentOccluded && !queryMetricOccluded(worldMatrix, traversalMetric))
+  {
+    atomicAdd(readback.debugA[5], 1);
+  }
   #endif
+  if (occluded)
+  {
+    errorScale = build.culledErrorScale;
+    traversalInfo.instanceID |= TRAVERSAL_OCCLUDED_BIT;
+  }
 #endif
 #if USE_HIT_STREAMING_LOD
   // per-instance finer-detail demand (magnifier): a smaller errorScale keeps the
@@ -265,7 +287,16 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   // tests below become reachable. min() overrides a mirror-only instance's
   // culledErrorScale; the per-group `streamingDemandsFiner` clamp still gates which
   // finer groups actually open.
-  errorScale = min(errorScale, instanceHitErrorScale(build.instanceHitScale, instanceID));
+  // Hybrid has no primary rays, visible instances follow the camera.
+#if USE_HYBRIDPATH
+  bool hitDemandLod = (visibilityState & INSTANCE_VISIBLE_BIT) == 0;
+#else
+  bool hitDemandLod = true;
+#endif
+  if (hitDemandLod)
+  {
+    errorScale = min(errorScale, instanceHitErrorScale(build.instanceHitScale, instanceID));
+  }
 #endif
   mat4x3 traversalMatrix = mat4x3(build.traversalViewMatrix * toMat4(worldMatrix));
   bool traverse      = forceTraverse || testForTraversal(traversalMatrix, uniformScale, traversalMetric, errorScale);
@@ -325,7 +356,8 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
 #endif
 
 #if USE_HIT_STREAMING_LOD
-  if (traverseNode && isGroup)
+  // a discrete seed renders its whole level, as its cached blas holds it
+  if (traverseNode && isGroup && hitDemandLod && !forceTraverse)
   {
     // lod clamp: only open a group (render finer content, request it when not
     // resident, keep it alive) when a recent ray footprint demands finer detail.
@@ -345,7 +377,8 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
     // when streaming we might need to bail out here, if the child group isn't resident
     // or if we are a merged instance
     #if USE_BLAS_MERGING && TARGETS_RAY_TRACING
-      if (isGroup && ((visibilityState & INSTANCE_USES_MERGED_BIT) != 0))
+      // the hybrid path's raster-only traversal still needs the groups
+      if (isGroup && ((visibilityState & (INSTANCE_USES_MERGED_BIT | INSTANCE_HYBRID_RASTER_ONLY_BIT)) == INSTANCE_USES_MERGED_BIT))
       {
         // no need to actually traverse the group in a merged instance, we are only
         // here to tag residency for streaming requests

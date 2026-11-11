@@ -119,6 +119,15 @@ void main()
     // if this groups' geometry requires a merged instance blas, then contribute all resident highest
     // detail clusters to it.
     uint mergedInstanceID = build.geometryBuildInfos.d[geometryID].mergedInstanceID;
+  #if USE_HYBRIDPATH
+    // a visible instance's blas is its rasterized cut, unless it is traversed for the raster only.
+    // `instance_classify_lod` keeps such instances out of the election, this only guards it.
+    if (mergedInstanceID != ~0
+        && (uint(build.instanceVisibility.d[mergedInstanceID]) & (INSTANCE_VISIBLE_BIT | INSTANCE_HYBRID_RASTER_ONLY_BIT)) == INSTANCE_VISIBLE_BIT)
+    {
+      mergedInstanceID = ~0;
+    }
+  #endif
     if (mergedInstanceID != ~0)
     {
       Geometry geometry  = geometries[geometryID];

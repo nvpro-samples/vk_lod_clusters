@@ -178,14 +178,129 @@ void rasterBinning(uint clusterID, uint instanceID, bool useAlpha, bool useSW, b
 }
 #endif
 
+#if USE_HYBRIDPATH
+// Hybrid path, see docs/raster_hybrid.md: primary visible instances are rasterized from this
+// frame's traversal and their blas must match that cut.
+
+// Returns INSTANCE_VISIBLE_BIT, INSTANCE_HYBRID_OCCLUDED_BIT or 0. The raster needs this
+// frame's frustum. Last frame's hiz can only judge occlusion where last frame's frustum saw
+// the instance. Occluded instances are treated like culled ones by ray tracing, the second
+// raster pass draws them if they reappear.
+uint getHybridVisibility(bool isVisibleLast, bool inFrustumLast, vec3 bboxLo, vec3 bboxHi, mat4x3 worldMatrix)
+{
+#if USE_CULLING
+  if (!intersectFrustumOnly(build.cullViewProjMatrix, bboxLo, bboxHi, worldMatrix)) return 0;
+  return isVisibleLast || !inFrustumLast ? INSTANCE_VISIBLE_BIT : INSTANCE_HYBRID_OCCLUDED_BIT;
+#else
+  return INSTANCE_VISIBLE_BIT;
+#endif
+}
+
+#if USE_CULLING
+// The first raster pass draws what last frame's hiz saw, or could not judge.
+bool testForHybridFirstPass(mat4x3 worldMatrix, BBox bbox)
+{
+  vec4 clipMin;
+  vec4 clipMax;
+  bool clipValid;
+  bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, bbox.lo, bbox.hi, worldMatrix, clipMin, clipMax, clipValid);
+  return !inFrustum || !clipValid || intersectHiz(clipMin, clipMax, 0);
+}
+#endif
+
+// The geometry's longest edge is that of its finest level, the low detail cluster's
+// triangles span about the whole bbox.
+bool hybridLowDetailUsesSW(bool append, bool reject, uint instanceID, RenderInstance instance, Geometry geometry)
+{
+#if USE_HYBRID_SW_RASTER
+  if (!append || reject) return false;
+  vec4 clipMin;
+  vec4 clipMax;
+  vec2 clipExtent;
+  bool clipValid;
+  intersectFrustum(build.cullViewProjMatrix, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix), clipMin, clipMax, clipValid, clipExtent);
+  BBox bbox        = geometry.bbox;
+  bbox.longestEdge = length(bbox.hi - bbox.lo);
+  return hybridClusterUsesSW(clipMin, clipMax, clipExtent, clipValid, bbox, transpose(instance.worldMatrix), instanceID,
+                             uint(instance.lowDetailClusterStateBits));
+#else
+  return false;
+#endif
+}
+
+// subgroup uniform, all lanes must call. `reject` appends to the second pass' candidates,
+// `useSW` to the compute raster's list.
+void hybridAppendCluster(bool append, bool reject, bool useSW, uint instanceID, uint clusterID)
+{
+#if !USE_HYBRID_SW_RASTER
+  useSW = false;
+#endif
+  bool  appendFirst  = append && !reject && !useSW;
+  bool  appendSW     = append && !reject && useSW;
+  bool  appendReject = append && reject;
+  uvec4 voteFirst    = subgroupBallot(appendFirst);
+  uvec4 voteReject   = subgroupBallot(appendReject);
+  uint  offsetFirst  = 0;
+  uint  offsetReject = 0;
+#if USE_HYBRID_SW_RASTER
+  uvec4 voteSW   = subgroupBallot(appendSW);
+  uint  offsetSW = 0;
+#endif
+  if (subgroupElect())
+  {
+    uint countFirst  = subgroupBallotBitCount(voteFirst);
+    uint countReject = subgroupBallotBitCount(voteReject);
+    if (countFirst != 0) offsetFirst = atomicAdd(buildRW.hybridClusterCounter, countFirst);
+    if (countReject != 0) offsetReject = atomicAdd(buildRW.hybridRejectCounter, countReject);
+#if USE_HYBRID_SW_RASTER
+    uint countSW = subgroupBallotBitCount(voteSW);
+    if (countSW != 0) offsetSW = atomicAdd(buildRW.renderClusterCounterSW, countSW);
+#endif
+  }
+  offsetFirst  = subgroupBroadcastFirst(offsetFirst) + subgroupBallotExclusiveBitCount(voteFirst);
+  offsetReject = subgroupBroadcastFirst(offsetReject) + subgroupBallotExclusiveBitCount(voteReject);
+
+  TraversalInfo info;
+  info.instanceID = instanceID;
+  info.packedNode = clusterID;
+  if (appendFirst && offsetFirst < build.maxRenderClusters)
+  {
+    uint64s_inout(build.hybridClusterInfos).d[offsetFirst] = packTraversalInfo(info);
+  }
+  if (appendReject && offsetReject < build.maxRenderClusters)
+  {
+    uint64s_inout(build.hybridRejectClusterInfos).d[offsetReject] = packTraversalInfo(info);
+  }
+#if USE_HYBRID_SW_RASTER
+  offsetSW = subgroupBroadcastFirst(offsetSW) + subgroupBallotExclusiveBitCount(voteSW);
+  if (appendSW && offsetSW < build.maxRenderClusters)
+  {
+    uint64s_inout(build.renderClusterInfosSW).d[offsetSW] = packTraversalInfo(info);
+  }
+#endif
+}
+#endif
+
 // Splits the discrete lod tag from a traversal item's instanceID.
 // Returns true if the item was seeded at a discrete lod level.
 bool unpackTraversalDiscrete(inout uint instanceID)
 {
-#if USE_DISCRETE_LOD
+#if USE_DISCRETE_LOD || USE_HYBRIDPATH
   bool isDiscrete = (instanceID & TRAVERSAL_DISCRETE_BIT) != 0;
   instanceID      = instanceID & ~TRAVERSAL_DISCRETE_BIT;
   return isDiscrete;
+#else
+  return false;
+#endif
+}
+
+// Splits the occlusion tag from a traversal item's instanceID.
+bool unpackTraversalOccluded(inout uint instanceID)
+{
+#if USE_CULLED_GROUP_LOD
+  bool isOccluded = (instanceID & TRAVERSAL_OCCLUDED_BIT) != 0;
+  instanceID      = instanceID & ~TRAVERSAL_OCCLUDED_BIT;
+  return isOccluded;
 #else
   return false;
 #endif
@@ -211,6 +326,25 @@ void TraversalMetric_setSphere(inout TraversalMetric metric, vec3 sphere)
   metric.boundingSphereY = sphere.y;
   metric.boundingSphereZ = sphere.z;
 }
+
+#if USE_CULLED_GROUP_LOD
+// Ray tracing: parts of a primary visible instance whose lod metric sphere failed
+// last frame's hiz use `culledErrorScale`. It depends on the metric alone, so the
+// node test of a group and the generating group test of its clusters agree.
+// A metric sphere contains all finer ones, so occlusion is inherited down the tree.
+bool queryMetricOccluded(mat4x3 instanceTransform, TraversalMetric metric)
+{
+  vec3 sphereCenter = TraversalMetric_getSphere(metric);
+  vec3 sphereExtent = vec3(metric.boundingSphereRadius);
+
+  vec4 clipMin;
+  vec4 clipMax;
+  bool clipValid;
+  bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, sphereCenter - sphereExtent, sphereCenter + sphereExtent,
+                                    instanceTransform, clipMin, clipMax, clipValid);
+  return !inFrustum || (clipValid && !intersectHiz(clipMin, clipMax, 0));
+}
+#endif
 
 // key function for the lod metric evaluation
 // returns true if error is over threshold ("coarse enough")
@@ -358,7 +492,7 @@ InstanceLodClassification classifyInstanceLod(Geometry geometry,
   return classification;
 }
 
-#if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
+#if USE_CULLING && TARGETS_RASTERIZATION
 
 // Node visibility test used by the lod traversal. Unlike clusters, nodes are
 // tested against the best available hiz.
@@ -414,6 +548,7 @@ bool queryClusterWasVisible(mat4x3 instanceTransform, BBox bbox, inout bool outR
 
   vec4 clipMin;
   vec4 clipMax;
+  vec2 clipExtent;
   bool clipValid;
 
 #if USE_CLUSTER_OCCLUSION_CULLING
@@ -427,12 +562,12 @@ bool queryClusterWasVisible(mat4x3 instanceTransform, BBox bbox, inout bool outR
   // single test against that pass' hiz is enough. The clusters the first pass
   // rejected are re-tested by `traversal_reject_clusters.comp.glsl` instead.
   bool useLast   = build.cullPass == 0;
-  bool inFrustum = intersectFrustum(useLast ? build.cullViewProjMatrixLast : build.cullViewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
+  bool inFrustum = intersectFrustum(useLast ? build.cullViewProjMatrixLast : build.cullViewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid, clipExtent);
   bool isVisible = inFrustum &&
     (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, view.cullMinPixelSize) && intersectHiz(clipMin, clipMax, useLast ? 0 : 1)));
 #else
   // test if visible in last frame
-  bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
+  bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid, clipExtent);
   bool isVisible = inFrustum &&
     (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, view.cullMinPixelSize) && intersectHiz(clipMin, clipMax, 0)));
 
@@ -447,7 +582,7 @@ bool queryClusterWasVisible(mat4x3 instanceTransform, BBox bbox, inout bool outR
     }
     else {
       // test against current
-      inFrustum = intersectFrustum(build.cullViewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
+      inFrustum = intersectFrustum(build.cullViewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid, clipExtent);
       isVisible = inFrustum &&
         (!clipValid || (intersectSize(clipMin, clipMax, view.cullMinPixelSize) && intersectHiz(clipMin, clipMax, 1)));
     }
@@ -458,11 +593,10 @@ bool queryClusterWasVisible(mat4x3 instanceTransform, BBox bbox, inout bool outR
 #if USE_SW_RASTER
   // check if sw rasterization is okay to use (not near/far clipped and smaller than threshold)
 
-  // TODO should embed this relative longest edge in bbox instead
   vec3 bboxDim       = bboxMax - bboxMin;
-  float relativeSize = bbox.longestEdge / length(bboxDim);
+  float relativeSize = swRasterRelativeSize(bbox.longestEdge / length(bboxDim), instanceTransform);
 
-  if (isVisible && clipMin.z > 0 && clipMax.z < 1 && clipValid && !intersectSize(clipMin, clipMax, build.swRasterThreshold, relativeSize))
+  if (isVisible && clipMin.z > 0 && clipMax.z < 1 && clipValid && !intersectSize(clipExtent, build.swRasterThreshold, relativeSize))
   {
     outRenderClusterSW = true;
   }
@@ -531,6 +665,21 @@ bool testForHitCameraFloor(mat4x3 instanceToEye, float uniformScale, TraversalMe
          && testForTraversal(instanceToEye, uniformScale, metric, errorScale * build.hitCameraErrorScale);
 }
 #endif
+
+// The cached blas level an instance needing `lodLevelMin` uses: its own, else the closest coarser
+// within `tolerance`, else the closest finer.
+uint pickCachedLevel(uint cachedLevelMask, uint lodLevelMin, uint tolerance)
+{
+  uint finerMask   = (2u << lodLevelMin) - 1u;
+  uint coarserMask = ((2u << min(lodLevelMin + tolerance, 31u)) - 1u) & ~finerMask;
+  if ((cachedLevelMask & (1u << lodLevelMin)) != 0)
+    return lodLevelMin;
+  if ((cachedLevelMask & coarserMask) != 0)
+    return findLSB(cachedLevelMask & coarserMask);
+  if ((cachedLevelMask & finerMask) != 0)
+    return findMSB(cachedLevelMask & finerMask);
+  return TRAVERSAL_INVALID_LOD_LEVEL;
+}
 
 // Whether a geometry takes part in the sharing election, which needs at least two
 // instances. Caching does not depend on this, it only needs `lodLevelMin`.

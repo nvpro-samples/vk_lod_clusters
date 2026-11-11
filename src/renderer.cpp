@@ -666,4 +666,26 @@ float Renderer::updateLodPixelError(Resources& res, RenderScene& rscene, const F
   return (2.0f * tanf(frame.traversalFov * 0.5f) * errorSizeInPixels / frame.traversalViewHeight);
 }
 
+// cluster rasterization shared by the raster and the hybrid renderer
+
+void cmdDrawMeshTasksIndirect(VkCommandBuffer cmd, bool useEXTmeshShader, VkBuffer buffer, VkDeviceSize offsetEXT, VkDeviceSize offsetNV)
+{
+  if(useEXTmeshShader)
+  {
+    vkCmdDrawMeshTasksIndirectEXT(cmd, buffer, offsetEXT, 1, 0);
+  }
+  else
+  {
+    vkCmdDrawMeshTasksIndirectNV(cmd, buffer, offsetNV, 1, 0);
+  }
+}
+
+void cmdBuildPassHiz(VkCommandBuffer cmd, Resources& res, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler, bool twoPass, uint32_t pass)
+{
+  if(!frame.freezeCulling)
+  {
+    res.cmdBuildHiz(cmd, frame, profiler, twoPass ? pass ^ 1 : 0);
+  }
+}
+
 }  // namespace lodclusters

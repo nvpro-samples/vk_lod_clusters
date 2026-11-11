@@ -47,7 +47,8 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"hdrirotation", "HDRI rotation around the up axis in degrees, RTX Mega Geometry's \"envmap rotation\" + 180. default 0"},
                                 &m_tweak.envHdriRotationDeg);
   m_info.parameterRegistry->add({"hdrielevation", "HDRI tilt towards the horizon in degrees. default 0"}, &m_tweak.envHdriElevationDeg);
-  m_info.parameterRegistry->add({"renderer", "0 rasterization, 1 ray tracing. default 1"}, (int*)&m_tweak.renderer);
+  m_info.parameterRegistry->add({"renderer", "0 rasterization, 1 ray tracing, 2 path tracing, 3 hybrid: path tracing from rasterized primary visibility. default 1"},
+                                (int*)&m_tweak.renderer);
   m_info.parameterRegistry->add({"verbose", "verbose logging"}, &g_verbose, true);
   m_info.parameterRegistry->add({"resetstats", "reset the timer statistics automatically. default false"}, &m_tweak.autoResetTimers);
   m_info.parameterRegistry->add({"resetstatsdelay",
@@ -92,8 +93,8 @@ LodClusters::LodClusters(const Info& info)
                                 &m_tweak.useStreaming);
   m_info.parameterRegistry->add({"clasallocator", "persistent device-side CLAS allocator, otherwise move based compaction. default true"},
                                 &m_streamingConfig.usePersistentClasAllocator);
-  m_info.parameterRegistry->add({"persistentpositions", "memory comparison: ray tracing also keeps the vertex positions resident like rasterization does, unused. default false"},
-                                &m_streamingConfig.keepPersistentPositions);
+  m_info.parameterRegistry->add({"persistentpositions", "ray tracing keeps the vertex positions resident like rasterization does and builds the CLAS from them, to compare memory. The hybrid renderer always does. default false"},
+                                &m_streamingKeepPositions);
   m_info.parameterRegistry->add({"gridcopies", "instance the entire scene on a grid this many times. default 1"},
                                 &m_sceneGridConfig.numCopies);
   m_info.parameterRegistry->add({"gridconfig", "grid config in 6 bits: 0..2 enabled axis, 3..5 enabled rotation. default 13"},
@@ -221,22 +222,33 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"culling", "occlusion and frustum culling. default true"}, &m_rendererConfig.useCulling);
   m_info.parameterRegistry->add({"cullminpixelsize", "cull boxes smaller than this in render pixels in both dimensions, 1 is lossless. default 1"},
                                 &m_frameConfig.frameConstants.cullMinPixelSize);
-  m_info.parameterRegistry->add({"primitiveculling", "primitive culling in the NV mesh shader, rasterization only. default false"},
+  m_info.parameterRegistry->add({"primitiveculling", "primitive culling in the NV mesh shader, rasterization and hybrid path. default false"},
                                 &m_rendererConfig.usePrimitiveCulling);
-  m_info.parameterRegistry->add({"twopassculling", "two pass culling in rasterization, otherwise only last frame's hiz. default false"},
+  m_info.parameterRegistry->add({"twopassculling", "two pass culling in rasterization, otherwise only last frame's hiz. The hybrid path always culls in two passes. default false"},
                                 &m_rendererConfig.useTwoPassCulling);
-  m_info.parameterRegistry->add({"twopassrejectlists", "second pass continues from what the first pass rejected, rather than traversing again. default true"},
+  m_info.parameterRegistry->add({"twopassrejectlists", "second pass continues from what the first pass rejected, rather than traversing again. Rasterization only. default true"},
                                 &m_rendererConfig.useTwoPassRejectLists);
-  m_info.parameterRegistry->add({"forcedinvisculling", "let ray tracing cull on primary visibility alone, may cause BLAS sharing artifacts. default false"},
-                                &m_rendererConfig.useForcedInvisibleCulling);
+  m_info.parameterRegistry->add({"culledgrouplod", "ray tracing applies the culled error scale to occluded parts of visible instances, always on for the hybrid path. default false"},
+                                &m_rendererConfig.useCulledGroupLod);
+  m_info.parameterRegistry->add({"hybridmatchcheck", "hybrid path: trace the primary ray too, logs an error with the next sequence step or memory report where it disagrees with the raster. default false"},
+                                &m_rendererConfig.useHybridMatchCheck);
   m_info.parameterRegistry->add({"dlss", "enable DLSS, super resolution in rasterization and denoising in ray tracing. default false"},
                                 &m_rendererConfig.useDlss);
   m_info.parameterRegistry->add({"dlssquality", "0 max performance, 1 balanced, 2 max quality, 3 ultra performance, 5 DLAA. default 2"},
                                 (int*)&m_rendererConfig.dlssQuality);
   m_info.parameterRegistry->add({"dlssdelayload", "render without DLSS until it is loaded in the background, ignored headless and with sequence files. default true"},
                                 &m_dlssDelayLoad);
-  m_info.parameterRegistry->add({"pathtrace", "basic path tracing (shading in ray-gen). default false"},
-                                &m_rendererConfig.usePathtrace);
+  m_info.parameterRegistry->add(
+      {.name            = "pathtrace",
+       .help            = "older form of --renderer 2: turns ray tracing into path tracing and back. default false",
+       .callbackSuccess = [this](const nvutils::ParameterBase* const) { m_pathtraceParsed = true; }},
+      &m_rendererConfig.usePathtrace);
+  m_info.parameterRegistry->add({"rayquery", "ray tracing renderer: compute shader with ray queries instead of the ray tracing pipeline. default false"},
+                                &m_rendererConfig.useRayQuery);
+  m_info.parameterRegistry->add({"hybriddiscretelod", "hybrid path: in the caching tail rasterize a whole cached level, its cached blas matches. default true"},
+                                &m_rendererConfig.useHybridDiscreteLod);
+  m_info.parameterRegistry->add({"hybridcachinglevels", "hybrid path: --cachinglevels in place of the ray tracing one. default 4"},
+                                &m_rendererConfig.hybridCachingLevels);
   m_info.parameterRegistry->add({"pathtracebounces", "indirect bounces, 0 (direct lighting only) to 7. default 1"},
                                 &m_frameConfig.frameConstants.pathtraceNumBounces);
   m_info.parameterRegistry->add({"pathtraceambient", "light the last path vertex with the baked sky and AO rays. default true"},
@@ -277,6 +289,8 @@ LodClusters::LodClusters(const Info& info)
                                 &m_rendererConfig.useBlasMerging);
   m_info.parameterRegistry->add({"blascaching", "cached BLAS from the highest fully resident lod level, when streaming. default true"},
                                 &m_rendererConfig.useBlasCaching);
+  m_info.parameterRegistry->add({"cachinglevels", "cached BLAS lod levels per geometry, 1 to 15: more keep a chain from the coarsest tail level up to the finest resident one, refined one level per frame. default 1"},
+                                &m_rendererConfig.cachingLevels);
   m_info.parameterRegistry->add({"discretelod", "rasterization: skip the lod traversal for instances that use a single fully resident lod level. default false"},
                                 &m_rendererConfig.useDiscreteLod);
   m_info.parameterRegistry->add({"discreteenabledlevels", "allow discrete lod in the last N lod levels, 0 to 32. default 8"},
@@ -311,6 +325,8 @@ LodClusters::LodClusters(const Info& info)
                                 &m_rendererConfig.usePtlasExplicitAabb);
   m_info.parameterRegistry->add({"partitionearlyout", "skip the per-instance kernels for partitions whose instances all sit on a persistent blas. default true"},
                                 &m_rendererConfig.usePartitionEarlyOut);
+  m_info.parameterRegistry->add({"blasdedup", "skip building BLAS that reference the same clusters as another BLAS in the same frame. default false"},
+                                &m_rendererConfig.useBlasDedup);
   m_info.parameterRegistry->add({"sharingpushculled", "push culled instances by one lod level for sharing. default true"},
                                 &m_frameConfig.sharingPushCulled);
   m_info.parameterRegistry->add({"sharingenabledlevels", "allow BLAS sharing in the last N lod levels, 0 to 32. default 8"},
@@ -323,6 +339,8 @@ LodClusters::LodClusters(const Info& info)
                                 &m_frameConfig.cachingPushLevels);
   m_info.parameterRegistry->add({"cachingstickylevels", "extra lod levels granted to an instance already on the cached blas, keeps it there. default 0"},
                                 &m_frameConfig.cachingStickyLevels);
+  m_info.parameterRegistry->add({"hybridcachedtolerance", "hybrid path: a visible instance keeps a cached blas within N lod levels of its cut, a known raster mismatch. default -1 off"},
+                                &m_frameConfig.hybridCachedTolerance);
   m_info.parameterRegistry->add({"partitionrevalidateframes",
                                  "reprocess a stable partition at least every N frames, also the cached blas retention window. default 64"},
                                 &m_frameConfig.partitionRevalidateFrames);
@@ -346,7 +364,7 @@ LodClusters::LodClusters(const Info& info)
                                 &m_frameConfig.showInstanceBboxes);
   m_info.parameterRegistry->add({"clusterbboxes", "draw the rendered clusters' bounding boxes as an overlay. default false"},
                                 &m_frameConfig.showClusterBboxes);
-  m_info.parameterRegistry->add({"swraster", "allow compute-shader rasterization, needs visualize 2 or 10. default false"},
+  m_info.parameterRegistry->add({"swraster", "allow compute-shader rasterization, needs visualize 2 or 10 or the hybrid renderer. default false"},
                                 &m_rendererConfig.useComputeRaster);
   m_info.parameterRegistry->add({"swrasterthreshold", "use SW raster when a cluster's longest edge covers fewer projected pixels. default 8"},
                                 &m_frameConfig.swRasterThreshold);
@@ -611,6 +629,7 @@ void LodClusters::initRenderSceneGeometry()
   // for both the async-load and config-change paths) before the geometry GPU setup.
   m_renderScene->sceneTextures.acquireOwnership(&m_resources);
 
+  updateDerivedStreamingConfig();
   bool success = m_renderScene->initGeometry(&m_resources, m_streamingConfig, m_tweak.useStreaming);
 
   // if preload fails, try streaming
@@ -768,7 +787,7 @@ void LodClusters::initRenderer(RendererType rtype)
   }
 
   // the partition early-out is independent of the ptlas, the tlas path skips the same kernels
-  if(m_rendererConfig.usePartitions && rtype == RENDERER_RAYTRACE_CLUSTERS_LOD)
+  if(m_rendererConfig.usePartitions && rtype != RENDERER_RASTER_CLUSTERS_LOD)
   {
     ScenePartitionConfig partitionConfig;
     partitionConfig.layout                 = m_rendererConfig.partitionLayout;
@@ -797,11 +816,17 @@ void LodClusters::initRenderer(RendererType rtype)
       m_renderer = makeRendererRasterClustersLod();
       break;
     case RENDERER_RAYTRACE_CLUSTERS_LOD:
+    case RENDERER_PATHTRACE_CLUSTERS_LOD:
       m_renderer = makeRendererRayTraceClustersLod();
+      break;
+    case RENDERER_HYBRID_CLUSTERS_LOD:
+      m_renderer = makeRendererHybridClustersLod();
       break;
   }
 
-  if(m_renderer && !m_renderer->init(m_resources, *m_renderScene, m_rendererConfig))
+  RendererConfig config = m_rendererConfig;
+  config.usePathtrace   = rtype == RENDERER_PATHTRACE_CLUSTERS_LOD || rtype == RENDERER_HYBRID_CLUSTERS_LOD;
+  if(m_renderer && !m_renderer->init(m_resources, *m_renderScene, config))
   {
     m_renderer = nullptr;
     LOGE("Renderer init failed\n");
@@ -886,7 +911,7 @@ void LodClusters::onAttach(nvapp::Application* app)
     if(!m_resources.m_supportsClusterRaytracing)
     {
       LOGW("WARNING: Cluster raytracing not supported\n");
-      if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+      if(usesRayTracing())
       {
         m_tweak.renderer = RENDERER_RASTER_CLUSTERS_LOD;
       }
@@ -894,6 +919,12 @@ void LodClusters::onAttach(nvapp::Application* app)
     else
     {
       m_ui.enumAdd(GUI_RENDERER, RENDERER_RAYTRACE_CLUSTERS_LOD, "Ray tracing");
+      m_ui.enumAdd(GUI_RENDERER, RENDERER_PATHTRACE_CLUSTERS_LOD, "Path tracing");
+      // the raster pass' alpha test interpolates texture coordinates with fragment barycentrics
+      if(m_resources.m_supportsBarycentrics)
+      {
+        m_ui.enumAdd(GUI_RENDERER, RENDERER_HYBRID_CLUSTERS_LOD, "Hybrid");
+      }
     }
 
     {
@@ -949,8 +980,7 @@ void LodClusters::onAttach(nvapp::Application* app)
   // NGX init takes seconds, overlap it with scene loading
   if(m_rendererConfig.useDlss)
   {
-    m_resources.initDlssAsync(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD ? Resources::DlssMode::eRayReconstruction :
-                                                                                   Resources::DlssMode::eSuperResolution,
+    m_resources.initDlssAsync(usesRayTracing() ? Resources::DlssMode::eRayReconstruction : Resources::DlssMode::eSuperResolution,
                               m_rendererConfig.dlssQuality);
   }
 #endif
@@ -1030,6 +1060,7 @@ void LodClusters::onAttach(nvapp::Application* app)
   std::filesystem::path newFileDrop = m_sceneFilePathDropNew;
   onFileDrop(newFileDrop);
 
+  resolvePathtraceRenderer();
   m_tweakLast          = m_tweak;
   m_sceneConfigLast    = m_sceneConfig;
   m_sceneConfigEdit    = m_sceneConfig;
@@ -1327,7 +1358,7 @@ void LodClusters::accumulateFrameStats()
 
   nvutils::ProfilerTimeline::TimerInfo info;
   std::string                          apiName;
-  bool valid = m_profilerTimeline->getFrameTimerInfo("Render", info, apiName) && info.numAveraged > 0;
+  bool valid = m_profilerTimeline->getFrameTimerInfo("Trace", info, apiName) && info.numAveraged > 0;
   if(!valid || info.numAveraged < m_statsNumAveragedLast)
   {
     // profiler averages were thrown away, so ours must restart too. A step that resets mid way
@@ -1343,6 +1374,21 @@ void LodClusters::accumulateFrameStats()
 
   shaderio::Readback readback;
   m_resources.getReadbackData(readback);
+
+  if(m_rendererConfig.useHybridMatchCheck)
+  {
+    // edge pixels round differently in raster and ray tracing, a mismatch shows as a patch
+    uint32_t pixels = 0;
+    for(uint32_t i = 20; i <= 30; i++)
+      pixels += readback.debugA[i];
+    uint32_t off = readback.debugA[21] + readback.debugA[22] + readback.debugA[25] + readback.debugA[26]
+                   + readback.debugA[27] + readback.debugA[28];
+    if(pixels && off > 8 + pixels / 10000)
+    {
+      m_hybridMatchFailedFrames++;
+      m_hybridMatchWorst = std::max(m_hybridMatchWorst, off);
+    }
+  }
 
   Renderer::FrameStats fs;
   fs.frames                      = 1;
@@ -1406,7 +1452,7 @@ void LodClusters::appendMemoryReport(std::string& message)
     message += fmt::format("Textures; {}; {};\n", textureMemBytes, textureMemBytes);
   }
   message += fmt::format("Geometry; {}; {};\n", resourceActual.geometryMemBytes, resourceReserved.geometryMemBytes);
-  if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+  if(usesRayTracing())
   {
     message += fmt::format("CLAS; {}; {};\n", resourceActual.rtClasMemBytes, resourceReserved.rtClasMemBytes);
     message += fmt::format("BLAS; {}; {};\n", resourceActual.rtBlasMemBytes, resourceReserved.rtBlasMemBytes);
@@ -1449,12 +1495,49 @@ void LodClusters::appendMemoryReport(std::string& message)
     message += fmt::format("Hit Demand Tasks; {}; {};\n", readback.numHitDemandTasks, m_renderer->getMaxTraversalTasks());
   }
   message += fmt::format("Traversal Clusters; {}; {};\n", readback.numRenderClusters, m_renderer->getMaxRenderClusters());
+  if(m_tweak.renderer == RENDERER_HYBRID_CLUSTERS_LOD)
+  {
+    // first pass, rejected by last frame's hiz, second pass
+    message += fmt::format("Hybrid Clusters; {}; {}; {}; {};\n", readback.numHybridClusters, readback.numHybridRejectClusters,
+                           readback.numHybridClusters2, m_renderer->getMaxRenderClusters());
+    if(m_rendererConfig.useComputeRaster)
+    {
+      // both passes
+      message += fmt::format("Hybrid SW Clusters; {};\n", readback.numHybridClustersSW);
+    }
+  }
   message += fmt::format("BLAS builds; {}; {};\n", readback.numBlasBuilds, m_renderer->getMaxBlasBuilds());
+  if(m_rendererConfig.useBlasDedup)
+  {
+    message += fmt::format("BLAS candidates; {};\n", readback.numBlasCandidates);
+    message += fmt::format("BLAS deduped; {};\n", readback.numBlasDeduped);
+    message += fmt::format("BLAS dedup probes; {};\n", readback.numBlasDedupProbes);
+    message += fmt::format("BLAS dedup missed; {};\n", readback.numBlasDedupMissed);
+  }
   // dev only, written while STREAM_DEBUG_RESIDENCY is set
   if(readback.debugA[0] + readback.debugA[1] + readback.debugA[2] + readback.debugA[3] + readback.debugA[4])
   {
     message += fmt::format("Residency Clusters; {}; {}; {}; {}; {};\n", readback.debugA[0], readback.debugA[1],
                            readback.debugA[2], readback.debugA[3], readback.debugA[4]);
+  }
+  // dev only, written while DEBUG_CULLED_GROUP_LOD is set
+  if(readback.debugA[5] + readback.debugA[6])
+  {
+    message += fmt::format("Occlusion Inherit Mismatch; {}; {};\n", readback.debugA[5], readback.debugA[6]);
+  }
+  // written with --hybridmatchcheck, failures are reported once per report
+  if(m_hybridMatchFailedFrames)
+  {
+    LOGE("hybridmatchcheck error: %u frames with up to %u mismatching pixels\n", m_hybridMatchFailedFrames, m_hybridMatchWorst);
+    m_hybridMatchFailedFrames = 0;
+    m_hybridMatchWorst        = 0;
+  }
+  if(readback.debugA[23])
+  {
+    message += fmt::format("Hybrid Match; {}; {}; {}; {}; {}; {}; {}; {}; {}; {}; {};\n", readback.debugA[20],
+                           readback.debugA[21], readback.debugA[22], readback.debugA[23], readback.debugA[24],
+                           readback.debugA[25], readback.debugA[26], readback.debugA[27], readback.debugA[28],
+                           readback.debugA[29], readback.debugA[30]);
   }
   // what the renderer applies, the raster renderer has no partitions
   const RendererConfig& activeConfig  = m_renderer->getConfig();
@@ -1660,10 +1743,48 @@ void LodClusters::updatedSceneGrid(const Scene& scene)
   }
 }
 
+void LodClusters::updateDerivedStreamingConfig()
+{
+  // the hybrid renderer rasterizes, ray tracing alone keeps positions only for the clas build
+  m_streamingConfig.keepPersistentPositions = m_streamingKeepPositions || m_tweak.renderer == RENDERER_HYBRID_CLUSTERS_LOD;
+}
+
+// --pathtrace predates the path tracing renderer type. Given on a command line or in a sequence
+// it still switches ray tracing to path tracing and back, a renderer switch only updates it.
+void LodClusters::resolvePathtraceRenderer()
+{
+  if(uint32_t(m_tweak.renderer) > RENDERER_HYBRID_CLUSTERS_LOD)
+  {
+    LOGW("--renderer %d is unknown, using ray tracing\n", int(m_tweak.renderer));
+    m_tweak.renderer = RENDERER_RAYTRACE_CLUSTERS_LOD;
+  }
+  if(m_tweak.renderer == RENDERER_HYBRID_CLUSTERS_LOD && !m_resources.m_supportsBarycentrics)
+  {
+    LOGW("the hybrid renderer needs fragment shader barycentrics, using path tracing\n");
+    m_tweak.renderer = RENDERER_PATHTRACE_CLUSTERS_LOD;
+  }
+  if(m_pathtraceParsed)
+  {
+    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD || m_tweak.renderer == RENDERER_PATHTRACE_CLUSTERS_LOD)
+    {
+      m_tweak.renderer = m_rendererConfig.usePathtrace ? RENDERER_PATHTRACE_CLUSTERS_LOD : RENDERER_RAYTRACE_CLUSTERS_LOD;
+    }
+    m_pathtraceParsed = false;
+  }
+  else if(m_tweak.renderer != m_tweakLast.renderer)
+  {
+    m_rendererConfig.usePathtrace = usesPathTracing();
+  }
+}
+
 void LodClusters::handleChanges()
 {
   if(m_sceneLoading)
     return;
+
+  resolvePathtraceRenderer();
+
+  updateDerivedStreamingConfig();
 
   // install what the loader thread completed, everything else about the scene was already set up
   // on that thread, only the pointer handover is deferred to here
@@ -1741,7 +1862,9 @@ void LodClusters::handleChanges()
   m_rendererConfig.useDepthOnly = m_frameConfig.visualize == VISUALIZE_DEPTH_ONLY;
 
 
-  if(m_rendererConfig.useComputeRaster && (!m_rendererConfig.useCulling || m_rendererConfig.useShading))
+  // the hybrid renderer's raster passes only write ids, shading is the path tracer's
+  if(m_rendererConfig.useComputeRaster
+     && (!m_rendererConfig.useCulling || (m_rendererConfig.useShading && m_tweak.renderer != RENDERER_HYBRID_CLUSTERS_LOD)))
   {
     m_rendererConfig.useComputeRaster = false;
   }
@@ -1750,10 +1873,8 @@ void LodClusters::handleChanges()
   bool dlssLoaded = false;
 #if USE_DLSS
   // switch to DLSS once the async init of the renderer's mode finished
-  Resources::DlssMode dlssWanted = m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD ?
-                                       Resources::DlssMode::eRayReconstruction :
-                                       Resources::DlssMode::eSuperResolution;
-  dlssLoaded                     = m_resources.pollDlssInit() == dlssWanted && m_rendererConfig.useDlss
+  Resources::DlssMode dlssWanted = usesRayTracing() ? Resources::DlssMode::eRayReconstruction : Resources::DlssMode::eSuperResolution;
+  dlssLoaded = m_resources.pollDlssInit() == dlssWanted && m_rendererConfig.useDlss
                && m_resources.m_frameBuffer.dlssMode == Resources::DlssMode::eNone;
 
   if(m_resources.m_dlssEvaluateFailed)
@@ -1877,28 +1998,36 @@ void LodClusters::handleChanges()
        || rendererCfgChanged(m_rendererConfig.numTraversalTaskBits) || rendererCfgChanged(m_rendererConfig.useShading)
        || rendererCfgChanged(m_rendererConfig.useBlasSharing) || rendererCfgChanged(m_rendererConfig.useRenderStats)
        || rendererCfgChanged(m_rendererConfig.useBlasMerging) || rendererCfgChanged(m_rendererConfig.useBlasCaching)
-       || rendererCfgChanged(m_rendererConfig.useEXTmeshShader) || rendererCfgChanged(m_rendererConfig.useComputeRaster)
-       || rendererCfgChanged(m_rendererConfig.usePrimitiveCulling) || rendererCfgChanged(m_rendererConfig.useTwoPassCulling)
-       || rendererCfgChanged(m_rendererConfig.useTwoPassRejectLists) || rendererCfgChanged(m_rendererConfig.useDepthOnly)
-       || rendererCfgChanged(m_rendererConfig.useForcedInvisibleCulling) || rendererCfgChanged(m_rendererConfig.usePersistentTraversal)
+       || rendererCfgChanged(m_rendererConfig.useBlasDedup) || rendererCfgChanged(m_rendererConfig.useEXTmeshShader)
+       || rendererCfgChanged(m_rendererConfig.useComputeRaster) || rendererCfgChanged(m_rendererConfig.usePrimitiveCulling)
+       || (m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD
+           && (rendererCfgChanged(m_rendererConfig.useTwoPassCulling) || rendererCfgChanged(m_rendererConfig.useTwoPassRejectLists)))
+       || rendererCfgChanged(m_rendererConfig.useDepthOnly) || rendererCfgChanged(m_rendererConfig.useCulledGroupLod)
+       || rendererCfgChanged(m_rendererConfig.useHybridMatchCheck) || rendererCfgChanged(m_rendererConfig.usePersistentTraversal)
        || rendererCfgChanged(m_rendererConfig.useVulkanMemoryModel) || rendererCfgChanged(m_rendererConfig.useAtomicLoadStore)
        || rendererCfgChanged(m_rendererConfig.useDiscreteLod) || rendererCfgChanged(m_rendererConfig.usePartitions)
        || rendererCfgChanged(m_rendererConfig.usePtlas) || rendererCfgChanged(m_rendererConfig.usePtlasExplicitAabb)
        || rendererCfgChanged(m_rendererConfig.partitionLayout) || rendererCfgChanged(m_rendererConfig.partitionGridCellSize)
        || rendererCfgChanged(m_rendererConfig.partitionGridOrigin) || rendererCfgChanged(m_rendererConfig.partitionGridCellsPerAxis)
        || rendererCfgChanged(m_rendererConfig.partitionDerivedTarget) || rendererCfgChanged(m_rendererConfig.partitionDerivedMaxInstances)
-       || rendererCfgChanged(m_rendererConfig.partitionDerivedMaxCount)
-       || rendererCfgChanged(m_rendererConfig.usePartitionEarlyOut) || rendererCfgChanged(m_rendererConfig.textureLodMode)
-       || rendererCfgChanged(m_rendererConfig.usePathtrace) || rendererCfgChanged(m_rendererConfig.streamPropagationMode)
+       || rendererCfgChanged(m_rendererConfig.partitionDerivedMaxCount) || rendererCfgChanged(m_rendererConfig.usePartitionEarlyOut)
+       || rendererCfgChanged(m_rendererConfig.textureLodMode) || rendererCfgChanged(m_rendererConfig.usePathtrace)
+       || rendererCfgChanged(m_rendererConfig.useRayQuery) || rendererCfgChanged(m_rendererConfig.streamPropagationMode)
        || rendererCfgChanged(m_rendererConfig.usePersistentHitDemand) || rendererCfgChanged(m_rendererConfig.useHitStreaming)
-       || rendererCfgChanged(m_rendererConfig.useHitStreamingLod) || rendererCfgChanged(m_rendererConfig.hitStreamingShadowDepth))
+       || rendererCfgChanged(m_rendererConfig.useHitStreamingLod) || rendererCfgChanged(m_rendererConfig.hitStreamingShadowDepth)
+       || rendererCfgChanged(m_rendererConfig.cachingLevels) || rendererCfgChanged(m_rendererConfig.useHybridDiscreteLod)
+       || rendererCfgChanged(m_rendererConfig.hybridCachingLevels))
     {
       // groups loaded without hit tracking carry no hit frames, the first age filter would unload them
       bool hitStreamingOn = m_rendererConfig.useHitStreaming && m_tweak.renderer != RENDERER_RASTER_CLUSTERS_LOD
                             && !(m_rendererConfigLast.useHitStreaming && m_tweakLast.renderer != RENDERER_RASTER_CLUSTERS_LOD);
 
       if(m_renderScene
-         && (rendererCfgChanged(m_rendererConfig.useBlasCaching) || rendererCfgChanged(m_rendererConfig.useDiscreteLod) || hitStreamingOn))
+         && (rendererCfgChanged(m_rendererConfig.useBlasCaching) || rendererCfgChanged(m_rendererConfig.cachingLevels)
+             || rendererCfgChanged(m_rendererConfig.useDiscreteLod) || rendererCfgChanged(m_rendererConfig.hybridCachingLevels)
+             || hitStreamingOn
+             // the hybrid renderer caches its own chain of levels
+             || (m_tweak.renderer == RENDERER_HYBRID_CLUSTERS_LOD) != (m_tweakLast.renderer == RENDERER_HYBRID_CLUSTERS_LOD)))
       {
         m_renderScene->streamingReset();
       }
@@ -2154,6 +2283,10 @@ void LodClusters::onRender(VkCommandBuffer cmd)
 #if USE_DLSS
     rasterDlssSrActive = m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD && m_rendererConfig.useDlss
                          && m_resources.m_frameBuffer.dlssUpscaler.isAvailable();
+    // the hybrid renderer rasterizes primary visibility with the jitter of the path tracer rays,
+    // which only use it while the denoiser is active
+    rasterDlssSrActive = rasterDlssSrActive
+                         || (m_tweak.renderer == RENDERER_HYBRID_CLUSTERS_LOD && m_renderer && m_renderer->getConfig().useDlss);
 #endif
     m_frameConfig.hbaoActive = m_rendererConfig.useShading && m_tweak.hbaoActive && m_resources.m_frameBuffer.useRasterization;
 

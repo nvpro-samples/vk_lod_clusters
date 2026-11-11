@@ -100,14 +100,34 @@ void main()
       build.instanceBuildInfos.d[instanceID].clusterReferencesCount = 0;
 
       uint referencesOffset = atomicAdd(buildRW.blasClasCounter, referencesCount);
+
+    #if USE_BLAS_DEDUP
+      // we don't know yet if this blas is unique, `blas_dedup_scan.comp.glsl` decides that
+      uint candidateIndex = atomicAdd(buildRW.blasCandidateCounter, 1);
+
+      BlasCandidateInfo candidate;
+      candidate.clusterReferences      = uint64_t(build.blasClusterAddresses) + uint64_t(referencesOffset * 8);
+      // reset count for insertion pass
+      candidate.clusterReferencesCount = 0;
+      candidate.keyXor                 = 0;
+      candidate.keyAdd                 = 0;
+      candidate.representative         = candidateIndex;
+      candidate.buildIndex             = ~0;
+      candidate.flags                  = 0;
+
+      build.blasCandidateInfos.d[candidateIndex] = candidate;
+
+      build.instanceBuildInfos.d[instanceID].blasBuildIndex = candidateIndex;
+    #else
       uint buildOffset      = atomicAdd(buildRW.blasBuildCounter, 1);
-      
+
       // reset count for insertion pass
       build.blasBuildInfos.d[buildOffset].clusterReferencesCount  = 0;
       build.blasBuildInfos.d[buildOffset].clusterReferencesStride = 8;
       build.blasBuildInfos.d[buildOffset].clusterReferences       = uint64_t(build.blasClusterAddresses) + uint64_t(referencesOffset * 8);
-      
+
       build.instanceBuildInfos.d[instanceID].blasBuildIndex = buildOffset;
+    #endif
     }
   }
 }

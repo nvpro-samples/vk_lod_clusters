@@ -58,20 +58,23 @@ public:
 
 struct RendererConfig
 {
-  bool flipWinding               = false;
-  bool forceTwoSided             = false;
-  bool useForcedInvisibleCulling = false;
-  bool useSorting                = false;
-  bool useRenderStats            = false;
-  bool useCulling                = true;
-  bool useTwoPassCulling         = false;
-  bool useTwoPassRejectLists     = true;
-  bool useBlasSharing            = true;
-  bool useBlasMerging            = true;
-  bool useBlasCaching            = true;
-  bool useDiscreteLod            = false;
+  bool flipWinding       = false;
+  bool forceTwoSided     = false;
+  bool useCulledGroupLod = false;
+  // hybrid path: trace the primary ray too and log an error where it disagrees with the raster
+  bool useHybridMatchCheck   = false;
+  bool useSorting            = false;
+  bool useRenderStats        = false;
+  bool useCulling            = true;
+  bool useTwoPassCulling     = false;
+  bool useTwoPassRejectLists = true;
+  bool useBlasSharing        = true;
+  bool useBlasMerging        = true;
+  bool useBlasCaching        = true;
+  bool useDiscreteLod        = false;
   // groups the instances spatially, which the early-out and the ptlas both consume. Neither
   // does anything without it.
+  bool useBlasDedup  = false;
   bool usePartitions = false;
   bool usePtlas      = false;
   // `initRayTracingPtlasInstances` takes these from the geometry's k-DOP hull, which spans
@@ -117,6 +120,8 @@ struct RendererConfig
   // basic path tracing: shading done in the ray-generation shader, 1 spp,
   // relies on DLSS Ray Reconstruction for denoising (noisy when DLSS is off).
   bool usePathtrace = false;
+  // image generation as a compute shader with ray queries instead of the ray tracing pipeline
+  bool useRayQuery = false;
 
   bool useHitStreaming = false;
   // additionally clamp the lod level based on the ray cone widths of hits,
@@ -140,6 +145,12 @@ struct RendererConfig
 
   // build flags for the cluster BLAS
   VkBuildAccelerationStructureFlagsKHR clusterBlasFlags = 0;
+
+  // cached blas lod levels per geometry, a chain from the coarsest tail level up
+  uint32_t cachingLevels = 1;
+  // hybrid path: own defaults for discrete lod in the caching tail and the cached levels
+  bool     useHybridDiscreteLod = true;
+  uint32_t hybridCachingLevels  = 4;
 };
 
 class Renderer
@@ -333,7 +344,20 @@ protected:
 
 //////////////////////////////////////////////////////////////////////////
 
+// cluster rasterization shared by the raster and the hybrid renderer
+
+// one indirect mesh task draw, `offsetEXT` / `offsetNV` point at the command in `buffer`
+void cmdDrawMeshTasksIndirect(VkCommandBuffer cmd, bool useEXTmeshShader, VkBuffer buffer, VkDeviceSize offsetEXT, VkDeviceSize offsetNV);
+
+// hiz the next cull pass tests against: with two passes pass 0 builds the second pass' hiz,
+// the last pass next frame's
+void cmdBuildPassHiz(VkCommandBuffer cmd, Resources& res, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler, bool twoPass, uint32_t pass);
+
+//////////////////////////////////////////////////////////////////////////
+
 std::unique_ptr<Renderer> makeRendererRasterClustersLod();
 std::unique_ptr<Renderer> makeRendererRayTraceClustersLod();
+// path tracing from rasterized primary visibility, see docs/raster_hybrid.md
+std::unique_ptr<Renderer> makeRendererHybridClustersLod();
 
 }  // namespace lodclusters

@@ -29,8 +29,8 @@ struct StreamingConfig
   bool allowBlasCaching           = true;
   bool useAsyncTransfer           = false;
   bool useDecoupledAsyncTransfer  = false;
-  // memory comparison: ray tracing also keeps the (unused) positions in the persistent group
-  // blob, as rasterization does
+  // ray tracing keeps positions in the persistent group blob and builds CLAS from them
+  // (hybrid path, or to compare memory against rasterization)
   bool keepPersistentPositions = false;
 
   uint32_t maxPerFrameLoadRequests   = 128;

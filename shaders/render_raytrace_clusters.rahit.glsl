@@ -117,6 +117,7 @@ layout(location = 1) rayPayloadEXT float rayHitAO;
 
 #include "attribute_encoding.h"
 #include "texturing.glsl"
+#include "render_cluster_hit.glsl"
 
 /////////////////////////////////
 
@@ -131,62 +132,12 @@ bool hasPrimaryRayPayload()
 
 void main()
 {
-  float pixelAngle = view.pixelAngle;
-
-  // get IDs
-  uint clusterID  = gl_ClusterIDNV_;
-  uint instanceID = gl_InstanceID;
-  uint triangleID = gl_PrimitiveID;
-
-  RenderInstance instance = instances[instanceID];
-  Geometry       geometry = geometries[instance.geometryID];
-
-  // Fetch cluster header
-#if USE_STREAMING
-  // dereference the cluster from the resident cluster table
-  uint64_t clusterAddress = streaming.resident.clusters.d[clusterID];
-#else
-  // access the cluster data directly from the preloaded array
-  uint64_t clusterAddress = geometry.preloadedClusters.d[clusterID];
-#endif
-  Cluster_in clusterRef = Cluster_in(clusterAddress);
-  Cluster    cluster    = clusterRef.d;
-
-  uint visData = clusterID;
-
-  uint8s_in localIndices = uint8s_in(Cluster_getTriangleIndices(Cluster_in(clusterRef)));
-
-  uvec3 triangleIndices =
-      uvec3(localIndices.d[triangleID * 3 + 0], localIndices.d[triangleID * 3 + 1], localIndices.d[triangleID * 3 + 2]);
-
-  vec3 baryWeight = vec3((1.f - barycentrics[0] - barycentrics[1]), barycentrics[0], barycentrics[1]);
-
-  vec2s_in oTexCoords = Cluster_getVertexTexCoords(clusterRef);
-
-  vec2 uv0       = oTexCoords.d[triangleIndices.x];
-  vec2 uv1       = oTexCoords.d[triangleIndices.y];
-  vec2 uv2       = oTexCoords.d[triangleIndices.z];
-  vec2 oTexCoord = baryWeight.x * uv0 + baryWeight.y * uv1 + baryWeight.z * uv2;
-
-  // positions come from the CLAS via the ray-tracing position-fetch extension (no group-memory read)
-  vec3 pos0 = gl_HitTriangleVertexPositionsEXT[0];
-  vec3 pos1 = gl_HitTriangleVertexPositionsEXT[1];
-  vec3 pos2 = gl_HitTriangleVertexPositionsEXT[2];
-
-  // Isotropic ray-cone TexLOD - the same helper the closest-hit material sampling uses, so the cutout honors
-  // TEXTURE_LOD_MODE too. Primary/reflection rays carry the propagated cone in the payload; shadow & AO rays
+  // Primary/reflection rays carry the propagated cone in the payload; shadow & AO rays
   // fall back to a first-hit footprint (ray length).
-  float texelDensity = computeTexelDensity(gl_ObjectToWorldEXT, pos0, pos1, pos2, uv0, uv1, uv2);
-  float coneWidth = hasPrimaryRayPayload() ? (rayHit.coneWidth + rayHit.coneSpread * gl_HitTEXT) : (pixelAngle * gl_HitTEXT);
-  vec3  wGeoNormal = normalize(mat3(instance.worldMatrixI) * cross(pos1 - pos0, pos2 - pos0));
-  float incidence  = abs(dot(wGeoNormal, gl_WorldRayDirectionEXT));
-  TexLOD texLod    = makeConeTexLOD(coneWidth, texelDensity, incidence);
-
-  uint texIndex = resolveAlphaMaskTextureIndex(instance, clusterRef, triangleID);
-  float alpha   = sampleBindless(texIndex, oTexCoord, texLod).a;
+  float coneWidth = hasPrimaryRayPayload() ? (rayHit.coneWidth + rayHit.coneSpread * gl_HitTEXT) : (view.pixelAngle * gl_HitTEXT);
   // No hit registration for streaming here: the closest-hits register the hit that is kept,
   // with the ray's own cone, shadow rays through the AO hit group.
-  if(alpha < 0.333)
+  if(!clusterAlphaTest(clusterRayHitBuiltins(), coneWidth, false, vec2(0)))
   {
     ignoreIntersectionEXT;
   }

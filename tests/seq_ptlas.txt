@@ -21,7 +21,6 @@ SEQUENCE "ptlas_partitions_off"
 --sequenceframes 32
 --sequenceresetframes 8
 --renderer 1
---pathtrace 0
 --dlss 0
 --streaming 1
 --culling 1
@@ -100,12 +99,12 @@ SEQUENCE "ptlas_hitstreaminglod_lens"
 --visualize 13
 
 SEQUENCE "ptlas_hitstreaminglod_lens_pathtrace"
---pathtrace 1
+--renderer 2
 --visualize 9
 
 # and back to no partitions, to check the renderer unwinds rather than staying on them
 SEQUENCE "ptlas_recover_partitions_off"
---pathtrace 0
+--renderer 1
 --hitstreaming 0
 --hitstreaminglod 0
 --opticalmode 0

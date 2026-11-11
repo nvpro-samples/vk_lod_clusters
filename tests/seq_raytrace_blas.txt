@@ -18,7 +18,6 @@ SEQUENCE "rt_unique0_share_off_merge_off_cache_off"
 --sequenceframes 32
 --sequenceresetframes 8
 --renderer 1
---pathtrace 0
 --dlss 0
 --gridunique 0
 --streaming 1
@@ -30,7 +29,6 @@ SEQUENCE "rt_unique0_share_off_merge_off_cache_off"
 
 SEQUENCE "rt_unique0_share_off_merge_off_cache_on"
 --renderer 1
---pathtrace 0
 --dlss 0
 --gridunique 0
 --streaming 1
@@ -42,7 +40,6 @@ SEQUENCE "rt_unique0_share_off_merge_off_cache_on"
 
 SEQUENCE "rt_unique0_share_off_merge_on_cache_off"
 --renderer 1
---pathtrace 0
 --dlss 0
 --gridunique 0
 --streaming 1
@@ -54,7 +51,6 @@ SEQUENCE "rt_unique0_share_off_merge_on_cache_off"
 
 SEQUENCE "rt_unique0_share_off_merge_on_cache_on"
 --renderer 1
---pathtrace 0
 --dlss 0
 --gridunique 0
 --streaming 1
@@ -66,7 +62,6 @@ SEQUENCE "rt_unique0_share_off_merge_on_cache_on"
 
 SEQUENCE "rt_unique0_share_on_merge_off_cache_off"
 --renderer 1
---pathtrace 0
 --dlss 0
 --gridunique 0
 --streaming 1
@@ -78,7 +73,6 @@ SEQUENCE "rt_unique0_share_on_merge_off_cache_off"
 
 SEQUENCE "rt_unique0_share_on_merge_off_cache_on"
 --renderer 1
---pathtrace 0
 --dlss 0
 --gridunique 0
 --streaming 1
@@ -90,7 +84,6 @@ SEQUENCE "rt_unique0_share_on_merge_off_cache_on"
 
 SEQUENCE "rt_unique0_share_on_merge_on_cache_off"
 --renderer 1
---pathtrace 0
 --dlss 0
 --gridunique 0
 --streaming 1
@@ -102,7 +95,6 @@ SEQUENCE "rt_unique0_share_on_merge_on_cache_off"
 
 SEQUENCE "rt_unique0_share_on_merge_on_cache_on"
 --renderer 1
---pathtrace 0
 --dlss 0
 --gridunique 0
 --streaming 1
@@ -114,7 +106,6 @@ SEQUENCE "rt_unique0_share_on_merge_on_cache_on"
 
 SEQUENCE "rt_unique1_share_off_merge_off_cache_off"
 --renderer 1
---pathtrace 0
 --dlss 0
 --gridunique 1
 --streaming 1
@@ -126,7 +117,6 @@ SEQUENCE "rt_unique1_share_off_merge_off_cache_off"
 
 SEQUENCE "rt_unique1_share_off_merge_off_cache_on"
 --renderer 1
---pathtrace 0
 --dlss 0
 --gridunique 1
 --streaming 1
@@ -138,7 +128,6 @@ SEQUENCE "rt_unique1_share_off_merge_off_cache_on"
 
 SEQUENCE "rt_unique1_share_off_merge_on_cache_off"
 --renderer 1
---pathtrace 0
 --dlss 0
 --gridunique 1
 --streaming 1
@@ -150,7 +139,6 @@ SEQUENCE "rt_unique1_share_off_merge_on_cache_off"
 
 SEQUENCE "rt_unique1_share_off_merge_on_cache_on"
 --renderer 1
---pathtrace 0
 --dlss 0
 --gridunique 1
 --streaming 1
@@ -162,7 +150,6 @@ SEQUENCE "rt_unique1_share_off_merge_on_cache_on"
 
 SEQUENCE "rt_unique1_share_on_merge_off_cache_off"
 --renderer 1
---pathtrace 0
 --dlss 0
 --gridunique 1
 --streaming 1
@@ -174,7 +161,6 @@ SEQUENCE "rt_unique1_share_on_merge_off_cache_off"
 
 SEQUENCE "rt_unique1_share_on_merge_off_cache_on"
 --renderer 1
---pathtrace 0
 --dlss 0
 --gridunique 1
 --streaming 1
@@ -186,7 +172,6 @@ SEQUENCE "rt_unique1_share_on_merge_off_cache_on"
 
 SEQUENCE "rt_unique1_share_on_merge_on_cache_off"
 --renderer 1
---pathtrace 0
 --dlss 0
 --gridunique 1
 --streaming 1
@@ -198,7 +183,6 @@ SEQUENCE "rt_unique1_share_on_merge_on_cache_off"
 
 SEQUENCE "rt_unique1_share_on_merge_on_cache_on"
 --renderer 1
---pathtrace 0
 --dlss 0
 --gridunique 1
 --streaming 1
@@ -210,7 +194,6 @@ SEQUENCE "rt_unique1_share_on_merge_on_cache_on"
 
 SEQUENCE "rt_nostreaming_share_on"
 --renderer 1
---pathtrace 0
 --dlss 0
 --gridunique 0
 --streaming 0
@@ -224,7 +207,6 @@ SEQUENCE "rt_nostreaming_share_on"
 # the extra atomic counters are their own shader permutation (USE_RENDER_STATS)
 SEQUENCE "rt_renderstats"
 --renderer 1
---pathtrace 0
 --dlss 0
 --gridunique 0
 --streaming 1
@@ -239,3 +221,47 @@ SEQUENCE "rt_renderstats_off"
 --renderer 1
 --renderstats 0
 --visualize 0
+# BLAS deduplication is orthogonal to the three above, so a few sequences rather than
+# doubling the matrix. It needs duplicates to work on, which is why --gridunique 1 is not
+# here: every instance owns its geometry there, so no two blas can be equal.
+
+# 256 instances of one geometry and nothing else reusing blas, the case deduplication is for
+SEQUENCE "rt_unique0_dedup_only"
+--renderer 1
+--dlss 0
+--gridunique 0
+--streaming 1
+--culling 1
+--blassharing 0
+--blasmerging 0
+--blascaching 0
+--blasdedup 1
+--visualize 9
+
+# combined with sharing, which takes most instances away before deduplication sees them.
+# Little is left to deduplicate, this is here so the combination cannot break unnoticed.
+SEQUENCE "rt_unique0_dedup_share_on"
+--renderer 1
+--dlss 0
+--gridunique 0
+--streaming 1
+--culling 1
+--blassharing 1
+--blasmerging 0
+--blascaching 0
+--blasdedup 1
+--visualize 9
+
+# combined with caching, which allocates its blas builds after the deduplication pass
+# compacted the descriptors, so the two share the build array
+SEQUENCE "rt_unique0_dedup_cache_on"
+--renderer 1
+--dlss 0
+--gridunique 0
+--streaming 1
+--culling 1
+--blassharing 0
+--blasmerging 0
+--blascaching 1
+--blasdedup 1
+--visualize 9

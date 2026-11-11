@@ -356,10 +356,11 @@ struct Geometry
   uint32_t lowDetailClusterID;
   uint64_t lowDetailBlasAddress;
 
+  // ray tracing: lod levels with a cached blas, one bit each (USE_BLAS_CACHING)
+  uint32_t cachedLevelMask;
   // ray tracing: streaming frame of the last cached blas build, which can reuse the replaced
   // one's address, the ptlas still needs an update then (USE_BLAS_CACHING)
   uint32_t cachedBuildFrame;
-  uint32_t _reserved;
 
   // object space geometry bbox
   BBox bbox;

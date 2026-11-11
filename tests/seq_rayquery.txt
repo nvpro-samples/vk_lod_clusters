@@ -1,0 +1,167 @@
+# --rayquery: the ray tracer and the path tracer as a compute shader with ray queries
+# instead of the ray tracing pipeline. The shader permutations the pipeline has (visualize
+# 2 and 10 select the unshaded and depth-only ones, DLSS its guide buffers), the optical
+# modes, AO and shadow rays, and hit streaming, whose registration moves from the hit
+# shaders into the query loops. Alpha masked materials are in seq_materials.txt, the hybrid
+# path in seq_hybrid_rayquery.txt.
+
+SEQUENCE "rq_raytrace_shaded"
+--sequenceframes 32
+--sequenceresetframes 8
+--renderer 1
+--rayquery 1
+--swraster 0
+--culling 1
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--streaming 1
+--dlss 0
+--shadowray 1
+--ao 1
+--opticalmode 0
+--hitstreaming 0
+--visualize 0
+
+SEQUENCE "rq_raytrace_noshadow_noao"
+--shadowray 0
+--ao 0
+
+SEQUENCE "rq_raytrace_visualize_01_grey"
+--shadowray 1
+--ao 1
+--visualize 1
+
+SEQUENCE "rq_raytrace_visualize_02_visbuffer"
+--shadowray 1
+--ao 1
+--visualize 2
+
+SEQUENCE "rq_raytrace_visualize_03_material"
+--shadowray 1
+--ao 1
+--visualize 3
+
+SEQUENCE "rq_raytrace_visualize_06_lodlevels"
+--shadowray 1
+--ao 1
+--visualize 6
+
+SEQUENCE "rq_raytrace_visualize_07_triangles"
+--shadowray 1
+--ao 1
+--visualize 7
+
+SEQUENCE "rq_raytrace_visualize_09_blasreuse"
+--shadowray 1
+--ao 1
+--visualize 9
+
+SEQUENCE "rq_raytrace_visualize_10_depthonly"
+--shadowray 1
+--ao 1
+--visualize 10
+
+SEQUENCE "rq_raytrace_dlss_00_shaded"
+--dlss 1
+--dlssquality 2
+--visualize 0
+
+SEQUENCE "rq_raytrace_dlss_02_visbuffer"
+--dlss 1
+--dlssquality 2
+--visualize 2
+
+SEQUENCE "rq_raytrace_dlss_10_depthonly"
+--dlss 1
+--dlssquality 2
+--visualize 10
+
+SEQUENCE "rq_raytrace_optical1"
+--dlss 0
+--visualize 0
+--opticalmode 1
+
+SEQUENCE "rq_raytrace_optical2"
+--dlss 0
+--visualize 0
+--opticalmode 2
+
+SEQUENCE "rq_raytrace_optical3"
+--dlss 0
+--visualize 0
+--opticalmode 3
+
+SEQUENCE "rq_raytrace_hitstreaming"
+--opticalmode 0
+--hitstreaming 1
+--hitstreaminglod 0
+
+SEQUENCE "rq_raytrace_hitstreaminglod_lens"
+--opticalmode 3
+--hitstreaming 1
+--hitstreaminglod 1
+
+SEQUENCE "rq_raytrace_forcetwosided"
+--opticalmode 0
+--hitstreaming 0
+--forcetwosided 1
+
+SEQUENCE "rq_pathtrace_shaded"
+--renderer 2
+--forcetwosided 0
+--pathtracebounces 2
+--pathtraceambient 0
+--visualize 0
+
+SEQUENCE "rq_pathtrace_bounces0"
+--pathtracebounces 0
+
+SEQUENCE "rq_pathtrace_ambient"
+--pathtracebounces 1
+--pathtraceambient 1
+
+SEQUENCE "rq_pathtrace_visualize_02_visbuffer"
+--pathtraceambient 0
+--visualize 2
+
+SEQUENCE "rq_pathtrace_visualize_05_groups"
+--pathtraceambient 0
+--visualize 5
+
+SEQUENCE "rq_pathtrace_visualize_10_depthonly"
+--pathtraceambient 0
+--visualize 10
+
+SEQUENCE "rq_pathtrace_dlss"
+--visualize 0
+--dlss 1
+--dlssquality 2
+
+SEQUENCE "rq_pathtrace_optical1"
+--dlss 0
+--opticalmode 1
+
+SEQUENCE "rq_pathtrace_optical2"
+--dlss 0
+--opticalmode 2
+
+SEQUENCE "rq_pathtrace_optical3"
+--dlss 0
+--opticalmode 3
+
+SEQUENCE "rq_pathtrace_hitstreaming"
+--opticalmode 0
+--hitstreaming 1
+--hitstreaminglod 0
+
+SEQUENCE "rq_pathtrace_hitstreaminglod_lens"
+--opticalmode 3
+--hitstreaming 1
+--hitstreaminglod 1
+
+SEQUENCE "rq_off"
+--rayquery 0
+--renderer 1
+--opticalmode 0
+--hitstreaming 0

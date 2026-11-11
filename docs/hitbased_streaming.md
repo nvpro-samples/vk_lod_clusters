@@ -144,7 +144,7 @@ Filling a static view took 42 frames with resident levels against 6 with the oth
 
 ## Results and limitations
 
-Measured with the path tracer on an NVIDIA RTX PRO 5000 Blackwell with clocks locked, without DLSS,
+Measured with the path tracer and the ray tracing pipeline on an NVIDIA RTX PRO 5000 Blackwell with clocks locked, without DLSS,
 from a static view with each scene's settings. Each configuration starts from a streaming reset and is averaged over the last 128 of 250
 frames, three repetitions interleaved within one process. Hit streaming off / on:
 
@@ -179,10 +179,12 @@ Key changes are:
 * [`streaming.glsl`](../shaders/streaming.glsl): hit registration (`streamingRegisterHit`,
   `streamingRegisterHitLod`, `streamingRegisterInstanceDemand`), the stream-in tests `streamingTestOverlapHits` and
   `streamingDemandsFiner`, and the hit-based unload in `streamingAgeFilter`.
-* [`render_raytrace_clusters.rchit.glsl`](../shaders/render_raytrace_clusters.rchit.glsl),
-  [`render_raytrace_clusters_ao.rchit.glsl`](../shaders/render_raytrace_clusters_ao.rchit.glsl) and
-  [`render_pathtrace_clusters.rchit.glsl`](../shaders/render_pathtrace_clusters.rchit.glsl): register the hits, the
-  ray generation shaders carry the cone through the payload.
+* [`render_raytrace_clusters_hit.glsl`](../shaders/render_raytrace_clusters_hit.glsl),
+  [`render_pathtrace_clusters_hit.glsl`](../shaders/render_pathtrace_clusters_hit.glsl) (the closest hits, also run
+  by the ray queries), [`render_raytrace_clusters_ao.rchit.glsl`](../shaders/render_raytrace_clusters_ao.rchit.glsl),
+  [`render_rayquery.glsl`](../shaders/render_rayquery.glsl) and
+  [`render_hybridpath_hit.glsl`](../shaders/render_hybridpath_hit.glsl) (the rasterized primary hit): register the
+  hits, the ray generation shaders carry the cone through the payload.
 * [`stream_hit_propagation.comp.glsl`](../shaders/stream_hit_propagation.comp.glsl): inherits the hits fine to
   coarse, smooths the widths, records `geometryHitDemandLevel` and seeds the demand pass.
 * [`stream_hit_demand_tree.comp.glsl`](../shaders/stream_hit_demand_tree.comp.glsl): the breadth-first demand descent

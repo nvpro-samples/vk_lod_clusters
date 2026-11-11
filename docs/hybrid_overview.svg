@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1900 660" width="1900" height="660" font-family="'NVIDIA Sans', 'NVIDIA Sans Regular', Arial, sans-serif">
+<defs><marker id="aG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6aa84f"/></marker><marker id="aY" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e0a800"/></marker></defs>
+<rect width="1900" height="660" fill="#ffffff"/>
+ <text x="40.0" y="40.0" font-size="26" fill="#000000" text-anchor="start" font-weight="bold">Path tracing</text>
+ <rect x="44.0" y="312.0" width="46.0" height="36.0" fill="#4a86e8"/>
+ <path d="M90.0 330.0 L110.0 312.0 L110.0 348.0 Z" fill="#4a86e8"/>
+ <line x1="110.0" y1="330.0" x2="750.0" y2="45.1" stroke="#3d85c6" stroke-width="2" stroke-dasharray="2 6" stroke-linecap="round"/>
+ <line x1="110.0" y1="330.0" x2="750.0" y2="614.9" stroke="#3d85c6" stroke-width="2" stroke-dasharray="2 6" stroke-linecap="round"/>
+ <circle cx="540" cy="285" r="82" fill="#b6d7a8" stroke="#6aa84f" stroke-width="3"/>
+ <circle cx="350" cy="350" r="52" fill="#b6d7a8" stroke="#6aa84f" stroke-width="3"/>
+ <path d="M618.7 413.9 L596.7 434.3 L568.0 425.4 L561.3 396.1 L583.3 375.7 L612.0 384.6 Z" fill="#e6e6e6" stroke="#999999" stroke-width="3"/>
+ <path d="M450.6 114.5 L427.1 136.2 L396.5 126.7 L389.4 95.5 L412.9 73.8 L443.5 83.3 Z" fill="#e6e6e6" stroke="#999999" stroke-width="3"/>
+ <line x1="110.0" y1="330.0" x2="299.0" y2="339.6" stroke="#6aa84f" stroke-width="2.5" marker-end="url(#aG)"/>
+ <line x1="110.0" y1="330.0" x2="464.6" y2="252.2" stroke="#6aa84f" stroke-width="2.5" marker-end="url(#aG)"/>
+ <line x1="326.6" y1="303.7" x2="429.6" y2="135.4" stroke="#e0a800" stroke-width="2.5" stroke-dasharray="7 5" marker-end="url(#aY)"/>
+ <text x="640.0" y="160.0" font-size="19" fill="#6aa84f" text-anchor="start" font-weight="normal">Visible instances keep</text>
+ <text x="640.0" y="184.0" font-size="19" fill="#6aa84f" text-anchor="start" font-weight="normal">their full detail, also on</text>
+ <text x="640.0" y="208.0" font-size="19" fill="#6aa84f" text-anchor="start" font-weight="normal">the parts nothing sees</text>
+ <text x="645.0" y="440.0" font-size="19" fill="#7f7f7f" text-anchor="start" font-weight="normal">Occluded or off-screen</text>
+ <text x="645.0" y="464.0" font-size="19" fill="#7f7f7f" text-anchor="start" font-weight="normal">instances: coarser LoD</text>
+ <text x="645.0" y="488.0" font-size="19" fill="#7f7f7f" text-anchor="start" font-weight="normal">(culled error scale)</text>
+ <text x="490.0" y="60.0" font-size="19" fill="#e0a800" text-anchor="start" font-weight="normal">Secondary rays start on</text>
+ <text x="490.0" y="84.0" font-size="19" fill="#e0a800" text-anchor="start" font-weight="normal">the traced hit</text>
+ <text x="60.0" y="630.0" font-size="21" fill="#000000" text-anchor="start" font-weight="normal">Every primary ray is traced through TLAS and BLAS.</text>
+ <path d="M852 300 L922 300 L922 268 L972 330 L922 392 L922 360 L852 360 Z" fill="#ffffff" stroke="#6aa84f" stroke-width="2.5"/>
+ <text x="904.0" y="338.0" font-size="22" fill="#5a9a2a" text-anchor="middle" font-weight="normal">Hybrid</text>
+ <text x="1010.0" y="40.0" font-size="26" fill="#000000" text-anchor="start" font-weight="bold">Hybrid</text>
+ <rect x="1014.0" y="312.0" width="46.0" height="36.0" fill="#4a86e8"/>
+ <path d="M1060.0 330.0 L1080.0 312.0 L1080.0 348.0 Z" fill="#4a86e8"/>
+ <line x1="1080.0" y1="330.0" x2="1720.0" y2="45.1" stroke="#3d85c6" stroke-width="2" stroke-dasharray="2 6" stroke-linecap="round"/>
+ <line x1="1080.0" y1="330.0" x2="1720.0" y2="614.9" stroke="#3d85c6" stroke-width="2" stroke-dasharray="2 6" stroke-linecap="round"/>
+ <defs><linearGradient id="g1510_285" gradientUnits="userSpaceOnUse" x1="1449.0" y1="238.2" x2="1518.3" y2="293.3"><stop offset="0.25" stop-color="#b6d7a8"/><stop offset="0.85" stop-color="#e69138"/></linearGradient></defs>
+ <path d="M1592.0 285.0 L1568.0 343.0 L1510.0 367.0 L1452.0 343.0 L1428.0 285.0 L1428.2 279.6 L1428.7 274.3 L1429.6 269.0 L1430.8 263.8 L1432.4 258.6 L1434.2 253.6 L1436.5 248.7 L1439.0 244.0 L1441.8 239.4 L1444.9 235.1 L1448.3 230.9 L1452.0 227.0 L1455.9 223.3 L1460.1 219.9 L1464.4 216.8 L1469.0 214.0 L1473.7 211.5 L1478.6 209.2 L1483.6 207.4 L1510.0 203.0 L1568.0 227.0 Z" fill="url(#g1510_285)" stroke="none"/>
+ <line x1="1592.0" y1="285.0" x2="1568.0" y2="343.0" stroke="#b45f06" stroke-width="3.5" stroke-linecap="round"/>
+ <line x1="1568.0" y1="343.0" x2="1510.0" y2="367.0" stroke="#b45f06" stroke-width="3.5" stroke-linecap="round"/>
+ <line x1="1510.0" y1="367.0" x2="1452.0" y2="343.0" stroke="#b45f06" stroke-width="3.5" stroke-linecap="round"/>
+ <line x1="1452.0" y1="343.0" x2="1428.0" y2="285.0" stroke="#b45f06" stroke-width="3.5" stroke-linecap="round"/>
+ <line x1="1428.0" y1="285.0" x2="1428.2" y2="279.6" stroke="#b45f06" stroke-width="3.5" stroke-linecap="round"/>
+ <line x1="1428.2" y1="279.6" x2="1428.7" y2="274.3" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1428.7" y1="274.3" x2="1429.6" y2="269.0" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1429.6" y1="269.0" x2="1430.8" y2="263.8" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1430.8" y1="263.8" x2="1432.4" y2="258.6" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1432.4" y1="258.6" x2="1434.2" y2="253.6" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1434.2" y1="253.6" x2="1436.5" y2="248.7" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1436.5" y1="248.7" x2="1439.0" y2="244.0" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1439.0" y1="244.0" x2="1441.8" y2="239.4" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1441.8" y1="239.4" x2="1444.9" y2="235.1" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1444.9" y1="235.1" x2="1448.3" y2="230.9" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1448.3" y1="230.9" x2="1452.0" y2="227.0" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1452.0" y1="227.0" x2="1455.9" y2="223.3" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1455.9" y1="223.3" x2="1460.1" y2="219.9" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1460.1" y1="219.9" x2="1464.4" y2="216.8" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1464.4" y1="216.8" x2="1469.0" y2="214.0" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1469.0" y1="214.0" x2="1473.7" y2="211.5" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1473.7" y1="211.5" x2="1478.6" y2="209.2" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1478.6" y1="209.2" x2="1483.6" y2="207.4" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1483.6" y1="207.4" x2="1510.0" y2="203.0" stroke="#b45f06" stroke-width="3.5" stroke-linecap="round"/>
+ <line x1="1510.0" y1="203.0" x2="1568.0" y2="227.0" stroke="#b45f06" stroke-width="3.5" stroke-linecap="round"/>
+ <line x1="1568.0" y1="227.0" x2="1592.0" y2="285.0" stroke="#b45f06" stroke-width="3.5" stroke-linecap="round"/>
+ <defs><linearGradient id="g1320_350" gradientUnits="userSpaceOnUse" x1="1283.1" y1="346.4" x2="1345.1" y2="350.0"><stop offset="0.25" stop-color="#b6d7a8"/><stop offset="0.85" stop-color="#e69138"/></linearGradient></defs>
+ <path d="M1372.0 350.0 L1356.8 386.8 L1320.0 402.0 L1303.3 399.2 L1300.1 398.0 L1297.0 396.6 L1294.0 395.0 L1291.1 393.2 L1288.3 391.3 L1285.7 389.1 L1283.2 386.8 L1280.9 384.3 L1278.7 381.7 L1276.8 378.9 L1275.0 376.0 L1273.4 373.0 L1272.0 369.9 L1270.8 366.7 L1269.8 363.5 L1269.0 360.1 L1268.4 356.8 L1268.1 353.4 L1268.0 350.0 L1268.1 346.6 L1268.4 343.2 L1269.0 339.9 L1269.8 336.5 L1270.8 333.3 L1272.0 330.1 L1273.4 327.0 L1275.0 324.0 L1276.8 321.1 L1278.7 318.3 L1280.9 315.7 L1283.2 313.2 L1285.7 310.9 L1288.3 308.7 L1291.1 306.8 L1294.0 305.0 L1297.0 303.4 L1300.1 302.0 L1303.3 300.8 L1306.5 299.8 L1309.9 299.0 L1313.2 298.4 L1320.0 298.0 L1356.8 313.2 Z" fill="url(#g1320_350)" stroke="none"/>
+ <line x1="1372.0" y1="350.0" x2="1356.8" y2="386.8" stroke="#b45f06" stroke-width="3.5" stroke-linecap="round"/>
+ <line x1="1356.8" y1="386.8" x2="1320.0" y2="402.0" stroke="#b45f06" stroke-width="3.5" stroke-linecap="round"/>
+ <line x1="1320.0" y1="402.0" x2="1303.3" y2="399.2" stroke="#b45f06" stroke-width="3.5" stroke-linecap="round"/>
+ <line x1="1303.3" y1="399.2" x2="1300.1" y2="398.0" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1300.1" y1="398.0" x2="1297.0" y2="396.6" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1297.0" y1="396.6" x2="1294.0" y2="395.0" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1294.0" y1="395.0" x2="1291.1" y2="393.2" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1291.1" y1="393.2" x2="1288.3" y2="391.3" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1288.3" y1="391.3" x2="1285.7" y2="389.1" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1285.7" y1="389.1" x2="1283.2" y2="386.8" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1283.2" y1="386.8" x2="1280.9" y2="384.3" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1280.9" y1="384.3" x2="1278.7" y2="381.7" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1278.7" y1="381.7" x2="1276.8" y2="378.9" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1276.8" y1="378.9" x2="1275.0" y2="376.0" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1275.0" y1="376.0" x2="1273.4" y2="373.0" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1273.4" y1="373.0" x2="1272.0" y2="369.9" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1272.0" y1="369.9" x2="1270.8" y2="366.7" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1270.8" y1="366.7" x2="1269.8" y2="363.5" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1269.8" y1="363.5" x2="1269.0" y2="360.1" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1269.0" y1="360.1" x2="1268.4" y2="356.8" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1268.4" y1="356.8" x2="1268.1" y2="353.4" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1268.1" y1="353.4" x2="1268.0" y2="350.0" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1268.0" y1="350.0" x2="1268.1" y2="346.6" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1268.1" y1="346.6" x2="1268.4" y2="343.2" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1268.4" y1="343.2" x2="1269.0" y2="339.9" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1269.0" y1="339.9" x2="1269.8" y2="336.5" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1269.8" y1="336.5" x2="1270.8" y2="333.3" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1270.8" y1="333.3" x2="1272.0" y2="330.1" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1272.0" y1="330.1" x2="1273.4" y2="327.0" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1273.4" y1="327.0" x2="1275.0" y2="324.0" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1275.0" y1="324.0" x2="1276.8" y2="321.1" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1276.8" y1="321.1" x2="1278.7" y2="318.3" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1278.7" y1="318.3" x2="1280.9" y2="315.7" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1280.9" y1="315.7" x2="1283.2" y2="313.2" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1283.2" y1="313.2" x2="1285.7" y2="310.9" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1285.7" y1="310.9" x2="1288.3" y2="308.7" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1288.3" y1="308.7" x2="1291.1" y2="306.8" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1291.1" y1="306.8" x2="1294.0" y2="305.0" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1294.0" y1="305.0" x2="1297.0" y2="303.4" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1297.0" y1="303.4" x2="1300.1" y2="302.0" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1300.1" y1="302.0" x2="1303.3" y2="300.8" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1303.3" y1="300.8" x2="1306.5" y2="299.8" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1306.5" y1="299.8" x2="1309.9" y2="299.0" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1309.9" y1="299.0" x2="1313.2" y2="298.4" stroke="#6aa84f" stroke-width="3" stroke-linecap="round"/>
+ <line x1="1313.2" y1="298.4" x2="1320.0" y2="298.0" stroke="#b45f06" stroke-width="3.5" stroke-linecap="round"/>
+ <line x1="1320.0" y1="298.0" x2="1356.8" y2="313.2" stroke="#b45f06" stroke-width="3.5" stroke-linecap="round"/>
+ <line x1="1356.8" y1="313.2" x2="1372.0" y2="350.0" stroke="#b45f06" stroke-width="3.5" stroke-linecap="round"/>
+ <path d="M1588.7 413.9 L1566.7 434.3 L1538.0 425.4 L1531.3 396.1 L1553.3 375.7 L1582.0 384.6 Z" fill="#e6e6e6" stroke="#999999" stroke-width="3"/>
+ <path d="M1420.6 114.5 L1397.1 136.2 L1366.5 126.7 L1359.4 95.5 L1382.9 73.8 L1413.5 83.3 Z" fill="#e6e6e6" stroke="#999999" stroke-width="3"/>
+ <line x1="1080.0" y1="330.0" x2="1269.0" y2="339.6" stroke="#6aa84f" stroke-width="2.5" marker-end="url(#aG)"/>
+ <line x1="1080.0" y1="330.0" x2="1434.6" y2="252.2" stroke="#6aa84f" stroke-width="2.5" marker-end="url(#aG)"/>
+ <line x1="1296.6" y1="303.7" x2="1399.6" y2="135.4" stroke="#e0a800" stroke-width="2.5" stroke-dasharray="7 5" marker-end="url(#aY)"/>
+ <text x="1610.0" y="160.0" font-size="19" fill="#6aa84f" text-anchor="start" font-weight="normal">Visible: the raster cut,</text>
+ <text x="1610.0" y="184.0" font-size="19" fill="#6aa84f" text-anchor="start" font-weight="normal">the BLAS matches it</text>
+ <text x="1615.0" y="275.0" font-size="19" fill="#b45f06" text-anchor="start" font-weight="normal">New: occluded parts of</text>
+ <text x="1615.0" y="299.0" font-size="19" fill="#b45f06" text-anchor="start" font-weight="normal">visible instances get</text>
+ <text x="1615.0" y="323.0" font-size="19" fill="#b45f06" text-anchor="start" font-weight="normal">coarser detail, in the</text>
+ <text x="1615.0" y="347.0" font-size="19" fill="#b45f06" text-anchor="start" font-weight="normal">raster and the BLAS</text>
+ <text x="1615.0" y="440.0" font-size="19" fill="#7f7f7f" text-anchor="start" font-weight="normal">Occluded or off-screen</text>
+ <text x="1615.0" y="464.0" font-size="19" fill="#7f7f7f" text-anchor="start" font-weight="normal">instances: as in the path</text>
+ <text x="1615.0" y="488.0" font-size="19" fill="#7f7f7f" text-anchor="start" font-weight="normal">tracer, no raster to match</text>
+ <text x="1460.0" y="60.0" font-size="19" fill="#e0a800" text-anchor="start" font-weight="normal">Secondary rays start on</text>
+ <text x="1460.0" y="84.0" font-size="19" fill="#e0a800" text-anchor="start" font-weight="normal">the rasterized hit</text>
+ <text x="1030.0" y="630.0" font-size="21" fill="#000000" text-anchor="start" font-weight="normal">Raster gives primary visibility, path tracing continues from it.</text>
+</svg>

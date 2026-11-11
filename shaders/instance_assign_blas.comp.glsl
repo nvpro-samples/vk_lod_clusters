@@ -162,9 +162,20 @@ void main()
     }
   #endif
 
+  #if USE_BLAS_DEDUP
+    // `blasBuildIndex` references a blas candidate, a deduplicated one points at
+    // its representative. Like sharing it must not add to the memory stats twice.
+    if (buildIndex != BLAS_BUILD_INDEX_LOWDETAIL && blasAddress == 0)
+    {
+      uint representative = build.blasCandidateInfos.d[buildIndex].representative;
+      doStats             = doStats && (representative == buildIndex);
+      buildIndex          = build.blasCandidateInfos.d[representative].buildIndex;
+    }
+  #endif
+
     // By default tlasInstances are set to low detail blas,
     // override when applicable.
-    
+
     if (buildIndex != BLAS_BUILD_INDEX_LOWDETAIL)
     {
     #if USE_MEMORY_STATS

@@ -103,6 +103,8 @@ struct FrameConfig
   uint32_t cachingPushLevels = 0;
   // hysteresis: extra levels for an instance already on the cached blas, keeps partitions quiet
   uint32_t cachingStickyLevels = 0;
+  // hybrid path: a visible instance keeps a cached blas within N levels of its cut, -1 off
+  int32_t hybridCachedTolerance = -1;
   // early-out: a stable partition is reprocessed at least this often. Bounds how stale a
   // skipped partition's lod decision may get, and is also the window over which the
   // cached blas retention value is minimised. 0 uses the default.
@@ -273,13 +275,16 @@ public:
     int  supersample    = 0;
     bool hbaoQuarterRes = true;
 
-    bool useResolved      = false;
-    bool useRasterization = false;
+    bool useResolved         = false;
+    bool useRasterization    = false;
+    bool useVisibilityBuffer = false;
+    bool useRasterAtomic     = false;
 
     // linear HDR, tonemapped into `imgColorLdr`
-    VkFormat colorFormat           = VK_FORMAT_R16G16B16A16_SFLOAT;
-    VkFormat ldrColorFormat        = VK_FORMAT_R8G8B8A8_UNORM;
-    VkFormat raytracingDepthFormat = VK_FORMAT_R32_SFLOAT;
+    VkFormat colorFormat            = VK_FORMAT_R16G16B16A16_SFLOAT;
+    VkFormat ldrColorFormat         = VK_FORMAT_R8G8B8A8_UNORM;
+    VkFormat raytracingDepthFormat  = VK_FORMAT_R32_SFLOAT;
+    VkFormat visibilityBufferFormat = VK_FORMAT_R32G32_UINT;
     VkFormat depthStencilFormat;
 
     VkViewport  viewport;
@@ -292,7 +297,9 @@ public:
     nvvk::Image imgDepthStencil    = {};
     nvvk::Image imgRaytracingDepth = {};
     nvvk::Image imgRasterAtomic    = {};
-    nvvk::Image imgHizFar[2]       = {};
+    // hybrid path: rasterized instance / cluster+triangle ids
+    nvvk::Image imgVisibilityBuffer = {};
+    nvvk::Image imgHizFar[2]        = {};
 
     VkPipelineRenderingCreateInfo pipelineRenderingInfo = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
 
@@ -315,6 +322,9 @@ public:
   // rebuilds render-size dependent resources so rasterization-only targets (HBAO, raster atomic)
   // are only allocated while a rasterization renderer is active
   void setFramebufferUseRasterization(bool enabled);
+  void setFramebufferUseVisibilityBuffer(bool enabled);
+  // the hybrid renderer's compute raster, rasterization always has the image
+  void setFramebufferUseRasterAtomic(bool enabled);
 #if USE_DLSS
   void updateFramebufferDlss(VkCommandBuffer cmd);
   // falls back to `eNone` if DLSS fails to initialize, or, without `m_dlssWaitForInit`, while its NGX init is still running

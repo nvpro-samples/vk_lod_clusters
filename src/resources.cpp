@@ -592,7 +592,7 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
 #endif
   }
 
-  if(m_frameBuffer.useRasterization)
+  if(m_frameBuffer.useRasterization || m_frameBuffer.useRasterAtomic)
   {
     // compute rasterization
     VkImageCreateInfo imageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -675,6 +675,33 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
 #endif
   }
 
+  if(m_frameBuffer.useVisibilityBuffer)
+  {
+    VkImageCreateInfo imageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    imageInfo.imageType         = VK_IMAGE_TYPE_2D;
+    imageInfo.format            = m_frameBuffer.visibilityBufferFormat;
+    imageInfo.extent.width      = m_frameBuffer.renderSize.width;
+    imageInfo.extent.height     = m_frameBuffer.renderSize.height;
+    imageInfo.extent.depth      = 1;
+    imageInfo.mipLevels         = 1;
+    imageInfo.arrayLayers       = 1;
+    imageInfo.samples           = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.tiling            = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage             = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+
+    VkImageViewCreateInfo imageViewInfo       = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    imageViewInfo.viewType                    = VK_IMAGE_VIEW_TYPE_2D;
+    imageViewInfo.format                      = imageInfo.format;
+    imageViewInfo.subresourceRange.levelCount = 1;
+    imageViewInfo.subresourceRange.layerCount = 1;
+    imageViewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+
+    NVVK_CHECK(m_allocator.createImage(m_frameBuffer.imgVisibilityBuffer, imageInfo, imageViewInfo));
+    NVVK_DBG_NAME(m_frameBuffer.imgVisibilityBuffer.image);
+    NVVK_DBG_NAME(m_frameBuffer.imgVisibilityBuffer.descriptor.imageView);
+  }
+
   // for two pass culling in rasterization need two
   for(uint32_t i = 0; i < 2; i++)
   {
@@ -743,6 +770,10 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
   {
     cmdImageTransition(cmd, m_frameBuffer.imgRasterAtomic, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
   }
+  if(m_frameBuffer.imgVisibilityBuffer.image)
+  {
+    cmdImageTransition(cmd, m_frameBuffer.imgVisibilityBuffer, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL);
+  }
 
   {
     VkClearColorValue clear = {};
@@ -786,6 +817,36 @@ void Resources::setFramebufferUseRasterization(bool enabled)
   {
     m_frameBuffer.useRasterization = enabled;
     VkCommandBuffer cmd            = createTempCmdBuffer();
+
+    deinitFramebufferRenderSizeDependent();
+    updateFramebufferRenderSizeDependent(cmd);
+    tempSyncSubmit(cmd);
+
+    updateFramebufferMemBytes();
+  }
+}
+
+void Resources::setFramebufferUseRasterAtomic(bool enabled)
+{
+  if(m_frameBuffer.useRasterAtomic != enabled)
+  {
+    m_frameBuffer.useRasterAtomic = enabled;
+    VkCommandBuffer cmd           = createTempCmdBuffer();
+
+    deinitFramebufferRenderSizeDependent();
+    updateFramebufferRenderSizeDependent(cmd);
+    tempSyncSubmit(cmd);
+
+    updateFramebufferMemBytes();
+  }
+}
+
+void Resources::setFramebufferUseVisibilityBuffer(bool enabled)
+{
+  if(m_frameBuffer.useVisibilityBuffer != enabled)
+  {
+    m_frameBuffer.useVisibilityBuffer = enabled;
+    VkCommandBuffer cmd               = createTempCmdBuffer();
 
     deinitFramebufferRenderSizeDependent();
     updateFramebufferRenderSizeDependent(cmd);
@@ -951,6 +1012,7 @@ void Resources::deinitFramebufferRenderSizeDependent()
   m_allocator.destroyImage(m_frameBuffer.imgHizFar[1]);
   m_allocator.destroyImage(m_frameBuffer.imgRaytracingDepth);
   m_allocator.destroyImage(m_frameBuffer.imgRasterAtomic);
+  m_allocator.destroyImage(m_frameBuffer.imgVisibilityBuffer);
 
   vkDestroyImageView(m_device, m_frameBuffer.viewDepth, nullptr);
   m_frameBuffer.viewDepth = VK_NULL_HANDLE;
@@ -1725,6 +1787,7 @@ void Resources::updateFramebufferMemBytes()
   bytes += getImageMemBytes(m_allocator, m_frameBuffer.imgColorResolved);
   bytes += getImageMemBytes(m_allocator, m_frameBuffer.imgDepthStencil);
   bytes += getImageMemBytes(m_allocator, m_frameBuffer.imgRaytracingDepth);
+  bytes += getImageMemBytes(m_allocator, m_frameBuffer.imgVisibilityBuffer);
   bytes += getImageMemBytes(m_allocator, m_frameBuffer.imgRasterAtomic);
   bytes += getImageMemBytes(m_allocator, m_frameBuffer.imgHizFar[0]);
   bytes += getImageMemBytes(m_allocator, m_frameBuffer.imgHizFar[1]);

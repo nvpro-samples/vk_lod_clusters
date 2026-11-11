@@ -14,148 +14,11 @@
 #include <algorithm>
 #include <cmath>
 
-#include "renderer.hpp"
-#include "partitioned_acceleration_structures.hpp"
-
-#define USE_LARGE_BUFFER_BLAS 1
+#include "renderer_raytrace_clusters_lod.hpp"
 
 //////////////////////////////////////////////////////////////////////////
 
 namespace lodclusters {
-
-class RendererRayTraceClustersLod : public Renderer
-{
-public:
-  virtual bool init(Resources& res, RenderScene& rscene, const RendererConfig& config) override;
-  virtual void render(VkCommandBuffer primary, Resources& res, RenderScene& rscene, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler) override;
-  virtual void deinit(Resources& res) override;
-  virtual void updatedFrameBuffer(Resources& res, RenderScene& rscene);
-
-private:
-  // sharing and caching are independent, but both need the instance lod classification
-  bool useBlasReuse() const { return m_config.useBlasSharing || m_config.useBlasCaching; }
-
-  bool initShaders(Resources& res, RenderScene& scene);
-
-  void initRayTracingPipeline(Resources& res);
-  bool initRayTracingBlas(Resources& res, RenderScene& scene, VkDeviceSize& scratchSize);
-  void initRayTracingTlas(Resources& res, RenderScene& rscene, VkDeviceSize& scratchSize);
-  bool initRayTracingPtlas(Resources& res, RenderScene& rscene, VkDeviceSize& scratchSize);
-  // the initial build writing all instances, needs the scratch and the build data
-  void initRayTracingPtlasInstances(Resources& res, RenderScene& rscene);
-  // the partition arrays the early-out reads, independent of the ptlas
-  void initInstancePartitions(Resources& res, RenderScene& rscene);
-
-  void updateRayTracingTlas(VkCommandBuffer cmd, Resources& res, bool update = false);
-  void updateRayTracingPtlas(VkCommandBuffer cmd);
-
-
-  struct Shaders
-  {
-    Shader rayGen;
-    Shader rayClosestHit;
-    Shader rayAnyHit;
-    Shader rayClosestHitAO;
-    Shader rayMiss;
-    Shader rayMissAO;
-
-    Shader computeTraversalPresort;
-    Shader computeTraversalInit;
-    Shader computeTraversalRun;
-    Shader computeTraversalGroups;
-    Shader computeTraversalMerge;
-    Shader computeBuildSetup;
-
-    Shader computeBlasInsertClusters;
-    Shader computeBlasSetupInsertion;
-    Shader computeBlasCachingSetupCopy;
-    Shader computeBlasCachingSetupBuild;
-
-    Shader computeInstanceAssignBlas;
-    Shader computeInstanceClassifyLod;
-    Shader computeGeometryBlasSharing;
-    Shader computeGeometryCachedRetain;
-    Shader computePartitionSetup;
-    Shader computePartitionBlockCompact;
-    Shader computeInstanceHitScale;
-
-    Shader computeHitPropagation;
-    Shader computeHitDemand;
-  };
-
-  struct Pipelines
-  {
-    VkPipeline rayTracing = nullptr;
-
-    VkPipeline computeTraversalPresort = nullptr;
-    VkPipeline computeTraversalInit    = nullptr;
-    VkPipeline computeTraversalRun     = nullptr;
-    VkPipeline computeTraversalGroups  = nullptr;
-    VkPipeline computeTraversalMerge   = nullptr;
-    VkPipeline computeBuildSetup       = nullptr;
-
-    VkPipeline computeBlasInsertClusters    = nullptr;
-    VkPipeline computeBlasSetupInsertion    = nullptr;
-    VkPipeline computeBlasCachingSetupCopy  = nullptr;
-    VkPipeline computeBlasCachingSetupBuild = nullptr;
-    VkPipeline computeInstanceAssignBlas    = nullptr;
-    VkPipeline computeInstanceClassifyLod   = nullptr;
-    VkPipeline computeGeometryBlasSharing   = nullptr;
-    VkPipeline computeGeometryCachedRetain  = nullptr;
-    VkPipeline computePartitionSetup        = nullptr;
-    VkPipeline computePartitionBlockCompact = nullptr;
-    VkPipeline computeInstanceHitScale      = nullptr;
-
-    VkPipeline computeHitPropagation = nullptr;
-    VkPipeline computeHitDemand      = nullptr;
-  };
-
-  VkPhysicalDeviceRayTracingPipelinePropertiesKHR m_rtProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
-  VkPhysicalDeviceAccelerationStructurePropertiesKHR m_accProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
-  VkPhysicalDeviceClusterAccelerationStructurePropertiesNV m_rtClasProperties{
-      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_PROPERTIES_NV};
-
-  nvvk::SBTGenerator::Regions m_sbtRegions;  // Shading binding table wrapper
-  nvvk::Buffer                m_sbtBuffer;
-
-  Shaders            m_shaders;
-  Pipelines          m_pipelines;
-  VkShaderStageFlags m_stageFlags{};
-  bool               m_hasAlphaMask = false;  // scene has alpha-masked geometry -> pipeline needs the any-hit group
-  VkPipelineLayout   m_pipelineLayout{};
-
-  nvvk::DescriptorPack m_dsetPack;
-
-  nvvk::Buffer m_sceneBuildBuffer;
-  nvvk::Buffer m_sceneDataBuffer;
-
-#if USE_LARGE_BUFFER_BLAS
-  nvvk::LargeBuffer m_sceneBlasDataBuffer;
-#else
-  nvvk::Buffer m_sceneBlasDataBuffer;
-#endif
-  nvvk::Buffer            m_sceneTraversalBuffer;
-  nvvk::Buffer            m_sceneGeometryHistogramBuffer;
-  shaderio::SceneBuilding m_sceneBuildShaderio;
-
-  VkClusterAccelerationStructureClustersBottomLevelInputNV m_blasInput{};
-  VkDeviceSize                                             m_blasDataSize = 0;
-
-  VkClusterAccelerationStructureMoveObjectsInputNV m_blasMoveInput{};
-
-  nvvk::Buffer                                m_tlasInstancesBuffer;
-  VkAccelerationStructureGeometryKHR          m_tlasGeometry{};
-  VkAccelerationStructureBuildGeometryInfoKHR m_tlasBuildInfo{};
-  nvvk::AccelerationStructure                 m_tlas;
-
-  // for m_config.usePtlas
-  PartitionedTlas m_ptlas;
-  // holds the operation count, followed by the operation of the frame
-  nvvk::Buffer m_ptlasOperationsBuffer;
-  uint32_t     m_partitionCount = 0;
-
-  nvvk::Buffer m_scratchBuffer;
-};
 
 bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscene)
 {
@@ -187,6 +50,8 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("USE_STREAMING", rscene.useStreaming ? "1" : "0");
   options.AddMacroDefinition("USE_SORTING", m_config.useSorting ? "1" : "0");
   options.AddMacroDefinition("USE_CULLING", m_config.useCulling ? "1" : "0");
+  // --twopassculling is raster only, the traversal tests last frame's hiz. The hybrid
+  // renderer always rasterizes in two passes, see RendererHybridClustersLod::renderRaster.
   options.AddMacroDefinition("USE_TWO_PASS_CULLING", "0");
   options.AddMacroDefinition("USE_TWO_PASS_REJECT_LISTS", "0");
   options.AddMacroDefinition("USE_BLAS_REUSE", useBlasReuse() ? "1" : "0");
@@ -196,6 +61,7 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("USE_PTLAS", m_config.usePtlas ? "1" : "0");
   options.AddMacroDefinition("USE_PARTITIONS", (m_config.usePtlas || m_config.usePartitionEarlyOut) ? "1" : "0");
   options.AddMacroDefinition("USE_PARTITION_EARLY_OUT", m_config.usePartitionEarlyOut ? "1" : "0");
+  options.AddMacroDefinition("USE_BLAS_DEDUP", m_config.useBlasDedup ? "1" : "0");
   options.AddMacroDefinition("USE_RENDER_STATS", m_config.useRenderStats ? "1" : "0");
   options.AddMacroDefinition("USE_DLSS", supportsDLSS && m_config.useDlss ? "1" : "0");
   options.AddMacroDefinition("ALLOW_VERTEX_NORMALS", rscene.scene->m_hasVertexNormals ? "1" : "0");
@@ -211,9 +77,12 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("MESHSHADER_WORKGROUP_SIZE", fmt::format("{}", m_meshShaderWorkgroupSize));
   options.AddMacroDefinition("MESHSHADER_BBOX_COUNT", fmt::format("{}", m_meshShaderBoxes));
   options.AddMacroDefinition("USE_SW_RASTER", "0");
+  options.AddMacroDefinition("USE_HYBRID_SW_RASTER", useHybridSWRaster() ? "1" : "0");
   options.AddMacroDefinition("USE_TWO_SIDED", rscene.scene->m_hasTwoSided && !m_config.forceTwoSided ? "1" : "0");
   options.AddMacroDefinition("USE_FORCED_TWO_SIDED", m_config.forceTwoSided ? "1" : "0");
-  options.AddMacroDefinition("USE_FORCED_INVISIBLE_CULLING", m_config.useForcedInvisibleCulling ? "1" : "0");
+  // the hybrid renderer leaves occlusion to the lod cut and the two raster passes
+  bool useCulledGroupLod = m_config.useCulling && (m_config.useCulledGroupLod || m_hybrid);
+  options.AddMacroDefinition("USE_CULLED_GROUP_LOD", useCulledGroupLod ? "1" : "0");
   options.AddMacroDefinition("USE_PERSISTENT_TRAVERSAL_KERNEL", m_config.usePersistentTraversal ? "1" : "0");
   options.AddMacroDefinition("TRAVERSAL_VULKAN_MEMORY_MODEL",
                              m_config.usePersistentTraversal && m_config.useVulkanMemoryModel ? "1" : "0");
@@ -226,6 +95,19 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("HAS_ALPHA_TEST", rscene.scene->m_hasAlphaMask ? "1" : "0");
   options.AddMacroDefinition("HAS_TEXTURED_MATERIALS", rscene.scene->m_hasTexturedMaterials ? "1" : "0");
   options.AddMacroDefinition("USE_PATHTRACING", m_config.usePathtrace ? "1" : "0");
+  options.AddMacroDefinition("USE_HYBRIDPATH", m_hybrid ? "1" : "0");
+  options.AddMacroDefinition("USE_HYBRID_DISCRETE_LOD",
+                             m_hybrid && m_config.useHybridDiscreteLod && m_config.useBlasCaching ? "1" : "0");
+  options.AddMacroDefinition("DEBUG_HYBRID_MATCH", m_hybrid && m_config.useHybridMatchCheck ? "1" : "0");
+  {
+    // the raster must see the positions the CLAS were built from, see `minPositionTruncateBitCount`.
+    // Compressed positions already dropped their bits.
+    uint32_t truncateBits = rscene.useStreaming ? rscene.sceneStreaming.getStreamingConfig().clasPositionTruncateBits :
+                                                  rscene.scenePreloaded.getConfig().clasPositionTruncateBits;
+    uint32_t droppedBits = rscene.scene->m_config.useCompressedData ? rscene.scene->m_config.compressionPosDropBits : 0;
+    options.AddMacroDefinition("HYBRID_POSITION_TRUNCATE_BITS",
+                               fmt::format("{}", m_hybrid && truncateBits > droppedBits ? truncateBits : 0));
+  }
   // path depth up to which sun shadow rays register hits, the ray tracer only has primary hits
   uint32_t shadowHitDepth = m_config.useHitStreaming ? uint32_t(std::max(m_config.hitStreamingShadowDepth, 1)) : 0;
   options.AddMacroDefinition("HIT_STREAMING_SHADOW_DEPTH", fmt::format("{}", shadowHitDepth));
@@ -241,24 +123,41 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   // The basic path tracer uses a separate shader set: the closest-hit only reports the hit
   // and all shading happens in the ray-generation shader.
   const bool  pt        = m_config.usePathtrace;
-  const char* rgenFile  = pt ? "render_pathtrace.rgen.glsl" : "render_raytrace.rgen.glsl";
+  const char* rgenFile  = m_hybrid ? "render_hybridpath.rgen.glsl" :
+                          pt       ? "render_pathtrace.rgen.glsl" :
+                                     "render_raytrace.rgen.glsl";
   const char* rchitFile = pt ? "render_pathtrace_clusters.rchit.glsl" : "render_raytrace_clusters.rchit.glsl";
   const char* rahitFile = pt ? "render_pathtrace_clusters.rahit.glsl" : "render_raytrace_clusters.rahit.glsl";
   const char* rmissFile = pt ? "render_pathtrace.rmiss.glsl" : "render_raytrace.rmiss.glsl";
 
   m_hasAlphaMask = rscene.scene->m_hasAlphaMask;
-  res.compileShader(m_shaders.rayGen, VK_SHADER_STAGE_RAYGEN_BIT_KHR, rgenFile, &options);
-  res.compileShader(m_shaders.rayClosestHit, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, rchitFile, &options);
-  // the any-hit only alpha-tests cutout geometry; compile it (and its hit groups) only when the scene has any
-  if(m_hasAlphaMask)
-    res.compileShader(m_shaders.rayAnyHit, VK_SHADER_STAGE_ANY_HIT_BIT_KHR, rahitFile, &options);
-  // shadow ray closest-hit that records hits for hit-based streaming, traced via the AO hit
-  // group (AO rays skip it). The path tracer's shadow rays run its own closest-hit, so this
-  // stage is unused when path tracing.
-  res.compileShader(m_shaders.rayClosestHitAO, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
-                    "render_raytrace_clusters_ao.rchit.glsl", &optionsAO);
-  res.compileShader(m_shaders.rayMiss, VK_SHADER_STAGE_MISS_BIT_KHR, rmissFile, &options, "primary");
-  res.compileShader(m_shaders.rayMissAO, VK_SHADER_STAGE_MISS_BIT_KHR, rmissFile, &optionsAO, "ao");
+  if(m_config.useRayQuery)
+  {
+    // one compute shader replaces the pipeline's stages
+    res.compileShader(m_shaders.rayQuery, VK_SHADER_STAGE_COMPUTE_BIT,
+                      pt ? "render_pathtrace_rq.comp.glsl" : "render_raytrace_rq.comp.glsl", &options);
+  }
+  else
+  {
+    res.compileShader(m_shaders.rayGen, VK_SHADER_STAGE_RAYGEN_BIT_KHR, rgenFile, &options);
+    res.compileShader(m_shaders.rayClosestHit, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, rchitFile, &options);
+    // the any-hit only alpha-tests cutout geometry; compile it (and its hit groups) only when the scene has any
+    if(m_hasAlphaMask)
+      res.compileShader(m_shaders.rayAnyHit, VK_SHADER_STAGE_ANY_HIT_BIT_KHR, rahitFile, &options);
+    // shadow ray closest-hit that records hits for hit-based streaming, traced via the AO hit
+    // group (AO rays skip it). The path tracer's shadow rays run its own closest-hit, so this
+    // stage is unused when path tracing.
+    res.compileShader(m_shaders.rayClosestHitAO, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
+                      "render_raytrace_clusters_ao.rchit.glsl", &optionsAO);
+    res.compileShader(m_shaders.rayMiss, VK_SHADER_STAGE_MISS_BIT_KHR, rmissFile, &options, "primary");
+    res.compileShader(m_shaders.rayMissAO, VK_SHADER_STAGE_MISS_BIT_KHR, rmissFile, &optionsAO, "ao");
+  }
+
+  // only RendererHybridClustersLod rasterizes, a no-op otherwise
+  if(!initRasterShaders(res, rscene, options))
+  {
+    return false;
+  }
 
   if(m_config.useSorting)
   {
@@ -284,6 +183,12 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   res.compileShader(m_shaders.computeBlasInsertClusters, VK_SHADER_STAGE_COMPUTE_BIT, "blas_clusters_insert.comp.glsl", &options);
   res.compileShader(m_shaders.computeBlasSetupInsertion, VK_SHADER_STAGE_COMPUTE_BIT, "blas_setup_insertion.comp.glsl", &options);
   res.compileShader(m_shaders.computeInstanceAssignBlas, VK_SHADER_STAGE_COMPUTE_BIT, "instance_assign_blas.comp.glsl", &options);
+
+  if(m_config.useBlasDedup)
+  {
+    res.compileShader(m_shaders.computeBlasDedupKeys, VK_SHADER_STAGE_COMPUTE_BIT, "blas_dedup_keys.comp.glsl", &options);
+    res.compileShader(m_shaders.computeBlasDedupScan, VK_SHADER_STAGE_COMPUTE_BIT, "blas_dedup_scan.comp.glsl", &options);
+  }
 
   if(useBlasReuse())
   {
@@ -399,6 +304,18 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
   // (enabling lod alone does not implicitly turn hit streaming on)
   m_config.useHitStreamingLod = m_config.useHitStreamingLod && m_config.useHitStreaming && rscene.useStreaming;
 
+  // the hybrid renderer rasterizes every instance in the frustum from this frame's traversal,
+  // the early-out keeps those partitions awake. Without culling every instance is rasterized.
+  m_config.usePartitionEarlyOut = m_config.usePartitionEarlyOut && !(m_hybrid && !m_config.useCulling);
+  // the compute raster stores the list index next to the triangle
+  if(useHybridSWRaster() && m_maxRenderClusters > (1u << (32 - HYBRIDPATH_VISBUFFER_TRIANGLE_BITS)))
+  {
+    LOGW("hybrid: SW-Raster disabled, it addresses %u render clusters\n", 1u << (32 - HYBRIDPATH_VISBUFFER_TRIANGLE_BITS));
+    m_config.useComputeRaster = false;
+  }
+  res.setFramebufferUseVisibilityBuffer(m_hybrid);
+  res.setFramebufferUseRasterAtomic(useHybridSWRaster());
+
   if(!initShaders(res, rscene))
   {
     LOGE("RendererRayTraceClustersLod shaders failed\n");
@@ -492,10 +409,26 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     m_sceneBuildShaderio.indirectDispatchGroups.gridZ        = 1;
     m_sceneBuildShaderio.indirectDispatchBlasInsertion.gridY = 1;
     m_sceneBuildShaderio.indirectDispatchBlasInsertion.gridZ = 1;
+    m_sceneBuildShaderio.indirectDispatchHybridReject.gridY  = 1;
+    m_sceneBuildShaderio.indirectDispatchHybridReject.gridZ  = 1;
+    m_sceneBuildShaderio.indirectDispatchClustersSW.gridY    = 1;
+    m_sceneBuildShaderio.indirectDispatchClustersSW.gridZ    = 1;
 
     BufferRanges mem = {};
     m_sceneBuildShaderio.renderClusterInfos =
         mem.append(sizeof(shaderio::ClusterInfo) * m_sceneBuildShaderio.maxRenderClusters, 8);
+    if(m_hybrid)
+    {
+      m_sceneBuildShaderio.hybridClusterInfos =
+          mem.append(sizeof(shaderio::ClusterInfo) * m_sceneBuildShaderio.maxRenderClusters, 8);
+      m_sceneBuildShaderio.hybridRejectClusterInfos =
+          mem.append(sizeof(shaderio::ClusterInfo) * m_sceneBuildShaderio.maxRenderClusters, 8);
+    }
+    if(useHybridSWRaster())
+    {
+      m_sceneBuildShaderio.renderClusterInfosSW =
+          mem.append(sizeof(shaderio::ClusterInfo) * m_sceneBuildShaderio.maxRenderClusters, 8);
+    }
 
     m_sceneBuildShaderio.instanceVisibility =
         mem.append(sizeof(uint8_t) * nvutils::align_up(m_renderInstances.size(), TRAVERSAL_INIT_WORKGROUP), 4);
@@ -539,6 +472,13 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
       m_sceneBuildShaderio.geometryHitDemandLevel = mem.append(sizeof(uint32_t) * m_sceneBuildShaderio.numGeometries, 4);
     }
 
+    if(m_config.useBlasDedup)
+    {
+      // every blas that would be built without deduplication becomes a candidate first
+      m_sceneBuildShaderio.blasCandidateInfos = mem.append(sizeof(shaderio::BlasCandidateInfo) * m_maxBlasBuilds, 32);
+      m_sceneBuildShaderio.blasCandidateSlots = mem.append(sizeof(uint32_t) * m_sceneBuildShaderio.maxRenderClusters, 4);
+    }
+
     if(m_config.useBlasSharing)
     {
       m_sceneBuildShaderio.geometryBuildInfos =
@@ -558,6 +498,13 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
           mem.append(sizeof(uint64_t) * rscene.sceneStreaming.getMaxCachedBlasBuilds(), 8);
     }
 
+    // hybrid discrete lod seeds groups in traversal init, which still reads the sort values
+    bool groupsSeededAtInit = m_hybrid && m_config.useHybridDiscreteLod && m_config.useBlasCaching;
+    if(groupsSeededAtInit)
+    {
+      m_sceneBuildShaderio.traversalGroupInfos = mem.append(sizeof(uint64_t) * m_sceneBuildShaderio.maxTraversalInfos, 8);
+    }
+
     if(m_config.useSorting)
     {
       // can alias some data required for sorting, with other data used at traversal/blas time.
@@ -567,9 +514,12 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
       mem.splitOverlap();
     }
 
-    m_sceneBuildShaderio.traversalGroupInfos = mem.append(sizeof(uint64_t) * m_sceneBuildShaderio.maxTraversalInfos, 8);
-    m_sceneBuildShaderio.blasBuildSizes      = mem.append(sizeof(uint32_t) * m_maxBlasBuilds, 4);
-    m_sceneBuildShaderio.blasBuildAddresses  = mem.append(sizeof(uint64_t) * m_maxBlasBuilds, 8);
+    if(!groupsSeededAtInit)
+    {
+      m_sceneBuildShaderio.traversalGroupInfos = mem.append(sizeof(uint64_t) * m_sceneBuildShaderio.maxTraversalInfos, 8);
+    }
+    m_sceneBuildShaderio.blasBuildSizes     = mem.append(sizeof(uint32_t) * m_maxBlasBuilds, 4);
+    m_sceneBuildShaderio.blasBuildAddresses = mem.append(sizeof(uint64_t) * m_maxBlasBuilds, 8);
 
     m_sceneBuildShaderio.blasClusterAddresses = mem.append(sizeof(uint64_t) * m_sceneBuildShaderio.maxRenderClusters, 8);
 
@@ -584,6 +534,15 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sceneDataBuffer.bufferSize, "operations", "build data");
 
     m_sceneBuildShaderio.renderClusterInfos += m_sceneDataBuffer.address;
+    if(m_hybrid)
+    {
+      m_sceneBuildShaderio.hybridClusterInfos += m_sceneDataBuffer.address;
+      m_sceneBuildShaderio.hybridRejectClusterInfos += m_sceneDataBuffer.address;
+    }
+    if(useHybridSWRaster())
+    {
+      m_sceneBuildShaderio.renderClusterInfosSW += m_sceneDataBuffer.address;
+    }
     m_sceneBuildShaderio.instanceVisibility += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.instanceCachedSticky += m_sceneDataBuffer.address;
     if(m_config.usePtlas || m_config.usePartitionEarlyOut)
@@ -605,6 +564,11 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     m_sceneBuildShaderio.blasBuildSizes += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.blasBuildAddresses += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.blasClusterAddresses += m_sceneDataBuffer.address;
+    if(m_config.useBlasDedup)
+    {
+      m_sceneBuildShaderio.blasCandidateInfos += m_sceneDataBuffer.address;
+      m_sceneBuildShaderio.blasCandidateSlots += m_sceneDataBuffer.address;
+    }
     m_sceneBuildShaderio.instanceSortKeys += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.instanceSortValues += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.instanceBuildInfos += m_sceneDataBuffer.address;
@@ -647,6 +611,25 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sceneTraversalBuffer.bufferSize, "operations", "build traversal");
 
     m_sceneBuildShaderio.traversalNodeInfos = m_sceneTraversalBuffer.address;
+
+    if(m_config.useBlasDedup)
+    {
+      // aim for a load factor of 0.5, a smaller table only costs dedup opportunities
+      uint32_t tableSize = 256;
+      while(tableSize < m_maxBlasBuilds * 2 && tableSize < (1u << 22))
+      {
+        tableSize <<= 1;
+      }
+
+      res.createBuffer(m_sceneBlasDedupTableBuffer, sizeof(uint32_t) * tableSize,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+      NVVK_DBG_NAME(m_sceneBlasDedupTableBuffer.buffer);
+      m_resourceReservedUsage.operationsMemBytes +=
+          logMemoryUsage(m_sceneBlasDedupTableBuffer.bufferSize, "operations", "build blas dedup");
+
+      m_sceneBuildShaderio.blasDedupTable     = m_sceneBlasDedupTableBuffer.address;
+      m_sceneBuildShaderio.blasDedupTableMask = tableSize - 1;
+    }
 
 #if USE_LARGE_BUFFER_BLAS
     res.createLargeBuffer(m_sceneBlasDataBuffer, m_blasDataSize,
@@ -696,6 +679,10 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
   {
     m_stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR
                    | VK_SHADER_STAGE_ANY_HIT_BIT_KHR | VK_SHADER_STAGE_COMPUTE_BIT;
+    if(m_hybrid)
+    {
+      m_stageFlags |= VK_SHADER_STAGE_MESH_BIT_NV | VK_SHADER_STAGE_FRAGMENT_BIT;
+    }
 
     nvvk::DescriptorBindings bindings;
     bindings.addBinding(BINDINGS_FRAME_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_stageFlags);
@@ -705,7 +692,8 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     bindings.addBinding(BINDINGS_RENDERMATERIALS_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_SCENEBUILDING_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_SCENEBUILDING_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_stageFlags);
-    bindings.addBinding(BINDINGS_HIZ_TEX, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, m_stageFlags);
+    // the hybrid renderer's second raster pass tests the first pass' hiz
+    bindings.addBinding(BINDINGS_HIZ_TEX, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, m_hybrid ? 2 : 1, m_stageFlags);
     if(rscene.useStreaming)
     {
       bindings.addBinding(BINDINGS_STREAMING_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
@@ -717,6 +705,14 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     bindings.addBinding(BINDINGS_ENV_HDRI_TEX, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_ENV_HDRI_ACCEL_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_RENDER_TARGET, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_stageFlags);
+    if(m_hybrid)
+    {
+      bindings.addBinding(BINDINGS_VISIBILITY_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_stageFlags);
+    }
+    if(useHybridSWRaster())
+    {
+      bindings.addBinding(BINDINGS_RASTER_ATOMIC, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_stageFlags);
+    }
 #if USE_DLSS
     if(m_config.useDlss)
     {
@@ -744,7 +740,11 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_RENDERMATERIALS_SSBO), m_renderMaterialBuffer);
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_SCENEBUILDING_SSBO), m_sceneBuildBuffer);
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_SCENEBUILDING_UBO), m_sceneBuildBuffer);
-    writeSets.append(m_dsetPack.makeWrite(BINDINGS_HIZ_TEX), &res.m_hizUpdate[0].farImageInfo);
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_HIZ_TEX, 0, 0), &res.m_hizUpdate[0].farImageInfo);
+    if(m_hybrid)
+    {
+      writeSets.append(m_dsetPack.makeWrite(BINDINGS_HIZ_TEX, 0, 1), &res.m_hizUpdate[1].farImageInfo);
+    }
     if(rscene.useStreaming)
     {
       writeSets.append(m_dsetPack.makeWrite(BINDINGS_STREAMING_SSBO), rscene.sceneStreaming.getShaderStreamingBuffer());
@@ -755,6 +755,14 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_SKY_IRRADIANCE_TEX), res.getSkyIrradianceDescriptor());
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_ENV_HDRI_TEX), res.getEnvHdriDescriptor());
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_ENV_HDRI_ACCEL_SSBO), res.getEnvHdriAccel());
+    if(m_hybrid)
+    {
+      writeSets.append(m_dsetPack.makeWrite(BINDINGS_VISIBILITY_BUFFER), res.m_frameBuffer.imgVisibilityBuffer);
+    }
+    if(useHybridSWRaster())
+    {
+      writeSets.append(m_dsetPack.makeWrite(BINDINGS_RASTER_ATOMIC), res.m_frameBuffer.imgRasterAtomic);
+    }
 #if USE_DLSS
     if(m_config.useDlss)
     {
@@ -780,7 +788,12 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
 
   // initialize ray tracing pipeline
 
-  initRayTracingPipeline(res);
+  if(!m_config.useRayQuery)
+  {
+    initRayTracingPipeline(res);
+  }
+  // only RendererHybridClustersLod rasterizes, a no-op otherwise
+  initRasterPipelines(res);
 
   // initialize traversal pipeline
 
@@ -809,6 +822,12 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     res.createComputePipeline(compInfo, m_shaders.computeBlasSetupInsertion, m_pipelines.computeBlasSetupInsertion);
 
     res.createComputePipeline(compInfo, m_shaders.computeInstanceAssignBlas, m_pipelines.computeInstanceAssignBlas);
+
+    if(m_config.useBlasDedup)
+    {
+      res.createComputePipeline(compInfo, m_shaders.computeBlasDedupKeys, m_pipelines.computeBlasDedupKeys);
+      res.createComputePipeline(compInfo, m_shaders.computeBlasDedupScan, m_pipelines.computeBlasDedupScan);
+    }
 
     if(useBlasReuse())
     {
@@ -851,6 +870,10 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
 
       res.createComputePipeline(compInfo, m_shaders.computeHitDemand, m_pipelines.computeHitDemand);
     }
+    if(m_config.useRayQuery)
+    {
+      res.createComputePipeline(compInfo, m_shaders.rayQuery, m_pipelines.rayQuery);
+    }
   }
 
   return true;
@@ -878,8 +901,10 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
   m_sceneBuildShaderio.sharingPushCulled     = frame.sharingPushCulled;
   m_sceneBuildShaderio.sharingTolerantLevels = frame.sharingTolerantLevels;
   // the ui range, larger values would route instances without a cached blas to it
-  m_sceneBuildShaderio.cachingPushLevels   = std::min(frame.cachingPushLevels, uint32_t(SHADERIO_MAX_LOD_LEVELS));
-  m_sceneBuildShaderio.cachingStickyLevels = std::min(frame.cachingStickyLevels, uint32_t(SHADERIO_MAX_LOD_LEVELS));
+  m_sceneBuildShaderio.cachingPushLevels     = std::min(frame.cachingPushLevels, uint32_t(SHADERIO_MAX_LOD_LEVELS));
+  m_sceneBuildShaderio.cachingStickyLevels   = std::min(frame.cachingStickyLevels, uint32_t(SHADERIO_MAX_LOD_LEVELS));
+  m_sceneBuildShaderio.hybridCachedTolerance = frame.hybridCachedTolerance;
+  m_sceneBuildShaderio.swRasterThreshold     = frame.swRasterThreshold;
   // The retention window is only honest while every partition is guaranteed to be visited
   // within it, so with the early-out on, forced revalidation is not optional.
   uint32_t revalidateFrames = frame.partitionRevalidateFrames;
@@ -937,6 +962,12 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
                     sizeof(uint32_t) * m_sceneBuildShaderio.numGeometries, ~0u);
   }
 
+  if(m_config.useBlasDedup)
+  {
+    // zero means "empty bucket"
+    vkCmdFillBuffer(cmd, m_sceneBlasDedupTableBuffer.buffer, 0, m_sceneBlasDedupTableBuffer.bufferSize, 0);
+  }
+
   if(rscene.useStreaming)
   {
     SceneStreaming::FrameSettings settings;
@@ -953,6 +984,8 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     settings.blasCacheAgeThreshold = frame.cachingAgeThreshold;
     // deeper levels would share the last cached blas slot
     settings.blasCacheMinLevel = std::min(frame.cachingEnabledLevels, uint32_t(GEOMETRY_CACHED_BLAS_STRIDE));
+    settings.blasCacheLevels   = std::clamp(m_hybrid ? m_config.hybridCachingLevels : m_config.cachingLevels, 1u,
+                                          uint32_t(GEOMETRY_CACHED_BLAS_STRIDE - 1));
     // an instance is only refreshed when its partition is processed, and forced revalidation
     // bounds that gap. Holding a replaced cached blas past it keeps a skipped instance from
     // ever meeting reused memory.
@@ -1545,6 +1578,26 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeBlasInsertClusters);
     vkCmdDispatchIndirect(cmd, m_sceneBuildBuffer.buffer, offsetof(shaderio::SceneBuilding, indirectDispatchBlasInsertion));
 
+    if(m_config.useBlasDedup)
+    {
+      // the candidate keys must be complete before they are compared
+      memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_UNIFORM_READ_BIT;
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                           &memBarrier, 0, nullptr, 0, nullptr);
+
+      // both loop, over the inserted CLAS and over the candidates
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeBlasDedupKeys);
+      vkCmdDispatch(cmd, std::min(getWorkGroupCount(m_maxRenderClusters, BLAS_DEDUP_SCAN_WORKGROUP), 4096u), 1, 1);
+
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                           &memBarrier, 0, nullptr, 0, nullptr);
+
+      // turns only the unique candidates into actual builds. Must run prior the cached
+      // blas builds below, so those allocate their build slots after the compaction.
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeBlasDedupScan);
+      vkCmdDispatch(cmd, std::min(getWorkGroupCount(m_maxBlasBuilds, BLAS_DEDUP_SCAN_WORKGROUP), 1024u), 1, 1);
+    }
 
     if(m_config.useBlasCaching)
     {
@@ -1726,22 +1779,33 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR
                                | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 1,
-                         &memBarrier, 0, nullptr, 0, nullptr);
+                         VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                         0, 1, &memBarrier, 0, nullptr, 0, nullptr);
   }
 #endif
 
+  // only RendererHybridClustersLod rasterizes, a no-op otherwise
+  renderRaster(cmd, res, rscene, frame, profiler);
+
   // Ray trace
   {
-    auto timerSection = profiler.cmdFrameSection(cmd, "Render");
+    auto timerSection = profiler.cmdFrameSection(cmd, "Trace");
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_pipelines.rayTracing);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_pipelineLayout, 1, 1,
-                            rscene.sceneTextures.getDsetPack().getSetPtr(), 0, nullptr);
+    VkPipelineBindPoint bindPoint = m_config.useRayQuery ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR;
+    vkCmdBindPipeline(cmd, bindPoint, m_config.useRayQuery ? m_pipelines.rayQuery : m_pipelines.rayTracing);
+    vkCmdBindDescriptorSets(cmd, bindPoint, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, bindPoint, m_pipelineLayout, 1, 1, rscene.sceneTextures.getDsetPack().getSetPtr(), 0, nullptr);
 #if !STREAMING_DEBUG_WITHOUT_RT
-    vkCmdTraceRaysKHR(cmd, &m_sbtRegions.raygen, &m_sbtRegions.miss, &m_sbtRegions.hit, &m_sbtRegions.callable,
-                      frame.frameConstants.viewport.x, frame.frameConstants.viewport.y, 1);
+    if(m_config.useRayQuery)
+    {
+      vkCmdDispatch(cmd, getWorkGroupCount(frame.frameConstants.viewport.x, RAYQUERY_WORKGROUP),
+                    getWorkGroupCount(frame.frameConstants.viewport.y, RAYQUERY_WORKGROUP), 1);
+    }
+    else
+    {
+      vkCmdTraceRaysKHR(cmd, &m_sbtRegions.raygen, &m_sbtRegions.miss, &m_sbtRegions.hit, &m_sbtRegions.callable,
+                        frame.frameConstants.viewport.x, frame.frameConstants.viewport.y, 1);
+    }
 #endif
     res.cmdBeginRendering(cmd, false, VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_LOAD_OP_DONT_CARE);
     res.cmdImageTransition(cmd, res.m_frameBuffer.imgRaytracingDepth, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_GENERAL, true);
@@ -1817,6 +1881,7 @@ void RendererRayTraceClustersLod::deinit(Resources& res)
   res.m_allocator.destroyBuffer(m_sceneBlasDataBuffer);
 #endif
   res.m_allocator.destroyBuffer(m_sceneGeometryHistogramBuffer);
+  res.m_allocator.destroyBuffer(m_sceneBlasDedupTableBuffer);
 
   res.m_allocator.destroyBuffer(m_sbtBuffer);
 
@@ -1840,7 +1905,8 @@ bool RendererRayTraceClustersLod::initRayTracingBlas(Resources& res, RenderScene
   m_blasInput.maxClusterCountPerAccelerationStructure = std::min(rscene.scene->m_maxPerGeometryClusters, m_maxRenderClusters);
   m_blasInput.maxTotalClusterCount = m_maxRenderClusters;
 
-  if(m_config.useBlasSharing && m_config.useBlasMerging)
+  // the hybrid renderer builds an own blas for every primary visible instance
+  if(m_config.useBlasSharing && m_config.useBlasMerging && !m_hybrid)
   {
     // we are guaranteeing only 2 BLAS per geometry that has multiple instances.
     // one through sharing, one through merging
@@ -2346,8 +2412,20 @@ void RendererRayTraceClustersLod::updatedFrameBuffer(Resources& res, RenderScene
 
   nvvk::WriteSetContainer writeSets;
 
-  writeSets.append(m_dsetPack.makeWrite(BINDINGS_HIZ_TEX), &res.m_hizUpdate[0].farImageInfo);
+  writeSets.append(m_dsetPack.makeWrite(BINDINGS_HIZ_TEX, 0, 0), &res.m_hizUpdate[0].farImageInfo);
+  if(m_hybrid)
+  {
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_HIZ_TEX, 0, 1), &res.m_hizUpdate[1].farImageInfo);
+  }
   writeSets.append(m_dsetPack.makeWrite(BINDINGS_RAYTRACING_DEPTH), res.m_frameBuffer.imgRaytracingDepth);
+  if(m_hybrid)
+  {
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_VISIBILITY_BUFFER), res.m_frameBuffer.imgVisibilityBuffer);
+  }
+  if(useHybridSWRaster())
+  {
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_RASTER_ATOMIC), res.m_frameBuffer.imgRasterAtomic);
+  }
 
 #if USE_DLSS
   if(m_config.useDlss && res.m_frameBuffer.dlssMode == Resources::DlssMode::eRayReconstruction

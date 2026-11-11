@@ -21,7 +21,8 @@
   its coarser persistent blas until the partition is processed again, which
   `partitionRevalidateFrames` bounds. Partitions crossing or entering the frustum within
   `partitionFrustumDepth` are processed every frame, their culled instances were
-  classified at `culledErrorScale` and must not wait. Streaming moving a cached blas is a
+  classified at `culledErrorScale` and must not wait. In hybrid every partition in this
+  frame's frustum is processed, its instances are rasterized. Streaming moving a cached blas is a
   different matter and must set `partitionInvalidateAll`.
 
   Partitions that are not skipped mark their instance blocks in `partitionBlockBits`,
@@ -88,15 +89,23 @@ void main()
   uint  andBits = ~0u;
   uint  orBits  = 0;
   float minW    = 3.402823466e+38;
+  uint andBitsRaster = ~0u;
   for (int n = 0; n < 8; n++)
   {
-    vec4 hPos = build.cullViewProjMatrixLast * getBoxCorner(bbox.lo, bbox.hi, n);
-    uint bits = getCullBits(hPos);
+    vec4 corner = getBoxCorner(bbox.lo, bbox.hi, n);
+    vec4 hPos   = build.cullViewProjMatrixLast * corner;
+    uint bits   = getCullBits(hPos);
     andBits &= bits;
     orBits  |= bits;
     minW     = min(minW, hPos.w);
+  #if USE_HYBRIDPATH
+    andBitsRaster &= getCullBits(build.cullViewProjMatrix * corner);
+  #endif
   }
   bool visible  = andBits == 0;
+  // hybrid rasterizes this frame's traversal of every instance in this frame's frustum,
+  // see `getHybridVisibility`. The host turns the early-out off for hybrid without culling.
+  bool rasterVisible = USE_HYBRIDPATH != 0 && andBitsRaster == 0;
   // distant partitions stay coarse, so they need not be revalidated. w is the view depth,
   // negative behind the camera.
   bool nearField = minW < build.partitionFrustumDepth;
@@ -106,7 +115,7 @@ void main()
   bool entered  = build.partitionFrustumRevalidate != 0 && visible && nearField && build.partitionVisible.d[partitionIndex] == 0;
   build.partitionVisible.d[partitionIndex] = visible ? 1 : 0;
 
-  bool stable = nonPersistent == 0 && build.partitionInvalidateAll == 0 && !crossing && !entered;
+  bool stable = nonPersistent == 0 && build.partitionInvalidateAll == 0 && !crossing && !entered && !rasterVisible;
   bool aged   = build.partitionRevalidateFrames != 0 && age >= build.partitionRevalidateFrames;
 
   if (stable && !aged)

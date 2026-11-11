@@ -85,30 +85,40 @@ void main()
 {
   uint patchID       = getWorkGroupIndex(gl_WorkGroupID);
   uint localThreadID = gl_LocalInvocationID.x;
+#if USE_16BIT_DISPATCH
+  // the 2D launch grid is rounded up
+  if (patchID >= streaming.update.patchCachedBlasCount)
+    return;
+#endif
   
   StreamingGeometryPatch sgpatch = streaming.update.geometryPatches.d[patchID];
   
-  uint discreteLodLevel        = sgpatch.discreteLodLevel;
+  uint cachedLevel             = sgpatch.cachedLevel;
   uint cachedBlasClustersCount = sgpatch.cachedBlasClustersCount;
   uint geometryID              = sgpatch.geometryID;
   
   if (localThreadID == 0)
   {  
-    geometries[geometryID].discreteLodLevel  = uint8_t(discreteLodLevel);
-    streaming.cachedBlasAddresses.d[geometryID * GEOMETRY_CACHED_BLAS_STRIDE
-                                    + GEOMETRY_CACHED_BLAS_SLOT(geometries[geometryID].lodLevelsCount,
-                                                                sgpatch.discreteLodLevel)] = sgpatch.cachedBlasAddress;
-    geometries[geometryID].cachedBuildFrame = streaming.frameIndex;
+    geometries[geometryID].discreteLodLevel = uint8_t(sgpatch.discreteLodLevel);
+    geometries[geometryID].cachedLevelMask  = sgpatch.cachedLevelMask;
+    // an invalid level would clamp to the last slot
+    if (cachedLevel != TRAVERSAL_INVALID_LOD_LEVEL)
+    {
+      streaming.cachedBlasAddresses.d[geometryID * GEOMETRY_CACHED_BLAS_STRIDE
+                                      + GEOMETRY_CACHED_BLAS_SLOT(geometries[geometryID].lodLevelsCount,
+                                                                  cachedLevel)] = sgpatch.cachedBlasAddress;
+      geometries[geometryID].cachedBuildFrame = streaming.frameIndex;
+    }
   }
   
-  if (discreteLodLevel == TRAVERSAL_INVALID_LOD_LEVEL)
+  if (cachedLevel == TRAVERSAL_INVALID_LOD_LEVEL || sgpatch.cachedBlasAddress == 0)
   {
-    // rare event we fully disable the cached BLAS
+    // the patch only invalidates or drops levels
     return;
   }
-  
+
   Geometry geometry     = geometries[geometryID];
-  LodLevel lodLevelInfo = geometry.lodLevels.d[discreteLodLevel];
+  LodLevel lodLevelInfo = geometry.lodLevels.d[cachedLevel];
   
   if (localThreadID == 0)
   {

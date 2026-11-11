@@ -11,7 +11,6 @@ SEQUENCE "materials_raster"
 --sequenceframes 32
 --sequenceresetframes 8
 --renderer 0
---pathtrace 0
 --dlss 0
 --swraster 0
 --culling 1
@@ -126,26 +125,50 @@ SEQUENCE "materials_raytrace_texlod_mip0"
 SEQUENCE "materials_pathtrace_off"
 --renderer 1
 --texlodmode 0
---pathtrace 0
 --visualize 0
 
 SEQUENCE "materials_pathtrace_on"
---renderer 1
---pathtrace 1
+--renderer 2
 --pathtracebounces 2
 --pathtraceautoexposure 1
 --visualize 0
 
 SEQUENCE "materials_pathtrace_on_untextured"
---renderer 1
---pathtrace 1
+--renderer 2
 --texturedmaterials 0
 --visualize 0
 
 SEQUENCE "materials_pathtrace_off_again"
 --renderer 1
---pathtrace 0
 --texturedmaterials 1
+--visualize 0
+
+# --rayquery: the alpha test any hit becomes the candidate loop of the ray queries
+SEQUENCE "materials_raytrace_rayquery"
+--renderer 1
+--rayquery 1
+--texturedmaterials 1
+--visualize 0
+
+SEQUENCE "materials_raytrace_rayquery_forcetwosided"
+--renderer 1
+--forcetwosided 1
+--visualize 0
+
+SEQUENCE "materials_raytrace_rayquery_texlod_explicit"
+--renderer 1
+--forcetwosided 0
+--texlodmode 1
+--visualize 0
+
+SEQUENCE "materials_pathtrace_rayquery"
+--renderer 2
+--texlodmode 0
+--visualize 0
+
+SEQUENCE "materials_rayquery_off"
+--renderer 1
+--rayquery 0
 --visualize 0
 
 # compressed groups decode at streaming time, and the decoder handles positions, texcoords,
@@ -154,7 +177,6 @@ SEQUENCE "materials_pathtrace_off_again"
 # a millisecond to build rather than on the bunny grid.
 SEQUENCE "materials_compressed_off_raster"
 --renderer 0
---pathtrace 0
 --texturedmaterials 1
 --compressed 0
 --visualize 0

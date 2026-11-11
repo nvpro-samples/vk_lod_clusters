@@ -19,13 +19,39 @@ bool intersectSize(vec4 clipMin, vec4 clipMax, float threshold)
   return any(greaterThan(rect,clipThreshold));
 }
 
-#if USE_SW_RASTER
-bool intersectSize(vec4 clipMin, vec4 clipMax, float threshold, float scale)
+#if USE_SW_RASTER || USE_HYBRID_SW_RASTER
+// clipExtent unclamped, the clamped bounds shrink a cluster at the viewport border
+bool intersectSize(vec2 clipExtent, float threshold, float scale)
 {
-  vec2 rect = (clipMax.xy - clipMin.xy) * 0.5 * scale * view.viewportf.xy;
+  vec2 rect = clipExtent * 0.5 * scale * view.viewportf.xy;
   vec2 clipThreshold = vec2(threshold);
-  
+
   return any(greaterThan(rect,clipThreshold));
+}
+
+// The longest edge relative to the bbox is an object space ratio. A non-uniform scale can
+// stretch an edge more than the bbox, widen it by the largest over the smallest axis scale.
+float swRasterRelativeSize(float relativeEdge, mat4x3 worldMatrix)
+{
+  vec3 scale = vec3(dot(worldMatrix[0], worldMatrix[0]), dot(worldMatrix[1], worldMatrix[1]), dot(worldMatrix[2], worldMatrix[2]));
+  return relativeEdge * sqrt(max(max(scale.x, scale.y), scale.z) / min(min(scale.x, scale.y), scale.z));
+}
+#endif
+
+#if USE_HYBRID_SW_RASTER
+// Hybrid path: small clusters go to the compute raster, the second pass decides again for its
+// own. Alpha tested ones stay with the fragment shader's test.
+bool hybridClusterUsesSW(vec4 clipMin, vec4 clipMax, vec2 clipExtent, bool clipValid, BBox bbox, mat4x3 worldMatrix, uint instanceID, uint clusterState)
+{
+  float relativeSize = swRasterRelativeSize(bbox.longestEdge / length(bbox.hi - bbox.lo), worldMatrix);
+  bool  useSW        = clipValid && clipMin.z > 0 && clipMax.z < 1
+                && !intersectSize(clipExtent, build.swRasterThreshold, relativeSize);
+#if HAS_ALPHA_TEST
+  uint opaqueStatus = instances[instanceID].opaqueStatus;
+  useSW = useSW && opaqueStatus != SHADERIO_OPAQUE_STATUS_ALPHAMASKED
+          && !(opaqueStatus == SHADERIO_OPAQUE_STATUS_MIXED && (clusterState & CLUSTER_STATE_ALPHAMASKED) != 0);
+#endif
+  return useSW;
 }
 #endif
 
@@ -53,7 +79,8 @@ vec4 getBoxCorner(vec3 bboxMin, vec3 bboxMax, int n)
   return vec4(mix(bboxMin, bboxMax, useMax),1);
 }
 
-bool intersectFrustum(mat4 viewProjMatrix, vec3 bboxMin, vec3 bboxMax, mat4x3 worldTM, out vec4 oClipmin, out vec4 oClipmax, out bool oClipvalid)
+// oClipextent: xy size of the unclamped bounds
+bool intersectFrustum(mat4 viewProjMatrix, vec3 bboxMin, vec3 bboxMax, mat4x3 worldTM, out vec4 oClipmin, out vec4 oClipmax, out bool oClipvalid, out vec2 oClipextent)
 {
   //vec3 bboxDim = (bboxMax - bboxMin) * 0.5;
   //vec3 bboxCtr = (bboxMax + bboxMin) * 0.5;
@@ -93,9 +120,16 @@ bool intersectFrustum(mat4 viewProjMatrix, vec3 bboxMin, vec3 bboxMax, mat4x3 wo
   oClipvalid = clipValid;
   oClipmin = vec4(clamp(clipMin.xy, vec2(-1), vec2(1)), clipMin.zw);
   oClipmax = vec4(clamp(clipMax.xy, vec2(-1), vec2(1)), clipMax.zw);
+  oClipextent = clipMax.xy - clipMin.xy;
 
   //return true;
   return andBits == 0;
+}
+
+bool intersectFrustum(mat4 viewProjMatrix, vec3 bboxMin, vec3 bboxMax, mat4x3 worldTM, out vec4 oClipmin, out vec4 oClipmax, out bool oClipvalid)
+{
+  vec2 clipExtent;
+  return intersectFrustum(viewProjMatrix, bboxMin, bboxMax, worldTM, oClipmin, oClipmax, oClipvalid, clipExtent);
 }
 
 // frustum test without the clipspace bounds, saves the per corner divide.

@@ -50,6 +50,8 @@ The scene can be rendered with or without streaming:
 The full logic of the renderers is implemented in:
 * [renderer_raster_clusters_lod.cpp](/src/renderer_raster_clusters_lod.cpp): Rasterization using `VK_NV_mesh_shader` or `VK_EXT_mesh_shader`
 * [renderer_raytrace_clusters_lod.cpp](/src/renderer_raytrace_clusters_lod.cpp): Ray tracing using `VK_NV_cluster_acceleration_structure`. Enabled by default if available.
+  The _"Path tracing"_ renderer is the same code with the path tracing shaders.
+* [renderer_hybrid_clusters_lod.cpp](/src/renderer_hybrid_clusters_lod.cpp): Path tracing from rasterized primary visibility, derives from the ray tracer.
 
 The sample also showcases a ray tracing specific optimization for [BLAS Sharing](docs/blas_sharing.md).
 
@@ -117,7 +119,7 @@ traversal at that level's node and renders the level as a whole. It is the raste
 tracing converge on the same resident geometry. Please have a look at the
 [Discrete LoD documentation](docs/raster_discrete_lod.md).
 
-In some conditions (visualize == visibility buffer, culling on) one can enable the usage of a basic compute-shader based rasterizer. However it hasn't been tuned yet and in typical usage scenarios is not faster than the mesh-shader because clusters tend to have larger than single pixel triangles. You can look for `USE_SW_RASTER` in the code where it does affect traversal.
+With culling on, in the visibility buffer or depth only visualization, or in the hybrid renderer, one can enable the usage of a basic compute-shader based rasterizer. It is rarely faster than the mesh-shader because clusters tend to have larger than single pixel triangles. You can look for `USE_SW_RASTER` in the code where it does affect traversal.
 
 **Ray Tracing:**
 After the BLAS are built, also runs the TLAS build or update and then traces rays.
@@ -130,21 +132,26 @@ otherwise occluded.
 
 ![image show difference when path tracing is enabled](docs/path_tracing.jpg)
 
-There is two sets of shaders, and their usage depends on whether _Path Tracing_ is enabled. They have a slightly different configuration. The default / basic set of shaders do shading in the hit-shader, whilst path-tracing does shading in the ray generation shader. Overall the material complexity in this sample is intentionally kept low and we recommend to have a look at [vk_gltf_renderer](https://github.com/nvpro-samples/vk_gltf_renderer) for more fidelity. Path tracing uses the physical sky model, whilst the other options use a simplified version.
+There is two sets of shaders, for the _"Ray tracing"_ and the _"Path tracing"_ renderer (`--renderer 2`). They have a slightly different configuration. The default / basic set of shaders do shading in the hit-shader, whilst path-tracing does shading in the ray generation shader. Overall the material complexity in this sample is intentionally kept low and we recommend to have a look at [vk_gltf_renderer](https://github.com/nvpro-samples/vk_gltf_renderer) for more fidelity. Path tracing uses the physical sky model, whilst the other options use a simplified version.
 
 Basic shaders:
 
-* [shaders/render_raytrace_clusters.rchit.glsl](/shaders/render_raytrace_clusters.rchit.glsl): Hit shader that handles shading of a hit on a cluster. There is only cluster geometry in this sample to be hit.
+* [shaders/render_raytrace_clusters_hit.glsl](/shaders/render_raytrace_clusters_hit.glsl): Shading of a hit on a cluster, run by the hit shader [render_raytrace_clusters.rchit.glsl](/shaders/render_raytrace_clusters.rchit.glsl). There is only cluster geometry in this sample to be hit.
 * [shaders/render_raytrace_clusters.rahit.glsl](/shaders/render_raytrace_clusters.rahit.glsl): Any hit shader for alpha-masked materials.
-* [shaders/render_raytrace.rgen.glsl](/shaders/render_raytrace.rgen.glsl): Ray generation shader, also implements the simple mirror effect.
+* [shaders/render_raytrace_raygen.glsl](/shaders/render_raytrace_raygen.glsl): Ray generation, also implements the optical effects, included by [render_raytrace.rgen.glsl](/shaders/render_raytrace.rgen.glsl).
 * [shaders/render_raytrace.rmiss.glsl](/shaders/render_raytrace.rmiss.glsl): Miss shader.
 
 Path tracing shaders:
 
-* [shaders/render_pathtrace_clusters.rchit.glsl](/shaders/render_pathtrace_clusters.rchit.glsl): Hit shader that provides minimal information back to the ray generation shader.
+* [shaders/render_pathtrace_clusters_hit.glsl](/shaders/render_pathtrace_clusters_hit.glsl): Closest hit that provides minimal information back to the ray generation, run by [render_pathtrace_clusters.rchit.glsl](/shaders/render_pathtrace_clusters.rchit.glsl).
 * [shaders/render_pathtrace_clusters.rahit.glsl](/shaders/render_pathtrace_clusters.rahit.glsl): Any hit shader for alpha-masked materials.
-* [shaders/render_pathtrace.rgen.glsl](/shaders/render_pathtrace.rgen.glsl): Ray generation shader that handles the multi-bounce path tracing as well as the material evaluation.
+* [shaders/render_pathtrace_raygen.glsl](/shaders/render_pathtrace_raygen.glsl): Ray generation that handles the multi-bounce path tracing as well as the material evaluation, included by [render_pathtrace.rgen.glsl](/shaders/render_pathtrace.rgen.glsl).
 * [shaders/render_pathtrace.rmiss.glsl](/shaders/render_pathtrace.rmiss.glsl) Miss shader.
+
+With _"Ray query"_ (`--rayquery 1`) both run as compute shaders instead of the ray tracing pipeline:
+[render_raytrace_rq.comp.glsl](/shaders/render_raytrace_rq.comp.glsl) and
+[render_pathtrace_rq.comp.glsl](/shaders/render_pathtrace_rq.comp.glsl) include the same ray generation and hit code,
+[render_rayquery.glsl](/shaders/render_rayquery.glsl) replaces the any hit and miss shaders.
 
 The ray tracing code path can optimize the number of BLAS builds through _"BLAS Sharing"_, which allows instances to use the BLAS
 from another instance.
@@ -158,10 +165,20 @@ The _"blas reuse"_ visualization shows which of these an instance ended up using
 
 * **green**: the pre-built low detail BLAS, or the geometry's cached BLAS
 * **yellow**: another instance's BLAS, through sharing
+* **pink**: a BLAS shared by a group of instances through [deduplication](docs/blas_dedup.md)
 * **orange**: the geometry's merged BLAS
 * **red**: a BLAS that was built for this instance alone in this frame
 
 The occlusion culling is kept basic, testing the footprint of the bounding box against the appropriate mip-level of last frame's HiZ buffer and last frame's matrices. This can cause artifacts on faster motion. Rasterization can avoid those with the two-pass variants, see [Rasterization Two-Pass Culling](docs/raster_twopass_culling.md).
+
+**Hybrid:**
+
+![top-down comparison: path tracing traces primary rays against the full LoD cut, the hybrid renderer rasterizes primary visibility, the BLAS of visible instances matches the raster cut and occluded parts get coarser detail](docs/hybrid_overview.svg)
+
+The hybrid renderer (`--renderer 3`) rasterizes primary visibility into a visibility buffer and path traces from there
+instead of tracing primary rays. The BLAS of visible instances match the rasterized LoD cut, so secondary rays start on
+the same surface, and occluded parts of visible instances get coarser detail in both. See the
+[Hybrid Rendering documentation](docs/raster_hybrid.md).
 
 ### Partitioned TLAS
 
@@ -214,7 +231,7 @@ Please have a look at the [GPU-Driven CLAS Allocation documentation](docs/clas_a
 The sample uses a lot of technologies and has many configurations. We don't have a lot of test coverage for it. If you experience instabilities, please let us know through GitHub Issues.
 You can use the commandline to change some defaults, some examples:
 
-* `--renderer 0` starts with rasterization.
+* `--renderer 0` starts with rasterization, `--renderer 2` with path tracing, `--renderer 3` with the hybrid renderer.
 * `--supersample 0` disables the super sampling that otherwise doubles rendering resolution in each dimension. 
 * `--clasallocator 0` disables the more complex gpu-driven allocator when streaming and uses the simple move based CLAS compaction instead. That scheme relocates all resident CLAS on every unload, so BLAS caching (which keeps a BLAS built from CLAS addresses across frames) has no effect while it is used.
 * `--gridcopies N` set the number of model copies in the scene.

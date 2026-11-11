@@ -140,9 +140,13 @@ void main()
   uint instanceLevelMax          = instanceInfo.lodLevelMax;
   
 #if USE_BLAS_CACHING
-  // lowest lod level of any instance using the cached blas
-  // computed in `instance_classify_lod.comp.glsl`
-  uint cachedLevel     = build.geometryCachedInfos.d[geometryID].cachedLevel;
+  // an instance already on the cached blas gets extra tolerance to stay there, so it
+  // does not flip back and forth and drag its partition in and out of the dirty set
+  uint cachedLevel = pickCachedLevel(geometry.cachedLevelMask, instanceLevelMin,
+                                     build.cachingPushLevels
+                                         + (build.instanceCachedSticky.d[instanceLoad] != uint8_t(0) ? build.cachingStickyLevels : 0));
+#else
+  uint cachedLevel = TRAVERSAL_INVALID_LOD_LEVEL;
 #endif
 #if USE_BLAS_SHARING
   // geometry's pick for the shared blas lod level
@@ -155,7 +159,7 @@ void main()
   uint mergedInstanceID = build.geometryBuildInfos.d[geometryID].mergedInstanceID;
 #endif
   
-#if USE_BLAS_MERGING || (USE_CULLING && USE_FORCED_INVISIBLE_CULLING)
+#if USE_BLAS_MERGING || USE_HYBRIDPATH
   // `instanceLoad`, not `instanceID`: this read is outside the `isValid` test. The linear
   // dispatch overshoots by less than a workgroup and `instanceVisibility` is padded for it,
   // but the early-out's block mapping yields ~0 for a thread past the instance count.
@@ -169,11 +173,7 @@ void main()
   bool traverseRootNode = false;
   bool usesCached       = false;
   bool usesPersistent   = false;
-  if (isValid
-#if USE_CULLING && USE_FORCED_INVISIBLE_CULLING
-    && ((visibilityState & INSTANCE_VISIBLE_BIT) != 0)
-#endif
-  )
+  if (isValid)
   {  
   #if USE_BLAS_MERGING  
     // note an instance can be both shareInstance and mergedInstance at the same time
@@ -199,15 +199,10 @@ void main()
       usesPersistent   = true;
     }
   #if USE_BLAS_CACHING
-    // an instance already on the cached blas gets extra tolerance to stay there, so it
-    // does not flip back and forth and drag its partition in and out of the dirty set
-    else if (instanceLevelMin + build.cachingPushLevels
-             + (build.instanceCachedSticky.d[instanceID] != uint8_t(0) ? build.cachingStickyLevels : 0) >= cachedLevel) {
+    else if (cachedLevel != TRAVERSAL_INVALID_LOD_LEVEL) {
       // don't add, use cached blas instead
-      // `discreteLodLevel` is the level the cached blas was actually built for, which is
-      // what the streaming side indexed the entry by. `cachedLevel` is demand, not supply.
       blasBuildIndex = geometryID | BLAS_BUILD_INDEX_CACHE_BIT
-                       | (GEOMETRY_CACHED_BLAS_SLOT(geometry.lodLevelsCount, geometry.discreteLodLevel)
+                       | (GEOMETRY_CACHED_BLAS_SLOT(geometry.lodLevelsCount, cachedLevel)
                           << BLAS_BUILD_INDEX_CACHE_SLOT_SHIFT);
 
       traverseRootNode = false;
@@ -256,7 +251,90 @@ void main()
     #endif
     }
   }
-  
+
+#if USE_HYBRIDPATH
+  // A visible instance is rasterized from its own lod cut and its blas must match that cut:
+  // - low detail rasterizes its blas' cluster
+  // - discrete lod: in the caching tail the cut is a whole cached level, at least as fine as
+  //   lodLevelMin, and its blas is that cached one
+  // - otherwise its own blas, or a cached one within `hybridCachedTolerance` levels, a known mismatch
+  // An occluded one keeps the blas ray tracing chose, its own cut is traversed for the raster only.
+  bool hybridOccluded      = (visibilityState & INSTANCE_HYBRID_OCCLUDED_BIT) != 0;
+  bool hybridLowDetail     = false;
+  bool hybridDiscrete      = false;
+  uint hybridDiscreteLevel = TRAVERSAL_INVALID_LOD_LEVEL;
+  if (isValid && (visibilityState & (INSTANCE_VISIBLE_BIT | INSTANCE_HYBRID_OCCLUDED_BIT)) != 0)
+  {
+    hybridLowDetail = TRAVERSAL_ALLOW_LOW_DETAIL_BLAS && instanceLevelMin == uint(instanceInfo.geometryLodLevelMax);
+  #if USE_HYBRID_DISCRETE_LOD
+    if (!hybridLowDetail && usesCached)
+    {
+      // no push / sticky, the raster never draws less detail than its cut
+      hybridDiscreteLevel = pickCachedLevel(geometry.cachedLevelMask, instanceLevelMin, 0);
+      hybridDiscrete      = hybridDiscreteLevel != TRAVERSAL_INVALID_LOD_LEVEL;
+    }
+  #endif
+    bool keepCached = usesCached && build.hybridCachedTolerance >= 0
+                      && abs(int(cachedLevel) - int(instanceLevelMin)) <= build.hybridCachedTolerance;
+    // the merged blas holds resident clusters, not this instance's cut
+    bool usesMerged = (uint(build.instanceVisibility.d[instanceID]) & INSTANCE_USES_MERGED_BIT) != 0;
+    bool reused     = usesMerged || blasBuildIndex != BLAS_BUILD_INDEX_LOWDETAIL;
+    if (hybridDiscrete)
+    {
+      blasBuildIndex = geometryID | BLAS_BUILD_INDEX_CACHE_BIT
+                       | (GEOMETRY_CACHED_BLAS_SLOT(geometry.lodLevelsCount, hybridDiscreteLevel) << BLAS_BUILD_INDEX_CACHE_SLOT_SHIFT);
+      build.instanceVisibility.d[instanceID] = uint8_t(visibilityState | INSTANCE_HYBRID_RASTER_ONLY_BIT);
+      traverseRootNode                       = false;
+    }
+    else if (!hybridLowDetail && reused && (hybridOccluded || keepCached))
+    {
+      build.instanceVisibility.d[instanceID] = uint8_t(build.instanceVisibility.d[instanceID] | INSTANCE_HYBRID_RASTER_ONLY_BIT
+                                                       | (keepCached ? INSTANCE_HYBRID_TOLERANCE_BIT : 0));
+      traverseRootNode                       = true;
+    }
+    else if (!hybridLowDetail && reused)
+    {
+      blasBuildIndex = BLAS_BUILD_INDEX_LOWDETAIL;
+      usesCached     = false;
+      usesPersistent = false;
+      build.instanceVisibility.d[instanceID] = uint8_t(visibilityState);
+      traverseRootNode                       = true;
+    }
+  }
+  hybridAppendCluster(hybridLowDetail, hybridOccluded,
+                      hybridLowDetailUsesSW(hybridLowDetail, hybridOccluded, instanceID, instance, geometry), instanceID,
+                      geometry.lowDetailClusterID);
+
+  // seed the discrete level's node, TRAVERSAL_DISCRETE_BIT renders all of its clusters
+  uint discreteNodePacked = 0;
+  if (hybridDiscrete)
+  {
+    uint rootNodePacked = geometry.nodes.d[0].packed;
+    discreteNodePacked  = geometry.nodes.d[PACKED_GET(rootNodePacked, Node_packed_nodeChildOffset) + hybridDiscreteLevel].packed;
+  }
+  bool seedGroup = hybridDiscrete && PACKED_GET(discreteNodePacked, Node_packed_isGroup) != 0;
+  bool seedNode  = hybridDiscrete && !seedGroup;
+  traverseRootNode = traverseRootNode || seedNode;
+
+  if (subgroupAny(seedGroup))
+  {
+    uvec4 voteGroups   = subgroupBallot(seedGroup);
+    uint  offsetGroups = 0;
+    if (subgroupElect())
+    {
+      offsetGroups = atomicAdd(buildRW.traversalGroupWriteCounter, subgroupBallotBitCount(voteGroups));
+    }
+    offsetGroups = subgroupBroadcastFirst(offsetGroups) + subgroupBallotExclusiveBitCount(voteGroups);
+    if (seedGroup && offsetGroups < build.maxTraversalInfos)
+    {
+      TraversalInfo traversalInfo;
+      traversalInfo.instanceID = instanceID | TRAVERSAL_DISCRETE_BIT;
+      traversalInfo.packedNode = discreteNodePacked;
+      build.traversalGroupInfos.d[offsetGroups] = packTraversalInfo(traversalInfo);
+    }
+  }
+#endif
+
 #if USE_BLAS_CACHING
   if (isValid) {
     build.instanceCachedSticky.d[instanceID] = uint8_t(usesCached ? 1 : 0);
@@ -288,6 +366,13 @@ void main()
     TraversalInfo traversalInfo;
     traversalInfo.instanceID = instanceID;
     traversalInfo.packedNode = rootNodePacked;
+  #if USE_HYBRIDPATH
+    if (seedNode)
+    {
+      traversalInfo.instanceID = instanceID | TRAVERSAL_DISCRETE_BIT;
+      traversalInfo.packedNode = discreteNodePacked;
+    }
+  #endif
 
     build.traversalNodeInfos.d[offsetNodes] = packTraversalInfo(traversalInfo);
   }

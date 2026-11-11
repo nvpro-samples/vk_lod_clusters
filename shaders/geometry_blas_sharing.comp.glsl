@@ -107,7 +107,6 @@ void main()
     Geometry geometry      = geometries[geometryID];
     
   #if USE_BLAS_CACHING
-    uint cachedLevel       = geometry.discreteLodLevel;
     uint cachedLevelNeeded = TRAVERSAL_INVALID_LOD_LEVEL;
   #endif
     uint shareLevelMin    = TRAVERSAL_INVALID_LOD_LEVEL;
@@ -135,12 +134,15 @@ void main()
         bool terminates   = build.geometryHistograms.d[geometryID].lodLevelMaxHistogram[lodLevel] > 0;
         
       #if USE_BLAS_CACHING
-        if (numInstances > 0 && lodLevel >= cachedLevel)
+        uint cachedLevel = numInstances > 0 ? pickCachedLevel(geometry.cachedLevelMask, lodLevel, build.cachingPushLevels)
+                                            : TRAVERSAL_INVALID_LOD_LEVEL;
+        if (cachedLevel != TRAVERSAL_INVALID_LOD_LEVEL)
         {
           if (cachedLevelNeeded == TRAVERSAL_INVALID_LOD_LEVEL)
           {
-            // lowest lod level of any instance using the cached blas
-            cachedLevelNeeded = lodLevel;
+            // lowest lod level of any instance using the cached blas, a pushed one counts
+            // with its cached level. Not a finer fallback, its levels must be able to age out.
+            cachedLevelNeeded = max(lodLevel, cachedLevel);
             // pretend we already triggered shareLevelMax
             // triggering sharing isn't necessary after this point,
             // but an election below it still has consumers in between

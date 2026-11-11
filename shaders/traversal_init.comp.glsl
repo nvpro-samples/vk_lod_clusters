@@ -137,10 +137,11 @@ void main()
   
   vec4 clipMin;
   vec4 clipMax;
+  vec2 clipExtent;
   bool clipValid;
   
 #if TARGETS_RASTERIZATION && USE_TWO_PASS_CULLING
-  bool inFrustum = intersectFrustum( build.cullPass == 0 ? build.cullViewProjMatrixLast : build.cullViewProjMatrix, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix), clipMin, clipMax, clipValid);
+  bool inFrustum = intersectFrustum( build.cullPass == 0 ? build.cullViewProjMatrixLast : build.cullViewProjMatrix, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix), clipMin, clipMax, clipValid, clipExtent);
   bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, view.cullMinPixelSize) && intersectHiz(clipMin, clipMax, build.cullPass)));
 
 #if !USE_TWO_PASS_REJECT_LISTS
@@ -151,8 +152,19 @@ void main()
 #endif
 
 #else
-  bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix), clipMin, clipMax, clipValid);
+  bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix), clipMin, clipMax, clipValid, clipExtent);
+#if USE_HYBRIDPATH
+  // no size culling, see `instance_classify_lod.comp.glsl`
+  bool isVisible = inFrustum && (!useOcclusion || !clipValid || intersectHiz(clipMin, clipMax, 0));
+#else
   bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, view.cullMinPixelSize) && intersectHiz(clipMin, clipMax, 0)));
+#endif
+#endif
+#if USE_HYBRIDPATH
+  uint hybridState = getHybridVisibility(isVisible, inFrustum, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix));
+  isVisible        = hybridState == INSTANCE_VISIBLE_BIT;
+#else
+  const uint hybridState = 0;
 #endif
 
 #if TARGETS_RASTERIZATION
@@ -192,12 +204,13 @@ void main()
   uint visibilityState = isVisible ? INSTANCE_VISIBLE_BIT : 0;
   
   bool isRenderable = isValid
-  #if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
+  #if USE_CULLING && TARGETS_RASTERIZATION
     && isVisible
   #endif
     ;
     
   bool traverseRootNode = isRenderable;
+  bool hybridLowDetail  = false;
 
   if (isRenderable)
   {
@@ -225,7 +238,11 @@ void main()
     // per-instance finer-detail demand (magnifier): without this the early-out
     // below would leave a mirror-only-visible instance on the low-detail blas.
     // min() so the demand overrides the culledErrorScale penalty.
-    errorScale = min(errorScale, instanceHitErrorScale(build.instanceHitScale, instanceID));
+    // Hybrid has no primary rays, visible instances follow the camera.
+    if (!(USE_HYBRIDPATH != 0 && isVisible))
+    {
+      errorScale = min(errorScale, instanceHitErrorScale(build.instanceHitScale, instanceID));
+    }
   #endif
 
     mat4 transform = build.traversalViewMatrix * toMat4(worldMatrix);
@@ -241,7 +258,7 @@ void main()
     #if TARGETS_RAY_TRACING
       // we don't need to add a cluster because we always add it
       // implictly through the use of the low detail BLAS.
-      
+      hybridLowDetail = hybridState != 0;
     #elif TARGETS_RASTERIZATION
       // lowest detail lod is guaranteed to have only one cluster.
       bool useAlpha = false;
@@ -252,8 +269,8 @@ void main()
     #endif
 
     #if USE_SW_RASTER
-      float relativeSize = geometry.bbox.longestEdge;
-      if (isVisible && clipValid && clipMin.z > 0 && clipMax.z < 1 && !intersectSize(clipMin, clipMax, build.swRasterThreshold, relativeSize))
+      float relativeSize = swRasterRelativeSize(geometry.bbox.longestEdge, transpose(instance.worldMatrix));
+      if (isVisible && clipValid && clipMin.z > 0 && clipMax.z < 1 && !intersectSize(clipExtent, build.swRasterThreshold, relativeSize))
       {
         useSW = true;
       }
@@ -268,6 +285,14 @@ void main()
       traverseRootNode = false;
     }
   }
+
+#if USE_HYBRIDPATH
+  // the low detail blas' cluster, every other visible instance is rasterized from its own traversal
+  bool hybridOccluded = hybridState == INSTANCE_HYBRID_OCCLUDED_BIT;
+  hybridAppendCluster(hybridLowDetail, hybridOccluded,
+                      hybridLowDetailUsesSW(hybridLowDetail, hybridOccluded, instanceID, instance, geometry), instanceID,
+                      geometry.lowDetailClusterID);
+#endif
 
   uvec4 voteNodes = subgroupBallot(traverseRootNode);  
   
@@ -293,23 +318,14 @@ void main()
 
 #if TARGETS_RAY_TRACING
   if (isValid) {
-    build.instanceVisibility.d[instanceID]                        = uint8_t(visibilityState);  
+    build.instanceVisibility.d[instanceID]                        = uint8_t(visibilityState | hybridState);
     build.instanceBuildInfos.d[instanceID].clusterReferencesCount = 0;
     build.instanceBuildInfos.d[instanceID].blasBuildIndex         = blasBuildIndex;
     
-    // We might want to remove the instance completely if not visible, or just use the low detail blas
+    // the low detail blas until a better one is assigned
     // (ptlas resolves the fallback in `instance_assign_blas.comp.glsl` instead)
   #if !USE_PTLAS
-    #if USE_CULLING && USE_FORCED_INVISIBLE_CULLING && FORCE_INVISIBLE_CULLED_REMOVES_INSTANCE
-    if(!isVisible && build.frameIndex != 0){
-      // first frame must always have a valid BLAS due to TLAS BUILD, other frames are TLAS UPDATE
-      build.tlasInstances.d[instanceID].blasReference             = 0;
-    }
-    else
-    #endif
-    {
-      build.tlasInstances.d[instanceID].blasReference             = geometry.lowDetailBlasAddress;
-    }
+    build.tlasInstances.d[instanceID].blasReference = geometry.lowDetailBlasAddress;
   #endif
   }
 #elif TARGETS_RASTERIZATION

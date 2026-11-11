@@ -240,8 +240,10 @@ struct StreamingGeometryPatch
   uint16_t discreteLodLevel;  // see Geometry::discreteLodLevel
   uint16_t cachedBlasClustersCount;
   uint64_t cachedBlasAddress;
+  uint32_t cachedLevel;      // level `cachedBlasAddress` was built for, its slot
+  uint32_t cachedLevelMask;  // see Geometry::cachedLevelMask
 };
-BUFFER_REF_DECLARE_ARRAY(StreamingGeometryPatchs_in, StreamingGeometryPatch, , 16);
+BUFFER_REF_DECLARE_ARRAY(StreamingGeometryPatchs_in, StreamingGeometryPatch, , 8);
 
 struct StreamingUpdate
 {

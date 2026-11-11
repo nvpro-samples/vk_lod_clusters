@@ -137,8 +137,20 @@ void main()
 #endif
   
   bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix), clipMin, clipMax, clipValid);
+
+#if USE_HYBRIDPATH
+  // no size culling, the blas keeps a small instance and the raster has to match it
+  bool isVisible = inFrustum && (!useOcclusion || !clipValid || intersectHiz(clipMin, clipMax, 0));
+#else
   bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, view.cullMinPixelSize) && intersectHiz(clipMin, clipMax, 0)));
-  
+#endif
+#if USE_HYBRIDPATH
+  uint hybridState = getHybridVisibility(isVisible, inFrustum, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix));
+  isVisible        = hybridState == INSTANCE_VISIBLE_BIT;
+#else
+  const uint hybridState = 0;
+#endif
+
   uint visibilityState = isVisible ? INSTANCE_VISIBLE_BIT : 0;
   
   if (isValid)
@@ -148,7 +160,7 @@ void main()
     mat4x3 worldMatrixI = transpose(instance.worldMatrixI);
     float uniformScale  = computeUniformScale(worldMatrix);
     float errorScale    = 1.0;
-  #if USE_CULLING && !USE_FORCED_INVISIBLE_CULLING
+  #if USE_CULLING
     // instance is not primary visible, apply different error scale
     if (visibilityState == 0) errorScale = build.culledErrorScale;
   #endif
@@ -157,7 +169,11 @@ void main()
     // the errorScale, so this instance's classified lodLevelMin becomes finer and
     // it drops out of blas sharing into its own higher-detail blas. min() so the
     // demand overrides the culledErrorScale of a mirror-only-visible instance.
-    errorScale = min(errorScale, instanceHitErrorScale(build.instanceHitScale, instanceID));
+    // Hybrid has no primary rays, visible instances follow the camera.
+    if (!(USE_HYBRIDPATH != 0 && isVisible))
+    {
+      errorScale = min(errorScale, instanceHitErrorScale(build.instanceHitScale, instanceID));
+    }
   #endif
   
     mat4 transform = build.traversalViewMatrix * toMat4(worldMatrix);
@@ -181,9 +197,6 @@ void main()
     uint lodLevelMin = 0;
     uint lodLevelMax = geometryLodLevelMax;
 
-  #if USE_CULLING && USE_FORCED_INVISIBLE_CULLING
-    if(isVisible)
-  #endif
     {
       InstanceLodClassification classification =
           classifyInstanceLod(geometry, mat4x3(transform), oViewPos, uniformScale, errorScale, 0, geometryUsesBlasSharing);
@@ -196,7 +209,7 @@ void main()
       // else an instance the camera wants detailed but no ray reaches keeps traversing into
       // an empty blas and its partition awake. ~0 until propagation ran once.
       uint demandLevel = build.geometryHitDemandLevel.d[geometryID];
-      if (demandLevel <= geometryLodLevelMax)
+      if (demandLevel <= geometryLodLevelMax && !(USE_HYBRIDPATH != 0 && isVisible))
       {
         if (build.hitCameraErrorScale > 0 && demandLevel > lodLevelMin)
         {
@@ -227,7 +240,14 @@ void main()
       // for this geometry, it means the instance only uses the lowest detail
       // cluster group / pre-built blas.
       bool lowestDetailOnly = lodLevelMin == geometryLodLevelMax;
-      
+
+    #if USE_HYBRIDPATH
+      // may use the cached blas but no shared / merged one, see `traversal_init_blas_reuse.comp.glsl`
+      bool hybridNoSharing = isVisible;
+    #else
+      const bool hybridNoSharing = false;
+    #endif
+
       if (TRAVERSAL_ALLOW_LOW_DETAIL_BLAS && lowestDetailOnly)
       {
         // uses the pre-built blas, influences neither sharing nor caching
@@ -239,9 +259,13 @@ void main()
         // such instance needs, the streaming age filter keeps those levels alive.
         // With sharing the same value is derived from the histogram in
         // `geometry_blas_sharing.comp.glsl`, which spares us this atomic.
-        if (lodLevelMin >= uint(geometry.discreteLodLevel))
+        uint cachingTolerance = build.cachingPushLevels
+                                + (build.instanceCachedSticky.d[instanceID] != uint8_t(0) ? build.cachingStickyLevels : 0);
+        uint cachedLevel      = pickCachedLevel(geometry.cachedLevelMask, lodLevelMin, cachingTolerance);
+        if (cachedLevel != TRAVERSAL_INVALID_LOD_LEVEL)
         {
-          atomicMin(build.geometryCachedInfos.d[geometryID].cachedLevel, lodLevelMin);
+          // see `geometry_blas_sharing.comp.glsl`
+          atomicMin(build.geometryCachedInfos.d[geometryID].cachedLevel, max(lodLevelMin, cachedLevel));
         }
       #endif
 
@@ -249,6 +273,10 @@ void main()
         {
           // fill geometry histogram
           atomicAdd(build.geometryHistograms.d[geometryID].lodLevelMinHistogram[lodLevelMin], 1);
+        }
+        // the min histogram also drives caching, the max histogram the sharing / merging election
+        if (geometryUsesBlasSharing && !hybridNoSharing)
+        {
           atomicAdd(build.geometryHistograms.d[geometryID].lodLevelMaxHistogram[lodLevelMax], 1);
 
           // we want to find the instance with the highest lod min level (meaning it likely has less detail)
@@ -266,7 +294,7 @@ void main()
     }
 
     // used during `traversal_run.comp.glsl` to allow lower detail for "invisible" instances
-    build.instanceVisibility.d[instanceID]                        = uint8_t(visibilityState);
+    build.instanceVisibility.d[instanceID]                        = uint8_t(visibilityState | hybridState);
     
     // used in `traversal_init_blas_reuse.comp.glsl` to drive the actual decision
     // which blas an instance should use
@@ -281,17 +309,7 @@ void main()
     // (ptlas resolves the fallback there instead, it has no pre-initialized instances)
     
   #if !USE_PTLAS
-    // We might want to remove the instance completely if not visible, or just use the low detail blas
-    #if USE_CULLING && USE_FORCED_INVISIBLE_CULLING && FORCE_INVISIBLE_CULLED_REMOVES_INSTANCE
-    if(!isVisible && build.frameIndex != 0){
-      // first frame must always have a valid BLAS due to TLAS BUILD, other frames are TLAS UPDATE
-      build.tlasInstances.d[instanceID].blasReference             = 0;
-    }
-    else
-    #endif
-    {
-      build.tlasInstances.d[instanceID].blasReference             = geometry.lowDetailBlasAddress;
-    }
+    build.tlasInstances.d[instanceID].blasReference = geometry.lowDetailBlasAddress;
   #endif
 
   }

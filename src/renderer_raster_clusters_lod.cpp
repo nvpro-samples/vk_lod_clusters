@@ -129,7 +129,6 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene)
   options.AddMacroDefinition("USE_SW_RASTER", m_config.useComputeRaster ? "1" : "0");
   options.AddMacroDefinition("USE_TWO_SIDED", rscene.scene->m_hasTwoSided && !m_config.forceTwoSided ? "1" : "0");
   options.AddMacroDefinition("USE_FORCED_TWO_SIDED", m_config.forceTwoSided ? "1" : "0");
-  options.AddMacroDefinition("USE_FORCED_INVISIBLE_CULLING", "0");
   options.AddMacroDefinition("USE_PERSISTENT_TRAVERSAL_KERNEL", m_config.usePersistentTraversal ? "1" : "0");
   options.AddMacroDefinition("TRAVERSAL_VULKAN_MEMORY_MODEL",
                              m_config.usePersistentTraversal && m_config.useVulkanMemoryModel ? "1" : "0");
@@ -182,6 +181,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
   m_config.usePtlas             = false;
   m_config.usePartitionEarlyOut = false;
   res.setFramebufferUseRasterization(true);
+  res.setFramebufferUseVisibilityBuffer(false);
 #if USE_DLSS
   // NGX is only initialized once DLSS is requested
   m_config.useDlss = m_config.useDlss
@@ -792,31 +792,17 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelines.graphicsMesh);
 
-        if(m_config.useEXTmeshShader)
-        {
-          vkCmdDrawMeshTasksIndirectEXT(cmd, m_sceneBuildBuffer.buffer,
-                                        offsetof(shaderio::SceneBuilding, indirectDrawClustersEXT), 1, 0);
-        }
-        else
-        {
-          vkCmdDrawMeshTasksIndirectNV(cmd, m_sceneBuildBuffer.buffer,
-                                       offsetof(shaderio::SceneBuilding, indirectDrawClustersNV), 1, 0);
-        }
+        cmdDrawMeshTasksIndirect(cmd, m_config.useEXTmeshShader, m_sceneBuildBuffer.buffer,
+                                 offsetof(shaderio::SceneBuilding, indirectDrawClustersEXT),
+                                 offsetof(shaderio::SceneBuilding, indirectDrawClustersNV));
 
         if(rscene.scene->m_hasAlphaMask)
         {
           vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelines.graphicsMeshAlpha);
 
-          if(m_config.useEXTmeshShader)
-          {
-            vkCmdDrawMeshTasksIndirectEXT(cmd, m_sceneBuildBuffer.buffer,
-                                          offsetof(shaderio::SceneBuilding, indirectDrawClustersAlphaEXT), 1, 0);
-          }
-          else
-          {
-            vkCmdDrawMeshTasksIndirectNV(cmd, m_sceneBuildBuffer.buffer,
-                                         offsetof(shaderio::SceneBuilding, indirectDrawClustersAlphaNV), 1, 0);
-          }
+          cmdDrawMeshTasksIndirect(cmd, m_config.useEXTmeshShader, m_sceneBuildBuffer.buffer,
+                                   offsetof(shaderio::SceneBuilding, indirectDrawClustersAlphaEXT),
+                                   offsetof(shaderio::SceneBuilding, indirectDrawClustersAlphaNV));
         }
       }
 
@@ -853,17 +839,7 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
       vkCmdEndRendering(cmd);
     }
 
-    if(!frame.freezeCulling)
-    {
-      if(m_config.useTwoPassCulling)
-      {
-        res.cmdBuildHiz(cmd, frame, profiler, pass ^ 1);
-      }
-      else
-      {
-        res.cmdBuildHiz(cmd, frame, profiler, 0);
-      }
-    }
+    cmdBuildPassHiz(cmd, res, frame, profiler, m_config.useTwoPassCulling, pass);
   }
   if(passCount > 1)
   {

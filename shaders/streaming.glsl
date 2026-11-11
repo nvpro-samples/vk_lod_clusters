@@ -3,6 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#ifndef STREAMING_GLSL
+#define STREAMING_GLSL
+
 #ifndef USE_HIT_STREAMING_LOD
 #define USE_HIT_STREAMING_LOD 0
 #endif
@@ -285,3 +288,5 @@ bool streamingDemandsFiner(uint groupIndex, GroupOverlapInfos_in groupOverlapInf
 }
 
 #endif
+
+#endif  // STREAMING_GLSL

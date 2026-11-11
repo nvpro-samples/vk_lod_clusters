@@ -138,10 +138,11 @@ void main()
   
   vec4 clipMin;
   vec4 clipMax;
+  vec2 clipExtent;
   bool clipValid;
   
 #if USE_TWO_PASS_CULLING
-  bool inFrustum = intersectFrustum( build.cullPass == 0 ? build.cullViewProjMatrixLast : build.cullViewProjMatrix, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix), clipMin, clipMax, clipValid);
+  bool inFrustum = intersectFrustum( build.cullPass == 0 ? build.cullViewProjMatrixLast : build.cullViewProjMatrix, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix), clipMin, clipMax, clipValid, clipExtent);
   bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, view.cullMinPixelSize) && intersectHiz(clipMin, clipMax, build.cullPass)));
 
 #if !USE_TWO_PASS_REJECT_LISTS
@@ -152,7 +153,7 @@ void main()
 #endif
 
 #else
-  bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix), clipMin, clipMax, clipValid);
+  bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix), clipMin, clipMax, clipValid, clipExtent);
   bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, view.cullMinPixelSize) && intersectHiz(clipMin, clipMax, 0)));
 #endif
 
@@ -244,8 +245,8 @@ void main()
     #endif
 
     #if USE_SW_RASTER
-      float relativeSize = geometry.bbox.longestEdge;
-      if (isVisible && clipValid && clipMin.z > 0 && clipMax.z < 1 && !intersectSize(clipMin, clipMax, build.swRasterThreshold, relativeSize))
+      float relativeSize = swRasterRelativeSize(geometry.bbox.longestEdge, transpose(instance.worldMatrix));
+      if (isVisible && clipValid && clipMin.z > 0 && clipMax.z < 1 && !intersectSize(clipExtent, build.swRasterThreshold, relativeSize))
       {
         useSW = true;
       }

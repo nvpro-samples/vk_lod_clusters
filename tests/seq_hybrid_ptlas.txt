@@ -1,0 +1,135 @@
+# Hybrid path: --partitions x --ptlas x --partitionearlyout on 4096 instances. The early-out
+# processes every partition in the frustum, `_frustumonly` turns the other wake-ups off.
+# `_overview` looks over the grid, `_pan` turns so partitions enter and leave the frustum.
+#
+# Every configuration runs twice: from a static close view into the grid, where most
+# instances are hidden behind the nearest bunnies, and as `_motion` along a sideways
+# camera path, which is what reaches the second raster pass (disocclusion). The static
+# view is camera path 1, a held path overrides --camerastring.
+# --hybridmatchcheck traces the primary ray as well and logs an error when more pixels
+# disagree with the raster than edge rounding explains.
+
+SEQUENCE "hy_partitions0_ptlas0_earlyout0"
+--sequenceframes 32
+--sequenceresetframes 8
+--renderer 3
+--hybridmatchcheck 1
+--dlss 0
+--culling 1
+--streaming 1
+--gridunique 0
+--blassharing 1
+--blasmerging 1
+--blascaching 1
+--hitstreaming 0
+--addcamerapath "smooth 1 loop 1 dur 4 ; {0.185, 1.860, 1.199}, {-0.691, 1.203, 0.323}, {0, 1, 0}, {60} ; {0.893, 1.860, 0.491}, {0.017, 1.203, -0.385}, {0, 1, 0}, {60} ; {0.185, 1.860, 1.199}, {-0.691, 1.203, 0.323}, {0, 1, 0}, {60}"
+--addcamerapath "smooth 0 loop 0 dur 1 ; {0.539, 1.860, 0.845}, {-0.337, 1.203, -0.031}, {0, 1, 0}, {60} ; {0.539, 1.860, 0.845}, {-0.337, 1.203, -0.031}, {0, 1, 0}, {60}"
+--addcamerapath "smooth 0 loop 0 dur 1 ; {-100, 10, -77}, {-130, 2, -100}, {0, 1, 0}, {60} ; {-100, 10, -77}, {-130, 2, -100}, {0, 1, 0}, {60}"
+--addcamerapath "smooth 1 loop 1 dur 4 ; {-100, 10, -77}, {-130, 2, -100}, {0, 1, 0}, {60} ; {-100, 10, -77}, {-135, 2, -62.5}, {0, 1, 0}, {60} ; {-100, 10, -77}, {-130, 2, -100}, {0, 1, 0}, {60} ; {-100, 10, -77}, {-95.1, 2, -114.5}, {0, 1, 0}, {60} ; {-100, 10, -77}, {-130, 2, -100}, {0, 1, 0}, {60}"
+--partitions 0
+--ptlas 0
+--partitionearlyout 0
+--runcamerapath 1 1
+
+SEQUENCE "hy_partitions0_ptlas0_earlyout0_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_partitions0_ptlas0_earlyout0_overview"
+--runcamerapath 2 32
+
+SEQUENCE "hy_partitions0_ptlas0_earlyout0_pan"
+--runcamerapath 3 32
+
+SEQUENCE "hy_partitions1_ptlas0_earlyout0"
+--partitions 1
+--ptlas 0
+--partitionearlyout 0
+--runcamerapath 1 1
+
+SEQUENCE "hy_partitions1_ptlas0_earlyout0_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_partitions1_ptlas0_earlyout0_overview"
+--runcamerapath 2 32
+
+SEQUENCE "hy_partitions1_ptlas0_earlyout0_pan"
+--runcamerapath 3 32
+
+SEQUENCE "hy_partitions1_ptlas0_earlyout1"
+--partitions 1
+--ptlas 0
+--partitionearlyout 1
+--runcamerapath 1 1
+
+SEQUENCE "hy_partitions1_ptlas0_earlyout1_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_partitions1_ptlas0_earlyout1_overview"
+--runcamerapath 2 32
+
+SEQUENCE "hy_partitions1_ptlas0_earlyout1_pan"
+--runcamerapath 3 32
+
+SEQUENCE "hy_partitions1_ptlas1_earlyout0"
+--partitions 1
+--ptlas 1
+--partitionearlyout 0
+--runcamerapath 1 1
+
+SEQUENCE "hy_partitions1_ptlas1_earlyout0_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_partitions1_ptlas1_earlyout0_overview"
+--runcamerapath 2 32
+
+SEQUENCE "hy_partitions1_ptlas1_earlyout0_pan"
+--runcamerapath 3 32
+
+SEQUENCE "hy_partitions1_ptlas1_earlyout1"
+--partitions 1
+--ptlas 1
+--partitionearlyout 1
+--runcamerapath 1 1
+
+SEQUENCE "hy_partitions1_ptlas1_earlyout1_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_partitions1_ptlas1_earlyout1_overview"
+--runcamerapath 2 32
+
+SEQUENCE "hy_partitions1_ptlas1_earlyout1_pan"
+--runcamerapath 3 32
+
+SEQUENCE "hy_ptlas0_earlyout_frustumonly"
+--partitions 1
+--ptlas 0
+--partitionearlyout 1
+--partitionfrustumrevalidate 0
+--partitionrevalidateframes 4096
+--runcamerapath 1 1
+
+SEQUENCE "hy_ptlas0_earlyout_frustumonly_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_ptlas0_earlyout_frustumonly_overview"
+--runcamerapath 2 32
+
+SEQUENCE "hy_ptlas0_earlyout_frustumonly_pan"
+--runcamerapath 3 32
+
+SEQUENCE "hy_ptlas1_earlyout_frustumonly"
+--partitions 1
+--ptlas 1
+--partitionearlyout 1
+--partitionfrustumrevalidate 0
+--partitionrevalidateframes 4096
+--runcamerapath 1 1
+
+SEQUENCE "hy_ptlas1_earlyout_frustumonly_motion"
+--runcamerapath 0 32
+
+SEQUENCE "hy_ptlas1_earlyout_frustumonly_overview"
+--runcamerapath 2 32
+
+SEQUENCE "hy_ptlas1_earlyout_frustumonly_pan"
+--runcamerapath 3 32

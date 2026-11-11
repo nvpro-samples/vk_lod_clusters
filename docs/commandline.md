@@ -8,7 +8,7 @@ with the model. Loading `<name>.gltf`/`.glb`/`.cfg` also runs `scene_overrides/<
 scene's own `.cfg` and before the scene is loaded, so options that affect loading take effect. An override cannot
 change `--scene`.
 
-* `--renderer 0` starts with rasterization.
+* `--renderer 0` starts with rasterization, `--renderer 2` with path tracing, `--renderer 3` with the hybrid renderer.
 * `--supersample 0` disables the super sampling that otherwise doubles rendering resolution in each dimension. 
 * `--clasallocator 0` disables the more complex gpu-driven allocator when streaming and uses the simple move based CLAS compaction instead. It moves all resident CLAS whenever a group is unloaded, which makes `--blascaching` ineffective while it is used, see [BLAS Caching](blas_caching.md).
 * `--gridcopies N` set the number of model copies in the scene.
