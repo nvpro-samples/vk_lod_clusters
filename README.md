@@ -3,6 +3,8 @@
 This sample is demonstrating the **NVIDIA RTX Mega Geometry** technology with a continuous level of detail (LoD) technique using mesh clusters that 
 leverages [`VK_NV_cluster_acceleration_structure`](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_NV_cluster_acceleration_structure.html) for ray tracing. It can also rasterize the content 
 using `VK_EXT/NV_mesh_shader`. Furthermore, the sample implements an on-demand streaming system from RAM to VRAM for the geometry.
+For scenes with many instances it can also use [`VK_NV_partitioned_acceleration_structure`](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_NV_partitioned_acceleration_structure.html),
+see [Partitioned TLAS](#partitioned-tlas).
 
 In rasterization continuous LoD techniques can help performance as they reduce the impact of sub-pixel triangles.
 For both ray tracing and rasterization these techniques can be combined with streaming the geometry data at
@@ -101,8 +103,9 @@ Does not need the BLAS and TLAS build steps and can render directly from `SceneB
 Frustum and occlusion culling can be done to reduce the number of rendered clusters during traversal.
 How the occlusion culling deals with the current frame's depth not existing yet is described in the
 [Rasterization Two-Pass Culling documentation](docs/raster_twopass_culling.md).
-* [shaders/render_raster_clusters.mesh.glsl](/shaders/render_raster_clusters.mesh.glsl): Mesh shader to render a cluster.
-* [shaders/render_raster_clusters_sw.comp.glsl](/shaders/render_raster_clusters.mesh.glsl): Compute shader to rasterize a cluster. It is only used when the "Allow SW-Raster" traversal option is active.
+* [shaders/render_raster_clusters.mesh.glsl](/shaders/render_raster_clusters.mesh.glsl): Mesh shader to render a cluster, `EXT_mesh_shader` variant.
+* [shaders/render_raster_clusters_nv.mesh.glsl](/shaders/render_raster_clusters_nv.mesh.glsl): Mesh shader to render a cluster, `NV_mesh_shader` variant with optional primitive culling.
+* [shaders/render_raster_clusters_sw.comp.glsl](/shaders/render_raster_clusters_sw.comp.glsl): Compute shader to rasterize a cluster. It is only used when the "Allow SW-Raster" traversal option is active.
 * [shaders/render_raster.frag.glsl](/shaders/render_raster.frag.glsl)
 
 When `USE_DLSS` is enabled at build time, rasterization supports **DLSS Super Resolution (DLSS-SR)** to upscale a lower-resolution render target (requires `--renderer 0` or the rasterizer UI option). The motion-vector render target stays bound whenever DLSS-SR is active; only _shaded_ hardware rasterization writes motion vectors (SW-raster and other non-shaded modes disable color writes on that attachment and clear it each frame).
@@ -159,6 +162,17 @@ The _"blas reuse"_ visualization shows which of these an instance ended up using
 * **red**: a BLAS that was built for this instance alone in this frame
 
 The occlusion culling is kept basic, testing the footprint of the bounding box against the appropriate mip-level of last frame's HiZ buffer and last frame's matrices. This can cause artifacts on faster motion. Rasterization can avoid those with the two-pass variants, see [Rasterization Two-Pass Culling](docs/raster_twopass_culling.md).
+
+### Partitioned TLAS
+
+![overview of a generated desert world with cities, pipelines and a salt pan inside a mountain rim](/docs/junkworld_overview.jpg)
+
+For scenes with many instances, ray tracing can group the instances into spatial partitions (`--partitions 1`).
+Partitions whose instances all sit on a persistent BLAS skip the per-instance work, and the partitions feed the
+partitioned TLAS (`--ptlas 1`, [`VK_NV_partitioned_acceleration_structure`](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_NV_partitioned_acceleration_structure.html)). Instead of rebuilding the TLAS over all
+instances every frame, it only rewrites the instances whose BLAS changed. Flying over the [Junkworld](#junkworld)
+scene above, that is about 3,200 of its 2.0 M instances per frame. See the
+[Instance Partitions documentation](docs/partitions_and_ptlas.md), which also describes the partition layouts.
 
 ### Streaming Operations
 
@@ -242,7 +256,6 @@ Please have a look at the [Materials documentation](docs/materials.md) for the U
 
 ## Future Improvements
 
-* Partitioned TLAS support for scenes with many instances.
 * Further techniques to reduce memory consumption.
 * Improve streaming performance.
 * Add texture streaming for material textures (long term).
@@ -299,6 +312,15 @@ Downloads, hardware requirements, processing command lines and known issues for 
 A glTF export of the highly detailed raw geometry from the [NVIDIA RTX Kit - Zorah Sample](https://developer.nvidia.com/rtx-kit?sortBy=developer_learning_library) as [presented at GDC 2025](https://developer.nvidia.com/blog/nvidia-rtx-advances-with-neural-rendering-and-digital-human-technologies-at-gdc-2025/).
 Available with textures (`zorah_textured_public` ~ 130 GB on disk with render cache) or geometry-only (`zorah_main_public` ~ 35 GB), you only need one of them.
 Must be streamed, cannot be pre-loaded. See [Additional Scenes](docs/scenes.md#zorah-demo-scene) for the download links and details.
+
+### Junkworld
+
+![a city on raised decks, a junk field at the city's edge and a crashed freighter on a salt pan](/docs/junkworld_collage.jpg)
+
+A generated 3 x 3 km junk planet with 2.0 M instances of 6,712 unique meshes, about 125 times as many instances as
+Zorah. It stresses the work that scales with the instance count, its `.cfg` enables the
+[partitioned TLAS](docs/partitions_and_ptlas.md). See [Additional Scenes](docs/scenes.md#junkworld) for the download
+link and details.
 
 ### Threedscans Statues
 

@@ -97,11 +97,30 @@ layout(local_size_x=TRAVERSAL_INIT_WORKGROUP) in;
 
 void main()
 {
+#if USE_PARTITION_EARLY_OUT
+  // dispatch is over the compacted blocks of partition-sorted instances, a block id is a
+  // start offset so the mapping is arithmetic
+  uint workGroupID  = getWorkGroupIndex(gl_WorkGroupID);
+  uint blockSlot    = workGroupID / (PARTITION_INSTANCE_BLOCK_SIZE / PARTITION_ACTIVE_INSTANCES_WORKGROUP);
+  uint blockLocal   = (workGroupID % (PARTITION_INSTANCE_BLOCK_SIZE / PARTITION_ACTIVE_INSTANCES_WORKGROUP))
+                          * PARTITION_ACTIVE_INSTANCES_WORKGROUP
+                      + gl_LocalInvocationID.x;
+  // only a 16-bit grid overshoots the active blocks, past them the slots are stale
+  bool blockValid   = USE_16BIT_DISPATCH == 0 || blockSlot < build.activeBlockCounter;
+  uint orderedIndex = build.activeBlocks.d[blockValid ? blockSlot : 0] * PARTITION_INSTANCE_BLOCK_SIZE + blockLocal;
+  // clamp the index, carry validity separately: the guarded loads below are predicated
+  // rather than branched, and a ~0 id would land at base + 4 GiB (32-bit byte offsets)
+  blockValid        = blockValid && orderedIndex < build.numRenderInstances;
+  uint instanceID   = build.partitionInstanceOrder.d[blockValid ? orderedIndex : 0];
+#else
   uint instanceID   = getGlobalInvocationIndex(gl_GlobalInvocationID);
+  bool blockValid   = true;
+#endif
   uint instanceLoad = min(build.numRenderInstances-1, instanceID);
-  bool isValid      = instanceID == instanceLoad;
+  bool isValid      = blockValid && instanceID == instanceLoad;
 
-#if USE_SORTING
+#if USE_SORTING && !USE_PARTITION_EARLY_OUT
+  // the early-out already processes in partition order, like classify and assign do
   instanceLoad = build.instanceSortValues.d[instanceLoad];
   instanceID   = instanceLoad;
 #endif
@@ -137,7 +156,10 @@ void main()
 #endif
   
 #if USE_BLAS_MERGING || (USE_CULLING && USE_FORCED_INVISIBLE_CULLING)
-  uint visibilityState = build.instanceVisibility.d[instanceID];
+  // `instanceLoad`, not `instanceID`: this read is outside the `isValid` test. The linear
+  // dispatch overshoots by less than a workgroup and `instanceVisibility` is padded for it,
+  // but the early-out's block mapping yields ~0 for a thread past the instance count.
+  uint visibilityState = build.instanceVisibility.d[instanceLoad];
 #endif
   
   // When we need to build a BLAS for this instance, we need to add it's root node
@@ -145,6 +167,8 @@ void main()
   // which the following logic shows.
   
   bool traverseRootNode = false;
+  bool usesCached       = false;
+  bool usesPersistent   = false;
   if (isValid
 #if USE_CULLING && USE_FORCED_INVISIBLE_CULLING
     && ((visibilityState & INSTANCE_VISIBLE_BIT) != 0)
@@ -166,17 +190,29 @@ void main()
     // blas isn't detailed enough for it. The instances sharing from it need even
     // less detail (`instanceLevelMin >= shareLevelMax >= shareLevelMin`), so they
     // then use the cached blas as well and never reference a blas that wasn't built.
+    // Sticky levels only apply to the instance itself, so the elected one can be cached
+    // while a sharer is not: `instance_assign_blas` resolves the share before the cache.
 
     if (TRAVERSAL_ALLOW_LOW_DETAIL_BLAS && instanceLevelMin == uint(instanceInfo.geometryLodLevelMax)) {
       // no need, lowest detail BLAS is used
       traverseRootNode = false;
+      usesPersistent   = true;
     }
   #if USE_BLAS_CACHING
-    else if (instanceLevelMin >= cachedLevel) {
+    // an instance already on the cached blas gets extra tolerance to stay there, so it
+    // does not flip back and forth and drag its partition in and out of the dirty set
+    else if (instanceLevelMin + build.cachingPushLevels
+             + (build.instanceCachedSticky.d[instanceID] != uint8_t(0) ? build.cachingStickyLevels : 0) >= cachedLevel) {
       // don't add, use cached blas instead
-      blasBuildIndex = geometryID | BLAS_BUILD_INDEX_CACHE_BIT;
+      // `discreteLodLevel` is the level the cached blas was actually built for, which is
+      // what the streaming side indexed the entry by. `cachedLevel` is demand, not supply.
+      blasBuildIndex = geometryID | BLAS_BUILD_INDEX_CACHE_BIT
+                       | (GEOMETRY_CACHED_BLAS_SLOT(geometry.lodLevelsCount, geometry.discreteLodLevel)
+                          << BLAS_BUILD_INDEX_CACHE_SLOT_SHIFT);
 
       traverseRootNode = false;
+      usesCached       = true;
+      usesPersistent   = true;
     }
   #endif
   #if USE_BLAS_SHARING
@@ -220,6 +256,19 @@ void main()
     #endif
     }
   }
+  
+#if USE_BLAS_CACHING
+  if (isValid) {
+    build.instanceCachedSticky.d[instanceID] = uint8_t(usesCached ? 1 : 0);
+  }
+#endif
+
+#if USE_PARTITION_EARLY_OUT
+  // count what keeps this partition from being skippable next frame
+  if (isValid && !usesPersistent) {
+    atomicAdd(build.partitionNonPersistent.d[build.instancePartitions.d[instanceID]], 1);
+  }
+#endif
   
   uvec4 voteNodes  = subgroupBallot(traverseRootNode);
   

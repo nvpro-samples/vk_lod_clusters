@@ -392,6 +392,7 @@ void Renderer::updateBasicDescriptors(Resources& res, RenderScene& rscene, const
   nvvk::WriteSetContainer writeSets;
   writeSets.append(m_basicDset.makeWrite(BINDINGS_FRAME_UBO), res.m_commonBuffers.frameConstants);
   writeSets.append(m_basicDset.makeWrite(BINDINGS_READBACK_SSBO), res.m_commonBuffers.readBack);
+  writeSets.append(m_basicDset.makeWrite(BINDINGS_ENV_HDRI_TEX), res.getEnvHdriDescriptor());
   if(res.m_supportsClusterRaytracing && !m_isRaster)
   {
     writeSets.append(m_basicDset.makeWrite(BINDINGS_RAYTRACING_DEPTH), res.m_frameBuffer.imgRaytracingDepth.descriptor);
@@ -438,6 +439,8 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene)
   {
     bindings.addBinding(BINDINGS_STREAMING_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_basicShaderFlags);
   }
+  // background
+  bindings.addBinding(BINDINGS_ENV_HDRI_TEX, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, m_basicShaderFlags);
   m_basicDset.init(bindings, res.m_device);
 
   nvvk::createPipelineLayout(res.m_device, &m_basicPipelineLayout, {m_basicDset.getLayout()},
@@ -472,7 +475,7 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene)
   }
 #endif
 
-  state.rasterizationState.lineWidth = float(res.m_frameBuffer.pixelScale * 2.0f);
+  state.rasterizationState.lineWidth = res.m_basicGraphicsState.rasterizationState.lineWidth * 2.0f;
 
   graphicsGen.clearShaders();
   graphicsGen.addShader(VK_SHADER_STAGE_MESH_BIT_NV, "main",
@@ -485,7 +488,7 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene)
 
   graphicsGen.clearShaders();
 
-  state.rasterizationState.lineWidth = float(res.m_frameBuffer.pixelScale);
+  state.rasterizationState.lineWidth = res.m_basicGraphicsState.rasterizationState.lineWidth;
   graphicsGen.addShader(VK_SHADER_STAGE_MESH_BIT_NV, "main",
                         nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.renderClusterBboxesMeshShader));
   graphicsGen.addShader(VK_SHADER_STAGE_FRAGMENT_BIT, "main",
@@ -656,9 +659,7 @@ float Renderer::updateLodPixelError(Resources& res, RenderScene& rscene, const F
     m_lodPixelError = frame.lodPixelError;
   }
 
-  glm::vec2 renderScale       = res.getFramebufferWindow2RenderScale();
-  float     pixelScale        = std::min(renderScale.x, renderScale.y);
-  float     errorSizeInPixels = lodPixelError * pixelScale;
+  float errorSizeInPixels = lodPixelError * res.m_frameBuffer.renderScale;
 
   // we used to omit the 2.0 in favor of a more conservative error (radius vs diameter),
   // but the industry standard seems to treat as diameter.

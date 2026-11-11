@@ -132,6 +132,22 @@ public:
     uint32_t                             blasCacheMinLevel     = 0;
     VkBuildAccelerationStructureFlagsKHR blasCacheFlags        = 0;
     uint32_t                             ageThreshold          = 16;
+    // Frames a replaced cached blas allocation is held before being returned to the
+    // allocator. The ptlas partition early-out only refreshes an instance when its
+    // partition is processed, so an allocation must outlive the worst case gap between
+    // two visits or a skipped instance ends up pointing at reused memory. 0 frees at once,
+    // which is what the non early-out path wants.
+    uint32_t blasCacheDeferFrames = 0;
+    // Refuse to unload the groups a cached blas was built from. Without this they can age out
+    // from under a blas that skipped instances are still tracing, which is the one case
+    // `blasCacheDeferFrames` cannot cover - holding the allocation does not help once its
+    // cluster references are gone. Only wanted with the early-out, otherwise it just holds
+    // residency nothing needs.
+    bool blasCachePinGroups = false;
+    // Step a pinned cached blas down to a coarser level rather than pinning it forever. The
+    // pin alone is a closed loop: the groups cannot age out, so the blas is never rebuilt, so
+    // the pin never lifts. See `appendCachedBlasRetires`.
+    bool blasCacheRetire = false;
   };
 
   // called by render thread
@@ -172,9 +188,14 @@ public:
 
   // used by renderer
   const nvvk::BufferTyped<shaderio::Geometry>& getShaderGeometriesBuffer() const { return m_shaderGeometriesBuffer; }
-  const nvvk::Buffer&                          getShaderStreamingBuffer() const { return m_shaderBuffer; }
-  const shaderio::SceneStreaming&              getShaderStreamingData() const { return m_shaderData; }
-  const StreamingConfig&                       getStreamingConfig() const { return m_config; }
+  // valid from `initClas`, every geometry keeps its lowest detail group resident
+  uint64_t getLowDetailBlasAddress(size_t geometryID) const
+  {
+    return m_shaderGeometries[geometryID].lowDetailBlasAddress;
+  }
+  const nvvk::Buffer&             getShaderStreamingBuffer() const { return m_shaderBuffer; }
+  const shaderio::SceneStreaming& getShaderStreamingData() const { return m_shaderData; }
+  const StreamingConfig&          getStreamingConfig() const { return m_config; }
 
   // device side memory usage, reserved or current state
   size_t getClasSize(bool reserved) const;
@@ -185,6 +206,42 @@ public:
   float getLoadFactor() const;
 
   uint32_t getMaxCachedBlasBuilds() const { return m_updates.getMaxCachedBlasBuilds(); }
+  // Why cached blas entries were repatched this frame. Only `higherDetail` can be deferred:
+  // the other two fire because the groups the old blas was built from are already gone.
+  struct CachedBlasPatchCounts
+  {
+    uint32_t lowerDetail    = 0;
+    uint32_t higherDetail   = 0;
+    uint32_t invalidateOnly = 0;
+    uint32_t deferred       = 0;  // old allocation held rather than returned
+    uint32_t unsafeFreed    = 0;  // old allocation returned at once, forces a full revalidation
+    uint32_t retired        = 0;  // pinned entry given up so its groups can age out
+  };
+  const CachedBlasPatchCounts& getFramePatchCounts() const { return m_framePatchCounts; }
+  uint32_t                     getFramePinnedUnloads() const { return m_framePinnedUnloads; }
+  uint32_t                     getFramePinnedDeferredUnloads() const { return m_framePinnedDeferredUnloads; }
+
+  // whether this group backs a cached blas and must stay resident, and which one: `Deferred`
+  // is a blas already replaced but still held, i.e. a group only the deferral window protects
+  enum CachedBlasPin
+  {
+    CACHED_BLAS_PIN_NONE,
+    CACHED_BLAS_PIN_LIVE,
+    CACHED_BLAS_PIN_DEFERRED,
+  };
+  CachedBlasPin cachedBlasGroupPin(const GeometryGroup& geometryGroup) const;
+
+  // Cached blas allocations that were returned to the allocator without waiting out
+  // `blasCacheDeferFrames`, so something skipped may still point at them. Non zero means the
+  // early-out has to reprocess every partition this frame. With deferral enabled and
+  // within budget this stays zero, which is the whole point - a patch alone must not cost a
+  // full revalidation, it happens on nearly every frame the camera moves.
+  uint32_t consumeUnsafeCachedBlasFree()
+  {
+    uint32_t count              = m_frameUnsafeCachedBlasFree;
+    m_frameUnsafeCachedBlasFree = 0;
+    return count;
+  }
 
   void updateBindings(const nvvk::Buffer& sceneBuildingBuffer);
 
@@ -244,6 +301,12 @@ private:
     // last published `shaderio::Geometry::discreteLodLevel` for USE_DISCRETE_LOD
     uint32_t                  discreteLodLevel     = TRAVERSAL_INVALID_LOD_LEVEL;
     nvvk::BufferSubAllocation cachedBlasAllocation = {};
+    // lod levels a deferred cached blas was built from, one bit each. Those groups stay
+    // pinned as well, see `cachedBlasGroupPin`.
+    uint32_t deferredBlasLevelMask = 0;
+    // the age filter asked for a group this cached blas is built from, so the entry is
+    // queued for retirement, see `appendCachedBlasRetires`
+    bool cachedBlasRetirePending = false;
   };
 
   std::vector<PersistentGeometry>       m_persistentGeometries;
@@ -291,7 +354,9 @@ private:
 
   // manages memory of cached BLAS builds
   nvvk::BufferSubAllocator m_cachedBlasAllocator;
-  uint32_t                 m_cachedBlasAlignment = 4;
+  // GEOMETRY_CACHED_BLAS_STRIDE entries per geometry, addresses of the cached blas
+  nvvk::BufferTyped<uint64_t> m_cachedBlasAddressesBuffer;
+  uint32_t                    m_cachedBlasAlignment = 4;
 
   // ui convenience only, not part of the caching algorithm, see `appendBlasCacheRevalidation`.
   // Cursor of the sweep that drops cached BLAS which a lowered `blasCacheMinLevel` excludes,
@@ -299,6 +364,46 @@ private:
   uint32_t m_blasCacheMinLevelLast   = 0;
   uint32_t m_blasCacheRevalidateNext = ~0u;
   uint32_t m_cachedBlasCount         = 0;
+  // cached blas freed without the deferral guarantee, since the last consume
+  uint32_t m_frameUnsafeCachedBlasFree = 0;
+  // the same per update task, they count once the task is applied, which with decoupled
+  // transfers is frames after its request
+  uint32_t m_updateUnsafeCachedBlasFree[STREAMING_MAX_ACTIVE_TASKS] = {};
+  // update task of the request being handled, INVALID_TASK_INDEX outside of it
+  uint32_t m_requestUpdateIndex = INVALID_TASK_INDEX;
+  // this frame's patch breakdown, reset in `cmdBeginFrame`
+  CachedBlasPatchCounts m_framePatchCounts;
+
+  // A replaced cached blas is held here for `blasCacheDeferFrames` after `startFrame`.
+  // The current value is used, it follows the revalidation window when that changes.
+  struct DeferredCachedBlasFree
+  {
+    nvvk::BufferSubAllocation allocation;
+    // frame its update task was applied, ~0 while still pending
+    uint32_t startFrame  = 0;
+    uint32_t updateIndex = INVALID_TASK_INDEX;
+    uint32_t geometryID  = 0;
+    uint32_t lodLevel    = 0;
+  };
+  std::vector<DeferredCachedBlasFree> m_deferredCachedBlasFrees;
+  // cap on how much may sit in the queue, beyond it we free early and flag it
+  size_t m_deferredCachedBlasMax = 0;
+  // geometries whose live cached blas the age filter wants the groups of
+  std::vector<uint32_t> m_cachedBlasRetires;
+  // unloads refused this frame because a cached blas is built from that group
+  uint32_t m_framePinnedUnloads = 0;
+  // subset of those held only by a deferred cached blas, not by the live one
+  uint32_t m_framePinnedDeferredUnloads = 0;
+
+  // `subFree` unless the caller asked for deferral and the blas is still usable, in which case
+  // it is queued. Clears the caller's handle either way, same contract as `subFree`, so it
+  // cannot be freed twice. `stillBacked` must be false whenever the groups the old blas was
+  // built from are no longer resident - holding the allocation does not help then, its cluster
+  // references are already dangling, and the early-out has to be told.
+  void deferCachedBlasFree(uint32_t geometryID, PersistentGeometry& geometry, const FrameSettings& settings, bool stillBacked);
+  // return everything whose hold has expired
+  void releaseDeferredCachedBlasFrees(const FrameSettings& settings);
+  void flagUnsafeCachedBlasFree();
 
   // This is the main function where we react on streaming requests.
   // It processes the request by issuing new storage upload work and prepares the scene patching and resident update task.
@@ -315,6 +420,11 @@ private:
   void handleDiscreteLod(StreamingUpdates::TaskInfo& updateTask);
   // ui convenience only, see definition
   void appendBlasCacheRevalidation(StreamingUpdates::TaskInfo& updateTask, const FrameSettings& settings);
+  void appendCachedBlasRetires(StreamingUpdates::TaskInfo& updateTask,
+                               const FrameSettings&        settings,
+                               uint32_t&                   writeIndex,
+                               uint32_t&                   cachedBuildsTotal,
+                               uint32_t&                   cachedClustersTotal);
 
   bool allocateCachedBlas(const PersistentGeometry&  geometry,
                           uint32_t                   lodClustersCount,

@@ -35,6 +35,10 @@ public:
 
   // renderers need to access this buffer
   const nvvk::BufferTyped<shaderio::Geometry>& getShaderGeometriesBuffer() const { return m_shaderGeometriesBuffer; }
+  uint64_t                                     getLowDetailBlasAddress(size_t geometryID) const
+  {
+    return m_shaderGeometries[geometryID].lowDetailBlasAddress;
+  }
 
   // device memory usage
   size_t getClasSize() const { return m_clasSize; }

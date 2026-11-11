@@ -1,0 +1,92 @@
+# Instance partitions, the per-partition early-out and the partitioned TLAS.
+#
+# --partitions is off by default, so this is the only file that reaches the partitioned path
+# at all, and with it the early-out, --ptlas 1 and the two visualizations the feature added.
+#
+# The matrix is partitions x early-out x ptlas. Partitions off makes the other two
+# meaningless - the renderer only builds them for the cluster lod ray tracer - so that is one
+# reference sequence rather than a row. Only the default derived grid layout is exercised;
+# --partitionlayout picks the BVH variants and they are a scene partitioning choice, not a
+# renderer path.
+#
+# --ptlas needs VK_NV_partitioned_acceleration_structure. Without it the option falls back to
+# the plain TLAS, so these sequences still run, they just stop testing the ptlas.
+#
+# Nothing here checks what is drawn beyond the images being comparable: partitions and the
+# early-out are an update-cost optimization and must not change the picture.
+
+SEQUENCE "ptlas_partitions_off"
+# --sequenceframes only exists once the sequencer is initialized, so it cannot be
+# passed on the command line - it has to be set here, in the first sequence.
+--sequenceframes 32
+--sequenceresetframes 8
+--renderer 1
+--pathtrace 0
+--dlss 0
+--streaming 1
+--culling 1
+--blassharing 1
+--blascaching 1
+--partitions 0
+--ptlas 0
+--visualize 9
+
+SEQUENCE "ptlas_partitions_on_earlyout_off"
+--partitions 1
+--partitionearlyout 0
+--ptlas 0
+--visualize 9
+
+SEQUENCE "ptlas_partitions_on_earlyout_on"
+--partitions 1
+--partitionearlyout 1
+--ptlas 0
+--visualize 9
+
+SEQUENCE "ptlas_on_earlyout_off"
+--partitions 1
+--partitionearlyout 0
+--ptlas 1
+--visualize 9
+
+SEQUENCE "ptlas_on_earlyout_on"
+--partitions 1
+--partitionearlyout 1
+--ptlas 1
+--visualize 9
+
+# instance bounds handed to the ptlas rather than derived from the BLAS
+SEQUENCE "ptlas_on_explicitaabb"
+--ptlasexplicitaabb 1
+--visualize 9
+
+# the early-out's retention knobs, which only do anything while it is on
+SEQUENCE "ptlas_earlyout_no_cacheretire"
+--ptlasexplicitaabb 0
+--blascacheretire 0
+--visualize 9
+
+SEQUENCE "ptlas_earlyout_revalidate_every_frame"
+--blascacheretire 1
+--partitionrevalidateframes 1
+--visualize 9
+
+# the partition assignment and which partitions the early-out actually processed
+SEQUENCE "ptlas_visualize_partition"
+--partitionrevalidateframes 64
+--visualize 12
+
+SEQUENCE "ptlas_visualize_partition_active"
+--visualize 13
+
+# BLAS caching off leaves the early-out nothing persistent to skip, it has to cope
+SEQUENCE "ptlas_on_no_blascaching"
+--blascaching 0
+--visualize 9
+
+# and back to no partitions, to check the renderer unwinds rather than staying on them
+SEQUENCE "ptlas_recover_partitions_off"
+--blascaching 1
+--partitions 0
+--ptlas 0
+--visualize 9

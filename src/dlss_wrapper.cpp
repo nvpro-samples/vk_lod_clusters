@@ -97,12 +97,10 @@ static NVSDK_NGX_Result getRequiredInstanceExtensions(NVSDK_NGX_Feature         
   NVSDK_NGX_FeatureCommonInfo commonInfo = {};
 
   NVSDK_NGX_FeatureDiscoveryInfo info{};
-  info.SDKVersion                             = NVSDK_NGX_Version_API;
-  info.FeatureID                              = feature;
-  info.Identifier.IdentifierType              = NVSDK_NGX_Application_Identifier_Type_Project_Id;
-  info.Identifier.v.ProjectDesc.EngineType    = appInfo.engineType;
-  info.Identifier.v.ProjectDesc.EngineVersion = appInfo.engineVersion.c_str();
-  info.Identifier.v.ProjectDesc.ProjectId     = appInfo.projectId.c_str();
+  info.SDKVersion                 = NVSDK_NGX_Version_API;
+  info.FeatureID                  = feature;
+  info.Identifier.IdentifierType  = NVSDK_NGX_Application_Identifier_Type_Application_Id;
+  info.Identifier.v.ApplicationId = kNgxApplicationID;
 
   info.ApplicationDataPath = appPath.c_str();
   info.FeatureInfo         = &commonInfo;
@@ -127,14 +125,12 @@ static NVSDK_NGX_Result getRequiredDeviceExtensions(NVSDK_NGX_Feature           
 
   NVSDK_NGX_FeatureCommonInfo    commonInfo{};
   NVSDK_NGX_FeatureDiscoveryInfo info{};
-  info.SDKVersion                             = NVSDK_NGX_Version_API;
-  info.FeatureID                              = feature;
-  info.Identifier.IdentifierType              = NVSDK_NGX_Application_Identifier_Type_Project_Id;
-  info.Identifier.v.ProjectDesc.EngineType    = appInfo.engineType;
-  info.Identifier.v.ProjectDesc.EngineVersion = appInfo.engineVersion.c_str();
-  info.Identifier.v.ProjectDesc.ProjectId     = appInfo.projectId.c_str();
-  info.ApplicationDataPath                    = appPath.c_str();
-  info.FeatureInfo                            = &commonInfo;
+  info.SDKVersion                 = NVSDK_NGX_Version_API;
+  info.FeatureID                  = feature;
+  info.Identifier.IdentifierType  = NVSDK_NGX_Application_Identifier_Type_Application_Id;
+  info.Identifier.v.ApplicationId = kNgxApplicationID;
+  info.ApplicationDataPath        = appPath.c_str();
+  info.FeatureInfo                = &commonInfo;
 
   uint32_t               numExtensions = 0;
   VkExtensionProperties* props{};
@@ -168,13 +164,9 @@ NVSDK_NGX_Result NgxContext::init(const NgxContext::InitInfo& initInfo)
 
     if(s_ngxRefCount == 0)
     {
-      // Init NGX API
-      // FIXME: provide correct ProjectID here
       NVSDK_NGX_Result initResult =
-          checkNgxResult(NVSDK_NGX_VULKAN_Init_with_ProjectID(initInfo.appInfo.projectId.c_str(), initInfo.appInfo.engineType,
-                                                              initInfo.appInfo.engineVersion.c_str(), exeString.c_str(),
-                                                              initInfo.instance, initInfo.physicalDevice, initInfo.device,
-                                                              vkGetInstanceProcAddr, vkGetDeviceProcAddr, &info),
+          checkNgxResult(NVSDK_NGX_VULKAN_Init(kNgxApplicationID, exeString.c_str(), initInfo.instance, initInfo.physicalDevice,
+                                               initInfo.device, vkGetInstanceProcAddr, vkGetDeviceProcAddr, &info),
                          __func__, __LINE__);
       if(NVSDK_NGX_FAILED(initResult))
         return initResult;
@@ -409,17 +401,18 @@ NVSDK_NGX_Result DlssRayReconstruction::cmdInit(VkCommandBuffer cmd, NgxContext&
   }
 
 
-  dlssdParams.InWidth        = info.inputSize.width;
-  dlssdParams.InHeight       = info.inputSize.height;
-  dlssdParams.InTargetWidth  = info.outputSize.width;
-  dlssdParams.InTargetHeight = info.outputSize.height;
+  dlssdParams.InWidth            = info.inputSize.width;
+  dlssdParams.InHeight           = info.inputSize.height;
+  dlssdParams.InTargetWidth      = info.outputSize.width;
+  dlssdParams.InTargetHeight     = info.outputSize.height;
+  dlssdParams.InPerfQualityValue = info.quality;
 
   // Though marked as 'optional', these are absolutely needed
   dlssdParams.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes
-                                     | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
+                                     | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure
+                                     | (info.depthInverted ? NVSDK_NGX_DLSS_Feature_Flags_DepthInverted : 0);
 
 
-  // Always use Default (Transformer) == Preset_D. The other ones are deprecated.
   NVSDK_NGX_RayReconstruction_Hint_Render_Preset dlssdModel = NVSDK_NGX_RayReconstruction_Hint_Render_Preset_Default;
   context.getNgxParams()->Set(NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Quality, dlssdModel);
   context.getNgxParams()->Set(NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Balanced, dlssdModel);

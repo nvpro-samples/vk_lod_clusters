@@ -1,6 +1,6 @@
 # Render permutation tests
 
-**155 sequences in 8 files** for a full pass with the validation layers on. Most of the
+**168 sequences in 9 files** for a full pass with the validation layers on. Most of the
 time is pipeline compilation, not rendering.
 
 Parameter sequences that drive the sample through the permutations that are easy to break
@@ -31,7 +31,8 @@ tests\run_tests.ps1
 
 Both run every `seq_*.txt` here as its own headless invocation, writing `output.log`, the
 `sequence.txt` that actually ran, and `screenshot_<index>_<sequence name>.jpg` into
-`tests/_results/<timestamp>/<sequence file>/` (gitignored).
+`tests/_results/<timestamp>/<sequence file>/` (gitignored). They test the newer binary of
+`_bin/Release` and `_bin/RelWithDebInfo` and print which one.
 
 | | PowerShell | bash |
 | --- | --- | --- |
@@ -56,12 +57,13 @@ frame.
 
 | file | sequences | covers |
 | --- | --- | --- |
-| `seq_visualize.txt` | 35 | all 12 visualization modes on both renderers, compute rasterization, the DLSS shader permutations, path tracing |
+| `seq_visualize.txt` | 35 | visualization modes 0-11 on both renderers, compute rasterization, the DLSS shader permutations, path tracing |
 | `seq_raster_features.txt` | 29 | `--culling` x `--twopassculling` x `--discretelod` over both geometry layouts, plus primitive culling, EXT mesh shader, compute rasterization, streaming off, HBAO, bbox overlays, render stats |
-| `seq_materials.txt` + `.cfg` | 23 | vertex attribute sets, textured materials, alpha mask and blend, two sided, multi material, texture lod modes, forced compute rasterization, `--compressed`, path tracing on/off |
+| `seq_materials.txt` + `.cfg` | 24 | vertex attribute sets, textured materials, alpha mask and blend, two sided, EXT mesh shader, multi material, texture lod modes, forced compute rasterization, `--compressed`, path tracing on/off |
 | `seq_raytrace_blas.txt` | 19 | `--blassharing` x `--blasmerging` x `--blascaching` over both geometry layouts, plus render stats |
 | `seq_limits.txt` + `.cfg` | 17 | every limit the sample warns about rather than enforces, exceeded one at a time and together |
 | `seq_traversal.txt` | 12 | `--persistenttraversal` off/on against both renderers, crossed with instance sorting, discrete lod and culling |
+| `seq_ptlas.txt` + `.cfg` | 12 | `--partitions` x `--partitionearlyout` x `--ptlas`, the early-out's retention knobs and the two partition visualizations |
 | `seq_streaming.txt` | 10 | streaming against preloaded, the CLAS allocator, async and decoupled transfers |
 | `seq_16bit_dispatch.txt` + `.cfg` | 10 | the 16 bit compute launch grid, on its own denser scene |
 
@@ -96,6 +98,11 @@ hence 16384 instances and `--loderror 0.1`.
 `--swrasterthreshold 100000` in that file forces every cluster through the compute
 rasterizer instead of the handful that are small enough by default, which is the only way
 its alpha test branch is reached.
+
+**`seq_ptlas.cfg`** - 4096 shared-geometry instances. The partition grid resolution is
+derived as `ceil(sqrt(instances / --partitionderivedtarget))`, so `bunny_grid.cfg` would give a 2x2
+grid and leave the early-out's block compaction nothing to compact. Geometry stays shared so
+BLAS caching converges and partitions actually reach a persistent BLAS.
 
 **`seq_limits.cfg`** - 1024 unique geometries against budgets that cannot hold them.
 Exceeding a limit is a normal runtime state, so the expected outcome is a degraded image and

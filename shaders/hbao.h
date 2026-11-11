@@ -14,6 +14,8 @@
 #define NVHBAO_MAIN_IMG_VIEWNORMAL 5
 #define NVHBAO_MAIN_IMG_DEPTHARRAY 6
 #define NVHBAO_MAIN_IMG_RESULTARRAY 7
+#define NVHBAO_MAIN_IMG_RESULT 8
+#define NVHBAO_MAIN_TEX_RESULT 9
 #define NVHBAO_MAIN_IMG_OUT 14
 
 #ifdef __cplusplus
@@ -38,7 +40,6 @@ struct NVHBAOData
   NVHBAOView view;
 
   vec2 clipToView;
-  vec2 invQuantizedGbufferSize;
 
   float amount;
   float invBackgroundViewDepth;
@@ -47,6 +48,12 @@ struct NVHBAOData
 
   float radiusToScreen;
   float powerExponent;
+
+  // the grid the effect runs on: viewport / downscale (1 or 2, a quarter of the pixels)
+  ivec2 aoSize;
+  ivec2 quarterSize;  // aoSize / 4, the slices' used size
+  int   downscale;
+  int   blur;
 };
 
 #ifdef __cplusplus

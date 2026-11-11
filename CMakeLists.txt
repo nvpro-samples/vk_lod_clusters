@@ -56,7 +56,12 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 # Adding DLSS if selected
 option(USE_DLSS "Use DLSS for denoising/upscaling" ON)
 if(USE_DLSS)
-  set(DLSS_VERSION "310.5.3")
+  set(DLSS_VERSION "310.9.1")
+  # FindNGX caches the include dir, it would keep the old headers after a version change. Only set
+  # along with the ngx target, so keep it when another project already created that.
+  if(NOT TARGET ngx)
+    unset(NGX_INCLUDE_DIR CACHE)
+  endif()
   find_package(NGX REQUIRED)
   target_link_libraries(${PROJECT_NAME} PRIVATE ngx)
   target_compile_definitions(${PROJECT_NAME} PRIVATE USE_DLSS)

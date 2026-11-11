@@ -23,6 +23,10 @@ layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuff
   FrameConstants view;
 };
 
+#if RAYTRACING_PAYLOAD_INDEX == 0 && ALLOW_SHADING
+#include "environment.glsl"
+#endif
+
 //////////////////////////////////////////////////////////////
 
 #if RAYTRACING_PAYLOAD_INDEX == 0
@@ -36,7 +40,7 @@ void main()
 {
 #if RAYTRACING_PAYLOAD_INDEX == 0
 #if ALLOW_SHADING
-  vec3 skyColor = evalPhysicalSky(view.skyPhysical, gl_WorldRayDirectionEXT);
+  vec3 skyColor = evalEnvironment(view.skyPhysical, view.envHdri, gl_WorldRayDirectionEXT);
   rayHit.color = skyColor;
   rayHit.hitT  = 0;
   #if USE_DLSS

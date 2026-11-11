@@ -13,16 +13,18 @@
 #include <nvsdk_ngx_vk.h>
 #include <glm/glm.hpp>
 
+// placeholder NGX application id, products request their own from NVIDIA and define DLSS_APPLICATION_ID
+#ifndef DLSS_APPLICATION_ID
+#define DLSS_APPLICATION_ID 0x12345678ABCDEF01ULL
+#endif
+inline constexpr unsigned long long kNgxApplicationID = DLSS_APPLICATION_ID;
+
 class NgxContext
 {
 public:
   struct ApplicationInfo
   {
-    std::string engineVersion   = "0.0";
-    std::string projectId       = "nvpro-samples";
     std::string applicationPath = "";
-    // WAR: custom type prevents creating the NGX API context, using Omniverse instead
-    NVSDK_NGX_EngineType engineType = NVSDK_NGX_ENGINE_TYPE_OMNIVERSE;
   };
 
   struct InitInfo
@@ -37,9 +39,6 @@ public:
   NVSDK_NGX_Result init(const InitInfo& info);
   NVSDK_NGX_Result deinit();
 
-  NVSDK_NGX_EngineType       getEngineType() const { return m_initInfo.appInfo.engineType; }
-  const std::string&         getEngineVersion() const { return m_initInfo.appInfo.engineVersion; }
-  const std::string&         getProjectId() const { return m_initInfo.appInfo.projectId; }
   const NVSDK_NGX_Parameter* getNgxParams() const { return m_ngxParams; }
   NVSDK_NGX_Parameter*       getNgxParams() { return m_ngxParams; }
   NVSDK_NGX_Result           isDlssRRAvailable();
@@ -104,10 +103,12 @@ public:
 
   struct InitInfo
   {
-    bool       packedNormalRoughness = true;
-    bool       hardwareDepth         = true;
-    VkExtent2D inputSize{};
-    VkExtent2D outputSize{};
+    NVSDK_NGX_PerfQuality_Value quality               = NVSDK_NGX_PerfQuality_Value_MaxQuality;
+    bool                        packedNormalRoughness = true;
+    bool                        hardwareDepth         = true;
+    bool                        depthInverted         = false;
+    VkExtent2D                  inputSize{};
+    VkExtent2D                  outputSize{};
     // GPU node mask, change only if using a system with multiple GPUs
     uint32_t creationNodeMask   = 0x1;
     uint32_t visibilityNodeMask = 0x1;

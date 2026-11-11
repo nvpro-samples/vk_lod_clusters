@@ -33,7 +33,10 @@ layout(scalar, binding = BINDINGS_RENDERMATERIALS_SSBO, set = 0) buffer renderMa
   RenderMaterial materials[];
 };
 
-layout(set = 0, binding = BINDINGS_TLAS) uniform accelerationStructureEXT asScene;
+layout(scalar, binding = BINDINGS_SCENEBUILDING_UBO, set = 0) uniform buildBuffer
+{
+  SceneBuilding build;
+};
 
 layout(set = 0, binding = BINDINGS_RAYTRACING_DEPTH, r32f) uniform image2D imgRaytracingDepth;
 layout(set = 0, binding = BINDINGS_RENDER_TARGET, rgba16f) uniform image2D imgColor;
@@ -143,7 +146,8 @@ void main()
   rayHit.coneWidth  = 0.0;
   rayHit.coneSpread = view.pixelAngle;
 
-  traceRayEXT(asScene, USE_FORCED_TWO_SIDED != 0 ? 0 : gl_RayFlagsCullBackFacingTrianglesEXT, 0xff,
+  traceRayEXT(accelerationStructureEXT(build.tlasAddress),
+              USE_FORCED_TWO_SIDED != 0 ? 0 : gl_RayFlagsCullBackFacingTrianglesEXT, 0xff,
               0, 1,  // hit offset, hit stride
               0,  // miss offset
               origin.xyz, tMin, direction.xyz, tMax,
@@ -164,7 +168,8 @@ void main()
       rayHit.coneWidth  = view.pixelAngle * mirrorT;
       rayHit.coneSpread = view.pixelAngle;
 
-      traceRayEXT(asScene, USE_FORCED_TWO_SIDED != 0 ? 0 : gl_RayFlagsCullBackFacingTrianglesEXT, 0xff,
+      traceRayEXT(accelerationStructureEXT(build.tlasAddress),
+                  USE_FORCED_TWO_SIDED != 0 ? 0 : gl_RayFlagsCullBackFacingTrianglesEXT, 0xff,
                   0, 1,  // hit offset, hit stride
                   0,  // miss offset
                   mirrorHitPoint, 0, reflect(direction.xyz, mirrorNormal), view.farPlane + mirrorT,
@@ -193,7 +198,8 @@ void main()
   }
 #endif
   vec3  hitPos   = origin.xyz + direction.xyz * (hitValid ? rayHit.hitT : view.farPlane * 0.99f);
-  float hitDepth = 1;
+  // misses at the far plane, which is 0 with reversed-Z
+  float hitDepth = 0;
 
   if(hitValid)
   {

@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <algorithm>
 #include <cassert>
 
 #include <volk.h>
@@ -12,12 +13,10 @@
 
 static const VkFormat NVHIZ_FORMAT = VK_FORMAT_R32_SFLOAT;
 
-void NVHizVK::TextureInfo::getShaderFactors(float factors[4]) const
+void NVHizVK::TextureInfo::getShaderFactors(float factors[2]) const
 {
-  factors[0] = float(usedWidth) / float(width);
-  factors[1] = float(usedHeight) / float(height);
-  factors[2] = float(usedWidth - 2) / float(width);
-  factors[3] = float(usedHeight - 2) / float(height);
+  factors[0] = exactWidth / float(width);
+  factors[1] = exactHeight / float(height);
 }
 
 void NVHizVK::TextureInfo::getSize(float size[2]) const
@@ -265,18 +264,21 @@ void NVHizVK::initPipelines(const shaderc::SpvCompilationResult spvResults[SHADE
 void NVHizVK::setupUpdateInfos(Update& update, uint32_t width, uint32_t height, VkFormat sourceFormat, VkImageAspectFlags sourceAspect) const
 {
   {
-    update.sourceInfo.width      = width;
-    update.sourceInfo.height     = height;
-    update.sourceInfo.usedWidth  = width;
-    update.sourceInfo.usedHeight = height;
-    update.sourceInfo.mipLevels  = 1;
-    update.sourceInfo.format     = sourceFormat;
-    update.sourceInfo.aspect     = sourceAspect;
+    update.sourceInfo.width       = width;
+    update.sourceInfo.height      = height;
+    update.sourceInfo.usedWidth   = width;
+    update.sourceInfo.usedHeight  = height;
+    update.sourceInfo.exactWidth  = float(width);
+    update.sourceInfo.exactHeight = float(height);
+    update.sourceInfo.mipLevels   = 1;
+    update.sourceInfo.format      = sourceFormat;
+    update.sourceInfo.aspect      = sourceAspect;
   }
   {
     uint32_t divisor = 2 << m_config.hizFarLevel;
-    uint32_t dim     = width > height ? width : height;
-    dim /= divisor;
+    uint32_t usedW   = (width + divisor - 1) / divisor;
+    uint32_t usedH   = (height + divisor - 1) / divisor;
+    uint32_t dim     = usedW > usedH ? usedW : usedH;
 
     uint32_t hiz  = 1;
     uint32_t mips = 1;
@@ -286,23 +288,27 @@ void NVHizVK::setupUpdateInfos(Update& update, uint32_t width, uint32_t height, 
       mips++;
     }
 
-    update.farInfo.format     = NVHIZ_FORMAT;
-    update.farInfo.aspect     = VK_IMAGE_ASPECT_COLOR_BIT;
-    update.farInfo.width      = hiz;
-    update.farInfo.height     = hiz;
-    update.farInfo.mipLevels  = mips;
-    update.farInfo.usedWidth  = width / divisor;
-    update.farInfo.usedHeight = height / divisor;
+    update.farInfo.format      = NVHIZ_FORMAT;
+    update.farInfo.aspect      = VK_IMAGE_ASPECT_COLOR_BIT;
+    update.farInfo.width       = hiz;
+    update.farInfo.height      = hiz;
+    update.farInfo.mipLevels   = mips;
+    update.farInfo.usedWidth   = usedW;
+    update.farInfo.usedHeight  = usedH;
+    update.farInfo.exactWidth  = float(width) / float(divisor);
+    update.farInfo.exactHeight = float(height) / float(divisor);
   }
   {
-    uint32_t divisor           = 2 << m_config.hizNearLevel;
-    update.nearInfo.format     = NVHIZ_FORMAT;
-    update.nearInfo.aspect     = VK_IMAGE_ASPECT_COLOR_BIT;
-    update.nearInfo.width      = width / divisor;
-    update.nearInfo.height     = height / divisor;
-    update.nearInfo.mipLevels  = 1;
-    update.nearInfo.usedWidth  = width / divisor;
-    update.nearInfo.usedHeight = height / divisor;
+    uint32_t divisor            = 2 << m_config.hizNearLevel;
+    update.nearInfo.format      = NVHIZ_FORMAT;
+    update.nearInfo.aspect      = VK_IMAGE_ASPECT_COLOR_BIT;
+    update.nearInfo.width       = (width + divisor - 1) / divisor;
+    update.nearInfo.height      = (height + divisor - 1) / divisor;
+    update.nearInfo.mipLevels   = 1;
+    update.nearInfo.usedWidth   = update.nearInfo.width;
+    update.nearInfo.usedHeight  = update.nearInfo.height;
+    update.nearInfo.exactWidth  = float(width) / float(divisor);
+    update.nearInfo.exactHeight = float(height) / float(divisor);
   }
 
   update.farImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -473,18 +479,17 @@ void NVHizVK::cmdUpdateHiz(VkCommandBuffer cmd, const Update& update, VkDescript
   uint32_t inputW = update.sourceInfo.usedWidth;
   uint32_t inputH = update.sourceInfo.usedHeight;
 
-  uint32_t halfW = inputW / 2;
-  uint32_t halfH = inputH / 2;
-
   uint32_t subW = (inputW + 1) / 2;
   uint32_t subH = (inputH + 1) / 2;
 
-  uint32_t farMultiplier  = 1 << m_config.hizFarLevel;
-  uint32_t nearMultiplier = 1 << m_config.hizNearLevel;
+  uint32_t farDivisor  = 2 << m_config.hizFarLevel;
+  uint32_t nearDivisor = 2 << m_config.hizNearLevel;
 
-  if(halfW != update.farInfo.usedWidth * farMultiplier || halfH != update.farInfo.usedHeight * farMultiplier
+  if((inputW + farDivisor - 1) / farDivisor != update.farInfo.usedWidth
+     || (inputH + farDivisor - 1) / farDivisor != update.farInfo.usedHeight
      || (update.nearImageView
-         && (halfW != update.nearInfo.usedWidth * nearMultiplier || halfH != update.nearInfo.usedHeight * nearMultiplier)))
+         && ((inputW + nearDivisor - 1) / nearDivisor != update.nearInfo.usedWidth
+             || (inputH + nearDivisor - 1) / nearDivisor != update.nearInfo.usedHeight)))
   {
     assert(0);
   }
@@ -553,8 +558,8 @@ void NVHizVK::cmdUpdateHiz(VkCommandBuffer cmd, const Update& update, VkDescript
 
     push.srcSize[0] = inputW;
     push.srcSize[1] = inputH;
-    push.srcSize[2] = inputW - 2;
-    push.srcSize[3] = inputH - 2;
+    push.srcSize[2] = std::max(inputW, 2u) - 2;
+    push.srcSize[3] = std::max(inputH, 2u) - 2;
 
     push.startLod = inputLod;
     push.writeLod = i;

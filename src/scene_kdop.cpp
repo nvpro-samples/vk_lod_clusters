@@ -3,7 +3,6 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <assert.h>
 #include <math.h>
 
 #include "scene_kdop.hpp"
@@ -205,6 +204,46 @@ glm::mat3 kdopComputeFrame(const glm::vec3* positions, size_t positionCount, con
 
 //////////////////////////////////////////////////////////////////////////
 
+// A frame within rounding of an axis permutation leaves the oriented slab planes nearly
+// coinciding with the bbox planes and with each other's spans, and their intersections
+// then scatter beyond the merge distance. The identity frame makes those exactly parallel.
+// Each of its slabs is bounded through every oriented one via
+// `w.p = o.p + (w - o).center + (w - o).(p - center)`, the last term at most
+// `|w - o| * halfDiagonal` for points inside the bbox, so the result stays conservative.
+static void kdopRebaseToIdentity(const KDop& dop, const glm::vec3& boxLo, const glm::vec3& boxHi, float* lo, float* hi)
+{
+  glm::mat3 frameT       = glm::transpose(dop.frame);
+  glm::vec3 center       = (boxLo + boxHi) * 0.5f;
+  glm::vec3 halfExtent   = (boxHi - boxLo) * 0.5f;
+  float     halfDiagonal = glm::length(halfExtent);
+
+  for(uint32_t j = 0; j < KDOP_AXIS_COUNT; j++)
+  {
+    glm::vec3 w       = kdopGetAxes()[j];
+    float     support = glm::dot(glm::abs(w), halfExtent);
+
+    hi[j] = glm::dot(w, center) + support;
+    lo[j] = glm::dot(w, center) - support;
+
+    for(uint32_t i = 0; i < KDOP_AXIS_COUNT; i++)
+    {
+      glm::vec3 o = frameT * kdopGetAxes()[i];
+
+      for(float sign : {1.0f, -1.0f})
+      {
+        glm::vec3 delta  = w - o * sign;
+        float     offset = glm::dot(delta, center);
+        float     slack  = glm::length(delta) * halfDiagonal;
+        float     oHi    = sign > 0 ? dop.hi[i] : -dop.lo[i];
+        float     oLo    = sign > 0 ? dop.lo[i] : -dop.hi[i];
+
+        hi[j] = std::min(hi[j], oHi + offset + slack);
+        lo[j] = std::max(lo[j], oLo + offset - slack);
+      }
+    }
+  }
+}
+
 void kdopBuildHull(KDopHull& hull, const KDop& dop, const glm::vec3& boxLo, const glm::vec3& boxHi)
 {
   hull.vertexCount = 0;
@@ -237,95 +276,112 @@ void kdopBuildHull(KDopHull& hull, const KDop& dop, const glm::vec3& boxLo, cons
   float     planeDistances[planeCount];
 
   glm::mat3 frameT = glm::transpose(dop.frame);
-
-  for(uint32_t i = 0; i < KDOP_AXIS_COUNT; i++)
-  {
-    glm::vec3 axis      = frameT * kdopGetAxes()[i];
-    float     axisScale = 1.0f / glm::length(axis);
-
-    planeNormals[i * 2 + 0]   = axis * axisScale;
-    planeDistances[i * 2 + 0] = dop.hi[i] * axisScale + dilate;
-    planeNormals[i * 2 + 1]   = -axis * axisScale;
-    planeDistances[i * 2 + 1] = -dop.lo[i] * axisScale + dilate;
-  }
-
-  for(uint32_t a = 0; a < 3; a++)
-  {
-    glm::vec3 axis = glm::vec3(0);
-    axis[a]        = 1.0f;
-
-    planeNormals[KDOP_AXIS_COUNT * 2 + a * 2 + 0]   = axis;
-    planeDistances[KDOP_AXIS_COUNT * 2 + a * 2 + 0] = boxHi[a] + dilate;
-    planeNormals[KDOP_AXIS_COUNT * 2 + a * 2 + 1]   = -axis;
-    planeDistances[KDOP_AXIS_COUNT * 2 + a * 2 + 1] = -boxLo[a] + dilate;
-  }
+  float     slabLo[KDOP_AXIS_COUNT];
+  float     slabHi[KDOP_AXIS_COUNT];
+  std::copy(dop.lo, dop.lo + KDOP_AXIS_COUNT, slabLo);
+  std::copy(dop.hi, dop.hi + KDOP_AXIS_COUNT, slabHi);
 
   bool overflow = false;
 
-  for(uint32_t i = 0; i < planeCount && !overflow; i++)
+  // a frame close to an axis permutation can overflow the budget, retried in the identity frame
+  for(uint32_t attempt = 0; attempt < 2; attempt++)
   {
-    for(uint32_t j = i + 1; j < planeCount && !overflow; j++)
+    if(attempt == 1)
     {
-      for(uint32_t k = j + 1; k < planeCount && !overflow; k++)
+      kdopRebaseToIdentity(dop, boxLo, boxHi, slabLo, slabHi);
+      frameT           = glm::mat3(1.0f);
+      hull.vertexCount = 0;
+      overflow         = false;
+    }
+
+    for(uint32_t i = 0; i < KDOP_AXIS_COUNT; i++)
+    {
+      glm::vec3 axis      = frameT * kdopGetAxes()[i];
+      float     axisScale = 1.0f / glm::length(axis);
+
+      planeNormals[i * 2 + 0]   = axis * axisScale;
+      planeDistances[i * 2 + 0] = slabHi[i] * axisScale + dilate;
+      planeNormals[i * 2 + 1]   = -axis * axisScale;
+      planeDistances[i * 2 + 1] = -slabLo[i] * axisScale + dilate;
+    }
+
+    for(uint32_t a = 0; a < 3; a++)
+    {
+      glm::vec3 axis = glm::vec3(0);
+      axis[a]        = 1.0f;
+
+      planeNormals[KDOP_AXIS_COUNT * 2 + a * 2 + 0]   = axis;
+      planeDistances[KDOP_AXIS_COUNT * 2 + a * 2 + 0] = boxHi[a] + dilate;
+      planeNormals[KDOP_AXIS_COUNT * 2 + a * 2 + 1]   = -axis;
+      planeDistances[KDOP_AXIS_COUNT * 2 + a * 2 + 1] = -boxLo[a] + dilate;
+    }
+
+    for(uint32_t i = 0; i < planeCount && !overflow; i++)
+    {
+      for(uint32_t j = i + 1; j < planeCount && !overflow; j++)
       {
-        glm::vec3 crossJK = glm::cross(planeNormals[j], planeNormals[k]);
-        float     det     = glm::dot(planeNormals[i], crossJK);
-
-        // triple product of unit normals, near zero means the planes share a direction
-        if(fabsf(det) < 1e-6f)
-          continue;
-
-        glm::vec3 point = (crossJK * planeDistances[i] + glm::cross(planeNormals[k], planeNormals[i]) * planeDistances[j]
-                           + glm::cross(planeNormals[i], planeNormals[j]) * planeDistances[k])
-                          / det;
-
-        bool inside = true;
-
-        for(uint32_t m = 0; m < planeCount; m++)
+        for(uint32_t k = j + 1; k < planeCount && !overflow; k++)
         {
-          if(glm::dot(planeNormals[m], point) > planeDistances[m] + containTolerance)
+          glm::vec3 crossJK = glm::cross(planeNormals[j], planeNormals[k]);
+          float     det     = glm::dot(planeNormals[i], crossJK);
+
+          // triple product of unit normals, near zero means the planes share a direction
+          if(fabsf(det) < 1e-6f)
+            continue;
+
+          glm::vec3 point = (crossJK * planeDistances[i] + glm::cross(planeNormals[k], planeNormals[i]) * planeDistances[j]
+                             + glm::cross(planeNormals[i], planeNormals[j]) * planeDistances[k])
+                            / det;
+
+          bool inside = true;
+
+          for(uint32_t m = 0; m < planeCount; m++)
           {
-            inside = false;
+            if(glm::dot(planeNormals[m], point) > planeDistances[m] + containTolerance)
+            {
+              inside = false;
+              break;
+            }
+          }
+
+          if(!inside)
+            continue;
+
+          bool duplicate = false;
+
+          for(uint32_t v = 0; v < hull.vertexCount; v++)
+          {
+            glm::vec3 delta = hull.vertices[v] - point;
+
+            if(glm::dot(delta, delta) <= mergeDistanceSq)
+            {
+              duplicate = true;
+              break;
+            }
+          }
+
+          if(duplicate)
+            continue;
+
+          if(hull.vertexCount >= KDOP_MAX_HULL_VERTICES)
+          {
+            overflow = true;
             break;
           }
+
+          hull.vertices[hull.vertexCount++] = point;
         }
-
-        if(!inside)
-          continue;
-
-        bool duplicate = false;
-
-        for(uint32_t v = 0; v < hull.vertexCount; v++)
-        {
-          glm::vec3 delta = hull.vertices[v] - point;
-
-          if(glm::dot(delta, delta) <= mergeDistanceSq)
-          {
-            duplicate = true;
-            break;
-          }
-        }
-
-        if(duplicate)
-          continue;
-
-        if(hull.vertexCount >= KDOP_MAX_HULL_VERTICES)
-        {
-          overflow = true;
-          break;
-        }
-
-        hull.vertices[hull.vertexCount++] = point;
       }
     }
+
+    if(!overflow)
+      break;
   }
 
   if(overflow)
   {
     // dropping vertices would make the set non conservative, falling back to the bbox
     // corners stays valid and just reproduces what the bbox alone would give
-    assert(0 && "kdop hull vertex budget exceeded");
-
     hull.vertexCount = 0;
 
     for(uint32_t corner = 0; corner < 8; corner++)

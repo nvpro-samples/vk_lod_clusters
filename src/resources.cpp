@@ -9,6 +9,7 @@
 #include <nvutils/spirv.hpp>
 #include <nvvk/barriers.hpp>
 #include <nvvk/formats.hpp>
+#include <nvvk/mipmaps.hpp>
 #include <nvvk/pipeline.hpp>
 
 #include "resources.hpp"
@@ -43,7 +44,7 @@ void Resources::postProcessFrame(VkCommandBuffer cmd, const FrameConfig& frame, 
     if(runHbao)
     {
       cmdHBAO(cmd, frame, profiler, false);
-      tonemapVariant = frame.hbaoSettings.blur ? TonemapPass::VARIANT_HBAO_BLUR : TonemapPass::VARIANT_HBAO;
+      tonemapVariant = TonemapPass::VARIANT_HBAO;
     }
 
     cmdTonemap(cmd, profiler, tonemapVariant);
@@ -212,20 +213,23 @@ void Resources::init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstanc
   {
     DlssDenoiser::InitInfo info;
     info.resourceAllocator = &m_allocator;
+    info.queueFamilyIndex  = m_queue.familyIndex;
+    info.queue             = m_queue.queue;
     info.samplerPool       = &m_samplerPool;
     info.instance          = instance;
 
+    // NGX itself is initialized on first use, it takes several seconds
     m_frameBuffer.dlssDenoiser.init(info);
-    m_frameBuffer.dlssDenoiser.initDenoiser();
   }
   {
     DlssUpscaler::InitInfo info;
     info.resourceAllocator = &m_allocator;
+    info.queueFamilyIndex  = m_queue.familyIndex;
+    info.queue             = m_queue.queue;
     info.samplerPool       = &m_samplerPool;
     info.instance          = instance;
 
     m_frameBuffer.dlssUpscaler.init(info);
-    m_frameBuffer.dlssUpscaler.initUpscaler();
   }
 #endif
   initShadingPasses();
@@ -295,8 +299,29 @@ void Resources::deinit()
   m_allocator.deinit();
 }
 
-bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
+bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample, bool hbaoQuarterRes)
 {
+  // only the HBAO resolution changed, its images are the only thing that follows it
+  if(m_frameBuffer.imgColor.image != 0 && windowSize.width == m_frameBuffer.windowSize.width
+     && windowSize.height == m_frameBuffer.windowSize.height && supersample == m_frameBuffer.supersample
+     && hbaoQuarterRes != m_frameBuffer.hbaoQuarterRes)
+  {
+    m_frameBuffer.hbaoQuarterRes = hbaoQuarterRes;
+    if(m_hbaoFrame.slot != ~0u)
+    {
+      NVVK_CHECK(vkDeviceWaitIdle(m_device));
+      HbaoPass::FrameConfig config = m_hbaoFrame.config;
+      config.quarterRes            = hbaoQuarterRes;
+
+      VkCommandBuffer cmd = createTempCmdBuffer();
+      m_hbaoPass.initFrame(m_hbaoFrame, config, cmd);
+      tempSyncSubmit(cmd);
+      updateTonemapDescriptors();
+      updateFramebufferMemBytes();
+    }
+    return true;
+  }
+
   m_fboChangeID++;
 
   if(m_frameBuffer.imgColor.image != 0)
@@ -309,82 +334,70 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
   bool oldResolved = m_frameBuffer.supersample > 1;
 
   VkExtent2D referenceSize = windowSize;
+  bool       fixedSize     = true;  // all but the default case
 
   switch(supersample)
   {
     case 540:
-      m_frameBuffer.renderScale       = glm::vec2(1.0f);
       m_frameBuffer.targetSize.width  = 960;
       m_frameBuffer.targetSize.height = 540;
       referenceSize                   = m_frameBuffer.targetSize;
       break;
     case 720:
-      m_frameBuffer.renderScale       = glm::vec2(1.0f);
       m_frameBuffer.targetSize.width  = 1280;
       m_frameBuffer.targetSize.height = 720;
       referenceSize                   = m_frameBuffer.targetSize;
       break;
     case 1080:
-      m_frameBuffer.renderScale       = glm::vec2(1.0f);
       m_frameBuffer.targetSize.width  = 1920;
       m_frameBuffer.targetSize.height = 1080;
+      referenceSize                   = m_frameBuffer.targetSize;
       break;
     case 1440:
-      m_frameBuffer.renderScale       = glm::vec2(1.0f);
       m_frameBuffer.targetSize.width  = 2560;
       m_frameBuffer.targetSize.height = 1440;
       referenceSize                   = m_frameBuffer.targetSize;
       break;
     case 2160:
-      m_frameBuffer.renderScale       = glm::vec2(1.0f);
       m_frameBuffer.targetSize.width  = 3840;
       m_frameBuffer.targetSize.height = 2160;
       referenceSize                   = m_frameBuffer.targetSize;
       break;
     case 1024:
-      m_frameBuffer.renderScale       = glm::vec2(1.0f);
       m_frameBuffer.targetSize.width  = 1024;
       m_frameBuffer.targetSize.height = 1024;
       referenceSize                   = m_frameBuffer.targetSize;
       break;
     case 2048:
-      m_frameBuffer.renderScale       = glm::vec2(1.0f);
       m_frameBuffer.targetSize.width  = 2048;
       m_frameBuffer.targetSize.height = 2048;
       referenceSize                   = m_frameBuffer.targetSize;
       break;
     case 4096:
-      m_frameBuffer.renderScale       = glm::vec2(1.0f);
       m_frameBuffer.targetSize.width  = 4096;
       m_frameBuffer.targetSize.height = 4096;
       referenceSize                   = m_frameBuffer.targetSize;
       break;
     default:
+      fixedSize                       = false;
       supersample                     = std::min(supersample, FrameBuffer::MAX_SUPERSAMPLE);
       m_frameBuffer.targetSize.width  = windowSize.width * supersample;
       m_frameBuffer.targetSize.height = windowSize.height * supersample;
-      m_frameBuffer.renderScale       = glm::vec2(float(supersample));
       break;
   }
 
-  m_frameBuffer.pixelScale = std::max(float(m_frameBuffer.targetSize.width) / float(referenceSize.width),
-                                      float(m_frameBuffer.targetSize.height) / float(referenceSize.height));
-  m_basicGraphicsState.rasterizationState.lineWidth = m_frameBuffer.pixelScale;
-
-  m_frameBuffer.windowSize  = windowSize;
-  m_frameBuffer.supersample = supersample;
+  m_frameBuffer.windowSize     = windowSize;
+  m_frameBuffer.referenceSize  = referenceSize;
+  m_frameBuffer.supersample    = supersample;
+  m_frameBuffer.hbaoQuarterRes = hbaoQuarterRes;
+  m_frameBuffer.fixedSize      = fixedSize;
 
   bool targetChanged = m_frameBuffer.targetSize.width != m_frameBuffer.targetSizeLast.width
                        || m_frameBuffer.targetSize.height != m_frameBuffer.targetSizeLast.height;
 
 #if USE_DLSS
-  if(!targetChanged && m_frameBuffer.dlssMode != DlssMode::eNone)
-  {
-    // DLSS resources stay, keep rendering at their size
-    m_frameBuffer.renderScale = glm::vec2(m_frameBuffer.renderSize.width, m_frameBuffer.renderSize.height)
-                                / glm::vec2(windowSize.width, windowSize.height);
-  }
-  else
+  // keep the DLSS render size while its resources stay
+  if(targetChanged || m_frameBuffer.dlssMode == DlssMode::eNone)
 #endif
   {
     // may be lowered due to DLSS
@@ -392,7 +405,8 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
   }
 
 
-  m_frameBuffer.useResolved = supersample > 1;
+  // fixed resolutions are displayed and saved as is, the window downscale is left to the viewport
+  m_frameBuffer.useResolved = supersample > 1 && !fixedSize;
 
   VkSampleCountFlagBits samplesUsed = VK_SAMPLE_COUNT_1_BIT;
   if(targetChanged)
@@ -502,6 +516,8 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample)
 
     m_frameBuffer.targetSizeLast = m_frameBuffer.targetSize;
   }
+
+  updateFramebufferScales();
 
   LOGI("framebuffer: %4d x %4d (window)\n", m_frameBuffer.windowSize.width, m_frameBuffer.windowSize.height);
   LOGI("             %4d x %4d (target)\n", m_frameBuffer.targetSize.width, m_frameBuffer.targetSize.height);
@@ -696,6 +712,7 @@ void Resources::updateFramebufferRenderSizeDependent(VkCommandBuffer cmd)
     HbaoPass::FrameConfig config;
     config.targetWidth             = m_frameBuffer.renderSize.width;
     config.targetHeight            = m_frameBuffer.renderSize.height;
+    config.quarterRes              = m_frameBuffer.hbaoQuarterRes;
     config.sourceDepth.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     config.sourceDepth.imageView   = m_frameBuffer.viewDepth;
     config.sourceDepth.sampler     = VK_NULL_HANDLE;
@@ -829,18 +846,75 @@ void Resources::updateFramebufferDlss(VkCommandBuffer cmd)
       break;
   }
 
-  m_frameBuffer.renderScale = glm::vec2(m_frameBuffer.renderSize.width, m_frameBuffer.renderSize.height)
-                              / glm::vec2(m_frameBuffer.windowSize.width, m_frameBuffer.windowSize.height);
+  updateFramebufferScales();
+}
+
+void Resources::initDlssAsync(DlssMode mode, NVSDK_NGX_PerfQuality_Value dlssQuality)
+{
+  // one at a time, the other is started once this one is polled
+  if(isDlssLoading())
+    return;
+
+  if(mode == DlssMode::eRayReconstruction)
+  {
+    m_frameBuffer.dlssDenoiser.initAsync();
+  }
+  else if(mode == DlssMode::eSuperResolution)
+  {
+    m_frameBuffer.dlssUpscaler.initAsync(dlssQuality);
+  }
+}
+
+bool Resources::isDlssLoading() const
+{
+  return m_frameBuffer.dlssDenoiser.isInitPending() || m_frameBuffer.dlssUpscaler.isInitPending();
+}
+
+Resources::DlssMode Resources::pollDlssInit()
+{
+  DlssMode finished = DlssMode::eNone;
+  if(m_frameBuffer.dlssDenoiser.pollInit())
+    finished = DlssMode::eRayReconstruction;
+  if(m_frameBuffer.dlssUpscaler.pollInit())
+    finished = DlssMode::eSuperResolution;
+
+  // waiting for DLSS means benchmarking, nothing may load in the background then
+  if(finished != DlssMode::eNone && !m_dlssWaitForInit)
+  {
+    // prepare the other mode as well, users tend to switch between rasterization and ray tracing
+    m_frameBuffer.dlssDenoiser.initAsync();
+    m_frameBuffer.dlssUpscaler.initAsync(m_frameBuffer.dlssQuality);
+  }
+  return finished;
 }
 
 void Resources::setFramebufferDlss(DlssMode mode, NVSDK_NGX_PerfQuality_Value dlssQuality)
 {
+  if(!m_dlssWaitForInit
+     && ((mode == DlssMode::eRayReconstruction && !m_frameBuffer.dlssDenoiser.isInitialized())
+         || (mode == DlssMode::eSuperResolution && !m_frameBuffer.dlssUpscaler.isInitialized())))
+  {
+    // render natively until the init is done
+    initDlssAsync(mode, dlssQuality);
+    mode = DlssMode::eNone;
+  }
+
   if(m_frameBuffer.dlssMode != mode || m_frameBuffer.dlssQuality != dlssQuality)
   {
     m_frameBuffer.dlssMode    = mode;
     m_frameBuffer.hasDenoiser = mode != DlssMode::eNone;
     m_frameBuffer.dlssQuality = dlssQuality;
-    VkCommandBuffer cmd       = createTempCmdBuffer();
+
+    if(mode == DlssMode::eRayReconstruction)
+    {
+      m_frameBuffer.dlssDenoiser.ensureInitialized();
+    }
+    else if(mode == DlssMode::eSuperResolution)
+    {
+      m_frameBuffer.dlssUpscaler.ensureInitialized(dlssQuality);
+    }
+
+    VkCommandBuffer cmd = createTempCmdBuffer();
 
     if(mode != DlssMode::eRayReconstruction)
     {
@@ -852,9 +926,9 @@ void Resources::setFramebufferDlss(DlssMode mode, NVSDK_NGX_PerfQuality_Value dl
     }
 
     // updateFramebufferDlss handles the eNone case in its switch and always
-    // refreshes renderScale from renderSize/windowSize. Calling it in both
-    // branches keeps renderScale in sync — the previous eNone shortcut left
-    // renderScale at the last DLSS ratio, which broke mouseover picking.
+    // refreshes the framebuffer scales from renderSize. Calling it in both
+    // branches keeps them in sync — the previous eNone shortcut left
+    // them at the last DLSS ratio, which broke mouseover picking.
     updateFramebufferDlss(cmd);
     deinitFramebufferRenderSizeDependent();
     updateFramebufferRenderSizeDependent(cmd);
@@ -899,9 +973,21 @@ void Resources::deinitFramebuffer()
   m_frameBufferMemBytes = 0;
 }
 
-glm::vec2 Resources::getFramebufferWindow2RenderScale() const
+glm::vec2 Resources::getFramebufferMouseScale() const
 {
-  return m_frameBuffer.renderScale;
+  return m_frameBuffer.mouseScale;
+}
+
+void Resources::updateFramebufferScales()
+{
+  const VkExtent2D& renderSize = m_frameBuffer.renderSize;
+
+  // by height, the lod error is relative to the render height
+  m_frameBuffer.renderScale = float(renderSize.height) / float(m_frameBuffer.referenceSize.height);
+  m_frameBuffer.mouseScale  = glm::vec2(renderSize.width, renderSize.height)
+                             / glm::vec2(m_frameBuffer.windowSize.width, m_frameBuffer.windowSize.height);
+
+  m_basicGraphicsState.rasterizationState.lineWidth = std::max(1.0f, m_frameBuffer.renderScale);
 }
 
 void Resources::getReadbackData(shaderio::Readback& readback)
@@ -988,8 +1074,8 @@ void Resources::initShadingPasses()
     bindings.addBinding(BINDINGS_TONEMAP_IN, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     bindings.addBinding(BINDINGS_TONEMAP_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     bindings.addBinding(BINDINGS_TONEMAP_HBAO_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-    bindings.addBinding(BINDINGS_TONEMAP_HBAO_DEPTHARRAY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
-    bindings.addBinding(BINDINGS_TONEMAP_HBAO_RESULTARRAY, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(BINDINGS_TONEMAP_HBAO_DEPTH, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(BINDINGS_TONEMAP_HBAO_RESULT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     m_tonemap.dset.init(bindings, m_device);
 
     nvvk::createPipelineLayout(m_device, &m_tonemap.pipelineLayout, {m_tonemap.dset.getLayout()});
@@ -1048,6 +1134,7 @@ void Resources::initShadingPasses()
     bindings.addBinding(BINDINGS_SKYBAKE_ENV, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, SKY_ENV_MIPS, VK_SHADER_STAGE_COMPUTE_BIT);
     bindings.addBinding(BINDINGS_SKYBAKE_IRRADIANCE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     bindings.addBinding(BINDINGS_SKYBAKE_FRAME_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(BINDINGS_ENV_HDRI_TEX, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     m_skyLighting.dset.init(bindings, m_device);
 
     nvvk::createPipelineLayout(m_device, &m_skyLighting.pipelineLayout, {m_skyLighting.dset.getLayout()},
@@ -1067,7 +1154,52 @@ void Resources::initShadingPasses()
     vkUpdateDescriptorSets(m_device, writeSets.size(), writeSets.data(), 0, nullptr);
   }
 
+  m_envHdri.init(&m_allocator, &m_samplerPool);
+  loadEnvHdri({});
+
   reloadShadingShaders();
+}
+
+bool Resources::loadEnvHdri(const std::filesystem::path& file)
+{
+  vkDeviceWaitIdle(m_device);
+  m_envHdri.destroyEnvironment();
+
+  // HdrIbl creates the image in an undefined layout and leaves the transitions to the uploader
+  m_uploader.setEnableLayoutBarriers(true);
+  VkCommandBuffer cmd = createTempCmdBuffer();
+  if(file.empty())
+  {
+    m_envHdri.loadEnvironment(cmd, m_uploader, std::span<float>{}, {0, 0});
+  }
+  else
+  {
+    m_envHdri.loadEnvironment(cmd, m_uploader, file, true);
+  }
+  m_uploader.cmdUploadAppended(cmd);
+  // the sky bake reads coarser mips for wide samples
+  VkExtent2D size = m_envHdri.getHdrImageSize();
+  if(m_envHdri.isValid() && size.width > 1 && size.height > 1)
+  {
+    nvvk::cmdGenerateMipmaps(cmd, m_envHdri.getHdrImage().image, size, nvvk::mipLevels(size));
+  }
+  tempSyncSubmit(cmd);
+  m_uploader.releaseStaging();
+  m_uploader.setEnableLayoutBarriers(false);
+
+  nvvk::WriteSetContainer writeSets;
+  writeSets.append(m_skyLighting.dset.makeWrite(BINDINGS_ENV_HDRI_TEX), m_envHdri.getHdrImage().descriptor);
+  vkUpdateDescriptorSets(m_device, writeSets.size(), writeSets.data(), 0, nullptr);
+
+  m_envHdriVersion++;
+  m_skyLighting.valid = false;
+
+  if(!file.empty() && !m_envHdri.isValid())
+  {
+    LOGW("HDRI %s could not be loaded\n", nvutils::utf8FromPath(file).c_str());
+    return false;
+  }
+  return true;
 }
 
 bool Resources::hasShadingPasses() const
@@ -1087,7 +1219,6 @@ bool Resources::reloadShadingShaders()
   {
     shaderc::CompileOptions options = makeCompilerOptions();
     options.AddMacroDefinition("TONEMAP_HBAO", v != TonemapPass::VARIANT_PLAIN ? "1" : "0");
-    options.AddMacroDefinition("NVHBAO_BLUR", v == TonemapPass::VARIANT_HBAO_BLUR ? "1" : "0");
     compileShader(shaders[v], VK_SHADER_STAGE_COMPUTE_BIT, "tonemap.comp.glsl", &options, std::to_string(v).c_str());
   }
   compileShader(shaders[TonemapPass::VARIANTS], VK_SHADER_STAGE_COMPUTE_BIT, "sky_bake.comp.glsl");
@@ -1133,6 +1264,9 @@ void Resources::deinitShadingPasses()
   vkDestroyPipelineLayout(m_device, m_tonemap.pipelineLayout, nullptr);
   m_tonemap.dset.deinit();
 
+  m_envHdri.destroyEnvironment();
+  m_envHdri.deinit();
+
   vkDestroyPipeline(m_device, m_skyLighting.pipeline, nullptr);
   vkDestroyPipelineLayout(m_device, m_skyLighting.pipelineLayout, nullptr);
   m_skyLighting.dset.deinit();
@@ -1159,8 +1293,8 @@ void Resources::updateTonemapDescriptors()
   if(m_hbaoFrame.slot != ~0u)
   {
     writeSets.append(m_tonemap.dset.makeWrite(BINDINGS_TONEMAP_HBAO_UBO), m_hbaoPass.getUboInfo(m_hbaoFrame));
-    writeSets.append(m_tonemap.dset.makeWrite(BINDINGS_TONEMAP_HBAO_DEPTHARRAY), m_hbaoFrame.images.linearDepthArray);
-    writeSets.append(m_tonemap.dset.makeWrite(BINDINGS_TONEMAP_HBAO_RESULTARRAY), m_hbaoFrame.images.resultArray);
+    writeSets.append(m_tonemap.dset.makeWrite(BINDINGS_TONEMAP_HBAO_DEPTH), m_hbaoFrame.config.sourceDepth);
+    writeSets.append(m_tonemap.dset.makeWrite(BINDINGS_TONEMAP_HBAO_RESULT), m_hbaoFrame.images.result);
   }
   vkUpdateDescriptorSets(m_device, writeSets.size(), writeSets.data(), 0, nullptr);
 }
@@ -1190,8 +1324,10 @@ void Resources::cmdTonemap(VkCommandBuffer cmd, nvvk::ProfilerGpuTimer& profiler
 void Resources::cmdUpdateSkyLighting(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler)
 {
   shaderio::SkyBakePush push{};
-  push.sky   = frame.frameConstants.skyPhysical;
-  push.upDir = glm::normalize(frame.frameConstants.wUpDir);
+  push.sky            = frame.frameConstants.skyPhysical;
+  push.upDir          = glm::normalize(frame.frameConstants.wUpDir);
+  push.envHdri        = frame.frameConstants.envHdri;
+  push.envHdriVersion = m_envHdriVersion;
 
   if(m_skyLighting.valid && memcmp(&push, &m_skyLighting.baked, sizeof(push)) == 0)
   {
@@ -1503,7 +1639,13 @@ void Resources::cmdPrepareDlssSrEvaluation(VkCommandBuffer cmd)
 bool Resources::cmdEvaluateDlssSr(VkCommandBuffer cmd, glm::vec2 jitter, nvvk::ProfilerGpuTimer& profiler)
 {
   auto timerSection = profiler.cmdFrameSection(cmd, "DLSS-SR");
-  return m_frameBuffer.dlssUpscaler.upscale(cmd, jitter);
+  bool success      = m_frameBuffer.dlssUpscaler.upscale(cmd, jitter);
+  if(!success && !m_dlssEvaluateFailed)
+  {
+    LOGE("DLSS-SR evaluation failed; falling back to native rendering.\n");
+    m_dlssEvaluateFailed = true;
+  }
+  return success;
 }
 #endif
 
@@ -1590,6 +1732,7 @@ void Resources::updateFramebufferMemBytes()
   bytes += getImageMemBytes(m_allocator, m_hbaoFrame.images.resultArray);
   bytes += getImageMemBytes(m_allocator, m_hbaoFrame.images.linearDepthArray);
   bytes += getImageMemBytes(m_allocator, m_hbaoFrame.images.viewNormal);
+  bytes += getImageMemBytes(m_allocator, m_hbaoFrame.images.result);
 
 #if USE_DLSS
   if(m_frameBuffer.dlssMode == DlssMode::eRayReconstruction)

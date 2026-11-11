@@ -4,6 +4,7 @@
  */
 
 #include "shaderio_streaming.h"
+#include "shaderio_ptlas.h"
 
 #ifndef _SHADERIO_BUILDING_H_
 #define _SHADERIO_BUILDING_H_
@@ -36,6 +37,11 @@ using namespace glm;
 #define BLAS_BUILD_INDEX_LOWDETAIL (uint(~0))
 #define BLAS_BUILD_INDEX_SHARE_BIT (uint(1 << 31))
 #define BLAS_BUILD_INDEX_CACHE_BIT (uint(1 << 30))
+// with BLAS_BUILD_INDEX_CACHE_BIT the upper bits carry the cached blas slot,
+// the lower bits the geometryID
+#define BLAS_BUILD_INDEX_CACHE_SLOT_SHIFT 26
+#define BLAS_BUILD_INDEX_CACHE_SLOT_MASK (uint(0xF) << BLAS_BUILD_INDEX_CACHE_SLOT_SHIFT)
+#define BLAS_BUILD_INDEX_GEOMETRY_MASK (uint((1 << BLAS_BUILD_INDEX_CACHE_SLOT_SHIFT) - 1))
 
 // disabling is more for testing
 #define TRAVERSAL_ALLOW_LOW_DETAIL_BLAS true
@@ -172,6 +178,34 @@ struct SceneBuilding
   uint sharingTolerantLevels;
   uint sharingPushCulled;
 
+  // extra lod levels an instance may give up to reach the cached blas
+  uint cachingPushLevels;
+  // additional levels granted to an instance already on the cached blas, keeps it there
+  uint cachingStickyLevels;
+
+  // Retention value the streaming age filter reads, one per geometry: the minimum of
+  // `cachedLevel` over a revalidation cycle, not of a single frame, so a skipped partition
+  // cannot have the groups its instances still reference aged out. Separate from
+  // `GeometryCachedInfo`, which is re-filled with ~0 every frame for the atomicMin.
+  BUFFER_REF(uint32s_inout) geometryCachedRetain;
+  // the cycle currently accumulating; it only becomes the live value above once complete,
+  // because the reset frame and a partition's forced revalidation are on different clocks
+  BUFFER_REF(uint32s_inout) geometryCachedRetainNext;
+  // 1 on the frame the cycle restarts, then `retainNext` goes live and a new one starts
+  uint cachedRetainReset;
+
+  // force a stable partition to be reprocessed after this many frames, 0 never
+  uint partitionRevalidateFrames;
+  // process partitions crossing or entering the frustum every frame
+  uint partitionFrustumRevalidate;
+  // only those whose nearest corner is closer than this view depth
+  float partitionFrustumDepth;
+  // invalidate everything this frame, set when streaming moved a cached blas
+  uint partitionInvalidateAll;
+  uint numPartitions;
+  // counters, reset per frame
+  uint partitionActiveCounter;
+
   // discrete lod (rasterization)
   // number of tail lod levels that may use a single discrete level
   uint discreteEnabledLevels;
@@ -230,6 +264,9 @@ struct SceneBuilding
   // only for rasterization so we have two lists
   BUFFER_REF(ClusterInfos_inout) renderClusterInfosAlpha;
 
+  // the per-instance kernels dispatch over the active partitions' instances.
+  // All three use a workgroup of 64, so one command serves them.
+  DispatchIndirectCommand indirectDispatchActiveInstances;
   DispatchIndirectCommand indirectDispatchNodes;
   DispatchIndirectCommand indirectDispatchGroups;
   DispatchIndirectCommand indirectDispatchRejectInstances;
@@ -268,6 +305,10 @@ struct SceneBuilding
   // ray tracing related
   //////////////////////////////////////////////////
 
+  // the scene's acceleration structure, a tlas or a ptlas. Always referenced by
+  // address, a ptlas has no acceleration structure object to bind.
+  uint64_t tlasAddress;
+
   DispatchIndirectCommand indirectDispatchBlasInsertion;
 
   // Computed dynamically, total number of CLAS that are referenced
@@ -283,6 +324,8 @@ struct SceneBuilding
 
   // culling/visibility related information
   BUFFER_REF(uint8s_inout) instanceVisibility;
+  // 1 if the instance used its geometry's cached blas last frame, persists across frames
+  BUFFER_REF(uint8s_inout) instanceCachedSticky;
 
   // instance sorting
   BUFFER_REF(uint32s_inout) instanceSortValues;
@@ -314,6 +357,50 @@ struct SceneBuilding
   BUFFER_REF(GeometryBuildInfos_inout) geometryBuildInfos;
   BUFFER_REF(GeometryCachedInfos_inout) geometryCachedInfos;
   BUFFER_REF(GeometryBuildHistogram_inout) geometryHistograms;
+
+  // for USE_PTLAS
+  // ------------
+  // number of instances appended to `ptlasInstanceUpdates` this frame
+  uint ptlasUpdateCounter;
+  // blas changes of instances that were written before
+  BUFFER_REF(PtlasInstanceUpdates_inout) ptlasInstanceUpdates;
+  // last blas reference written to the ptlas, per instance
+  BUFFER_REF(uint64s_inout) ptlasInstanceBlas;
+  // number of instances updated within a partition, per frame statistic
+  BUFFER_REF(uint32s_inout) ptlasPartitionUpdates;
+
+  // for USE_PARTITION_EARLY_OUT
+  // ------------
+  // Per-partition early-out. Membership is fixed, so the instance order and the
+  // per-partition ranges are built once on the host. None of this needs the ptlas: the
+  // tlas path skips the same per-instance kernels, it just cannot skip its own build.
+  // partition of each instance, indexed by instance id
+  BUFFER_REF(uint32s_in) instancePartitions;
+  // instance ids grouped by partition
+  BUFFER_REF(uint32s_in) partitionInstanceOrder;
+  // x = first entry in `partitionInstanceOrder`, y = instance count
+  BUFFER_REF(uvec2s_in) partitionRanges;
+  // instances in the partition that did NOT resolve to a persistent blas, counted by
+  // `traversal_init_blas_reuse`. 0 means the partition is stable and can be skipped:
+  // every instance sits on a cached or pre-built low detail blas, so there is no
+  // traversal, no blas build and no ptlas update to do for it.
+  BUFFER_REF(uint32s_inout) partitionNonPersistent;
+  // frame index a partition was last processed, drives forced revalidation
+  BUFFER_REF(uint32s_inout) partitionLastFrame;
+  // world bounds of each partition
+  BUFFER_REF(BBoxes_in) partitionBboxes;
+  // 1 while the partition was inside the frustum last frame, catches camera cuts
+  BUFFER_REF(uint32s_inout) partitionVisible;
+  // one bit per block of PARTITION_INSTANCE_BLOCK_SIZE partition-sorted instances, set by
+  // the partitions that must be processed this frame
+  BUFFER_REF(uint32s_inout) partitionBlockBits;
+  // compacted block ids, each one a start offset into `partitionInstanceOrder`
+  BUFFER_REF(uint32s_inout) activeBlocks;
+  uint numInstanceBlocks;
+  uint activeBlockCounter;
+  // the operation of this frame's build, and the number of operations
+  BUFFER_REF(PtlasOperations_inout) ptlasOperations;
+  BUFFER_REF(uint32s_inout) ptlasOperationCount;
 
   // for USE_BLAS_CACHING
   BUFFER_REF(uint64s_inout) cachedBlasClusterAddressesSrc;

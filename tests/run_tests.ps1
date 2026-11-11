@@ -22,8 +22,8 @@
 #>
 [CmdletBinding()]
 param(
-    # build configuration subdirectory of _bin to test
-    [string]   $Config         = 'Release',
+    # build configuration subdirectory of _bin to test, defaults to the newer of Release and RelWithDebInfo
+    [string]   $Config         = '',
     # explicit executable, overrides -Config
     [string]   $Exe            = '',
     # where the screenshots and logs are written
@@ -52,7 +52,14 @@ $testsDir = $PSScriptRoot
 $rootDir  = Split-Path -Parent $testsDir
 
 if (-not $Exe) {
-    $Exe = Join-Path $rootDir "_bin/$Config/vk_lod_clusters_internal.exe"
+    # named after the checkout's folder, as in CMakeLists.txt
+    $exeName = (Split-Path -Leaf $rootDir) + '.exe'
+    $configs = if ($Config) { @($Config) } else { @('Release', 'RelWithDebInfo') }
+    $Exe = $configs | ForEach-Object { Join-Path $rootDir "_bin/$_/$exeName" } | Where-Object { Test-Path $_ } |
+        Sort-Object { (Get-Item $_).LastWriteTime } -Descending | Select-Object -First 1
+    if (-not $Exe) {
+        throw "$exeName not found in _bin/$($configs -join ' or _bin/') (build it first, or pass -Exe)"
+    }
 }
 if (-not (Test-Path $Exe)) {
     throw "executable not found: $Exe (build it first, or pass -Exe)"
@@ -86,7 +93,7 @@ $failurePatterns = @(
     'failed to allocate'
 )
 
-Write-Host "executable : $Exe"
+Write-Host "executable : $Exe ($((Get-Item $Exe).LastWriteTime))"
 Write-Host "scene      : $Scene"
 Write-Host "results    : $OutDir"
 Write-Host ""

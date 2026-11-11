@@ -96,27 +96,41 @@ layout(local_size_x=INSTANCES_ASSIGN_BLAS_WORKGROUP) in;
 
 void main()
 {
-  uint instanceID = getGlobalInvocationIndex(gl_GlobalInvocationID);
+#if USE_PARTITION_EARLY_OUT
+  // dispatch is over the compacted blocks of partition-sorted instances, a block id is a
+  // start offset so the mapping is arithmetic
+  uint workGroupID  = getWorkGroupIndex(gl_WorkGroupID);
+  uint blockSlot    = workGroupID / (PARTITION_INSTANCE_BLOCK_SIZE / PARTITION_ACTIVE_INSTANCES_WORKGROUP);
+  uint blockLocal   = (workGroupID % (PARTITION_INSTANCE_BLOCK_SIZE / PARTITION_ACTIVE_INSTANCES_WORKGROUP))
+                          * PARTITION_ACTIVE_INSTANCES_WORKGROUP
+                      + gl_LocalInvocationID.x;
+  // only a 16-bit grid overshoots the active blocks, past them the slots are stale
+  bool blockValid   = USE_16BIT_DISPATCH == 0 || blockSlot < build.activeBlockCounter;
+  uint orderedIndex = build.activeBlocks.d[blockValid ? blockSlot : 0] * PARTITION_INSTANCE_BLOCK_SIZE + blockLocal;
+  // clamp the index, carry validity separately: the guarded loads below are predicated
+  // rather than branched, and a ~0 id would land at base + 4 GiB (32-bit byte offsets)
+  blockValid        = blockValid && orderedIndex < build.numRenderInstances;
+  uint instanceID   = build.partitionInstanceOrder.d[blockValid ? orderedIndex : 0];
+#else
+  uint instanceID   = getGlobalInvocationIndex(gl_GlobalInvocationID);
+  bool blockValid   = true;
+#endif
   
-  if (instanceID < build.numRenderInstances)
+  if (blockValid && instanceID < build.numRenderInstances)
   {
     InstanceBuildInfo buildInfo = build.instanceBuildInfos.d[instanceID];
     uint buildIndex             = buildInfo.blasBuildIndex;
     
     bool doStats         = true;
     uint64_t blasAddress = 0;
-    
-  #if USE_BLAS_CACHING
-    // we might reference the geometry's cached blas
-    if (buildIndex != BLAS_BUILD_INDEX_LOWDETAIL && (buildIndex & BLAS_BUILD_INDEX_CACHE_BIT) != 0)
-    {
-      blasAddress = geometries[buildIndex & ~BLAS_BUILD_INDEX_CACHE_BIT].cachedBlasAddress;
-      // don't add to build stats, the cached blas has its own persistent storage
-      doStats     = false;
-    }
-  #endif
+    // a blas that is built every frame changes its content even when it happens to
+    // land on the same address again
+    bool isPerFrameBlas  = false;
+    bool cachedRebuilt   = false;
+
   #if USE_BLAS_SHARING
-    // we might reference another instance's blas, the two bits are mutually exclusive
+    // we might reference another instance's blas, the two bits are mutually exclusive.
+    // Resolved first: with sticky levels the shared instance can be on the cached blas.
     if (buildIndex != BLAS_BUILD_INDEX_LOWDETAIL && (buildIndex & BLAS_BUILD_INDEX_SHARE_BIT) != 0)
     {
       buildIndex = build.instanceBuildInfos.d[buildIndex & ~BLAS_BUILD_INDEX_SHARE_BIT].blasBuildIndex;
@@ -124,7 +138,30 @@ void main()
       doStats    = false;
     }
   #endif
-    
+  #if USE_BLAS_CACHING
+    // we might reference the geometry's cached blas
+    if (buildIndex != BLAS_BUILD_INDEX_LOWDETAIL && (buildIndex & BLAS_BUILD_INDEX_CACHE_BIT) != 0)
+    {
+      blasAddress = streaming.cachedBlasAddresses.d[
+          (buildIndex & BLAS_BUILD_INDEX_GEOMETRY_MASK) * GEOMETRY_CACHED_BLAS_STRIDE
+          + ((buildIndex & BLAS_BUILD_INDEX_CACHE_SLOT_MASK) >> BLAS_BUILD_INDEX_CACHE_SLOT_SHIFT)];
+      // don't add to build stats, the cached blas has its own persistent storage
+      doStats     = false;
+    #if USE_PTLAS
+      // rebuilt this frame, possibly where the blas it replaced was
+      cachedRebuilt = geometries[buildIndex & BLAS_BUILD_INDEX_GEOMETRY_MASK].cachedBuildFrame == streaming.frameIndex;
+    #endif
+
+      if (blasAddress == 0)
+      {
+        // streaming can invalidate the entry after the routing decision. Fall back, since
+        // `buildIndex` still carries CACHE_BIT and would index `blasBuildAddresses`
+        // with 1<<30 plus the geometry id.
+        buildIndex = BLAS_BUILD_INDEX_LOWDETAIL;
+      }
+    }
+  #endif
+
     // By default tlasInstances are set to low detail blas,
     // override when applicable.
     
@@ -137,17 +174,68 @@ void main()
       }
     #endif
       
-      build.tlasInstances.d[instanceID].blasReference =
+    #if USE_BLAS_CACHING
+      isPerFrameBlas = blasAddress == 0;
+    #else
+      isPerFrameBlas = true;
+    #endif
+      
+      blasAddress =
       #if USE_BLAS_CACHING
         blasAddress != 0 ? blasAddress : 
       #endif
         build.blasBuildAddresses.d[buildIndex];
     }
+  #if !USE_PTLAS
+    if (blasAddress != 0)
+    {
+      build.tlasInstances.d[instanceID].blasReference = blasAddress;
+    }
+  #else
+    // updates carry the blas explicitly, resolve the fallback here
+    if (blasAddress == 0)
+    {
+      blasAddress = geometries[instances[instanceID].geometryID].lowDetailBlasAddress;
+    }
+  #endif
+
+  #if USE_PARTITION_EARLY_OUT
+    if (isPerFrameBlas)
+    {
+      // marked on the assignment, not on the routing intent in `traversal_init_blas_reuse`:
+      // `blas_setup_insertion` can still hand a routed instance a per-frame build slot
+      atomicAdd(build.partitionNonPersistent.d[build.instancePartitions.d[instanceID]], 1);
+    }
+  #endif
+    
+  #if USE_PTLAS
+    // later builds only touch the instances whose blas changed. Persistent blas
+    // (cached or pre-built low detail) keep their content, so comparing the address
+    // is enough for those, unless rebuilt.
+    if (isPerFrameBlas || cachedRebuilt || build.ptlasInstanceBlas.d[instanceID] != blasAddress)
+    {
+      build.ptlasInstanceBlas.d[instanceID] = blasAddress;
+      
+      PtlasInstanceUpdate instanceUpdate;
+      instanceUpdate.instanceIndex     = instanceID;
+      instanceUpdate.instanceSbtOffset = 0;
+      instanceUpdate.blasReference     = blasAddress;
+      
+      build.ptlasInstanceUpdates.d[atomicAdd(buildRW.ptlasUpdateCounter, 1)] = instanceUpdate;
+      
+      // statistics on how the updates spread across the partitions
+      uint partitionIndex = build.instancePartitions.d[instanceID];
+      if (atomicAdd(build.ptlasPartitionUpdates.d[partitionIndex], 1) == 0)
+      {
+        atomicAdd(readback.numPtlasDirtyPartitions, 1);
+      }
+    }
+  #endif
   }
   
 #if 1
-  // stats
-  if (instanceID == 0)
+  // stats, from the first thread: instance 0 is not processed when the early-out skips its partition
+  if (getGlobalInvocationIndex(gl_GlobalInvocationID) == 0)
   {
     readback.numBlasBuilds = build.blasBuildCounter;
   }

@@ -17,6 +17,10 @@ With **Blas Caching** a BLAS is re-used over multiple frames and can therefore b
 > geometries' CLAS. `RendererRayTraceClustersLod::init` therefore ignores the setting while
 > the allocator is off; the requested value is kept and takes effect again with the allocator.
 
+BLAS caching is on by default (`--blascaching 1`). `--cachingenabledlevels` (0 to 16) sets how many of the coarsest LoD
+levels may be cached. `--cachingpushlevels` lets an instance give up that many extra levels to use the cached BLAS,
+`--cachingstickylevels` grants an instance already on it extra levels to stay there.
+
 ## Algorithm
 
 When BLAS sharing it can be observed that the sharing level of detail (LoD) of a particular geometry might not change over multiple
@@ -45,7 +49,7 @@ The streaming system uses the existing scene level patching to provide informati
 On the device we do some BLAS build preparation, gathering the CLAS (Cluster Level Acceleration Structure) addresses used for the cached BLAS.
 Furthermore we determine if an instance's minimum LoD level is equal or greater than the cached level and can therefore use the cached BLAS instead of the per-frame BLAS.
 
-Since BLAS caching skips instance traversal, which resets the age of groups for streaming, we need to manage the age reset elsewhere. During age filtering, all streaming groups are iterated through. We check if they are part of a cached BLAS and ensure their LoD (Level of Detail) level remains active by resetting their age. The LoD level is determined by the minimum LoD level of any instance using the cached BLAS, not the cached level itself. Otherwise, unloading would never be triggered.
+Since BLAS caching skips instance traversal, which resets the age of groups for streaming, we need to manage the age reset elsewhere. During age filtering, all streaming groups are iterated through. We check if they are part of a cached BLAS and ensure their LoD (Level of Detail) level remains active by resetting their age. The LoD level is determined by the minimum LoD level of any instance using the cached BLAS, not the cached level itself, kept over a revalidation cycle when the partition early-out is on. Otherwise, unloading would never be triggered.
 
 
 ## Implementation
@@ -67,6 +71,7 @@ Key changes in the shaders and device code are:
 * [`traversal_init_blas_reuse.comp.glsl`](../shaders/traversal_init_blas_reuse.comp.glsl) Modify the instance's decision which BLAS to use. We use `BLAS_BUILD_INDEX_CACHE_BIT` to tag cached BLAS.
 * [`blas_caching_setup_build.comp.glsl`](../shaders/blas_caching_setup_build.comp.glsl): Feeds the CLAS addresses into the cached BLAS list of references prior building.
 * [`blas_caching_setup_copy.comp.glsl`](../shaders/blas_caching_setup_copy.comp.glsl): Sets up the BLAS copy from the per-frame BLAS builds into their persistent storage. 
+* [`geometry_cached_retain.comp.glsl`](../shaders/geometry_cached_retain.comp.glsl): Keeps the minimum LoD level of the instances using a cached BLAS over the retention window that the age filter reads.
 * [`instance_assign_blas.comp.glsl`](../shaders/instance_assign_blas.comp.glsl): When assigning the BLAS to the ray tracing instance, account for cached BLAS use-case.
 * [`scene_streaming.cpp`](../src/scene_streaming.cpp): Check the `SceneStreaming::handleBlasCaching` function.
 

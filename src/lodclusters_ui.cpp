@@ -287,16 +287,28 @@ void LodClusters::viewportUI(ImVec2 corner, ImVec2 imageSize)
   ImVec2 mouseAbsPos = ImGui::GetMousePos();
   ImVec2 localPos    = {mouseAbsPos.x - corner.x, mouseAbsPos.y - corner.y};
 
+  if(m_headlessPicking.x >= 0.0f && m_headlessPicking.y >= 0.0f)
+  {
+    // relative to the rendered image, headless has no layout to place a mouse in
+    glm::uvec2 renderSize = {m_resources.m_frameBuffer.renderSize.width, m_resources.m_frameBuffer.renderSize.height};
+    m_frameConfig.frameConstants.mousePosition =
+        glm::min(glm::uvec2(glm::min(m_headlessPicking, glm::vec2(1.0f)) * glm::vec2(renderSize)), renderSize - 1u);
+  }
   // reject positions outside the image rect; ~0u never matches a launch id
-  if(localPos.x < 0.0f || localPos.y < 0.0f || localPos.x >= imageSize.x || localPos.y >= imageSize.y)
+  else if(localPos.x < 0.0f || localPos.y < 0.0f || localPos.x >= imageSize.x || localPos.y >= imageSize.y)
   {
     m_frameConfig.frameConstants.mousePosition = glm::uvec2(~0u, ~0u);
   }
   else
   {
-    glm::uvec2 mousePos = {uint32_t(localPos.x), uint32_t(localPos.y)};
-    m_frameConfig.frameConstants.mousePosition =
-        glm::uvec2(glm::vec2(mousePos) * m_resources.getFramebufferWindow2RenderScale());
+    const Resources::FrameBuffer& fb = m_resources.m_frameBuffer;
+    // fixed resolutions are letterboxed, so map through the displayed rect
+    glm::vec2  scale                           = fb.fixedSize ?
+                                                     glm::vec2(fb.renderSize.width, fb.renderSize.height) / glm::vec2(imageSize.x, imageSize.y) :
+                                                     m_resources.getFramebufferMouseScale();
+    glm::uvec2 mousePos                        = {uint32_t(localPos.x), uint32_t(localPos.y)};
+    glm::uvec2 maxPos                          = {fb.renderSize.width - 1, fb.renderSize.height - 1};
+    m_frameConfig.frameConstants.mousePosition = glm::min(glm::uvec2(glm::vec2(mousePos) * scale), maxPos);
   }
 
   if(m_renderer)
@@ -618,8 +630,8 @@ void LodClusters::uiSettingsSceneModifiers()
         return false;
       });
 
-      PE::Checkbox("Unique geometries", &m_sceneGridConfig.uniqueGeometriesForCopies,
-                   "New Instances of the grid also get their own set of geometries, stresses streaming & memory consumption");
+      PE::SliderFloat("Unique geometries", &m_sceneGridConfig.uniqueGeometries, 0.0f, 1.0f, "%.2f", 0,
+                      "Fraction of grid copies that get their own set of geometries, stresses streaming & memory consumption");
 
       PE::InputFloat("X gap", &m_sceneGridConfig.refShift.x, 0.1f, 0.1f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue,
                      "Instance grid config encoded in 6 bits: 0..2 bit enabled axis, 3..5 bit enabled rotation");
@@ -653,20 +665,29 @@ void LodClusters::uiSettingsRendering()
     PE::entry("Super Resolution", [&]() { return m_ui.enumCombobox(GUI_SUPERSAMPLE, "sampling", &m_tweak.supersample); });
 #if USE_DLSS
     bool        dlssAvailable = false;
+    bool        dlssLoading   = false;
     const char* dlssLabel     = "DLSS";
     if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
     {
-      dlssAvailable = m_resources.m_frameBuffer.dlssDenoiser.isAvailable();
-      dlssLabel     = "DLSS - RR";
+      // NGX is only initialized once DLSS is requested
+      dlssAvailable = !m_resources.m_frameBuffer.dlssDenoiser.isInitialized()
+                      || m_resources.m_frameBuffer.dlssDenoiser.isAvailable();
+      // also when queued behind the other mode, the modes load one at a time
+      dlssLoading = !m_resources.m_frameBuffer.dlssDenoiser.isInitialized() && m_resources.isDlssLoading();
+      dlssLabel   = "DLSS - RR";
     }
     else if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD)
     {
-      dlssAvailable = m_resources.m_frameBuffer.dlssUpscaler.isAvailable();
-      dlssLabel     = "DLSS - SR";
+      dlssAvailable = !m_resources.m_frameBuffer.dlssUpscaler.isInitialized()
+                      || m_resources.m_frameBuffer.dlssUpscaler.isAvailable();
+      dlssLoading = !m_resources.m_frameBuffer.dlssUpscaler.isInitialized() && m_resources.isDlssLoading();
+      dlssLabel   = "DLSS - SR";
     }
-    ImGui::BeginDisabled(!dlssAvailable);
+    // no changes while NGX loads in the background, DLSS is switched on once done
+    std::string dlssEntry = dlssLoading ? fmt::format("{} (loading)", dlssLabel) : dlssLabel;
+    ImGui::BeginDisabled(!dlssAvailable || dlssLoading);
     {
-      PE::entry(dlssLabel, [&]() {
+      PE::entry(dlssEntry, [&]() {
         bool changed = ImGui::Checkbox("Enabled", &m_rendererConfig.useDlss);
         ImGui::SameLine();
 
@@ -727,7 +748,7 @@ void LodClusters::uiSettingsRendering()
 
       if(m_rendererConfig.usePathtrace)
       {
-        PE::SliderInt("Bounces", &m_frameConfig.frameConstants.pathtraceNumBounces, 1, 8);
+        PE::SliderInt("Indirect bounces", &m_frameConfig.frameConstants.pathtraceNumBounces, 0, 7, "%d", 0, "0 is direct lighting only.");
         PE::SliderFloat("Firefly clamp", &m_frameConfig.frameConstants.pathtraceFireflyClamp, 0.0f, 100.0f, "%.1f");
       }
       else
@@ -775,10 +796,23 @@ void LodClusters::uiSettingsRendering()
         {
           m_lastAmbientOcclusionSamples = m_frameConfig.frameConstants.ambientOcclusionSamples;
         }
+        if(m_rendererConfig.usePathtrace)
+        {
+          PE::Checkbox("Ambient last bounce", (bool*)&m_frameConfig.frameConstants.pathtraceAmbientTail,
+                       "Path tracing: light the last path vertex like ray tracing, sun shadow ray plus the baked "
+                       "sky, occluded by unbounded rays (count from Rays above) and one reflection ray. Recovers the energy cut-off "
+                       "bounces lose.");
+          if(m_frameConfig.frameConstants.pathtraceAmbientTail)
+          {
+            PE::SliderFloat("Ambient fill", &m_frameConfig.frameConstants.pathtraceAmbientFill, 0.0f, 1.0f, "%.2f", 0,
+                            "Fraction of the sky ambient kept in occluded directions, a stand-in for bounce light.");
+          }
+        }
       }
       if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD)
       {
         PE::Checkbox("Blur", &m_frameConfig.hbaoSettings.blur);
+        PE::Checkbox("Quarter resolution", &m_tweak.hbaoQuarter, "Half width and height, upsampled depth-aware");
         PE::InputFloat("Radius", &m_tweak.hbaoRadius, 0.01f, 0, "%.6f", 0,
                        "Fraction of scene size, negative is absolute world-space radius");
         PE::InputFloat("Sharpness", &m_frameConfig.hbaoSettings.powerExponent, 1.0f);
@@ -848,6 +882,112 @@ void LodClusters::uiSettingsTraversal()
 
       m_frameConfig.culledErrorScale = std::max(1.0f, m_frameConfig.culledErrorScale);
 
+      PE::Checkbox("Partitions", &m_rendererConfig.usePartitions,
+                   "group the instances spatially; both the early-out and the ptlas need it");
+
+      ImGui::BeginDisabled(!m_resources.m_supportsPartitionedTlas || !m_rendererConfig.usePartitions);
+      PE::Checkbox("Ptlas", &m_rendererConfig.usePtlas,
+                   "partitioned tlas (VK_NV_partitioned_acceleration_structure), updates only the instances whose "
+                   "blas changed. Consumes the partitions above");
+      ImGui::EndDisabled();
+
+      if(PE::treeNode("Partition settings"))
+      {
+        ImGui::BeginDisabled(!m_rendererConfig.usePartitions);
+        PE::Checkbox("Early out", &m_rendererConfig.usePartitionEarlyOut,
+                     "skip the per-instance kernels for partitions whose instances all sit on a persistent blas. "
+                     "Independent of the ptlas, the tlas path skips the same work");
+        ImGui::BeginDisabled(!m_rendererConfig.usePartitionEarlyOut);
+        PE::InputIntClamped("Revalidate frames", (int*)&m_frameConfig.partitionRevalidateFrames, 1, 4096, 8, 64,
+                            ImGuiInputTextFlags_EnterReturnsTrue,
+                            "reprocess a stable partition at least every N frames. Bounds the gap between two "
+                            "visits, which is also how long a replaced cached blas has to be held");
+        PE::Checkbox("Revalidate frustum partitions", &m_frameConfig.partitionFrustumRevalidate,
+                     "process partitions that cross or enter the frustum every frame, so instances turning visible "
+                     "do not wait for the revalidate interval");
+        ImGui::BeginDisabled(!m_frameConfig.partitionFrustumRevalidate);
+        PE::SliderFloat("Frustum distance", &m_frameConfig.partitionFrustumDistance, 0.0f, 1.0f, "%.2f", 0,
+                        "only partitions closer than this fraction of the scene size are revalidated, "
+                        "distant ones keep their coarse lod anyway");
+        ImGui::EndDisabled();
+        PE::Checkbox("Retire cached blas", &m_frameConfig.blasCacheRetire,
+                     "step a cached blas down to a coarser level once the age filter wants the groups it is built "
+                     "from. Off keeps those groups resident for as long as the blas lives, which only grows");
+        ImGui::EndDisabled();
+        ImGui::BeginDisabled(!m_rendererConfig.usePtlas);
+        PE::Checkbox("Ptlas explicit bounds", &m_rendererConfig.usePtlasExplicitAabb,
+                     "provide the instance bounds to the ptlas, so they stay independent of the currently used blas");
+        ImGui::EndDisabled();
+        PE::entry(
+            "Layout",
+            [&]() {
+              return m_ui.enumCombobox(GUI_PARTITIONLAYOUT, "##partitionlayout", &m_rendererConfig.partitionLayout);
+            },
+            "how instances are grouped; the api is handed only the partition count, so this is the only lever");
+        switch(m_rendererConfig.partitionLayout)
+        {
+          case ScenePartitionConfig::LAYOUT_FIXED_GRID:
+            PE::InputFloat("Grid cell size", &m_rendererConfig.partitionGridCellSize, 1.0f, 10.0f, "%.3f",
+                           ImGuiInputTextFlags_EnterReturnsTrue,
+                           "world units per xz cell, takes precedence over the cells per axis, 0 disables");
+            ImGui::BeginDisabled(m_rendererConfig.partitionGridCellSize <= 0);
+            PE::InputFloat3("Grid origin", &m_rendererConfig.partitionGridOrigin.x, "%.3f",
+                            ImGuiInputTextFlags_EnterReturnsTrue, "shifts the world origin the cells are aligned to");
+            ImGui::EndDisabled();
+            ImGui::BeginDisabled(m_rendererConfig.partitionGridCellSize > 0);
+            PE::InputIntClamped("Grid cells per axis", (int*)&m_rendererConfig.partitionGridCellsPerAxis, 1, 4096, 1, 1,
+                                ImGuiInputTextFlags_EnterReturnsTrue, "cells along each xz axis over the scene bounds");
+            ImGui::EndDisabled();
+            break;
+          case ScenePartitionConfig::LAYOUT_DERIVED_GRID:
+          case ScenePartitionConfig::LAYOUT_DERIVED_BVH_MEDIAN:
+          case ScenePartitionConfig::LAYOUT_DERIVED_BVH_SAH:
+          case ScenePartitionConfig::LAYOUT_DERIVED_QUADTREE:
+            PE::InputIntClamped("Derived target instances", (int*)&m_rendererConfig.partitionDerivedTarget, 1, 65536,
+                                16, 64, ImGuiInputTextFlags_EnterReturnsTrue,
+                                "instances a partition should hold, the bvh and quadtree leaf size or the initial grid resolution");
+            if(m_rendererConfig.partitionLayout == ScenePartitionConfig::LAYOUT_DERIVED_GRID)
+            {
+              PE::InputIntClamped("Derived max instances", (int*)&m_rendererConfig.partitionDerivedMaxInstances, 1,
+                                  65536, 16, 64, ImGuiInputTextFlags_EnterReturnsTrue,
+                                  "the grid resolution is refined until no partition holds more");
+            }
+            PE::InputIntClamped("Derived max count", (int*)&m_rendererConfig.partitionDerivedMaxCount, 0, 1 << 20, 256,
+                                4096, ImGuiInputTextFlags_EnterReturnsTrue,
+                                "budget for the number of partitions, the build cost tracks this rather than occupancy");
+            break;
+          case ScenePartitionConfig::LAYOUT_NODE_REGEX:
+            if(m_scene && !m_scene->m_instanceNodeGroups.empty())
+            {
+              PE::Text("Node groups", m_scene->m_nodeGroupUngroupedCount ?
+                                          fmt::format("{}, {} ungrouped instances in one more",
+                                                      m_scene->m_nodeGroupCount, m_scene->m_nodeGroupUngroupedCount) :
+                                          fmt::format("{}", m_scene->m_nodeGroupCount));
+            }
+            else
+            {
+              PE::Text("Node groups", "none, load with --partitionnodes");
+            }
+            break;
+        }
+        if(m_scene && !m_scene->m_partitions.empty())
+        {
+          std::string count = fmt::format("{}", m_scene->m_partitions.size());
+          if(m_scene->m_partitionsPerAxis && m_scene->m_partitionConfig.layout == ScenePartitionConfig::LAYOUT_DERIVED_QUADTREE)
+          {
+            count += fmt::format(" from {} x {} base cells", m_scene->m_partitionsPerAxis, m_scene->m_partitionsPerAxis);
+          }
+          else if(m_scene->m_partitionsPerAxis)
+          {
+            count += fmt::format(" of {} x {}", m_scene->m_partitionsPerAxis, m_scene->m_partitionsPerAxis);
+          }
+          PE::Text("Count", count);
+        }
+        ImGui::EndDisabled();
+        PE::treePop();
+      }
+
+
       PE::Checkbox("Blas Sharing", &m_rendererConfig.useBlasSharing, "shares blas for instances further away that can use it safely");
       // Caching needs streaming, and it needs the CLAS addresses it built the cached blas from
       // to stay put, which only the persistent allocator does. These settings are kept as the
@@ -877,9 +1017,15 @@ void LodClusters::uiSettingsTraversal()
         ImGui::EndDisabled();
 
         ImGui::BeginDisabled(!m_rendererConfig.useBlasCaching);
-        PE::InputIntClamped("Cached tail levels", (int*)&m_frameConfig.cachingEnabledLevels, 0, SHADERIO_MAX_LOD_LEVELS,
-                            1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
+        PE::InputIntClamped("Cached tail levels", (int*)&m_frameConfig.cachingEnabledLevels, 0,
+                            GEOMETRY_CACHED_BLAS_STRIDE, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
                             "Caching may be used in the last N levels of the instance geometry");
+        PE::InputIntClamped("Cached push levels", (int*)&m_frameConfig.cachingPushLevels, 0, SHADERIO_MAX_LOD_LEVELS, 1,
+                            1, ImGuiInputTextFlags_EnterReturnsTrue,
+                            "extra lod levels an instance may give up to reach the cached blas, 0 is exact");
+        PE::InputIntClamped("Cached sticky levels", (int*)&m_frameConfig.cachingStickyLevels, 0,
+                            SHADERIO_MAX_LOD_LEVELS, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
+                            "extra levels for an instance already on the cached blas, so it stays and its partition stays quiet");
         ImGui::EndDisabled();
 
         ImGui::BeginDisabled(!useBlasReuse);
@@ -932,6 +1078,9 @@ void LodClusters::uiSettingsTraversal()
       ImGui::BeginDisabled(!m_rendererConfig.useCulling);
       PE::Checkbox("Freeze Culling", &m_frameConfig.freezeCulling);
       PE::Checkbox("Freeze LoD", &m_frameConfig.freezeLoD);
+      PE::InputFloat("Cull min pixel size", &m_frameConfig.frameConstants.cullMinPixelSize, 0.5f, 1.0f, "%.2f",
+                     ImGuiInputTextFlags_EnterReturnsTrue,
+                     "culls boxes smaller than this in render pixels in both dimensions. 1 is lossless, larger drops small objects");
       if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD)
       {
         PE::Checkbox("Use TwoPass Culling", (bool*)&m_rendererConfig.useTwoPassCulling,
@@ -1698,6 +1847,29 @@ void LodClusters::uiStatistics()
         ImGui::Text("%d %%", pct.pctBlas);
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
+        if(m_renderer && m_renderer->getConfig().usePtlas && m_scene && !m_scene->m_partitions.empty())
+        {
+          ImGui::Text("PTLAS Instances");
+          ImGui::TableNextColumn();
+          ImGui::Text("%s", formatMetric(readback.numPtlasUpdates).c_str());
+          ImGui::TableNextColumn();
+          ImGui::Text("%d %%",
+                      m_scene->m_instances.empty() ? 0 : uint32_t(readback.numPtlasUpdates * 100 / m_scene->m_instances.size()));
+          ImGui::SetItemTooltip("instances whose blas changed, they are the only ones written into the ptlas");
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+          ImGui::Text("PTLAS Partitions");
+          ImGui::TableNextColumn();
+          ImGui::Text("%s", formatMetric(readback.numPtlasDirtyPartitions).c_str());
+          ImGui::TableNextColumn();
+          ImGui::Text("%d %%", m_scene->m_partitions.empty() ?
+                                   0 :
+                                   uint32_t(readback.numPtlasDirtyPartitions * 100 / m_scene->m_partitions.size()));
+          ImGui::SetItemTooltip("partitions that contain at least one updated instance, out of %zu",
+                                m_scene->m_partitions.size());
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+        }
         ImGui::EndTable();
       }
     }
@@ -1837,8 +2009,81 @@ void LodClusters::uiStatistics()
       uiPlot(std::string("LOD Levels Histogram"), std::string("Mesh count with %d LOD levels: %u"),
              m_scene->m_histograms.lodLevels, m_scene->m_histograms.lodLevelsMax, 0, m_scene->m_maxLodLevelsCount + 1);
     }
+
+    if(m_scene && !m_scene->m_partitions.empty() && ImGui::CollapsingHeader("Partition Stats"))
+    {
+      ImGui::Text("Partitions: %zu", m_scene->m_partitions.size());
+      ImGui::Text("Partition max instances: %zu", m_scene->m_partitionHistogram.size() - 1);
+      uiPlot(std::string("Partition Instances Histogram"), std::string("Partition count with %d instances: %u"),
+             m_scene->m_partitionHistogram, m_scene->m_partitionHistogramMax);
+    }
   }
   ImGui::End();
+}
+
+bool LodClusters::getHitPosition(const shaderio::Readback& readback, glm::dvec3& hitPos)
+{
+  float d = decodePickingDepth(readback);
+  // reject far plane and beyond (reversed-Z: 0 = far)
+  if(d <= 0.0f)
+    return false;
+
+  glm::uvec2 mousePos = {m_frameConfig.frameConstants.mousePosition.x, m_frameConfig.frameConstants.mousePosition.y};
+
+  const glm::dmat4 view = m_info.cameraManipulator->getViewMatrix();
+  const glm::dmat4 proj = m_frameConfig.frameConstants.projMatrix;
+
+  glm::dvec4 win_norm = {0, 0, m_frameConfig.frameConstants.viewport.x, m_frameConfig.frameConstants.viewport.y};
+  hitPos              = glm::unProjectZO({mousePos.x, mousePos.y, d}, view, proj, win_norm);
+  return true;
+}
+
+std::string LodClusters::getHitInfoText(const shaderio::Readback& readback, bool pickingValid, const glm::dvec3& hitPos)
+{
+  uint32_t    instanceID          = -1;
+  uint32_t    geometryID          = -1;
+  uint32_t    materialID          = -1;
+  uint32_t    clusterID           = -1;
+  uint32_t    triangleID          = -1;
+  const char* materialName        = nullptr;
+  const char* geometryName        = nullptr;
+  bool        materialAlphaMasked = false;
+  bool        materialTwoSided    = false;
+
+  if(m_scene && pickingValid && readback.instanceId < m_scene->m_instances.size())
+  {
+    instanceID = readback.instanceId;
+    geometryID = m_scene->m_instances[readback.instanceId].geometryID;
+
+    if(m_renderer)
+    {
+      materialID = m_renderer->getOriginalMaterialID(readback.materialId);
+      if(materialID != ~0)
+      {
+        materialName        = m_scene->m_materialNames[materialID].c_str();
+        materialAlphaMasked = m_scene->m_materials[materialID].alphaMasked;
+        materialTwoSided    = m_scene->m_materials[materialID].twoSided;
+      }
+    }
+
+    clusterID  = readback.clusterTriangleId >> 8;
+    triangleID = readback.clusterTriangleId & 0xFF;
+    // unique grid copies extend the geometry ids beyond the original names
+    size_t originalID = m_scene->getOriginalGeometryIndex(geometryID);
+    if(originalID < m_scene->m_geometryNames.size())
+      geometryName = m_scene->m_geometryNames[originalID].c_str();
+  }
+
+  return fmt::format(
+      "Instance ID:  {}\n"
+      "Geometry ID:  {} \"{}\"\n"
+      "Material ID:  {} \"{}\"{} {}\n"
+      "Cluster  ID:  {}\n"
+      "Triangle ID:  {}\n"
+      "Position:  [{:f}, {:f}, {:f}]",
+      int32_t(instanceID), int32_t(geometryID), geometryName ? geometryName : "", int32_t(materialID),
+      materialName ? materialName : "", materialAlphaMasked ? " alpha-masked" : "",
+      materialTwoSided ? " two-sided" : "", int32_t(clusterID), int32_t(triangleID), hitPos.x, hitPos.y, hitPos.z);
 }
 
 // "Misc Settings" panel: camera, sky, tonemapper and visualization options.
@@ -1877,9 +2122,56 @@ void LodClusters::uiMiscSettings(bool pickingValid, const glm::dvec3& hitPos)
       PE::InputFloat("Fog distance", &m_tweak.fogDistance, 0.01f, 0, "%.4f", 0,
                      "Shaded only: distance at which the haze halves the light, scaled by the sky's haze. Fraction of "
                      "scene size, negative is absolute, 0 disables");
+      auto loadHdri = [&]() {
+        std::filesystem::path filePath = nvgui::windowOpenFileDialog(m_app->getWindowHandle(), "Load HDRI", "HDRI(.hdr)|*.hdr");
+        if(!filePath.empty())
+        {
+          m_envHdriFile      = filePath;
+          m_tweak.useEnvHdri = true;
+        }
+      };
+      bool useHdri = m_tweak.useEnvHdri && m_resources.hasEnvHdri();
+      PE::entry(
+          "Environment",
+          [&]() {
+            if(ImGui::RadioButton("Physical sky", !useHdri))
+            {
+              m_tweak.useEnvHdri = false;
+            }
+            ImGui::SameLine();
+            if(ImGui::RadioButton("HDRI", useHdri))
+            {
+              m_tweak.useEnvHdri = true;
+              // nothing loaded yet, ask for a file
+              if(!m_resources.hasEnvHdri())
+              {
+                loadHdri();
+              }
+            }
+            return false;
+          },
+          "Lights all renderers, an HDRI is a lat-long .hdr. Dropping a .hdr file switches to it too.");
+      if(useHdri)
+      {
+        PE::entry("HDRI file", [&]() {
+          if(ImGui::Button("Load..."))
+          {
+            loadHdri();
+          }
+          ImGui::SameLine();
+          ImGui::TextUnformatted(nvutils::utf8FromPath(m_envHdriFileLast.filename()).c_str());
+          return false;
+        });
+        PE::SliderFloat("HDRI intensity", &m_tweak.envHdriIntensity, 0.0f, 4.0f, "%.2f");
+        PE::SliderFloat("HDRI rotation", &m_tweak.envHdriRotationDeg, -180.0f, 180.0f, "%.0f deg");
+        PE::SliderFloat("HDRI elevation", &m_tweak.envHdriElevationDeg, -90.0f, 90.0f, "%.0f deg");
+      }
       PE::end();
-      ImGui::Text("Sun & Sky");
-      nvgui::skyPhysicalParameterUI(m_frameConfig.frameConstants.skyPhysical);
+      if(!useHdri)
+      {
+        ImGui::Text("Sun & Sky");
+        nvgui::skyPhysicalParameterUI(m_frameConfig.frameConstants.skyPhysical);
+      }
     }
 
     const float tonemapperPosY = ImGui::GetCursorScreenPos().y - ImGui::GetWindowPos().y;
@@ -1940,45 +2232,9 @@ void LodClusters::uiMiscSettings(bool pickingValid, const glm::dvec3& hitPos)
 
     if(ImGui::CollapsingHeader("Hit Info", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {
-      uint32_t    instanceID          = -1;
-      uint32_t    geometryID          = -1;
-      uint32_t    materialID          = -1;
-      uint32_t    clusterID           = -1;
-      uint32_t    triangleID          = -1;
-      const char* materialName        = nullptr;
-      const char* geometryName        = nullptr;
-      bool        materialAlphaMasked = false;
-      bool        materialTwoSided    = false;
+      ImGui::TextUnformatted(getHitInfoText(readback, pickingValid, hitPos).c_str());
 
-      if(m_scene && pickingValid && readback.instanceId < m_scene->m_instances.size())
-      {
-        instanceID = readback.instanceId;
-        geometryID = m_scene->m_instances[readback.instanceId].geometryID;
-
-        if(m_renderer)
-        {
-          materialID = m_renderer->getOriginalMaterialID(readback.materialId);
-          if(materialID != ~0)
-          {
-            materialName        = m_scene->m_materialNames[materialID].c_str();
-            materialAlphaMasked = m_scene->m_materials[materialID].alphaMasked;
-            materialTwoSided    = m_scene->m_materials[materialID].twoSided;
-          }
-        }
-
-        clusterID    = readback.clusterTriangleId >> 8;
-        triangleID   = readback.clusterTriangleId & 0xFF;
-        geometryName = m_scene->m_geometryNames[geometryID].c_str();
-      }
-
-      ImGui::Text("Instance ID:  %d", instanceID);
-      ImGui::Text("Geometry ID:  %d \"%s\"", geometryID, geometryName ? geometryName : "");
-      ImGui::Text("Material ID:  %d \"%s\"%s %s", materialID, materialName ? materialName : "",
-                  materialAlphaMasked ? " alpha-masked" : "", materialTwoSided ? " two-sided" : "");
-      ImGui::Text("Cluster  ID:  %d", clusterID);
-      ImGui::Text("Triangle ID:  %d", triangleID);
-      ImGui::Text("Position:  [%f, %f, %f]", hitPos.x, hitPos.y, hitPos.z);
-
+      ImGui::TextDisabled("Ctrl+H: copy hit info to clipboard");
       ImGui::TextDisabled("Raster only:\nP: toggle solo instance Shift+P: toggle solo instance + cluster");
     }
 
@@ -2161,19 +2417,13 @@ void LodClusters::onUIRender()
         requestMirrorBox = true;
       }
 
-      bool screenShotJpg = ImGui::IsKeyPressed(ImGuiKey_F11, false);
-      bool screenShotPng = ImGui::IsKeyPressed(ImGuiKey_F12, false);
+      bool screenShotJpg = ImGui::IsKeyChordPressed(ImGuiKey_F12);
+      bool screenShotPng = ImGui::IsKeyChordPressed(ImGuiMod_Shift | ImGuiKey_F12);
       if(screenShotJpg || screenShotPng)
       {
         auto        now      = std::chrono::system_clock::now();
         std::string filename = fmt::format("screenshot_{:%Y_%m_%d_%H_%M_%S}.{}", now, screenShotJpg ? "jpg" : "png");
-
-        VkExtent2D extent = {m_resources.m_frameBuffer.imgColorLdr.extent.width,
-                             m_resources.m_frameBuffer.imgColorLdr.extent.height};
-
-        m_app->saveImageToFile(m_resources.m_frameBuffer.imgColorLdr.image, extent, filename, screenShotJpg ? 90 : 100,
-                               m_resources.m_frameBuffer.useResolved ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL :
-                                                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        saveScreenshot(SCREENSHOT_VIEWPORT, filename, screenShotJpg ? 90 : 100);
       }
     }
   }
@@ -2183,22 +2433,25 @@ void LodClusters::onUIRender()
 
   bool       pickingValid = isPickingValid(readback);
   glm::dvec3 hitPos       = {};
-  bool       hitPosValid  = false;
-  if(pickingValid)
+  bool       hitPosValid  = getHitPosition(readback, hitPos);
+
+  // the readback slot read here may still be in flight, so a rendered frame's result is
+  // only certain to have landed `cycleSize + 1` frames later, `onRender` counts them down
+  if(m_headlessPicking != m_headlessPickingLast)
   {
-    float d = decodePickingDepth(readback);
-    // reject far plane and beyond (reversed-Z: 0 = far)
-    if(d > 0.0f)
-    {
-      glm::uvec2 mousePos = {m_frameConfig.frameConstants.mousePosition.x, m_frameConfig.frameConstants.mousePosition.y};
+    m_headlessPickingLast = m_headlessPicking;
+    m_headlessPickingWait = (m_headlessPicking.x >= 0 && m_headlessPicking.y >= 0) ? int(m_app->getFrameCycleSize()) + 1 : -1;
+  }
+  else if(m_headlessPickingWait == 0)
+  {
+    m_headlessPickingWait = -1;
+    LOGI("Hit Info at %.3f %.3f:\n%s\n", m_headlessPicking.x, m_headlessPicking.y,
+         pickingValid ? getHitInfoText(readback, pickingValid, hitPos).c_str() : "no hit");
+  }
 
-      const glm::dmat4 view = m_info.cameraManipulator->getViewMatrix();
-      const glm::dmat4 proj = m_frameConfig.frameConstants.projMatrix;
-
-      glm::dvec4 win_norm = {0, 0, m_frameConfig.frameConstants.viewport.x, m_frameConfig.frameConstants.viewport.y};
-      hitPosValid         = true;
-      hitPos              = glm::unProjectZO({mousePos.x, mousePos.y, d}, view, proj, win_norm);
-    }
+  if(pickingValid && viewport && nvgui::isWindowHovered(viewport) && ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_H))
+  {
+    ImGui::SetClipboardText(getHitInfoText(readback, pickingValid, hitPos).c_str());
   }
 
   // P sets the rasterization solo filter on the currently hovered instance,
@@ -2285,6 +2538,15 @@ void LodClusters::onUIRender()
     }
 
     ImVec2 corner = ImGui::GetCursorScreenPos();  // Corner of the viewport
+    if(fb.fixedSize && fb.targetSize.width && fb.targetSize.height)
+    {
+      // fixed resolution: fit its aspect into the viewport, centered
+      float scale = std::min(avail.x / float(fb.targetSize.width), avail.y / float(fb.targetSize.height));
+      imageSize   = {float(fb.targetSize.width) * scale, float(fb.targetSize.height) * scale};
+      corner.x += std::max(0.0f, (avail.x - imageSize.x) * 0.5f);
+      corner.y += std::max(0.0f, (avail.y - imageSize.y) * 0.5f);
+      ImGui::SetCursorScreenPos(corner);
+    }
     ImGui::Image((ImTextureID)m_imguiTexture, imageSize);
     viewportUI(corner, imageSize);
   }
@@ -2591,9 +2853,9 @@ void LodClusters::onUIMenu()
 
   if(doOpenFile)
   {
-    std::filesystem::path filePath =
-        nvgui::windowOpenFileDialog(m_app->getWindowHandle(), "Load supported",
-                                    "Supported Files|*.gltf;*.glb;*.cfg|glTF(.gltf, .glb)|*.gltf;*.glb|config file(.cfg)|*.cfg");
+    std::filesystem::path filePath = nvgui::windowOpenFileDialog(
+        m_app->getWindowHandle(), "Load supported",
+        "Supported Files|*.gltf;*.glb;*.cfg;*.hdr|glTF(.gltf, .glb)|*.gltf;*.glb|config file(.cfg)|*.cfg|HDRI(.hdr)|*.hdr");
     if(!filePath.empty())
     {
       onFileDrop(filePath);

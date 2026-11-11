@@ -18,6 +18,7 @@
 
 #include "lodclusters.hpp"
 #include <nvshaders/tonemap_functions.h.slang>
+#include "partitioned_acceleration_structures.hpp"
 #if USE_DLSS
 #include "../shaders/dlss_util.h"
 #endif
@@ -38,6 +39,14 @@ LodClusters::LodClusters(const Info& info)
       fmt::format("{:%Y_%m_%d_%H_%M_%S}", std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now()));
 
   m_info.parameterRegistry->add({"scene", "scene file to load (.gltf, .glb, .cfg)"}, {".gltf", ".glb", ".cfg"}, &m_sceneFilePathDropNew);
+  m_info.parameterRegistry->add({"hdrifile", "HDRI environment (.hdr) lighting all renderers instead of the physical sky"},
+                                {".hdr"}, &m_envHdriFile);
+  m_info.parameterRegistry->add({"hdri", "light with the loaded HDRI, otherwise the physical sky. default true"},
+                                &m_tweak.useEnvHdri);
+  m_info.parameterRegistry->add({"hdriintensity", "HDRI radiance scale. default 1"}, &m_tweak.envHdriIntensity);
+  m_info.parameterRegistry->add({"hdrirotation", "HDRI rotation around the up axis in degrees, RTX Mega Geometry's \"envmap rotation\" + 180. default 0"},
+                                &m_tweak.envHdriRotationDeg);
+  m_info.parameterRegistry->add({"hdrielevation", "HDRI tilt towards the horizon in degrees. default 0"}, &m_tweak.envHdriElevationDeg);
   m_info.parameterRegistry->add({"renderer", "0 rasterization, 1 ray tracing. default 1"}, (int*)&m_tweak.renderer);
   m_info.parameterRegistry->add({"verbose", "verbose logging"}, &g_verbose, true);
   m_info.parameterRegistry->add({"resetstats", "reset the timer statistics automatically. default false"}, &m_tweak.autoResetTimers);
@@ -48,6 +57,9 @@ LodClusters::LodClusters(const Info& info)
                                 (int*)&m_sequenceScreenshotMode, true);
   m_info.parameterRegistry->add({"screenshotframegap", "save a screenshot every n frames, and after the last headless frame. 0 disabled (default)"},
                                 &m_screenshotFrameInterval);
+  m_info.parameterRegistry->addVector(
+      {"headlesspicking", "pick at x y relative to the viewport (0..1) instead of the mouse and log the next hit info. default -1 -1 off"},
+      &m_headlessPicking);
   m_info.parameterRegistry->add({"screenshotmode", "screenshot content of screenshotframegap: 1 full window, 2 rendered viewport (default)"},
                                 (int*)&m_screenshotMode);
 
@@ -60,6 +72,7 @@ LodClusters::LodClusters(const Info& info)
                                 &m_resources.m_dumpInternal);
   m_info.parameterRegistry->add({"camerastring", "initial camera, copy/paste from the Misc Settings -> Camera widget"}, &m_cameraString);
   m_info.parameterRegistry->add({"cameraspeed", "camera movement speed, 0 derives it from the scene size"}, &m_cameraSpeed);
+  m_info.parameterRegistry->add({"cameragltf", "index of the glTF camera to start with, default 0"}, &m_cameraGltf);
   m_info.parameterRegistry->add({"cameraclipnear", "default camera near clip plane as fraction of the scene diagonal, negative is absolute, 0 derives it from the scene size"},
                                 &m_cameraClipNear);
   m_info.parameterRegistry->add({"cameraclipfar", "default camera far clip plane as fraction of the scene diagonal, negative is absolute, 0 derives it from the scene size"},
@@ -67,6 +80,8 @@ LodClusters::LodClusters(const Info& info)
   registerCameraPathParameters();
   m_info.parameterRegistry->addVector({"sundirection", "sun direction"}, &m_frameConfig.frameConstants.skyPhysical.sunDirection);
 
+  m_info.parameterRegistry->add({"streamingreset", "reset the streaming state once, e.g. at the start of a parameter sequence"},
+                                &m_streamingResetRequest, true);
   m_info.parameterRegistry->add({"streaming", "stream geometry on demand, 0 preloads the whole scene and can need a lot of memory. default true"},
                                 &m_tweak.useStreaming);
   m_info.parameterRegistry->add({"clasallocator", "persistent device-side CLAS allocator, otherwise move based compaction. default true"},
@@ -75,8 +90,8 @@ LodClusters::LodClusters(const Info& info)
                                 &m_sceneGridConfig.numCopies);
   m_info.parameterRegistry->add({"gridconfig", "grid config in 6 bits: 0..2 enabled axis, 3..5 enabled rotation. default 13"},
                                 &m_sceneGridConfig.gridBits);
-  m_info.parameterRegistry->add({"gridunique", "give each grid copy its own geometries, stresses streaming and memory. default false"},
-                                &m_sceneGridConfig.uniqueGeometriesForCopies);
+  m_info.parameterRegistry->add({"gridunique", "fraction (0..1) of grid copies with their own geometries, 1 = all unique, stresses streaming and memory. default 0"},
+                                &m_sceneGridConfig.uniqueGeometries);
   m_info.parameterRegistry->add({"clusterconfig", "cluster size: 0 64T_64V, 1 64T_128V, 2 64T_192V, 3 96T_96V, 4 128T_128V, 5 128T_256V, 6 256T_256V. default 4"},
                                 (int*)&m_tweak.clusterConfig);
   m_info.parameterRegistry->add({"clustergroupsize", "clusters per lod group, decimated together and sharing one error. default 32"},
@@ -162,6 +177,8 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"hbaoradius", "HBAO radius as percentage to scene bounding radius, negative is absolute world-space radius. default 0.05"},
                                 &m_tweak.hbaoRadius);
   m_info.parameterRegistry->add({"hbaoblur", "blur the HBAO result. default true"}, &m_frameConfig.hbaoSettings.blur);
+  m_info.parameterRegistry->add({"hbaoquarter", "HBAO at half width and height, upsampled depth-aware. default true"},
+                                &m_tweak.hbaoQuarter);
   m_info.parameterRegistry->add({"claspositionbits", "CLAS position mantissa bits to drop to save memory, 0 to 22. default 0"},
                                 &m_streamingConfig.clasPositionTruncateBits);
   m_info.parameterRegistry->add({"maxtransfermegabytes", "per-frame transfer budget in MiB, negative is percentage of device local heap (-25 == 25 %)"},
@@ -192,6 +209,8 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"cullederrorscale", "scale the pixel error for instances without primary visibility in ray tracing. >= 1, default 2"},
                                 &m_frameConfig.culledErrorScale);
   m_info.parameterRegistry->add({"culling", "occlusion and frustum culling. default true"}, &m_rendererConfig.useCulling);
+  m_info.parameterRegistry->add({"cullminpixelsize", "cull boxes smaller than this in render pixels in both dimensions, 1 is lossless. default 1"},
+                                &m_frameConfig.frameConstants.cullMinPixelSize);
   m_info.parameterRegistry->add({"primitiveculling", "primitive culling in the NV mesh shader, rasterization only. default false"},
                                 &m_rendererConfig.usePrimitiveCulling);
   m_info.parameterRegistry->add({"twopassculling", "two pass culling in rasterization, otherwise only last frame's hiz. default false"},
@@ -202,11 +221,18 @@ LodClusters::LodClusters(const Info& info)
                                 &m_rendererConfig.useForcedInvisibleCulling);
   m_info.parameterRegistry->add({"dlss", "enable DLSS, super resolution in rasterization and denoising in ray tracing. default false"},
                                 &m_rendererConfig.useDlss);
-  m_info.parameterRegistry->add({"dlssquality", "0 max performance, 1 balanced, 2 max quality, 3 ultra performance, 4 ultra quality, 5 DLAA. default 2"},
+  m_info.parameterRegistry->add({"dlssquality", "0 max performance, 1 balanced, 2 max quality, 3 ultra performance, 5 DLAA. default 2"},
                                 (int*)&m_rendererConfig.dlssQuality);
+  m_info.parameterRegistry->add({"dlssdelayload", "render without DLSS until it is loaded in the background, ignored headless and with sequence files. default true"},
+                                &m_dlssDelayLoad);
   m_info.parameterRegistry->add({"pathtrace", "basic path tracing (shading in ray-gen). default false"},
                                 &m_rendererConfig.usePathtrace);
-  m_info.parameterRegistry->add({"pathtracebounces", "1 to 8, default 3"}, &m_frameConfig.frameConstants.pathtraceNumBounces);
+  m_info.parameterRegistry->add({"pathtracebounces", "indirect bounces, 0 (direct lighting only) to 7. default 1"},
+                                &m_frameConfig.frameConstants.pathtraceNumBounces);
+  m_info.parameterRegistry->add({"pathtraceambient", "light the last path vertex with the baked sky and AO rays. default true"},
+                                &m_frameConfig.frameConstants.pathtraceAmbientTail);
+  m_info.parameterRegistry->add({"pathtraceambientfill", "ambient kept in occluded directions, 0 to 1. default 0.15"},
+                                &m_frameConfig.frameConstants.pathtraceAmbientFill);
   m_info.parameterRegistry->add({"tonemap", "0 Filmic, 1 Uncharted2, 2 Clip (no curve), 3 ACES, 4 AgX, 5 Khronos PBR"},
                                 &m_frameConfig.frameConstants.tonemapper.method);
   m_info.parameterRegistry->add({"autoexposure", "adapt exposure to scene luminance, default 1. Disable for deterministic captures"},
@@ -227,7 +253,7 @@ LodClusters::LodClusters(const Info& info)
                                 &m_rendererConfig.useBlasSharing);
   m_info.parameterRegistry->add({"blasmerging", "merged BLAS for close instances when streaming, caps dynamic blas at 2 per geometry. default true"},
                                 &m_rendererConfig.useBlasMerging);
-  m_info.parameterRegistry->add({"blascaching", "cached BLAS from the highest fully resident lod level, when streaming. default false"},
+  m_info.parameterRegistry->add({"blascaching", "cached BLAS from the highest fully resident lod level, when streaming. default true"},
                                 &m_rendererConfig.useBlasCaching);
   m_info.parameterRegistry->add({"discretelod", "rasterization: skip the lod traversal for instances that use a single fully resident lod level. default false"},
                                 &m_rendererConfig.useDiscreteLod);
@@ -235,20 +261,64 @@ LodClusters::LodClusters(const Info& info)
                                 &m_frameConfig.discreteEnabledLevels);
   m_info.parameterRegistry->add({"discretelodrange", "allow discrete lod when an instance spans at most N lod levels, a value at or above the geometry's lod level count imposes no limit. default 16"},
                                 &m_frameConfig.discreteLodRange);
+  m_info.parameterRegistry->add({"partitions", "group instances into spatial partitions, required by the early-out and the ptlas. default false"},
+                                &m_rendererConfig.usePartitions);
+  m_info.parameterRegistry->add({"ptlas", "partitioned tlas, updates only instances whose blas changed. default false"},
+                                &m_rendererConfig.usePtlas);
+  m_info.parameterRegistry->add({"partitionlayout", "how instances are grouped into partitions: 0 fixed grid, 1 derived grid, 2 derived bvh median, 3 derived bvh sah, 4 derived quadtree, 5 node regex (see partitionnodes). default 1"},
+                                &m_rendererConfig.partitionLayout);
+  m_info.parameterRegistry->add({"partitiongridcellsize", "fixed grid: world units per cell, aligned to the shifted origin, takes precedence over partitiongridcells. 0 disables. default 0"},
+                                &m_rendererConfig.partitionGridCellSize, 0.0f);
+  {
+    const float originMin[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    const float originMax[3] = {FLT_MAX, FLT_MAX, FLT_MAX};
+    m_info.parameterRegistry->addArray({"partitiongridorigin", "x y z: fixed grid: shifts the world origin the partitiongridcellsize cells are aligned to. default 0 0 0"},
+                                       3, &m_rendererConfig.partitionGridOrigin.x, originMin, originMax);
+  }
+  m_info.parameterRegistry->add({"partitiongridcells", "fixed grid: cells along each axis over the scene bounds, 1 to 4096. default 16"},
+                                &m_rendererConfig.partitionGridCellsPerAxis, 1u);
+  m_info.parameterRegistry->add({"partitionderivedtarget",
+                                 "derived layouts: instances a partition should hold, the bvh and quadtree leaf size or the initial grid resolution. default 64"},
+                                &m_rendererConfig.partitionDerivedTarget);
+  m_info.parameterRegistry->add({"partitionderivedmax", "derived grid: refines the resolution until no partition holds more instances. default 1024"},
+                                &m_rendererConfig.partitionDerivedMaxInstances);
+  m_info.parameterRegistry->add({"partitionderivedmaxcount",
+                                 "derived layouts: budget for the number of partitions, stops the bvh and quadtree splits and the grid refinement. 0 only respects the device limit. default 4096"},
+                                &m_rendererConfig.partitionDerivedMaxCount);
+  m_info.parameterRegistry->add({"ptlasexplicitaabb", "provide instance bounds to the ptlas, rather than deriving them from the blas. default false"},
+                                &m_rendererConfig.usePtlasExplicitAabb);
+  m_info.parameterRegistry->add({"partitionearlyout", "skip the per-instance kernels for partitions whose instances all sit on a persistent blas. default true"},
+                                &m_rendererConfig.usePartitionEarlyOut);
   m_info.parameterRegistry->add({"sharingpushculled", "push culled instances by one lod level for sharing. default true"},
                                 &m_frameConfig.sharingPushCulled);
   m_info.parameterRegistry->add({"sharingenabledlevels", "allow BLAS sharing in the last N lod levels, 0 to 32. default 8"},
                                 &m_frameConfig.sharingEnabledLevels);
   m_info.parameterRegistry->add({"sharingtolerantlevels", "share BLAS despite a lod level mismatch in the last N levels, 0 to 32. default 7"},
                                 &m_frameConfig.sharingTolerantLevels);
-  m_info.parameterRegistry->add({"cachingenabledlevels", "allow BLAS caching in the last N lod levels, 0 to 32. default 8"},
+  m_info.parameterRegistry->add({"cachingenabledlevels", "allow BLAS caching in the last N lod levels, 0 to 16. default 8"},
                                 &m_frameConfig.cachingEnabledLevels);
+  m_info.parameterRegistry->add({"cachingpushlevels", "extra lod levels an instance may give up to reach the cached blas, 0 is exact. default 0"},
+                                &m_frameConfig.cachingPushLevels);
+  m_info.parameterRegistry->add({"cachingstickylevels", "extra lod levels granted to an instance already on the cached blas, keeps it there. default 0"},
+                                &m_frameConfig.cachingStickyLevels);
+  m_info.parameterRegistry->add({"partitionrevalidateframes",
+                                 "reprocess a stable partition at least every N frames, also the cached blas retention window. default 64"},
+                                &m_frameConfig.partitionRevalidateFrames);
+  m_info.parameterRegistry->add({"partitionfrustumrevalidate",
+                                 "early-out: process partitions crossing or entering the frustum every frame. default true"},
+                                &m_frameConfig.partitionFrustumRevalidate);
+  m_info.parameterRegistry->add({"partitionfrustumdistance",
+                                 "early-out: the frustum revalidation stops at this fraction of the scene size. "
+                                 "default 0.25"},
+                                &m_frameConfig.partitionFrustumDistance);
+  m_info.parameterRegistry->add({"blascacheretire", "early-out: step a pinned cached blas down to a coarser level rather than holding its groups. default true"},
+                                &m_frameConfig.blasCacheRetire);
   m_info.parameterRegistry->add({"instancesorting", "sort instances before traversal. default false"}, &m_rendererConfig.useSorting);
   m_info.parameterRegistry->add({"renderclusterbits", "clusters enqueued per frame in bits (1 << N), BLAS input for ray tracing. 8 to 25, default 20"},
                                 &m_rendererConfig.numRenderClusterBits);
   m_info.parameterRegistry->add({"rendertraversalbits", "intermediate traversal tasks in bits (1 << N). 8 to 25, default 20"},
                                 &m_rendererConfig.numTraversalTaskBits);
-  m_info.parameterRegistry->add({"visualize", "0 shaded, 1 grey, 2 visibility buffer, 3 material, 4 clusters, 5 groups, 6 lod levels, 7 triangles, 8 blas, 9 blas reuse, 10 depth only, 11 discrete lod. default 6"},
+  m_info.parameterRegistry->add({"visualize", "0 shaded, 1 grey, 2 visibility buffer, 3 material, 4 clusters, 5 groups, 6 lod levels, 7 triangles, 8 blas, 9 blas reuse, 10 depth only, 11 discrete lod, 12 partition, 13 partition active. default 6"},
                                 &m_frameConfig.visualize);
   m_info.parameterRegistry->add({"instancebboxes", "draw the instance bounding boxes as an overlay. default false"},
                                 &m_frameConfig.showInstanceBboxes);
@@ -300,6 +370,8 @@ LodClusters::LodClusters(const Info& info)
                                 &m_sceneLoaderConfig.simplifyOverridesFile);
   m_info.parameterRegistry->add({"skipnodes", "c++ regular expression string to skip adding instances whose name matches"},
                                 &m_sceneLoaderConfig.skipNodeNames);
+  m_info.parameterRegistry->add({"partitionnodes", "c++ regular expression string, all instances below a node whose name matches share a partition, a nested match starts a new one, unmatched instances share one more. Used by partitionlayout 5"},
+                                &m_sceneLoaderConfig.partitionNodeNames);
   m_info.parameterRegistry->add({"skipmeshes", "c++ regular expression string to skip adding instances whose mesh name matches"},
                                 &m_sceneLoaderConfig.skipMeshNames);
   m_info.parameterRegistry->add({"skipmaterials", "c++ regular expression string to skip adding instances whose first mesh material name matches"},
@@ -354,6 +426,7 @@ LodClusters::LodClusters(const Info& info)
   m_frameConfig.frameConstants.ambientOcclusionSamples = 2;
   m_frameConfig.frameConstants.visualize               = VISUALIZE_LOD;
   m_frameConfig.frameConstants.facetShading            = 1;
+  m_frameConfig.frameConstants.cullMinPixelSize        = 1.0f;
   m_frameConfig.frameConstants.wMirrorBox              = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
   m_frameConfig.frameConstants.texGradScale            = 1.0f;
 
@@ -362,8 +435,10 @@ LodClusters::LodClusters(const Info& info)
   m_frameConfig.frameConstants.skyPhysical             = {};
   m_frameConfig.frameConstants.skyPhysical.groundColor = {0.62f, 0.59f, 0.55f};
   // basic path tracer defaults
-  m_frameConfig.frameConstants.pathtraceNumBounces   = 3;
+  m_frameConfig.frameConstants.pathtraceNumBounces   = 1;
   m_frameConfig.frameConstants.pathtraceFireflyClamp = 20.0f;
+  m_frameConfig.frameConstants.pathtraceAmbientTail  = 1;
+  m_frameConfig.frameConstants.pathtraceAmbientFill  = 0.15f;
   // nvpro_core2 tonemapper defaults, auto-exposure on and mean averaging (no histogram pass)
   m_frameConfig.frameConstants.tonemapper              = {};
   m_frameConfig.frameConstants.tonemapper.autoExposure = 1;
@@ -570,7 +645,7 @@ void LodClusters::deinitScene()
 void LodClusters::onResize(VkCommandBuffer cmd, const VkExtent2D& size)
 {
   m_windowSize = size;
-  m_resources.initFramebuffer(m_windowSize, m_tweak.supersample);
+  m_resources.initFramebuffer(m_windowSize, m_tweak.supersample, m_tweak.hbaoQuarter);
   updateImguiImage();
   if(m_renderer)
   {
@@ -613,6 +688,11 @@ void LodClusters::onLastHeadlessFrame()
   {
     saveScreenshot(m_screenshotMode, fmt::format("screenshot_{}_{:08}.jpg", m_screenshotTimeStamp, m_frames - 1));
   }
+
+  if(m_headlessPickingWait >= 0)
+  {
+    LOGW("headlesspicking: no result yet, needs more headlessframes\n");
+  }
 }
 
 
@@ -644,6 +724,30 @@ void LodClusters::initRenderer(RendererType rtype)
       LOGE("RenderScene shaders failed\n");
       return;
     }
+  }
+
+  // the partition early-out is independent of the ptlas, the tlas path skips the same kernels
+  if(m_rendererConfig.usePartitions && rtype == RENDERER_RAYTRACE_CLUSTERS_LOD)
+  {
+    ScenePartitionConfig partitionConfig;
+    partitionConfig.layout                 = m_rendererConfig.partitionLayout;
+    partitionConfig.gridCellSize           = m_rendererConfig.partitionGridCellSize;
+    partitionConfig.gridOrigin             = m_rendererConfig.partitionGridOrigin;
+    partitionConfig.gridCellsPerAxis       = std::min(m_rendererConfig.partitionGridCellsPerAxis, 4096u);
+    partitionConfig.derivedTargetInstances = m_rendererConfig.partitionDerivedTarget;
+    partitionConfig.derivedMaxInstances    = m_rendererConfig.partitionDerivedMaxInstances;
+    partitionConfig.derivedMaxCount        = m_rendererConfig.partitionDerivedMaxCount;
+    if(partitionConfig.layout >= ScenePartitionConfig::LAYOUT_COUNT)
+    {
+      LOGW("--partitionlayout %u is unknown, using the derived grid\n", partitionConfig.layout);
+      partitionConfig.layout = ScenePartitionConfig::LAYOUT_DERIVED_GRID;
+    }
+    // the device limit only binds the ptlas; the early-out on its own has no such cap
+    partitionConfig.maxPartitions = m_resources.m_supportsPartitionedTlas && m_rendererConfig.usePtlas ?
+                                        PartitionedTlas::getProperties(m_resources.m_physicalDevice).maxPartitionCount :
+                                        0;
+
+    m_scene->updatePartitions(partitionConfig);
   }
 
   switch(rtype)
@@ -720,6 +824,12 @@ void LodClusters::onAttach(nvapp::Application* app)
   {
     m_ui.enumAdd(GUI_RENDERER, RENDERER_RASTER_CLUSTERS_LOD, "Rasterization");
 
+    m_ui.enumAdd(GUI_PARTITIONLAYOUT, int(ScenePartitionConfig::LAYOUT_FIXED_GRID), "fixed grid");
+    m_ui.enumAdd(GUI_PARTITIONLAYOUT, int(ScenePartitionConfig::LAYOUT_DERIVED_GRID), "derived grid");
+    m_ui.enumAdd(GUI_PARTITIONLAYOUT, int(ScenePartitionConfig::LAYOUT_DERIVED_BVH_MEDIAN), "derived bvh median");
+    m_ui.enumAdd(GUI_PARTITIONLAYOUT, int(ScenePartitionConfig::LAYOUT_DERIVED_BVH_SAH), "derived bvh sah");
+    m_ui.enumAdd(GUI_PARTITIONLAYOUT, int(ScenePartitionConfig::LAYOUT_DERIVED_QUADTREE), "derived quadtree");
+    m_ui.enumAdd(GUI_PARTITIONLAYOUT, int(ScenePartitionConfig::LAYOUT_NODE_REGEX), "node regex");
     m_ui.enumAdd(GUI_BUILDMODE, 0, "default");
     m_ui.enumAdd(GUI_BUILDMODE, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR, "fast build");
     m_ui.enumAdd(GUI_BUILDMODE, VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR, "fast trace");
@@ -766,6 +876,8 @@ void LodClusters::onAttach(nvapp::Application* app)
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_TRIANGLE, "triangles");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_BLAS, "blas");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_BLAS_REUSE, "blas reuse");
+    m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_PARTITION, "partition");
+    m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_PARTITION_ACTIVE, "partition active");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_DEPTH_ONLY, "depth only (black)");
     m_ui.enumAdd(GUI_VISUALIZE, VISUALIZE_DISCRETE_LOD, "discrete lod");
   }
@@ -777,12 +889,24 @@ void LodClusters::onAttach(nvapp::Application* app)
 
   m_texturesConfig.immutableSampler = m_resources.m_samplerTriLinear;
 
+#if USE_DLSS
+  m_resources.m_dlssWaitForInit = m_resources.m_dlssWaitForInit || !m_dlssDelayLoad;
+
+  // NGX init takes seconds, overlap it with scene loading
+  if(m_rendererConfig.useDlss)
+  {
+    m_resources.initDlssAsync(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD ? Resources::DlssMode::eRayReconstruction :
+                                                                                   Resources::DlssMode::eSuperResolution,
+                              m_rendererConfig.dlssQuality);
+  }
+#endif
+
   {
     NVVK_CHECK(m_resources.m_samplerPool.acquireSampler(m_imguiSampler));
     NVVK_DBG_NAME(m_imguiSampler);
   }
 
-  m_resources.initFramebuffer({128, 128}, m_tweak.supersample);
+  m_resources.initFramebuffer({128, 128}, m_tweak.supersample, m_tweak.hbaoQuarter);
   updateImguiImage();
 
   if(!m_clasAllocatorVis.init(m_resources))
@@ -811,7 +935,7 @@ void LodClusters::onAttach(nvapp::Application* app)
     m_sceneFilePathDefault = m_sceneFilePathDropNew = nvutils::findFile("bunny_v2/bunny.gltf", defaultSearchPaths);
 
     // enforce unique geometries in the sample scene
-    m_sceneGridConfig.uniqueGeometriesForCopies = true;
+    m_sceneGridConfig.uniqueGeometries = 1.0f;
 
     if(m_sceneGridConfig.numCopies == 1)
     {
@@ -866,6 +990,14 @@ void LodClusters::onDetach()
     LOGI("Scene load still in progress on window close, exiting immediately\n");
     std::_Exit(0);
   }
+#if USE_DLSS
+  // NGX calls can't be interrupted, the first feature creation alone takes seconds
+  if(m_resources.isDlssLoading())
+  {
+    LOGI("DLSS load still in progress on window close, exiting immediately\n");
+    std::_Exit(0);
+  }
+#endif
 
   NVVK_CHECK(vkDeviceWaitIdle(m_app->getDevice()));
 
@@ -1010,18 +1142,26 @@ void LodClusters::onFileDrop(const std::filesystem::path& filePath)
   if(filePath.empty())
     return;
 
+  if(filePath.extension() == ".hdr")
+  {
+    m_envHdriFile      = filePath;
+    m_tweak.useEnvHdri = true;
+    return;
+  }
+
   if(!m_sceneLoadFromConfig)
   {
     // avoid certain state to affect the new scene
     if(!m_sceneFilePathDropLast.empty() && filePath != m_sceneFilePathDropLast)
     {
       // reset grid parameter (in case scene is too large to be replicated)
-      m_sceneGridConfig.numCopies                 = 1;
-      m_sceneGridConfig.uniqueGeometriesForCopies = false;
+      m_sceneGridConfig.numCopies        = 1;
+      m_sceneGridConfig.uniqueGeometries = 0.0f;
 
       m_cameraSpeed             = 0;
       m_cameraClipNear          = 0;
       m_cameraClipFar           = 0;
+      m_cameraGltf              = 0;
       m_cameraString            = {};
       m_cameraStringLast        = {};
       m_cameraStringCommandLine = {};
@@ -1122,6 +1262,81 @@ void LodClusters::doProcessingOnly()
   m_scene->init(m_sceneFilePathDropNew, m_sceneConfig, m_sceneLoaderConfig, m_sceneCacheSuffix, false);
 }
 
+// The readback counters are single frame samples, so a benchmark step needs their mean over
+// exactly the frames the reported timers cover: the last `numAveraged` frames since the
+// profiler's last reset. Once `sequenceaverages` is reached that is a sliding window, the
+// count stops growing but every frame still adds a sample.
+void LodClusters::accumulateFrameStats()
+{
+  if(!m_renderer)
+    return;
+
+  nvutils::ProfilerTimeline::TimerInfo info;
+  std::string                          apiName;
+  bool valid = m_profilerTimeline->getFrameTimerInfo("Render", info, apiName) && info.numAveraged > 0;
+  if(!valid || info.numAveraged < m_statsNumAveragedLast)
+  {
+    // profiler averages were thrown away, so ours must restart too. A step that resets mid way
+    // is a step whose numbers are worth less, so that is counted.
+    if(valid)
+      m_statsProfilerResets++;
+    m_statsSampleCount = 0;
+    m_statsTotal       = {};
+  }
+  m_statsNumAveragedLast = valid ? info.numAveraged : 0;
+  if(!valid)
+    return;
+
+  shaderio::Readback readback;
+  m_resources.getReadbackData(readback);
+
+  Renderer::FrameStats fs;
+  fs.frames                      = 1;
+  fs.traversalTasks              = readback.numTraversalTasks;
+  fs.renderClusters              = readback.numRenderClusters;
+  fs.blasBuilds                  = readback.numBlasBuilds;
+  fs.ptlasUpdates                = readback.numPtlasUpdates;
+  fs.ptlasUpdatesPeak            = readback.numPtlasUpdates;
+  fs.ptlasDirtyPartitions        = readback.numPtlasDirtyPartitions;
+  fs.activePartitions            = readback.numActivePartitions;
+  fs.activeInstances             = readback.numActiveInstances;
+  fs.partitionInvalidateAllCount = readback.partitionInvalidateAllCount ? 1 : 0;
+
+  if(m_renderScene && m_renderScene->useStreaming)
+  {
+    const SceneStreaming::CachedBlasPatchCounts& pc = m_renderScene->sceneStreaming.getFramePatchCounts();
+    fs.patchLowerDetail                             = pc.lowerDetail;
+    fs.patchHigherDetail                            = pc.higherDetail;
+    fs.patchInvalidateOnly                          = pc.invalidateOnly;
+    fs.patchDeferred                                = pc.deferred;
+    fs.patchUnsafeFreed                             = pc.unsafeFreed;
+    fs.patchRetired                                 = pc.retired;
+    fs.pinnedUnloads                                = m_renderScene->sceneStreaming.getFramePinnedUnloads();
+    fs.pinnedDeferredUnloads                        = m_renderScene->sceneStreaming.getFramePinnedDeferredUnloads();
+  }
+
+  m_statsSamples[m_statsSampleCount % m_statsSamples.size()] = fs;
+  m_statsSampleCount++;
+  m_statsTotal += fs;
+
+  // averaging all frames outgrows the samples, but then covers everything since the reset
+  Renderer::FrameStats window;
+  if(info.numAveraged > m_statsSamples.size())
+  {
+    window = m_statsTotal;
+  }
+  else
+  {
+    uint32_t count = std::min(info.numAveraged, m_statsSampleCount);
+    for(uint32_t i = 0; i < count; i++)
+    {
+      window += m_statsSamples[(m_statsSampleCount - 1 - i) % m_statsSamples.size()];
+    }
+  }
+  window.profilerResets         = m_statsProfilerResets;
+  m_renderer->getFrameStatsRW() = window;
+}
+
 void LodClusters::parameterSequenceCallback(const nvutils::ParameterSequencer::State& state)
 {
   std::string message;
@@ -1158,8 +1373,13 @@ void LodClusters::parameterSequenceCallback(const nvutils::ParameterSequencer::S
       message += fmt::format("Groups; {}; {};\n", stats.residentGroups, stats.maxGroups);
       message += fmt::format("Clusters; {}; {};\n", stats.residentClusters, stats.maxClusters);
       message += fmt::format("Triangles; {};\n", stats.residentTriangles);
-      message += fmt::format("Loads; {};\n", stats.loadCount);
-      message += fmt::format("Unloads; {};\n", stats.unloadCount);
+      message += fmt::format("Last Loads; {};\n", stats.loadCount);
+      message += fmt::format("Last Unloads; {};\n", stats.unloadCount);
+      message += fmt::format("Last Load Requests; {};\n", stats.loadRequestCount);
+      message += fmt::format("Last Load Fails; {}; {}; {}; {}; {};\n", stats.couldNotTransfer, stats.couldNotAllocateClas,
+                             stats.couldNotAllocateGroup, stats.couldNotStore, stats.uncompletedLoadCount);
+      message += fmt::format("Frame Loads; {}; {}; {}; {};\n", stats.frameLoadCount, stats.frameLoadClusters,
+                             stats.frameLoadDeviceBytes, stats.frameLoadStoredBytes);
       if(m_rendererConfig.useBlasCaching)
       {
         message += fmt::format("Cached BLAS; {};\n", stats.cachedBlasCount);
@@ -1173,6 +1393,53 @@ void LodClusters::parameterSequenceCallback(const nvutils::ParameterSequencer::S
     message += fmt::format("Traversal Tasks; {}; {};\n", readback.numTraversalTasks, m_renderer->getMaxTraversalTasks());
     message += fmt::format("Traversal Clusters; {}; {};\n", readback.numRenderClusters, m_renderer->getMaxRenderClusters());
     message += fmt::format("BLAS builds; {}; {};\n", readback.numBlasBuilds, m_renderer->getMaxBlasBuilds());
+    // what the renderer applies, the raster renderer has no partitions
+    const RendererConfig& activeConfig  = m_renderer->getConfig();
+    const bool            hasPartitions = activeConfig.usePartitions && m_scene && !m_scene->m_partitions.empty();
+    const bool            hasPtlas      = hasPartitions && activeConfig.usePtlas;
+    const bool            hasEarlyOut   = hasPartitions && activeConfig.usePartitionEarlyOut;
+
+    if(hasPartitions)
+    {
+      if(hasPtlas)
+      {
+        message += fmt::format("Ptlas Updates; {}; {};\n", readback.numPtlasUpdates, m_scene->m_instances.size());
+        message +=
+            fmt::format("Ptlas Dirty Partitions; {}; {};\n", readback.numPtlasDirtyPartitions, m_scene->m_partitions.size());
+      }
+      if(hasEarlyOut)
+      {
+        // what the early-out left for the per-instance kernels to do
+        message += fmt::format("Active Partitions; {}; {};\n", readback.numActivePartitions, m_scene->m_partitions.size());
+        message += fmt::format("Active Instances; {}; {};\n", readback.numActiveInstances, m_scene->m_instances.size());
+      }
+
+      // block means; the single frame samples above swing hard on a forced revalidation frame
+      const Renderer::FrameStats& fs = m_renderer->getFrameStats();
+      message += fmt::format("Mean; Value; Frames;\n");
+      message += fmt::format("Profiler Resets; {};\n", fs.profilerResets);
+      message += fmt::format("Frames InvalidateAll; {}; {};\n", fs.partitionInvalidateAllCount, fs.frames);
+      message += fmt::format("Patches LowerDetail; {};\n", fs.patchLowerDetail);
+      message += fmt::format("Patches HigherDetail; {};\n", fs.patchHigherDetail);
+      message += fmt::format("Patches InvalidateOnly; {};\n", fs.patchInvalidateOnly);
+      message += fmt::format("Patches Deferred; {};\n", fs.patchDeferred);
+      message += fmt::format("Patches UnsafeFreed; {};\n", fs.patchUnsafeFreed);
+      message += fmt::format("Patches Retired; {};\n", fs.patchRetired);
+      message += fmt::format("Pinned Unloads; {}; {};\n", fs.pinnedUnloads, fs.pinnedDeferredUnloads);
+      message += fmt::format("Mean Traversal Tasks; {}; {};\n", fs.mean(fs.traversalTasks), fs.frames);
+      message += fmt::format("Mean BLAS builds; {}; {};\n", fs.mean(fs.blasBuilds), fs.frames);
+      if(hasPtlas)
+      {
+        message += fmt::format("Mean Ptlas Updates; {}; {};\n", fs.mean(fs.ptlasUpdates), fs.frames);
+        message += fmt::format("Peak Ptlas Updates; {}; {};\n", fs.ptlasUpdatesPeak, fs.frames);
+        message += fmt::format("Mean Ptlas Dirty Partitions; {}; {};\n", fs.mean(fs.ptlasDirtyPartitions), fs.frames);
+      }
+      if(hasEarlyOut)
+      {
+        message += fmt::format("Mean Active Partitions; {}; {};\n", fs.mean(fs.activePartitions), fs.frames);
+        message += fmt::format("Mean Active Instances; {}; {};\n", fs.mean(fs.activeInstances), fs.frames);
+      }
+    }
     if(m_tweak.renderer == RENDERER_RASTER_CLUSTERS_LOD && m_rendererConfig.useCulling
        && m_rendererConfig.useTwoPassCulling && m_rendererConfig.useTwoPassRejectLists)
     {
@@ -1207,10 +1474,17 @@ void LodClusters::parameterSequenceCallback(const nvutils::ParameterSequencer::S
 
   nvutils::Logger::getInstance().log(nvutils::Logger::eSTATS, "%s", message.c_str());
 
+  // The samples restart with the profiler's own reset, only the reset count is per step.
+  m_statsProfilerResets = 0;
+  if(m_renderer)
+  {
+    m_renderer->resetFrameStats();
+  }
+
   saveScreenshot(m_sequenceScreenshotMode, fmt::format("screenshot_{}_{}.jpg", state.index, state.description));
 }
 
-void LodClusters::saveScreenshot(ScreenshotMode mode, const std::string& filename)
+void LodClusters::saveScreenshot(ScreenshotMode mode, const std::string& filename, int quality)
 {
   if(mode == SCREENSHOT_OFF)
     return;
@@ -1223,13 +1497,15 @@ void LodClusters::saveScreenshot(ScreenshotMode mode, const std::string& filenam
 
   if(mode == SCREENSHOT_WINDOW)
   {
-    m_app->saveScreenShot(std::filesystem::path(filename), 100);
+    m_app->saveScreenShot(std::filesystem::path(filename), quality);
   }
   else if(mode == SCREENSHOT_VIEWPORT)
   {
-    m_app->saveImageToFile(m_resources.m_frameBuffer.useResolved ? m_resources.m_frameBuffer.imgColorResolved.image :
-                                                                   m_resources.m_frameBuffer.imgColorLdr.image,
-                           m_resources.m_frameBuffer.windowSize, filename, 100, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    // the displayed image: resolved at window size, otherwise the target (fixed resolution)
+    const Resources::FrameBuffer& fb = m_resources.m_frameBuffer;
+    m_app->saveImageToFile(fb.useResolved ? fb.imgColorResolved.image : fb.imgColorLdr.image,
+                           fb.useResolved ? fb.windowSize : fb.targetSize, filename, quality,
+                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
   }
 }
 
@@ -1387,13 +1663,36 @@ void LodClusters::handleChanges()
   }
 
 
-  bool frameBufferChanged = false;
-  if(tweakChanged(m_tweak.supersample))
-  {
-    m_resources.initFramebuffer(m_windowSize, m_tweak.supersample);
-    updateImguiImage();
+  bool dlssLoaded = false;
+#if USE_DLSS
+  // switch to DLSS once the async init of the renderer's mode finished
+  Resources::DlssMode dlssWanted = m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD ?
+                                       Resources::DlssMode::eRayReconstruction :
+                                       Resources::DlssMode::eSuperResolution;
+  dlssLoaded                     = m_resources.pollDlssInit() == dlssWanted && m_rendererConfig.useDlss
+               && m_resources.m_frameBuffer.dlssMode == Resources::DlssMode::eNone;
 
-    frameBufferChanged = true;
+  if(m_resources.m_dlssEvaluateFailed)
+  {
+    // re-initializes the renderer natively
+    m_rendererConfig.useDlss         = false;
+    m_resources.m_dlssEvaluateFailed = false;
+  }
+#endif
+
+  bool frameBufferChanged = false;
+  // a change of only the HBAO resolution leaves the change id alone
+  const bool supersampleChanged = tweakChanged(m_tweak.supersample);
+  const bool hbaoQuarterChanged = tweakChanged(m_tweak.hbaoQuarter);
+  if(supersampleChanged || hbaoQuarterChanged)
+  {
+    const size_t fboChangeID = m_resources.m_fboChangeID;
+    m_resources.initFramebuffer(m_windowSize, m_tweak.supersample, m_tweak.hbaoQuarter);
+    if(fboChangeID != m_resources.m_fboChangeID)
+    {
+      updateImguiImage();
+      frameBufferChanged = true;
+    }
   }
 
   bool shaderChanged = false;
@@ -1404,6 +1703,16 @@ void LodClusters::handleChanges()
     // shader compile errors are a common cause of a failed render-scene init, so a reload is the
     // way to retry after fixing them
     m_renderSceneInitAllowed = true;
+  }
+
+  bool envHdriChanged = false;
+  if(m_envHdriFile != m_envHdriFileLast)
+  {
+    envHdriChanged = true;
+
+    deinitRenderer();
+    m_resources.loadEnvHdri(m_envHdriFile);
+    m_envHdriFileLast = m_envHdriFile;
   }
 
   bool sceneChanged = false;
@@ -1473,9 +1782,10 @@ void LodClusters::handleChanges()
       }
     }
 
-    if(sceneChanged || shaderChanged || renderSceneChanged || tweakChanged(m_tweak.renderer) || tweakChanged(m_tweak.supersample)
+    if(sceneChanged || shaderChanged || renderSceneChanged || envHdriChanged || tweakChanged(m_tweak.renderer)
+       || tweakChanged(m_tweak.supersample)
 #if USE_DLSS
-       || rendererCfgChanged(m_rendererConfig.useDlss) || rendererCfgChanged(m_rendererConfig.dlssQuality)
+       || rendererCfgChanged(m_rendererConfig.useDlss) || rendererCfgChanged(m_rendererConfig.dlssQuality) || dlssLoaded
 #endif
        || rendererCfgChanged(m_rendererConfig.flipWinding) || rendererCfgChanged(m_rendererConfig.useDebugVisualization)
        || rendererCfgChanged(m_rendererConfig.useCulling) || rendererCfgChanged(m_rendererConfig.forceTwoSided)
@@ -1486,9 +1796,14 @@ void LodClusters::handleChanges()
        || rendererCfgChanged(m_rendererConfig.useEXTmeshShader) || rendererCfgChanged(m_rendererConfig.useComputeRaster)
        || rendererCfgChanged(m_rendererConfig.usePrimitiveCulling) || rendererCfgChanged(m_rendererConfig.useTwoPassCulling)
        || rendererCfgChanged(m_rendererConfig.useTwoPassRejectLists) || rendererCfgChanged(m_rendererConfig.useDepthOnly)
-       || rendererCfgChanged(m_rendererConfig.useForcedInvisibleCulling)
-       || rendererCfgChanged(m_rendererConfig.usePersistentTraversal) || rendererCfgChanged(m_rendererConfig.useVulkanMemoryModel)
-       || rendererCfgChanged(m_rendererConfig.useAtomicLoadStore) || rendererCfgChanged(m_rendererConfig.useDiscreteLod)
+       || rendererCfgChanged(m_rendererConfig.useForcedInvisibleCulling) || rendererCfgChanged(m_rendererConfig.usePersistentTraversal)
+       || rendererCfgChanged(m_rendererConfig.useVulkanMemoryModel) || rendererCfgChanged(m_rendererConfig.useAtomicLoadStore)
+       || rendererCfgChanged(m_rendererConfig.useDiscreteLod) || rendererCfgChanged(m_rendererConfig.usePartitions)
+       || rendererCfgChanged(m_rendererConfig.usePtlas) || rendererCfgChanged(m_rendererConfig.usePtlasExplicitAabb)
+       || rendererCfgChanged(m_rendererConfig.partitionLayout) || rendererCfgChanged(m_rendererConfig.partitionGridCellSize)
+       || rendererCfgChanged(m_rendererConfig.partitionGridOrigin) || rendererCfgChanged(m_rendererConfig.partitionGridCellsPerAxis)
+       || rendererCfgChanged(m_rendererConfig.partitionDerivedTarget) || rendererCfgChanged(m_rendererConfig.partitionDerivedMaxInstances)
+       || rendererCfgChanged(m_rendererConfig.partitionDerivedMaxCount) || rendererCfgChanged(m_rendererConfig.usePartitionEarlyOut)
        || rendererCfgChanged(m_rendererConfig.textureLodMode) || rendererCfgChanged(m_rendererConfig.usePathtrace))
     {
       if(m_renderScene && (rendererCfgChanged(m_rendererConfig.useBlasCaching) || rendererCfgChanged(m_rendererConfig.useDiscreteLod)))
@@ -1515,6 +1830,15 @@ void LodClusters::handleChanges()
     {
       m_renderer->updatedFrameBuffer(m_resources, *m_renderScene);
       m_rendererFboChangeID = m_resources.m_fboChangeID;
+    }
+
+    if(m_streamingResetRequest)
+    {
+      if(m_renderScene)
+      {
+        m_renderScene->streamingReset();
+      }
+      m_streamingResetRequest = false;
     }
   }
 
@@ -1597,6 +1921,10 @@ void LodClusters::registerCameraPathParameters()
   // `--runcamerapath <index> <framecount>` plays back a path over a fixed number
   // of frames (deterministic), one keyframe-step per rendered frame. Meant to be
   // used within benchmark sequences.
+  m_info.parameterRegistry->add({"camerapathloop",
+                                 "make --runcamerapath wrap instead of holding at the end, so <framecount> sets one "
+                                 "lap and the step length sets the duration. needs a closed path. default false"},
+                                &m_cameraPathLoop);
   m_info.parameterRegistry->addCustom(
       {"runcamerapath", "deterministic fixed-step playback: <index> <framecount>, spreads the given path across framecount frames"},
       2, [this](const nvutils::ParameterBase* const, std::span<char const* const> args, const std::filesystem::path&) -> bool {
@@ -1660,16 +1988,30 @@ void LodClusters::updateCameraPath(double time)
 
   if(m_cameraPathPlayback == CAMERA_PATH_FIXED)
   {
-    // deterministic: frame f maps to u = f / (frames - 1)
-    int    denom = std::max(m_cameraPathFrames - 1, 1);
-    double u     = double(std::min(m_cameraPathFrame, denom)) / double(denom);
+    double u;
+    if(m_cameraPathLoop)
+    {
+      // one lap per `framecount` frames, so the speed a step runs at and how long it runs
+      // are independent. u goes 0 .. (n-1)/n and wraps, keeping the seam the same step size
+      // as every other. Assumes a closed path - a path whose last key is not its first will
+      // jump there, which is why this is opt-in rather than driven off the file's loop flag.
+      int n = std::max(m_cameraPathFrames, 1);
+      u     = double(m_cameraPathFrame % n) / double(n);
+      m_cameraPathFrame++;
+    }
+    else
+    {
+      // deterministic: frame f maps to u = f / (frames - 1)
+      int denom = std::max(m_cameraPathFrames - 1, 1);
+      u         = double(std::min(m_cameraPathFrame, denom)) / double(denom);
+
+      // advance for the next frame, hold at the end (the sequence/headless run
+      // stops on its own frame count)
+      if(m_cameraPathFrame < m_cameraPathFrames - 1)
+        m_cameraPathFrame++;
+    }
     applyCameraPathSample(u);
     m_cameraPathU = u;
-
-    // advance for the next frame, hold at the end (the sequence/headless run
-    // stops on its own frame count)
-    if(m_cameraPathFrame < m_cameraPathFrames - 1)
-      m_cameraPathFrame++;
   }
   else  // CAMERA_PATH_REALTIME
   {
@@ -1839,6 +2181,14 @@ void LodClusters::onRender(VkCommandBuffer cmd)
       frameConstants.ambientOcclusionRadius = m_tweak.aoRadius < 0 ? -m_tweak.aoRadius : sceneSize * m_tweak.aoRadius;
     }
 
+    VkExtent2D hdriSize              = m_resources.getEnvHdriSize();
+    frameConstants.envHdri.enabled   = m_tweak.useEnvHdri && m_resources.hasEnvHdri() ? 1 : 0;
+    frameConstants.envHdri.intensity = m_tweak.envHdriIntensity;
+    frameConstants.envHdri.rotation  = glm::radians(m_tweak.envHdriRotationDeg);
+    frameConstants.envHdri.elevation = glm::radians(m_tweak.envHdriElevationDeg);
+    frameConstants.envHdri.width     = hdriSize.width;
+    frameConstants.envHdri.height    = hdriSize.height;
+
     frameConstants.fogDensity = 0;
     if(m_tweak.fogDistance != 0 && m_frameConfig.visualize == VISUALIZE_SHADED)
     {
@@ -1881,6 +2231,7 @@ void LodClusters::onRender(VkCommandBuffer cmd)
 
     m_resources.cmdUpdateSkyLighting(cmd, m_frameConfig, m_profilerGpuTimer);
     m_renderer->render(cmd, m_resources, *m_renderScene, m_frameConfig, m_profilerGpuTimer);
+    accumulateFrameStats();
 
     // after all streaming operations of this frame, so it reflects the state the
     // next frame allocates against
@@ -1924,6 +2275,11 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     m_resources.m_queueStates.primary.m_pendingWaits.pop_back();
   }
 
+  if(m_renderer && m_headlessPickingWait > 0)
+  {
+    m_headlessPickingWait--;
+  }
+
   m_lastTime = time;
   m_frames++;
 }
@@ -1945,7 +2301,7 @@ void LodClusters::setSceneCamera(const std::filesystem::path& filePath, Scene& s
     // keep the clip planes updatedSceneGrid derived, the camera's defaults would replace them
     glm::dvec2 clipPlanes = m_info.cameraManipulator->getClipPlanes();
 
-    auto& c = scene.m_cameras[0];
+    auto& c = scene.m_cameras[std::clamp(m_cameraGltf, 0, int(scene.m_cameras.size()) - 1)];
     m_info.cameraManipulator->setFov(c.fovy);
 
 

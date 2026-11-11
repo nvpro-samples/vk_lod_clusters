@@ -268,6 +268,11 @@ struct SceneLoaderConfig
   std::string skipMaterialNames;
   std::string skipMeshNames;
 
+  // regular expression string, every instance below a node whose name matches shares a
+  // partition. A nested match starts a new one, the instances below no matching node share
+  // one more. Used by `ScenePartitionConfig::LAYOUT_NODE_REGEX`.
+  std::string partitionNodeNames;
+
   // discard instances whose materials have these properties
   bool skipAlphaMasked  = false;
   bool skipAlphaBlended = true;
@@ -281,10 +286,10 @@ struct SceneLoaderConfig
     // ignore progressInfo (runtime pointers, not configuration)
     return processingThreadsPct == other.processingThreadsPct && processingOnly == other.processingOnly
            && processingAllowPartial == other.processingAllowPartial && processingMemoryGiB == other.processingMemoryGiB
-           && autoSaveCache == other.autoSaveCache && autoLoadCache == other.autoLoadCache
-           && memoryMappedCache == other.memoryMappedCache && forcePreprocessMiB == other.forcePreprocessMiB
-           && simplifyOverridesFile == other.simplifyOverridesFile && skipNodeNames == other.skipNodeNames
-           && skipMaterialNames == other.skipMaterialNames && skipMeshNames == other.skipMeshNames
+           && autoSaveCache == other.autoSaveCache && autoLoadCache == other.autoLoadCache && memoryMappedCache == other.memoryMappedCache
+           && forcePreprocessMiB == other.forcePreprocessMiB && simplifyOverridesFile == other.simplifyOverridesFile
+           && skipNodeNames == other.skipNodeNames && skipMaterialNames == other.skipMaterialNames
+           && skipMeshNames == other.skipMeshNames && partitionNodeNames == other.partitionNodeNames
            && skipAlphaMasked == other.skipAlphaMasked && skipAlphaBlended == other.skipAlphaBlended
            && enableTexturedMaterials == other.enableTexturedMaterials && skipNormalMaps == other.skipNormalMaps;
   }
@@ -296,16 +301,70 @@ struct SceneLoaderConfig
 // Useful for benchmarking.
 struct SceneGridConfig
 {
-  // when set to true each new set of instance on the grid gets
-  // its own unique set of geometries. This stresses the streaming system
-  // and memory consumption a lot more.
-  bool      uniqueGeometriesForCopies = false;
-  uint32_t  numCopies                 = 1;
-  uint32_t  gridBits                  = 13;
-  glm::vec3 refShift                  = {1.0f, 1.0f, 1.0f};
-  float     snapAngle                 = 0;
-  float     minScale                  = 1.0f;
-  float     maxScale                  = 1.0f;
+  // fraction of copies that get their own set of geometries (0..1), the others
+  // reuse those sets. 1 gives every copy unique geometries, which stresses the
+  // streaming system and memory consumption a lot more.
+  float     uniqueGeometries = 0.0f;
+  uint32_t  numCopies        = 1;
+  uint32_t  gridBits         = 13;
+  glm::vec3 refShift         = {1.0f, 1.0f, 1.0f};
+  float     snapAngle        = 0;
+  float     minScale         = 1.0f;
+  float     maxScale         = 1.0f;
+};
+
+// Assignment of the instances to spatial partitions, used by the partitioned tlas and by
+// the partition early-out, which needs no extension.
+struct ScenePartitionConfig
+{
+  // How instances are grouped. The api is handed nothing but the partition count, so the
+  // grouping is the only lever on the driver's top level structure, and it drives trace
+  // cost, build cost and how often a partition can go quiet all at once.
+  enum Layout : uint32_t
+  {
+    // uniform cells over xz, ignores y and ignores density. Sized by `gridCellSize` or
+    // `gridCellsPerAxis`
+    LAYOUT_FIXED_GRID,
+    // as above, the resolution is derived from the instance count
+    LAYOUT_DERIVED_GRID,
+    // top-down median splits of the instance centers, uniform occupancy
+    LAYOUT_DERIVED_BVH_MEDIAN,
+    // top-down sah splits over the instance bounds, trades occupancy for tighter partitions
+    LAYOUT_DERIVED_BVH_SAH,
+    // the derived grid's initial cells, each split into quadrants while it holds more than
+    // the target
+    LAYOUT_DERIVED_QUADTREE,
+    // one partition per node group from `SceneLoaderConfig::partitionNodeNames`, the
+    // instances below no matching node share one more
+    LAYOUT_NODE_REGEX,
+    LAYOUT_COUNT,
+  };
+  uint32_t layout = LAYOUT_DERIVED_GRID;
+  // fixed grid: world units per cell, takes precedence over `gridCellsPerAxis` when non zero.
+  // Cells are aligned to the world origin shifted by `gridOrigin`, not to the scene bounds.
+  float     gridCellSize = 0;
+  glm::vec3 gridOrigin   = {0, 0, 0};
+  // fixed grid: cells along each of the two axes over the scene bounds
+  uint32_t gridCellsPerAxis = 16;
+  // derived layouts: instances a partition should hold, the bvh and quadtree leaf size or
+  // the initial grid resolution
+  uint32_t derivedTargetInstances = 64;
+  // derived grid: hard cap for a single partition, the resolution is increased until it fits
+  uint32_t derivedMaxInstances = 1024;
+  // derived layouts: refinement stops once the used partitions would exceed this, 0 only
+  // respects the device limit. The ptlas build cost tracks the partition count, so this is
+  // the budget that matters, not the occupancy the refinement chases.
+  uint32_t derivedMaxCount = 4096;
+  // device limit for the number of partitions
+  uint32_t maxPartitions = 0;
+
+  bool operator==(const ScenePartitionConfig& other) const
+  {
+    return layout == other.layout && gridCellSize == other.gridCellSize && gridOrigin == other.gridOrigin
+           && gridCellsPerAxis == other.gridCellsPerAxis && derivedTargetInstances == other.derivedTargetInstances
+           && derivedMaxInstances == other.derivedMaxInstances && derivedMaxCount == other.derivedMaxCount
+           && maxPartitions == other.maxPartitions;
+  }
 };
 
 struct Filters;
@@ -338,6 +397,22 @@ public:
   void   deinit();
 
   void updateSceneGrid(const SceneGridConfig& gridConfig);
+
+  // Assigns the instances to spatial partitions, see ScenePartitionConfig::Layout.
+  // Result is cached, repeated calls with the same config and scene state do nothing.
+  void updatePartitions(const ScenePartitionConfig& partitionConfig);
+  // both fill `m_instancePartitions` and return the number of partitions used
+  uint32_t buildPartitionsGrid(const ScenePartitionConfig& partitionConfig);
+  uint32_t buildPartitionsBvh(const ScenePartitionConfig& partitionConfig);
+  uint32_t buildPartitionsQuadtree(const ScenePartitionConfig& partitionConfig);
+  uint32_t buildPartitionsCells(const ScenePartitionConfig& partitionConfig);
+  uint32_t buildPartitionsNodeGroups();
+  // cells per axis of the derived grid before its refinement, the quadtree starts from them
+  uint32_t getPartitionGridBaseCells(const ScenePartitionConfig& partitionConfig) const;
+  // xz position of the instance center in cells of a `perAxis` grid over the scene bounds
+  glm::vec2 getPartitionGridPos(const shaderio::BBox& instanceBbox, uint32_t perAxis) const;
+  // how many partitions the budget and the device limit allow
+  uint32_t getPartitionBudget(const ScenePartitionConfig& partitionConfig) const;
 
   bool isMemoryMappedCache() const { return m_loadedFromCache && m_cacheFileMapping.valid(); }
 
@@ -660,17 +735,16 @@ public:
 
   // we virtually instance geometries to avoid higher cpu memory consumption
   // happens when the grid config is larger
-  const GeometryView& getActiveGeometry(size_t idx) const { return m_geometryViews[idx % m_originalGeometryCount]; }
-  size_t              getActiveGeometryCount() const { return m_activeGeometryCount; }
+  const GeometryView& getActiveGeometry(size_t idx) const { return m_geometryViews[m_activeToOriginal[idx]]; }
+  size_t              getActiveGeometryCount() const { return m_activeToOriginal.size(); }
+  size_t              getOriginalGeometryIndex(size_t idx) const { return m_activeToOriginal[idx]; }
 
   // transform these by an instance matrix and take the min/max for a tight world AABB,
   // see `kdopBuildHull` for why it has to be these points
-  const KDopHull& getActiveGeometryHull(size_t idx) const { return m_geometryHulls[idx % m_originalGeometryCount]; }
+  const KDopHull& getActiveGeometryHull(size_t idx) const { return m_geometryHulls[m_activeToOriginal[idx]]; }
 
-  uint32_t getGeometryInstanceFactor() const
-  {
-    return m_gridConfig.uniqueGeometriesForCopies ? 1u : uint32_t(m_instances.size() / m_originalInstanceCount);
-  }
+  // how many grid copies reference this active geometry
+  uint32_t getActiveGeometryInstanceFactor(size_t idx) const { return m_activeInstanceFactor[idx]; }
 
 
   //////////////////////////////////////////////////////////////////////////
@@ -786,6 +860,33 @@ public:
   shaderio::BBox m_gridBbox;
 
   std::vector<Instance> m_instances;
+
+  // spatial partitions, see `updatePartitions`
+  struct Partition
+  {
+    shaderio::BBox bbox;
+    uint32_t       instanceCount;
+    // first entry in `m_partitionInstanceOrder`, membership is fixed so this is built once
+    uint32_t instanceOffset;
+  };
+  ScenePartitionConfig  m_partitionConfig;
+  shaderio::BBox        m_partitionSceneBbox{};
+  std::vector<uint32_t> m_instancePartitions;
+  // instance ids grouped by partition, so a partition owns a contiguous range
+  std::vector<uint32_t>  m_partitionInstanceOrder;
+  std::vector<Partition> m_partitions;
+  // number of partitions with n instances, the last bin also counts larger ones
+  static constexpr uint32_t PARTITION_HISTOGRAM_MAX = 4096;
+  std::vector<uint32_t>     m_partitionHistogram;
+  uint32_t                  m_partitionHistogramMax = 0;
+  uint32_t                  m_partitionsPerAxis     = 0;
+  // per original instance, the node group from `SceneLoaderConfig::partitionNodeNames`,
+  // ~0 when no matching node is above it. Empty when the option is not used.
+  std::vector<uint32_t> m_instanceNodeGroups;
+  uint32_t              m_nodeGroupCount = 0;
+  // original instances below no matching node, they share one partition
+  size_t m_nodeGroupUngroupedCount = 0;
+
   // deduplicated material sets, one entry per distinct set (bounded by mesh count)
   std::vector<MaterialSetRange> m_instanceMaterialSets;
   // flat pool of scene material IDs the ranges above point into
@@ -879,7 +980,9 @@ private:
     std::vector<uint32_t> localMaterialIDs;
   };
 
-  size_t m_activeGeometryCount = 0;
+  // active geometry id -> original geometry, grid copies with unique geometries append new ids
+  std::vector<uint32_t> m_activeToOriginal;
+  std::vector<uint32_t> m_activeInstanceFactor;
 
   std::vector<GeometryStorage> m_geometryStorages;
   std::vector<GeometryView>    m_geometryViews;
@@ -1151,7 +1254,8 @@ private:
                                 const struct cgltf_data*     data,
                                 const struct cgltf_node*     node,
                                 const glm::mat4              parentObjToWorldTransform,
-                                struct Filters*              filters = nullptr);
+                                struct Filters*              filters   = nullptr,
+                                uint32_t                     nodeGroup = ~0u);
 
   // to handle glTF EXT_meshopt_compression
   bool loadCompressedViewsGLTF(ProcessingInfo&                                processingInfo,

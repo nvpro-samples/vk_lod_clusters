@@ -44,9 +44,16 @@ SEQUENCE "materials_raster_flipwinding"
 --flipwinding 1
 --visualize 0
 
+SEQUENCE "materials_raster_extmeshshader"
+--renderer 0
+--flipwinding 0
+--extmeshshader 1
+--visualize 0
+
 SEQUENCE "materials_raster_swraster"
 --renderer 0
 --flipwinding 0
+--extmeshshader 0
 --swraster 1
 --swrasterthreshold 8
 --visualize 2
@@ -125,7 +132,7 @@ SEQUENCE "materials_pathtrace_off"
 SEQUENCE "materials_pathtrace_on"
 --renderer 1
 --pathtrace 1
---pathtracebounces 3
+--pathtracebounces 2
 --pathtraceautoexposure 1
 --visualize 0
 

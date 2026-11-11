@@ -20,29 +20,20 @@ layout(scalar, binding = NVHBAO_MAIN_UBO) uniform controlBuffer
 };
 
 layout(binding=NVHBAO_MAIN_IMG_OUT)   uniform image2D imgOut;
-layout(binding=NVHBAO_MAIN_TEX_DEPTHARRAY) uniform sampler2DArray texDepthArray;
-layout(binding=NVHBAO_MAIN_TEX_RESULTARRAY) uniform sampler2DArray texResultArray;
+layout(binding=NVHBAO_MAIN_TEX_DEPTH) uniform sampler2D texDepth;
+layout(binding=NVHBAO_MAIN_TEX_RESULT) uniform sampler2D texResult;
 
-
-#ifndef NVHBAO_BLUR
-#define NVHBAO_BLUR 0
-#endif
-
-#if NVHBAO_BLUR
-layout(local_size_x = 16, local_size_y = 16) in;
-#else
 layout(local_size_x = 8, local_size_y = 8) in;
-#endif
 
 #include "hbao_apply.glsl"
 
 void main()
 {
-  float totalOcclusion = hbaoOcclusion(gl_WorkGroupID.xy, gl_LocalInvocationID.xy, gl_GlobalInvocationID.xy);
   ivec2 storePos = ivec2(gl_GlobalInvocationID.xy);
 
   if (all(lessThan(storePos, g_Ssao.view.viewportSize.xy)))
   {
+    float totalOcclusion = hbaoVisibility(storePos);
     vec4 color = imageLoad(imgOut, storePos);
     color.xyz *= totalOcclusion;
     imageStore(imgOut, storePos, color);

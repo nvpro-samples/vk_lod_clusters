@@ -363,7 +363,7 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
           offsetRequested = subgroupBroadcastFirst(offsetRequested);
           offsetRequested += subgroupBallotExclusiveBitCount(voteRequested);
           
-          if (triggerRequest && offsetRequested <= streaming.request.maxLoads) {
+          if (triggerRequest && offsetRequested < streaming.request.maxLoads) {
             // while streaming data is based on geometry 
             streaming.request.loadGeometryGroups.d[offsetRequested] = uvec2(geometryID, groupIndex);
           }
@@ -402,13 +402,15 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   
   if (subgroupElect())
   {
-  #if USE_PERSISTENT_TRAVERSAL_KERNEL
-    // increase global task counter
-    atomicAdd(buildRW.traversalTaskCounter, int(countNodes));
-  #endif
     // get memory offsets
     offsetNodes  = atomicAdd(buildRW.traversalNodeWriteCounter, countNodes);
     offsetGroups = atomicAdd(buildRW.traversalGroupWriteCounter, countGroups);
+  #if USE_PERSISTENT_TRAVERSAL_KERNEL
+    // increase global task counter by the nodes that are stored, so it reaches zero
+    // even when the array overflows. Our own task still counts, it cannot hit zero meanwhile.
+    uint storedNodes = min(countNodes, build.maxTraversalInfos - min(offsetNodes, build.maxTraversalInfos));
+    if (storedNodes != 0) atomicAdd(buildRW.traversalTaskCounter, int(storedNodes));
+  #endif
   }
   memoryBarrierBuffer();
   
@@ -561,7 +563,7 @@ void processAllSubTasks(inout TraversalInfo traversalInfo, bool threadRunnable, 
 
 #if USE_PERSISTENT_TRAVERSAL_KERNEL
 
-void run_persistent()
+bool run_persistent()
 {    
   // This is a persistent threads kernel that implements
   // a producer/consumer loop.
@@ -633,7 +635,7 @@ void run_persistent()
     #endif
       if (subgroupAny(isEmpty))
       {
-        return;
+        return false;
       }
     }
     
@@ -675,28 +677,36 @@ void run_persistent()
       // All processed items need to decrement the global task counter
       // and reset their complete state.      
       uint numRunnable = subgroupBallotBitCount(subgroupBallot(threadRunnable));
-      
+
+      int tasksBefore = 0;
       if (subgroupElect()) {
-        atomicAdd(buildRW.traversalTaskCounter, -int(numRunnable));
+        tasksBefore = atomicAdd(buildRW.traversalTaskCounter, -int(numRunnable));
       }
-      
+
+      // the subgroup taking the counter to zero finished the traversal, nothing can enqueue anymore
+      if (subgroupBroadcastFirst(tasksBefore) == int(numRunnable))
+      {
+        return true;
+      }
+
       if (threadRunnable) {
         // reset read index to invalid
         threadReadIndex = ~0;
       }
     }
   }
+  return false;
 }
 
 void main_persistent()
 {
-  run_persistent();
-  
-  uint threadID = getGlobalInvocationIndex(gl_GlobalInvocationID);
-
-  if (threadID == 0) {
+  // Other subgroups may still traverse when we return, only the one that took the task
+  // counter to zero knows the final group count. Without any node the grid comes from
+  // BUILD_SETUP_TRAVERSAL_RUN.
+  if (run_persistent() && subgroupElect()) {
     // this sets up the grid for `traversal_run_groups.comp.glsl`
-  
+
+    memoryBarrierBuffer();
     uint groupCount = atomicAdd(buildRW.traversalGroupWriteCounter,0);
     groupCount = min(groupCount,build.maxTraversalInfos);
     uint workGroupCount = (groupCount + TRAVERSAL_GROUPS_WORKGROUP - 1) / TRAVERSAL_GROUPS_WORKGROUP;

@@ -30,3 +30,4 @@ zbsgfxpack.lua
 clang_format.bat
 tests/_results/
 tests/*.nvsngeo
+screenshot_*

@@ -10,6 +10,8 @@
 // It initialize the NGX and create the G-Buffers for the denoiser
 // It also provides the descriptor set for the denoiser
 
+#include <future>
+
 #include <glm/glm.hpp>
 
 
@@ -42,6 +44,9 @@ public:
   {
     VkInstance               instance{};
     nvvk::ResourceAllocator* resourceAllocator{};
+    uint32_t                 queueFamilyIndex{};
+    // main thread queue, runs the warm-up feature's creation commands
+    VkQueue queue{};
 
     // optional for UI/imgui
     nvvk::SamplerPool* samplerPool{};
@@ -63,6 +68,11 @@ public:
   void deinitResources();
 
   void initDenoiser();
+  // runs initDenoiser on a worker thread, ensureInitialized waits for it
+  void initAsync();
+  bool isInitPending() const { return m_initFuture.valid(); }
+  // completes initAsync if it finished, returns true if so
+  bool pollInit();
   // Return the descriptor info for the DLSS buffer
   VkDescriptorImageInfo getDescriptorImageInfo(DlssBufferType name) const;
 
@@ -79,8 +89,8 @@ public:
   // To be called externally only for `DlssRayReconstruction::ResourceType::eColorOut`
   void setResource(DlssRayReconstruction::ResourceType resourceId, VkImage image, VkImageView imageView, VkFormat format);
 
-  // This is the actual denoising call
-  void denoise(VkCommandBuffer cmd, glm::vec2 jitter, const glm::mat4& modelView, const glm::mat4& projection, bool reset = false);
+  // This is the actual denoising call, returns false if nothing was written to the output
+  bool denoise(VkCommandBuffer cmd, glm::vec2 jitter, const glm::mat4& modelView, const glm::mat4& projection, bool reset = false);
 
   // This is for the debug UI
   void onUi();
@@ -91,17 +101,28 @@ public:
   const nvvk::GBuffer& getGBuffers() const { return m_dlssGBuffers; }
 
   bool ensureInitialized();
+  bool isInitialized() const { return !m_initFuture.valid() && m_initialized; }
 
 private:
+  void warmupFeature();
+  // main thread, after the init finished
+  void finishWarmup(bool submit);
+
   InitInfo m_info{};
   Settings m_settings{};
   bool     m_initialized  = false;
   bool     m_hasResources = false;
   bool     m_dlssCreated  = false;
 
+  std::future<void> m_initFuture;
+
   // #DLSS - Wrapper for DLSS
   NgxContext            m_ngx{};
   DlssRayReconstruction m_dlss{};
+
+  DlssRayReconstruction m_warmup{};
+  VkCommandPool         m_warmupPool{};
+  VkCommandBuffer       m_warmupCmd{};
 
   std::vector<VkFormat> m_bufferInfos = {
       {VK_FORMAT_R16G16B16A16_SFLOAT},  // #DLSS - Rendered image       : eDlssRenderImage

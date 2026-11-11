@@ -100,9 +100,27 @@ layout(local_size_x=INSTANCES_CLASSIFY_LOD_WORKGROUP) in;
 
 void main()
 {
+#if USE_PARTITION_EARLY_OUT
+  // dispatch is over the compacted blocks of partition-sorted instances, a block id is a
+  // start offset so the mapping is arithmetic
+  uint workGroupID  = getWorkGroupIndex(gl_WorkGroupID);
+  uint blockSlot    = workGroupID / (PARTITION_INSTANCE_BLOCK_SIZE / PARTITION_ACTIVE_INSTANCES_WORKGROUP);
+  uint blockLocal   = (workGroupID % (PARTITION_INSTANCE_BLOCK_SIZE / PARTITION_ACTIVE_INSTANCES_WORKGROUP))
+                          * PARTITION_ACTIVE_INSTANCES_WORKGROUP
+                      + gl_LocalInvocationID.x;
+  // only a 16-bit grid overshoots the active blocks, past them the slots are stale
+  bool blockValid   = USE_16BIT_DISPATCH == 0 || blockSlot < build.activeBlockCounter;
+  uint orderedIndex = build.activeBlocks.d[blockValid ? blockSlot : 0] * PARTITION_INSTANCE_BLOCK_SIZE + blockLocal;
+  // clamp the index, carry validity separately: the guarded loads below are predicated
+  // rather than branched, and a ~0 id would land at base + 4 GiB (32-bit byte offsets)
+  blockValid        = blockValid && orderedIndex < build.numRenderInstances;
+  uint instanceID   = build.partitionInstanceOrder.d[blockValid ? orderedIndex : 0];
+#else
   uint instanceID   = getGlobalInvocationIndex(gl_GlobalInvocationID);
+  bool blockValid   = true;
+#endif
   uint instanceLoad = min(build.numRenderInstances-1, instanceID);
-  bool isValid      = instanceID == instanceLoad;
+  bool isValid      = blockValid && instanceID == instanceLoad;
   
   RenderInstance instance = instances[instanceLoad];
   uint geometryID = instance.geometryID;
@@ -119,7 +137,7 @@ void main()
 #endif
   
   bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix), clipMin, clipMax, clipValid);
-  bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, CULL_MIN_PIXEL_SIZE) && intersectHiz(clipMin, clipMax, 0)));
+  bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, view.cullMinPixelSize) && intersectHiz(clipMin, clipMax, 0)));
   
   uint visibilityState = isVisible ? INSTANCE_VISIBLE_BIT : 0;
   
@@ -230,18 +248,21 @@ void main()
     // ensure that the tlas instances are always initialized to the pre-built low detail blas and
     // renderable in some way.
     // May be overwritten at a later time in `instance_assign_blas.comp.glsl`
+    // (ptlas resolves the fallback there instead, it has no pre-initialized instances)
     
+  #if !USE_PTLAS
     // We might want to remove the instance completely if not visible, or just use the low detail blas
-  #if USE_CULLING && USE_FORCED_INVISIBLE_CULLING && FORCE_INVISIBLE_CULLED_REMOVES_INSTANCE
+    #if USE_CULLING && USE_FORCED_INVISIBLE_CULLING && FORCE_INVISIBLE_CULLED_REMOVES_INSTANCE
     if(!isVisible && build.frameIndex != 0){
       // first frame must always have a valid BLAS due to TLAS BUILD, other frames are TLAS UPDATE
       build.tlasInstances.d[instanceID].blasReference             = 0;
     }
     else
-  #endif
+    #endif
     {
       build.tlasInstances.d[instanceID].blasReference             = geometry.lowDetailBlasAddress;
     }
+  #endif
 
   }
 }

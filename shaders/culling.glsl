@@ -120,11 +120,11 @@ bool intersectHiz(vec4 clipMin, vec4 clipMax, uint idx)
   clipMin.xy = clipMin.xy * 0.5 + 0.5;
   clipMax.xy = clipMax.xy * 0.5 + 0.5;
   
-  clipMin.xy *= view.hizSizeFactors.xy;
-  clipMax.xy *= view.hizSizeFactors.xy;
+  clipMin.xy *= view.hizSizeFactors;
+  clipMax.xy *= view.hizSizeFactors;
    
-  clipMin.xy = min(clipMin.xy, view.hizSizeFactors.zw);
-  clipMax.xy = min(clipMax.xy, view.hizSizeFactors.zw);
+  clipMin.xy = min(clipMin.xy, view.hizSizeFactors);
+  clipMax.xy = min(clipMax.xy, view.hizSizeFactors);
   
   vec2  size = (clipMax.xy - clipMin.xy);
   float maxSize = max(size.x * view.hizSize.x, size.y * view.hizSize.y);
@@ -138,10 +138,14 @@ bool intersectHiz(vec4 clipMin, vec4 clipMax, uint idx)
   vec2 fineMipSize = view.hizSize * exp2(1 - mipLevel);
   mipLevel -= float(all(lessThanEqual(fract(clipMin.xy * fineMipSize) + size * fineMipSize, vec2(2.0))));
 
+  // center at most on the mip's last valid texel, so the 2x2 footprint stays on texels the build wrote
+  vec2 mipSize = view.hizSize * exp2(-max(mipLevel, 0.0));
+  vec2 uv      = min((clipMin.xy + clipMax.xy) * 0.5, (ceil(view.hizSizeFactors * mipSize) - 1.0) / mipSize);
+
 #if USE_TWO_PASS_CULLING
-  float depth = textureLod(texHizFar[idx], ((clipMin.xy + clipMax.xy)*0.5),mipLevel).r;
+  float depth = textureLod(texHizFar[idx], uv, mipLevel).r;
 #else
-  float depth = textureLod(texHizFar, ((clipMin.xy + clipMax.xy)*0.5),mipLevel).r;
+  float depth = textureLod(texHizFar, uv, mipLevel).r;
 #endif
   bool result = clipMax.z >= depth - c_depthNudge;
 

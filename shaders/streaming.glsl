@@ -19,7 +19,9 @@ void streamingAgeFilter(uint residentID, uint geometryID, Group_in groupRef, boo
   if (useBlasCaching)
   {
     uint lodLevel    = streaming.resident.groups.d[residentID].lodLevel;
-    uint cachedLevel = build.geometryCachedInfos.d[geometryID].cachedLevel;
+    // the cycle minimum, not this frame's value: instances in a skipped partition
+    // contribute nothing to `cachedLevel` but still reference their cached blas
+    uint cachedLevel = build.geometryCachedRetain.d[geometryID];
     
     // keep cached levels alive
     if (lodLevel >= cachedLevel) {
@@ -37,7 +39,7 @@ void streamingAgeFilter(uint residentID, uint geometryID, Group_in groupRef, boo
   if (age > streaming.ageThreshold)
   {    
     uint unloadOffset = atomicAdd(streamingRW.request.unloadCounter, 1);
-    if (unloadOffset <= streaming.request.maxUnloads) {
+    if (unloadOffset < streaming.request.maxUnloads) {
       streaming.request.unloadGeometryGroups.d[unloadOffset] = uvec2(geometryID, streaming.resident.groupIDs.d[residentID]);
     }
   }

@@ -58,12 +58,16 @@ public:
 
     // the system may use only a sub-rectangle of the allocated width/height
     // you should clamp access to this, when sampling the texture
+    // rounded up, so odd source sizes keep their last texel
     uint32_t usedWidth;
     uint32_t usedHeight;
+    // unrounded size in texels, maps normalized screen coordinates to the texture
+    float exactWidth;
+    float exactHeight;
 
-    // xy scale and zw clamp
-    // use min(uv*factor.xy,factor.zw) for lookups
-    void getShaderFactors(float factors[4]) const;
+    // exact screen extent, scales and clamps lookups
+    // use clamp(uv*factor,0,factor) for lookups
+    void getShaderFactors(float factors[2]) const;
     void getSize(float size[2]) const;
   };
 

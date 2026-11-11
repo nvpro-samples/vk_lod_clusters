@@ -302,6 +302,9 @@ struct SceneStreaming
   uint    useBlasCaching;
   uint    clasPositionTruncateBits;
 
+  // see GEOMETRY_CACHED_BLAS_STRIDE. 0 means no entry.
+  BUFFER_REF(uint64s_inout) cachedBlasAddresses;
+
   StreamingResident  resident;
   StreamingUpdate    update;
   StreamingRequest   request;

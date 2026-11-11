@@ -34,10 +34,11 @@ done
 shift $((OPTIND - 1))
 
 if [ -z "$exe" ]; then
-  for candidate in "$root_dir/_bin/Release/vk_lod_clusters_internal" \
-                   "$root_dir/_bin/Release/vk_lod_clusters_internal.exe" \
-                   "$root_dir/_bin/vk_lod_clusters_internal"; do
-    if [ -x "$candidate" ]; then exe="$candidate"; break; fi
+  # named after the checkout's folder, as in CMakeLists.txt; the newer of Release and RelWithDebInfo
+  name="$(basename "$root_dir")"
+  for candidate in "$root_dir"/_bin/Release/"$name"{,.exe} "$root_dir"/_bin/RelWithDebInfo/"$name"{,.exe} \
+                   "$root_dir/_bin/$name"; do
+    if [ -x "$candidate" ] && { [ -z "$exe" ] || [ "$candidate" -nt "$exe" ]; }; then exe="$candidate"; fi
   done
 fi
 if [ ! -x "$exe" ]; then
@@ -47,6 +48,7 @@ fi
 # the app runs with the case directory as its working directory, so relative paths
 # have to be resolved here, while they still mean something
 exe="$(cd "$(dirname "$exe")" && pwd)/$(basename "$exe")"
+echo "executable: $exe ($(date -r "$exe" '+%Y-%m-%d %H:%M:%S'))"
 if [ -n "$scene" ]; then
   scene="$(cd "$(dirname "$scene")" && pwd)/$(basename "$scene")"
 fi

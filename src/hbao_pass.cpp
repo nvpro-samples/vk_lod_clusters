@@ -56,6 +56,8 @@ bool HbaoPass::init(nvvk::ResourceAllocator* allocator, nvvk::SamplerPool* sampl
     bindings.addBinding(NVHBAO_MAIN_IMG_VIEWNORMAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     bindings.addBinding(NVHBAO_MAIN_IMG_DEPTHARRAY, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     bindings.addBinding(NVHBAO_MAIN_IMG_RESULTARRAY, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(NVHBAO_MAIN_IMG_RESULT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings.addBinding(NVHBAO_MAIN_TEX_RESULT, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     bindings.addBinding(NVHBAO_MAIN_IMG_OUT, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT);
     m_dsetPack.init(bindings, m_device, config.maxFrames);
 
@@ -103,16 +105,9 @@ static bool compileShader(nvvkglsl::GlslCompiler*        compiler,
 
 bool HbaoPass::reloadShaders()
 {
-  shaderc::CompileOptions optionsRaw  = m_glslCompiler->options();
-  shaderc::CompileOptions optionsBlur = m_glslCompiler->options();
-
-  optionsRaw.AddMacroDefinition("NVHBAO_BLUR", "0");
-  optionsBlur.AddMacroDefinition("NVHBAO_BLUR", "1");
-
   bool state = true;
-  state = compileShader(m_glslCompiler, m_shaders.applyRaw, VK_SHADER_STAGE_COMPUTE_BIT, "hbao_apply.comp.glsl", &optionsRaw) && state;
-  state = compileShader(m_glslCompiler, m_shaders.applyBlurred, VK_SHADER_STAGE_COMPUTE_BIT, "hbao_apply.comp.glsl", &optionsBlur)
-          && state;
+  state = compileShader(m_glslCompiler, m_shaders.apply, VK_SHADER_STAGE_COMPUTE_BIT, "hbao_apply.comp.glsl") && state;
+  state = compileShader(m_glslCompiler, m_shaders.blur, VK_SHADER_STAGE_COMPUTE_BIT, "hbao_blur.comp.glsl") && state;
   state = compileShader(m_glslCompiler, m_shaders.calc, VK_SHADER_STAGE_COMPUTE_BIT, "hbao_calc.comp.glsl") && state;
   state = compileShader(m_glslCompiler, m_shaders.deinterleave, VK_SHADER_STAGE_COMPUTE_BIT, "hbao_deinterleave.comp.glsl") && state;
   state = compileShader(m_glslCompiler, m_shaders.viewNormal, VK_SHADER_STAGE_COMPUTE_BIT, "hbao_viewnormal.comp.glsl") && state;
@@ -128,8 +123,8 @@ bool HbaoPass::reloadShaders()
 
 void HbaoPass::updatePipelines()
 {
-  vkDestroyPipeline(m_device, m_pipelines.applyRaw, nullptr);
-  vkDestroyPipeline(m_device, m_pipelines.applyBlurred, nullptr);
+  vkDestroyPipeline(m_device, m_pipelines.apply, nullptr);
+  vkDestroyPipeline(m_device, m_pipelines.blur, nullptr);
   vkDestroyPipeline(m_device, m_pipelines.calc, nullptr);
   vkDestroyPipeline(m_device, m_pipelines.deinterleave, nullptr);
   vkDestroyPipeline(m_device, m_pipelines.viewNormal, nullptr);
@@ -142,10 +137,10 @@ void HbaoPass::updatePipelines()
   info.stage.pName                       = "main";
   info.stage.pNext                       = &shaderInfo;
 
-  shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.applyRaw);
-  vkCreateComputePipelines(m_device, nullptr, 1, &info, nullptr, &m_pipelines.applyRaw);
-  shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.applyBlurred);
-  vkCreateComputePipelines(m_device, nullptr, 1, &info, nullptr, &m_pipelines.applyBlurred);
+  shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.apply);
+  vkCreateComputePipelines(m_device, nullptr, 1, &info, nullptr, &m_pipelines.apply);
+  shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.blur);
+  vkCreateComputePipelines(m_device, nullptr, 1, &info, nullptr, &m_pipelines.blur);
   shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.deinterleave);
   vkCreateComputePipelines(m_device, nullptr, 1, &info, nullptr, &m_pipelines.deinterleave);
   shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.calc);
@@ -153,8 +148,8 @@ void HbaoPass::updatePipelines()
   shaderInfo = nvvkglsl::GlslCompiler::makeShaderModuleCreateInfo(m_shaders.viewNormal);
   vkCreateComputePipelines(m_device, nullptr, 1, &info, nullptr, &m_pipelines.viewNormal);
 
-  NVVK_DBG_NAME(m_pipelines.applyBlurred);
-  NVVK_DBG_NAME(m_pipelines.applyRaw);
+  NVVK_DBG_NAME(m_pipelines.blur);
+  NVVK_DBG_NAME(m_pipelines.apply);
   NVVK_DBG_NAME(m_pipelines.deinterleave);
   NVVK_DBG_NAME(m_pipelines.calc);
   NVVK_DBG_NAME(m_pipelines.viewNormal);
@@ -166,8 +161,8 @@ void HbaoPass::deinit()
   m_samplerPool->releaseSampler(m_linearSampler);
   m_samplerPool->releaseSampler(m_nearestSampler);
 
-  vkDestroyPipeline(m_device, m_pipelines.applyBlurred, nullptr);
-  vkDestroyPipeline(m_device, m_pipelines.applyRaw, nullptr);
+  vkDestroyPipeline(m_device, m_pipelines.blur, nullptr);
+  vkDestroyPipeline(m_device, m_pipelines.apply, nullptr);
   vkDestroyPipeline(m_device, m_pipelines.calc, nullptr);
   vkDestroyPipeline(m_device, m_pipelines.deinterleave, nullptr);
   vkDestroyPipeline(m_device, m_pipelines.viewNormal, nullptr);
@@ -209,19 +204,21 @@ bool HbaoPass::initFrame(Frame& frame, const FrameConfig& config, VkCommandBuffe
   VkImageCreateInfo     info     = DEFAULT_VkImageCreateInfo;
   VkImageViewCreateInfo viewInfo = DEFAULT_VkImageViewCreateInfo;
 
-  info.extent.width  = width;
-  info.extent.height = height;
+  // the images are sized for the AO grid, a quarter run needs a frame of its own
+  const uint32_t downscale = config.quarterRes ? 2 : 1;
+  const uint32_t aoWidth   = (width + downscale - 1) / downscale;
+  const uint32_t aoHeight  = (height + downscale - 1) / downscale;
+
+  info.extent.width  = aoWidth;
+  info.extent.height = aoHeight;
   info.usage         = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 
   info.format = viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
   m_allocator->createImage(frame.images.viewNormal, info, viewInfo);
   frame.images.viewNormal.descriptor.sampler = m_nearestSampler;
 
-  uint32_t quarterWidth  = ((width + 3) / 4);
-  uint32_t quarterHeight = ((height + 3) / 4);
-
-  info.extent.width  = quarterWidth;
-  info.extent.height = quarterHeight;
+  info.extent.width  = (aoWidth + 3) / 4;
+  info.extent.height = (aoHeight + 3) / 4;
   info.arrayLayers   = RANDOM_ELEMENTS;
 
   viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
@@ -234,6 +231,14 @@ bool HbaoPass::initFrame(Frame& frame, const FrameConfig& config, VkCommandBuffe
   m_allocator->createImage(frame.images.linearDepthArray, info, viewInfo);
   frame.images.linearDepthArray.descriptor.sampler = m_nearestSampler;
 
+  info.extent.width  = aoWidth;
+  info.extent.height = aoHeight;
+  info.arrayLayers   = 1;
+  viewInfo.viewType  = VK_IMAGE_VIEW_TYPE_2D;
+  info.format = viewInfo.format = VK_FORMAT_R16G16_SFLOAT;
+  m_allocator->createImage(frame.images.result, info, viewInfo);
+  frame.images.result.descriptor.sampler = m_nearestSampler;
+
   nvvk::BarrierContainer barrierContainer;
   barrierContainer.appendOptionalLayoutTransition(
       frame.images.viewNormal, nvvk::makeImageMemoryBarrier({nullptr, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL}));
@@ -241,6 +246,8 @@ bool HbaoPass::initFrame(Frame& frame, const FrameConfig& config, VkCommandBuffe
       frame.images.resultArray, nvvk::makeImageMemoryBarrier({nullptr, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL}));
   barrierContainer.appendOptionalLayoutTransition(
       frame.images.linearDepthArray, nvvk::makeImageMemoryBarrier({nullptr, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL}));
+  barrierContainer.appendOptionalLayoutTransition(
+      frame.images.result, nvvk::makeImageMemoryBarrier({nullptr, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL}));
   barrierContainer.cmdPipelineBarrier(cmd, 0);
 
 
@@ -256,6 +263,8 @@ bool HbaoPass::initFrame(Frame& frame, const FrameConfig& config, VkCommandBuffe
   writes.append(m_dsetPack.makeWrite(NVHBAO_MAIN_IMG_VIEWNORMAL, frame.slot), frame.images.viewNormal);
   writes.append(m_dsetPack.makeWrite(NVHBAO_MAIN_IMG_DEPTHARRAY, frame.slot), frame.images.linearDepthArray);
   writes.append(m_dsetPack.makeWrite(NVHBAO_MAIN_IMG_RESULTARRAY, frame.slot), frame.images.resultArray);
+  writes.append(m_dsetPack.makeWrite(NVHBAO_MAIN_IMG_RESULT, frame.slot), frame.images.result);
+  writes.append(m_dsetPack.makeWrite(NVHBAO_MAIN_TEX_RESULT, frame.slot), frame.images.result);
   writes.append(m_dsetPack.makeWrite(NVHBAO_MAIN_IMG_OUT, frame.slot), config.targetColor);
 
   vkUpdateDescriptorSets(m_device, uint32_t(writes.size()), writes.data(), 0, nullptr);
@@ -263,9 +272,11 @@ bool HbaoPass::initFrame(Frame& frame, const FrameConfig& config, VkCommandBuffe
   VkImage hbaoResultArray = frame.images.resultArray.image;
   VkImage hbaoDepthArray  = frame.images.linearDepthArray.image;
   VkImage hbaoViewNormal  = frame.images.viewNormal.image;
+  VkImage hbaoResult      = frame.images.result.image;
   NVVK_DBG_NAME(hbaoResultArray);
   NVVK_DBG_NAME(hbaoDepthArray);
   NVVK_DBG_NAME(hbaoViewNormal);
+  NVVK_DBG_NAME(hbaoResult);
 
   return true;
 }
@@ -278,6 +289,7 @@ void HbaoPass::deinitFrame(Frame& frame)
     m_allocator->destroyImage(frame.images.resultArray);
     m_allocator->destroyImage(frame.images.linearDepthArray);
     m_allocator->destroyImage(frame.images.viewNormal);
+    m_allocator->destroyImage(frame.images.result);
   }
 
   frame = Frame();
@@ -289,8 +301,9 @@ void HbaoPass::updateUbo(VkCommandBuffer cmd, const Frame& frame, const Settings
   uint32_t    width  = frame.width;
   uint32_t    height = frame.height;
 
-  uint32_t quarterWidth  = ((width + 3) / 4);
-  uint32_t quarterHeight = ((height + 3) / 4);
+  const uint32_t downscale = frame.config.quarterRes ? 2 : 1;
+  const uint32_t aoWidth   = (width + downscale - 1) / downscale;
+  const uint32_t aoHeight  = (height + downscale - 1) / downscale;
 
   glsl::NVHBAOData hbaoData = {};
 
@@ -298,7 +311,7 @@ void HbaoPass::updateUbo(VkCommandBuffer cmd, const Frame& frame, const Settings
 
   hbaoData.view.matClipToView   = glm::inverse(view.projectionMatrix);
   hbaoData.view.matWorldToView  = view.viewMatrix;
-  hbaoData.view.pixelOffset     = glm::vec2(0, 0);
+  hbaoData.view.pixelOffset     = glm::vec2(0, 0);  // unused, the shaders sample pixel centres
   hbaoData.view.viewportSize    = glm::ivec2(width, height);
   hbaoData.view.invViewportSize = glm::vec2(1.0f) / viewportSizeF;
 
@@ -308,14 +321,17 @@ void HbaoPass::updateUbo(VkCommandBuffer cmd, const Frame& frame, const Settings
   hbaoData.view.windowToClipScale = 1.0f / clipToWindowScale;
   hbaoData.view.windowToClipBias  = -clipToWindowBias * hbaoData.view.windowToClipScale;
 
-  hbaoData.amount                  = settings.intensity;
-  hbaoData.surfaceBias             = settings.bias;
-  hbaoData.powerExponent           = settings.powerExponent;
-  hbaoData.radiusWorld             = settings.radius;
-  hbaoData.invQuantizedGbufferSize = glm::vec2(1.0) / (glm::vec2(quarterWidth * 4, quarterHeight * 4));
-  hbaoData.invBackgroundViewDepth  = 1.0f / (settings.backgroundViewDepth * view.farPlane);
+  hbaoData.amount                 = settings.intensity;
+  hbaoData.surfaceBias            = settings.bias;
+  hbaoData.powerExponent          = settings.powerExponent;
+  hbaoData.radiusWorld            = settings.radius;
+  hbaoData.aoSize                 = glm::ivec2(aoWidth, aoHeight);
+  hbaoData.quarterSize            = glm::ivec2((aoWidth + 3) / 4, (aoHeight + 3) / 4);
+  hbaoData.downscale              = int(downscale);
+  hbaoData.blur                   = settings.blur ? 1 : 0;
+  hbaoData.invBackgroundViewDepth = 1.0f / (settings.backgroundViewDepth * view.farPlane);
 
-  hbaoData.radiusToScreen = viewportSizeF.y * 0.5f * abs(view.projectionMatrix[1][1]);
+  hbaoData.radiusToScreen = float(aoHeight) * 0.5f * abs(view.projectionMatrix[1][1]);
 
   hbaoData.clipToView = {view.projectionMatrix[2][3] / view.projectionMatrix[0][0],
                          view.projectionMatrix[2][3] / view.projectionMatrix[1][1]};
@@ -325,15 +341,20 @@ void HbaoPass::updateUbo(VkCommandBuffer cmd, const Frame& frame, const Settings
 
 void HbaoPass::cmdCompute(VkCommandBuffer cmd, const Frame& frame, const Settings& settings, bool apply) const
 {
-  uint32_t width  = frame.width;
-  uint32_t height = frame.height;
+  const uint32_t width  = frame.width;
+  const uint32_t height = frame.height;
 
-  uint32_t quarterWidth  = ((width + 3) / 4);
-  uint32_t quarterHeight = ((height + 3) / 4);
+  const uint32_t downscale = frame.config.quarterRes ? 2 : 1;
+  const uint32_t aoWidth   = (width + downscale - 1) / downscale;
+  const uint32_t aoHeight  = (height + downscale - 1) / downscale;
+
+  const uint32_t quarterWidth  = (aoWidth + 3) / 4;
+  const uint32_t quarterHeight = (aoHeight + 3) / 4;
 
   glm::uvec2 gridInput((width + 7) / 8, (height + 7) / 8);
+  glm::uvec2 gridAo((aoWidth + 7) / 8, (aoHeight + 7) / 8);
   glm::uvec2 gridQuarter((quarterWidth + 7) / 8, (quarterHeight + 7) / 8);
-  glm::uvec2 gridBlur((width + 15) / 16, (height + 15) / 16);
+  glm::uvec2 gridBlur((aoWidth + 15) / 16, (aoHeight + 15) / 16);
 
   VkMemoryBarrier memBarrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
   memBarrier.srcAccessMask   = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -345,10 +366,10 @@ void HbaoPass::cmdCompute(VkCommandBuffer cmd, const Frame& frame, const Setting
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(frame.slot), 0, nullptr);
 
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.deinterleave);
-  vkCmdDispatch(cmd, gridInput.x, gridInput.y, 1);
+  vkCmdDispatch(cmd, gridQuarter.x, gridQuarter.y, 1);
 
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.viewNormal);
-  vkCmdDispatch(cmd, gridInput.x, gridInput.y, 1);
+  vkCmdDispatch(cmd, gridAo.x, gridAo.y, 1);
 
   memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
   memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -361,19 +382,17 @@ void HbaoPass::cmdCompute(VkCommandBuffer cmd, const Frame& frame, const Setting
   vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
                        &memBarrier, 0, nullptr, 0, nullptr);
 
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.blur);
+  vkCmdDispatch(cmd, gridBlur.x, gridBlur.y, 1);
+
   if(!apply)
   {
     return;
   }
 
-  if(settings.blur)
-  {
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.applyBlurred);
-    vkCmdDispatch(cmd, gridBlur.x, gridBlur.y, 1);
-  }
-  else
-  {
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.applyRaw);
-    vkCmdDispatch(cmd, gridInput.x, gridInput.y, 1);
-  }
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                       &memBarrier, 0, nullptr, 0, nullptr);
+
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.apply);
+  vkCmdDispatch(cmd, gridInput.x, gridInput.y, 1);
 }

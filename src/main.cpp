@@ -62,6 +62,8 @@ int main(int argc, char** argv)
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_IMAGE_ATOMIC_INT64_FEATURES_EXT};
   VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pipeExecutableKHR{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
+  VkPhysicalDevicePartitionedAccelerationStructureFeaturesNV ptlasNV{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PARTITIONED_ACCELERATION_STRUCTURE_FEATURES_NV};
 
   nvvk::ContextInitInfo vkSetup{
       .instanceExtensions = {VK_EXT_DEBUG_UTILS_EXTENSION_NAME},
@@ -90,6 +92,8 @@ int main(int argc, char** argv)
 
   // set to version 2 compatibility instead of VK_NV_CLUSTER_ACCELERATION_STRUCTURE_SPEC_VERSION to cover more drivers
   vkSetup.deviceExtensions.push_back({VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME, &clustersNV, false, 2});
+
+  vkSetup.deviceExtensions.push_back({VK_NV_PARTITIONED_ACCELERATION_STRUCTURE_EXTENSION_NAME, &ptlasNV, false});
 
   vkSetup.deviceExtensions.push_back({VK_NV_SHADER_SM_BUILTINS_EXTENSION_NAME, &smNV, false});
   vkSetup.deviceExtensions.push_back({VK_NV_MESH_SHADER_EXTENSION_NAME, &meshNV, false});
@@ -122,6 +126,10 @@ int main(int argc, char** argv)
   parameterRegistry.add({"device", "force a vulkan device via index into the device list"}, &vkSetup.forceGPU);
   parameterRegistry.add({"headless", "run without a window"}, &appInfo.headless, true);
   parameterRegistry.add({"headlessframes", "frames to render in headless mode. default 1"}, &appInfo.headlessFrameCount);
+  parameterRegistry.add({"headlessfps", "frame rate limit in headless mode, idles the GPU between frames. 0 unlimited (default)"},
+                        &appInfo.headlessFps);
+  parameterRegistry.addVector({"windowsize", "window size, or the viewport when headless: width height. default 0 0 picks one"},
+                              &appInfo.windowSize);
 
   bool     useThreadLocalArena       = true;
   uint32_t threadLocalArenaBudgetMbs = uint32_t(lodclusters::ThreadLocalArena::DEFAULT_RETAIN_BUDGET / (1024 * 1024));
@@ -263,11 +271,16 @@ int main(int argc, char** argv)
 
   sampleElement->setSupportsClusterRaytracing(vkContext.hasExtensionEnabled(VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME)
                                               && vkContext.hasExtensionEnabled(VK_KHR_RAY_TRACING_POSITION_FETCH_EXTENSION_NAME));
+  sampleElement->setSupportsPartitionedTlas(vkContext.hasExtensionEnabled(VK_NV_PARTITIONED_ACCELERATION_STRUCTURE_EXTENSION_NAME));
   sampleElement->setSupportsBarycentrics(vkContext.hasExtensionEnabled(VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME));
   sampleElement->setSupportsMeshShaderNV(vkContext.hasExtensionEnabled(VK_NV_MESH_SHADER_EXTENSION_NAME));
   sampleElement->setSupportsSmBuiltinsNV(vkContext.hasExtensionEnabled(VK_NV_SHADER_SM_BUILTINS_EXTENSION_NAME));
   sampleElement->setSupportsPipelineExecutableInfo(vkContext.hasExtensionEnabled(VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME)
                                                    && pipeExecutableKHR.pipelineExecutableInfo);
+#if USE_DLSS
+  // benchmarks need DLSS from the first frame on
+  sampleElement->setDlssWaitForInit(appInfo.headless || sequencerInfo.hasScript());
+#endif
 
   appInfo.instance       = vkContext.getInstance();
   appInfo.device         = vkContext.getDevice();

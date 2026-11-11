@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <bit>
 #include <volk.h>
 #include <fmt/format.h>
 
@@ -121,8 +122,24 @@ bool SceneStreaming::init(Resources* resources, const Scene* scene, const Stream
 
   m_operationsSize += logMemoryUsage(m_shaderBuffer.bufferSize, "operations", "stream shaderio");
 
+  // one cached blas entry per (geometry, lod level slot), see GEOMETRY_CACHED_BLAS_STRIDE.
+  // Fixed stride so the index comes from the geometryID alone.
+  res.createBufferTyped(m_cachedBlasAddressesBuffer, size_t(m_scene->getActiveGeometryCount()) * GEOMETRY_CACHED_BLAS_STRIDE,
+                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+  NVVK_DBG_NAME(m_cachedBlasAddressesBuffer.buffer);
+  m_shaderData.cachedBlasAddresses = m_cachedBlasAddressesBuffer.address;
+  m_operationsSize += logMemoryUsage(m_cachedBlasAddressesBuffer.bufferSize, "operations", "stream cached blas");
+
   // seed lo res geometry
   initGeometries(res, scene);
+
+  // an unwritten entry must read as "no cached blas", not as a stale address
+  {
+    Resources::BatchedUploader uploader(res);
+    std::vector<uint64_t>      zeros(size_t(m_scene->getActiveGeometryCount()) * GEOMETRY_CACHED_BLAS_STRIDE, 0);
+    uploader.uploadBuffer(m_cachedBlasAddressesBuffer, zeros.data());
+    uploader.flush();
+  }
 
   return true;
 }
@@ -148,16 +165,21 @@ void SceneStreaming::resetCachedBlas(Resources::BatchedUploader& uploader)
   {
     SceneStreaming::PersistentGeometry& persistentGeometry = m_persistentGeometries[geometryIndex];
 
-    persistentGeometry.cachedBlasUpdateFrame = 0;
-    persistentGeometry.cachedBlasLevel       = TRAVERSAL_INVALID_LOD_LEVEL;
+    persistentGeometry.cachedBlasUpdateFrame   = 0;
+    persistentGeometry.cachedBlasLevel         = TRAVERSAL_INVALID_LOD_LEVEL;
+    persistentGeometry.deferredBlasLevelMask   = 0;
+    persistentGeometry.cachedBlasRetirePending = false;
     if(persistentGeometry.cachedBlasAllocation)
     {
       m_cachedBlasAllocator.subFree(persistentGeometry.cachedBlasAllocation);
+      m_frameUnsafeCachedBlasFree++;
     }
   }
 
-  // resets cachedBlasLevel and cachedBlasAddress
+  // resets discreteLodLevel and cachedBuildFrame
   uploader.uploadBuffer(m_shaderGeometriesBuffer, m_shaderGeometries.data());
+
+  m_cachedBlasRetires.clear();
 
   // ui convenience only, see `appendBlasCacheRevalidation`. A clean run streams the scene in
   // after this and re-populates the cached blas, a runtime re-init does not.
@@ -266,10 +288,11 @@ void SceneStreaming::initGeometries(Resources& res, const Scene* scene)
     shaderGeometry.streamingGroupAddresses = persistentGeometry.groupAddresses.address;
     shaderGeometry.lodLevelsCount          = numLodLevels;
     shaderGeometry.lodLevels               = persistentGeometry.lodLevels.address;
-    shaderGeometry.cachedBlasAddress       = 0;
+    shaderGeometry.cachedBuildFrame        = ~0u;
+    shaderGeometry._reserved               = 0;
     shaderGeometry.discreteLodLevel        = TRAVERSAL_INVALID_LOD_LEVEL;
-    shaderGeometry.instancesCount          = sceneGeometry.instanceReferenceCount * scene->getGeometryInstanceFactor();
-    shaderGeometry.instancesOffset         = instancesOffset;
+    shaderGeometry.instancesCount = sceneGeometry.instanceReferenceCount * scene->getActiveGeometryInstanceFactor(geometryIndex);
+    shaderGeometry.instancesOffset = instancesOffset;
 
     instancesOffset += shaderGeometry.instancesCount;
 
@@ -366,6 +389,16 @@ void SceneStreaming::cmdBeginFrame(VkCommandBuffer         cmd,
 
   auto     timerSection = profiler.cmdFrameSection(cmd, "Stream Begin");
   VkDevice device       = m_resources->m_device;
+
+  m_stats.frameLoadCount       = 0;
+  m_stats.frameLoadClusters    = 0;
+  m_stats.frameLoadDeviceBytes = 0;
+  m_stats.frameLoadStoredBytes = 0;
+  // before anything can allocate, hand back the cached blas whose hold has expired
+  releaseDeferredCachedBlasFrees(settings);
+  m_framePatchCounts           = {};
+  m_framePinnedUnloads         = 0;
+  m_framePinnedDeferredUnloads = 0;
 
   // For each task queue we must ensure that we have one new task index
   // available to acquire for any potential new work in this frame.
@@ -486,6 +519,17 @@ void SceneStreaming::cmdBeginFrame(VkCommandBuffer         cmd,
 
     m_resident.applyTask(m_shaderData.resident, pushUpdateIndex, m_frameIndex);
     m_updates.applyTask(m_shaderData.update, pushUpdateIndex, m_frameIndex);
+
+    // the cached blas this task replaced stop being referenced from now on
+    m_frameUnsafeCachedBlasFree += m_updateUnsafeCachedBlasFree[pushUpdateIndex];
+    m_updateUnsafeCachedBlasFree[pushUpdateIndex] = 0;
+    for(DeferredCachedBlasFree& deferred : m_deferredCachedBlasFrees)
+    {
+      if(deferred.startFrame == ~0u && deferred.updateIndex == pushUpdateIndex)
+      {
+        deferred.startFrame = m_frameIndex;
+      }
+    }
 
     // we later want to detect the completion of the update task
     // (this was the first thing we did in this function),
@@ -665,8 +709,8 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
   }
 
 #if !STREAMING_DEBUG_FORCE_REQUESTS
-  // a pending cached blas revalidation (ui convenience) is work as well, it needs this task's geometry patches
-  if(((!loadCount && !unloadCount) && m_blasCacheRevalidateNext == ~0u) || !m_debugFrameLimit)
+  // a pending cached blas revalidation (ui convenience) or retire is work as well, it needs this task's geometry patches
+  if(((!loadCount && !unloadCount) && m_blasCacheRevalidateNext == ~0u && m_cachedBlasRetires.empty()) || !m_debugFrameLimit)
   {
     // no work to do
     m_requestsTaskQueue.releaseTaskIndex(popRequestIndex);
@@ -703,6 +747,9 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
   // then, therefore use the pushUpdateIndex (this index is released once the copy is done)
   updateTask.clasVerticesRingSlot = pushUpdateIndex;
 
+  m_requestUpdateIndex                          = pushUpdateIndex;
+  m_updateUnsafeCachedBlasFree[pushUpdateIndex] = 0;
+
   bool useBlasCaching = m_requiresClas && m_config.allowBlasCaching && settings.useBlasCaching;
   // both features are driven by the same geometry patches, they are mutually exclusive
   bool useGeometryPatches = useBlasCaching || settings.useDiscreteLod;
@@ -714,6 +761,33 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
 
     assert(geometryGroup.geometryID < m_scene->getActiveGeometryCount());
     assert(geometryGroup.groupID < m_scene->getActiveGeometry(geometryGroup.geometryID).totalClustersCount);
+
+    // A cached blas is built from every group of its lod level, and a skipped partition's
+    // instance keeps pointing at it, so the unload is refused. Under memory pressure it goes
+    // anyway and is reported instead - refusing to stream is worse.
+    CachedBlasPin cachedBlasPin = settings.blasCachePinGroups ? cachedBlasGroupPin(geometryGroup) : CACHED_BLAS_PIN_NONE;
+    if(cachedBlasPin != CACHED_BLAS_PIN_NONE)
+    {
+      if(getLoadFactor() < 0.95f)
+      {
+        // The age filter only proposes a group no active instance referenced, so a live pin
+        // means the blas is finer than anything still asks for. Queue it for retirement -
+        // refusing alone never lifts, because the refusal is what keeps the level resident.
+        PersistentGeometry& pinnedGeometry = m_persistentGeometries[geometryGroup.geometryID];
+        if(settings.blasCacheRetire && cachedBlasPin == CACHED_BLAS_PIN_LIVE && !pinnedGeometry.cachedBlasRetirePending)
+        {
+          pinnedGeometry.cachedBlasRetirePending = true;
+          m_cachedBlasRetires.push_back(geometryGroup.geometryID);
+        }
+        m_framePinnedUnloads++;
+        m_framePinnedDeferredUnloads += cachedBlasPin == CACHED_BLAS_PIN_DEFERRED ? 1 : 0;
+        continue;
+      }
+
+      // the cached blas loses its cluster references here, and nothing else reports that
+      flagUnsafeCachedBlasFree();
+      m_framePatchCounts.unsafeFreed++;
+    }
 
     const StreamingResident::Group* group = m_resident.findGroup(geometryGroup);
     if(!group)
@@ -787,6 +861,10 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
   m_stats.couldNotAllocateGroup = 0;
   m_stats.couldNotStore         = 0;
   m_stats.uncompletedLoadCount  = 0;
+  if(request.shaderData->loadCounter)
+  {
+    m_stats.loadRequestCount = request.shaderData->loadCounter;
+  }
 
   for(uint32_t g = 0; g < loadCount; g++)
   {
@@ -924,6 +1002,10 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
 
     // stats
     transferBytes += groupInfo.sizeBytes;
+    m_stats.frameLoadCount++;
+    m_stats.frameLoadClusters += groupInfo.clusterCount;
+    m_stats.frameLoadDeviceBytes += groupDeviceSize;
+    m_stats.frameLoadStoredBytes += groupInfo.sizeBytes;
   }
 
   // now that all loads are done, the removed groups' resident IDs can be
@@ -933,10 +1015,15 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
   updateTask.newClusterCount = clasBuildOffset;
 
 #if !STREAMING_DEBUG_FORCE_REQUESTS
-  // a pending cached blas revalidation still needs the geometry patches of this task
-  if(updateTask.loadCount == 0 && updateTask.unloadCount == 0 && !(useBlasCaching && m_blasCacheRevalidateNext != ~0u))
+  // a pending cached blas revalidation or retire (queued by a refused unload) still needs the
+  // geometry patches of this task
+  if(updateTask.loadCount == 0 && updateTask.unloadCount == 0
+     && !(useBlasCaching && (m_blasCacheRevalidateNext != ~0u || !m_cachedBlasRetires.empty())))
   {
     // we ended up doing no work
+    m_frameUnsafeCachedBlasFree += m_updateUnsafeCachedBlasFree[pushUpdateIndex];
+    m_updateUnsafeCachedBlasFree[pushUpdateIndex] = 0;
+    m_requestUpdateIndex                          = INVALID_TASK_INDEX;
     m_requestsTaskQueue.releaseTaskIndex(popRequestIndex);
     m_updatesTaskQueue.releaseTaskIndex(pushUpdateIndex);
     m_storageTaskQueue.releaseTaskIndex(pushStorageIndex);
@@ -1030,6 +1117,7 @@ uint32_t SceneStreaming::handleCompletedRequest(VkCommandBuffer      cmd,
 
   // give back the index for future write operations
   m_requestsTaskQueue.releaseTaskIndex(popRequestIndex);
+  m_requestUpdateIndex = INVALID_TASK_INDEX;
 
   // enqueue the storage task
   // the dependentIndex may be set to the pushUpdateIndex if we use decoupled
@@ -1115,6 +1203,114 @@ void SceneStreaming::handleDiscreteLod(StreamingUpdates::TaskInfo& updateTask)
   updateTask.geometryCachedClustersCount = 0;
 }
 
+// The group pin is a closed loop on its own: a pinned group cannot age out, so the level stays
+// fully resident, so nothing ever invalidates the cached blas built from it. Residency then only
+// grows, and turning the pin off instead costs a full revalidation on half the frames.
+//
+// So give the entry up deliberately. The age filter asked for the level the blas sits on, which
+// means nothing still asks for that much detail, so it moves to the next coarser level that is
+// fully resident - the same step `isLowerDetail` takes once the groups are gone, just taken
+// before they can be. The old blas and its clusters are held by `deferCachedBlasFree` for the
+// revalidation window, so instances that have not been revisited keep tracing something valid,
+// and the finer groups unload once it expires.
+void SceneStreaming::appendCachedBlasRetires(StreamingUpdates::TaskInfo& updateTask,
+                                             const FrameSettings&        settings,
+                                             uint32_t&                   writeIndex,
+                                             uint32_t&                   cachedBuildsTotal,
+                                             uint32_t&                   cachedClustersTotal)
+{
+  uint32_t maxPatches = m_updates.getMaxGeometryPatches();
+
+  size_t kept = 0;
+  for(size_t i = 0; i < m_cachedBlasRetires.size(); i++)
+  {
+    uint32_t            geometryID         = m_cachedBlasRetires[i];
+    PersistentGeometry& persistentGeometry = m_persistentGeometries[geometryID];
+
+    // a regular patch may have rebuilt or invalidated the entry since it was queued
+    if(persistentGeometry.cachedBlasLevel == TRAVERSAL_INVALID_LOD_LEVEL || persistentGeometry.cachedBlasUpdateFrame == m_frameIndex)
+    {
+      persistentGeometry.cachedBlasRetirePending = false;
+      continue;
+    }
+
+    if(writeIndex >= maxPatches)
+    {
+      // out of patch budget, retry next frame
+      m_cachedBlasRetires[kept++] = geometryID;
+      continue;
+    }
+
+    const Scene::GeometryView& geometryView = m_scene->getActiveGeometry(geometryID);
+
+    // skip the last level, it always exists as the low detail blas
+    uint32_t coarserLevel    = TRAVERSAL_INVALID_LOD_LEVEL;
+    uint32_t coarserClusters = 0;
+    for(uint32_t level = persistentGeometry.cachedBlasLevel + 1; level < persistentGeometry.lodLevelsCount - 1; level++)
+    {
+      if(persistentGeometry.lodGroupsCount[level] != persistentGeometry.lodLoadedGroupsCount[level])
+        continue;
+
+      if(geometryView.lodLevels[level].clusterCount <= STREAMING_CACHED_BLAS_MAX_CLUSTERS)
+      {
+        coarserLevel    = level;
+        coarserClusters = geometryView.lodLevels[level].clusterCount;
+      }
+      break;
+    }
+
+    if(coarserLevel != TRAVERSAL_INVALID_LOD_LEVEL
+       && (cachedClustersTotal + coarserClusters > settings.blasCacheMaxClusters || cachedBuildsTotal + 1 > settings.blasCacheMaxBuilds))
+    {
+      // out of build budget, retry next frame
+      m_cachedBlasRetires[kept++] = geometryID;
+      continue;
+    }
+
+    persistentGeometry.cachedBlasRetirePending = false;
+
+    nvvk::BufferSubAllocation subAllocation;
+    bool                      hasCoarser = coarserLevel != TRAVERSAL_INVALID_LOD_LEVEL
+                      && allocateCachedBlas(persistentGeometry, coarserClusters, settings, subAllocation);
+
+    if(persistentGeometry.cachedBlasAllocation)
+    {
+      // the pin kept the level resident, so the old blas is still traceable and can be held
+      deferCachedBlasFree(geometryID, persistentGeometry, settings, true);
+    }
+
+    shaderio::StreamingGeometryPatch& sgpatch = updateTask.geometryPatches[writeIndex++];
+    sgpatch.geometryID                        = geometryID;
+
+    if(hasCoarser)
+    {
+      persistentGeometry.cachedBlasLevel      = coarserLevel;
+      persistentGeometry.cachedBlasAllocation = subAllocation;
+
+      sgpatch.discreteLodLevel        = uint16_t(coarserLevel);
+      sgpatch.cachedBlasAddress       = m_cachedBlasAllocator.subRange(subAllocation).address;
+      sgpatch.cachedBlasClustersCount = uint16_t(coarserClusters);
+
+      cachedClustersTotal += coarserClusters;
+      cachedBuildsTotal++;
+    }
+    else
+    {
+      // nothing coarser is cacheable, the low detail blas takes over
+      m_cachedBlasCount -= 1;
+      persistentGeometry.cachedBlasLevel = TRAVERSAL_INVALID_LOD_LEVEL;
+
+      sgpatch.discreteLodLevel        = TRAVERSAL_INVALID_LOD_LEVEL;
+      sgpatch.cachedBlasAddress       = 0;
+      sgpatch.cachedBlasClustersCount = 0;
+    }
+
+    persistentGeometry.cachedBlasUpdateFrame = m_frameIndex;
+    m_framePatchCounts.retired++;
+  }
+  m_cachedBlasRetires.resize(kept);
+}
+
 void SceneStreaming::handleBlasCaching(StreamingUpdates::TaskInfo& updateTask, const FrameSettings& settings)
 {
   uint32_t writeIndex = 0;
@@ -1176,12 +1372,21 @@ void SceneStreaming::handleBlasCaching(StreamingUpdates::TaskInfo& updateTask, c
 
     if(isLowerDetail || isHigherDetail || isInvalidateOnly || STREAMING_DEBUG_FORCE_REQUESTS)
     {
+      m_framePatchCounts.lowerDetail += isLowerDetail ? 1 : 0;
+      m_framePatchCounts.higherDetail += isHigherDetail ? 1 : 0;
+      m_framePatchCounts.invalidateOnly += isInvalidateOnly ? 1 : 0;
+
       if(isLowerDetail || isInvalidateOnly)
       {
-        // de-allocate first, because will use less space next, which is guaranteed to fit
+        // de-allocate first, because will use less space next, which is guaranteed to fit.
+        // With deferral on, the space is not handed back immediately, so the allocation below
+        // can fail - that lands in the invalidate branch, which is a quality loss and not a
+        // correctness one, the old blas stays valid until its partitions are revisited.
         if(persistentGeometry.cachedBlasAllocation)
         {
-          m_cachedBlasAllocator.subFree(persistentGeometry.cachedBlasAllocation);
+          // `isLowerDetail` means the level it was built from is no longer fully resident, so
+          // its cluster references are already stale - this one cannot be deferred
+          deferCachedBlasFree(sgpatch.geometryID, persistentGeometry, settings, false);
         }
       }
 
@@ -1201,7 +1406,9 @@ void SceneStreaming::handleBlasCaching(StreamingUpdates::TaskInfo& updateTask, c
         // so it can keep old cached blas if building fails
         if(persistentGeometry.cachedBlasAllocation)
         {
-          m_cachedBlasAllocator.subFree(persistentGeometry.cachedBlasAllocation);
+          // only reached for `isHigherDetail`: more detail became resident, the old blas and
+          // everything it points at are still there, so it can be held
+          deferCachedBlasFree(sgpatch.geometryID, persistentGeometry, settings, true);
         }
         m_cachedBlasCount += persistentGeometry.cachedBlasLevel == TRAVERSAL_INVALID_LOD_LEVEL ? 1 : 0;
         persistentGeometry.cachedBlasLevel       = sgpatch.discreteLodLevel;
@@ -1236,8 +1443,113 @@ void SceneStreaming::handleBlasCaching(StreamingUpdates::TaskInfo& updateTask, c
     }
   }
 
+  appendCachedBlasRetires(updateTask, settings, writeIndex, cachedBuildsTotal, cachedClustersTotal);
+
   updateTask.geometryCachedCount         = writeIndex;
   updateTask.geometryCachedClustersCount = cachedClustersTotal;
+
+  // Note a patch on its own is deliberately *not* reported to the ptlas early-out. The old
+  // allocation is held by `deferCachedBlasFree` rather than reused, so an instance that has
+  // not been revisited yet keeps pointing at memory that is still its own blas. Only a free
+  // that skipped the hold sets `m_frameUnsafeCachedBlasFree`.
+}
+
+SceneStreaming::CachedBlasPin SceneStreaming::cachedBlasGroupPin(const GeometryGroup& geometryGroup) const
+{
+  const PersistentGeometry& persistentGeometry = m_persistentGeometries[geometryGroup.geometryID];
+
+  bool hasLive = persistentGeometry.cachedBlasLevel != TRAVERSAL_INVALID_LOD_LEVEL;
+  if(!hasLive && !persistentGeometry.deferredBlasLevelMask)
+    return CACHED_BLAS_PIN_NONE;
+
+  const Scene::GeometryView& sceneGeometry = m_scene->getActiveGeometry(geometryGroup.geometryID);
+
+  auto coversGroup = [&](uint32_t level) {
+    if(level >= sceneGeometry.lodLevels.size())
+      return false;
+    const shaderio::LodLevel& lodLevel = sceneGeometry.lodLevels[level];
+    return geometryGroup.groupID >= lodLevel.groupOffset && geometryGroup.groupID < lodLevel.groupOffset + lodLevel.groupCount;
+  };
+
+  if(hasLive && coversGroup(persistentGeometry.cachedBlasLevel))
+    return CACHED_BLAS_PIN_LIVE;
+
+  // A deferred blas keeps its allocation, so an instance that has not been revisited still has
+  // a valid pointer - but only holding its clusters too makes that pointer safe to trace.
+  uint32_t levelMask = persistentGeometry.deferredBlasLevelMask;
+  while(levelMask)
+  {
+    uint32_t level = uint32_t(std::countr_zero(levelMask));
+    levelMask &= levelMask - 1;
+
+    if(coversGroup(level))
+      return CACHED_BLAS_PIN_DEFERRED;
+  }
+
+  return CACHED_BLAS_PIN_NONE;
+}
+
+void SceneStreaming::deferCachedBlasFree(uint32_t geometryID, PersistentGeometry& geometry, const FrameSettings& settings, bool stillBacked)
+{
+  if(stillBacked && settings.blasCacheDeferFrames && m_deferredCachedBlasFrees.size() < m_deferredCachedBlasMax
+     && geometry.cachedBlasLevel < SHADERIO_MAX_LOD_LEVELS)
+  {
+    // the hold starts once the update replacing it is applied
+    uint32_t startFrame = m_requestUpdateIndex != INVALID_TASK_INDEX ? ~0u : m_frameIndex;
+    m_deferredCachedBlasFrees.push_back(
+        {geometry.cachedBlasAllocation, startFrame, m_requestUpdateIndex, geometryID, geometry.cachedBlasLevel});
+    geometry.deferredBlasLevelMask |= 1u << geometry.cachedBlasLevel;
+    m_framePatchCounts.deferred++;
+    // the queue owns it now; clearing matches what `subFree` does to its argument, so the
+    // caller cannot hand the same allocation back a second time
+    geometry.cachedBlasAllocation = {};
+    return;
+  }
+
+  // Deferral is off, the queue is full, or the blas is no longer backed by resident groups.
+  // Free now and tell the early-out, which then reprocesses every partition this frame so
+  // nothing is left pointing at it.
+  m_cachedBlasAllocator.subFree(geometry.cachedBlasAllocation);
+  flagUnsafeCachedBlasFree();
+  m_framePatchCounts.unsafeFreed++;
+}
+
+void SceneStreaming::flagUnsafeCachedBlasFree()
+{
+  if(m_requestUpdateIndex != INVALID_TASK_INDEX)
+  {
+    m_updateUnsafeCachedBlasFree[m_requestUpdateIndex]++;
+  }
+  else
+  {
+    m_frameUnsafeCachedBlasFree++;
+  }
+}
+
+void SceneStreaming::releaseDeferredCachedBlasFrees(const FrameSettings& settings)
+{
+  size_t kept = 0;
+  for(size_t i = 0; i < m_deferredCachedBlasFrees.size(); i++)
+  {
+    DeferredCachedBlasFree& deferred = m_deferredCachedBlasFrees[i];
+    if(deferred.startFrame != ~0u && uint64_t(deferred.startFrame) + settings.blasCacheDeferFrames <= m_frameIndex)
+    {
+      m_cachedBlasAllocator.subFree(deferred.allocation);
+      // unpin, but only after the pass below re-asserts what is still held: the same
+      // (geometry, level) may sit in the queue more than once
+      m_persistentGeometries[deferred.geometryID].deferredBlasLevelMask &= ~(1u << deferred.lodLevel);
+    }
+    else
+    {
+      m_deferredCachedBlasFrees[kept++] = deferred;
+    }
+  }
+  m_deferredCachedBlasFrees.resize(kept);
+
+  for(const DeferredCachedBlasFree& deferred : m_deferredCachedBlasFrees)
+  {
+    m_persistentGeometries[deferred.geometryID].deferredBlasLevelMask |= 1u << deferred.lodLevel;
+  }
 }
 
 bool SceneStreaming::allocateCachedBlas(const PersistentGeometry&  geometry,
@@ -1847,6 +2159,7 @@ void SceneStreaming::deinit()
 
   res.m_allocator.destroyBuffer(m_shaderGeometriesBuffer);
   res.m_allocator.destroyBuffer(m_shaderBuffer);
+  res.m_allocator.destroyBuffer(m_cachedBlasAddressesBuffer);
 
   m_resources = nullptr;
   m_scene     = nullptr;
@@ -1875,6 +2188,19 @@ void SceneStreaming::reset()
 
   // need to reset internal clock
   m_frameIndex = 1;
+
+  // the dropped update tasks are never applied, holds start over with the clock
+  for(DeferredCachedBlasFree& deferred : m_deferredCachedBlasFrees)
+  {
+    deferred.startFrame = m_frameIndex;
+  }
+  // the held cached blas reference clas that are gone now, skipped instances may still use them
+  m_frameUnsafeCachedBlasFree++;
+  for(uint32_t& count : m_updateUnsafeCachedBlasFree)
+  {
+    m_frameUnsafeCachedBlasFree += count;
+    count = 0;
+  }
 
   m_clasGrowMaxSizedLeftDelta = 0;
   m_clasGrowFrameIndex        = 0;
@@ -2075,6 +2401,12 @@ bool SceneStreaming::initClas()
     m_cachedBlasAlignment      = initInfo.minAlignment;
 
     m_cachedBlasAllocator.init(initInfo);
+
+    // A geometry can only be repatched every `blasCacheAgeThreshold` frames, so over one
+    // deferral window it contributes a handful of entries at most. Generous, and only a
+    // guard against unbounded growth - running out just means freeing early, which costs a
+    // full revalidation that frame and nothing more.
+    m_deferredCachedBlasMax = m_persistentGeometries.size() * 4 + 1024;
   }
 
   m_clasScratchAlignment = clusterProps.clusterScratchByteAlignment;
@@ -2546,6 +2878,12 @@ void SceneStreaming::deinitClas()
         m_cachedBlasAllocator.subFree(persistentGeometry.cachedBlasAllocation);
       }
     }
+
+    for(DeferredCachedBlasFree& deferred : m_deferredCachedBlasFrees)
+    {
+      m_cachedBlasAllocator.subFree(deferred.allocation);
+    }
+    m_deferredCachedBlasFrees.clear();
 
     m_cachedBlasAllocator.deinit();
   }

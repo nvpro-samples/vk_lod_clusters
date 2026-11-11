@@ -95,7 +95,10 @@ void main()
   if (localThreadID == 0)
   {  
     geometries[geometryID].discreteLodLevel  = uint8_t(discreteLodLevel);
-    geometries[geometryID].cachedBlasAddress = sgpatch.cachedBlasAddress;
+    streaming.cachedBlasAddresses.d[geometryID * GEOMETRY_CACHED_BLAS_STRIDE
+                                    + GEOMETRY_CACHED_BLAS_SLOT(geometries[geometryID].lodLevelsCount,
+                                                                sgpatch.discreteLodLevel)] = sgpatch.cachedBlasAddress;
+    geometries[geometryID].cachedBuildFrame = streaming.frameIndex;
   }
   
   if (discreteLodLevel == TRAVERSAL_INVALID_LOD_LEVEL)
@@ -114,6 +117,8 @@ void main()
     
     uint referencesOffset = atomicAdd(buildRW.blasClasCounter, cachedBlasClustersCount);
     uint buildOffset      = atomicAdd(buildRW.blasBuildCounter, 1);
+    // `instance_assign_blas` does not run when the early-out leaves no active block
+    atomicMax(readback.numBlasBuilds, buildOffset + 1);
     
     build.geometryCachedInfos.d[geometryID].cachedBuildIndex = buildOffset;
     

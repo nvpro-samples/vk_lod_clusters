@@ -112,11 +112,12 @@ bool ScenePreloaded::init(Resources* res, const Scene* scene, const Config& conf
     shaderGeometry.preloadedClusters = preloadGeometry.clusterAddresses.address;
     shaderGeometry.lodLevelsCount    = uint32_t(numLodLevels);
     shaderGeometry.lodLevels         = preloadGeometry.lodLevels.address;
-    shaderGeometry.cachedBlasAddress = 0;
+    shaderGeometry.cachedBuildFrame  = ~0u;
+    shaderGeometry._reserved         = 0;
     // all lod levels are resident
     shaderGeometry.discreteLodLevel = 0;
-    shaderGeometry.instancesCount   = sceneGeometry.instanceReferenceCount * scene->getGeometryInstanceFactor();
-    shaderGeometry.instancesOffset  = instancesOffset;
+    shaderGeometry.instancesCount = sceneGeometry.instanceReferenceCount * scene->getActiveGeometryInstanceFactor(geometryIndex);
+    shaderGeometry.instancesOffset = instancesOffset;
 
     instancesOffset += shaderGeometry.instancesCount;
 

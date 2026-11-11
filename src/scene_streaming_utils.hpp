@@ -86,8 +86,14 @@ struct StreamingStats
   uint64_t transferBytes        = 0;
   uint32_t transferCount        = 0;
   uint32_t loadCount            = 0;
+  uint32_t loadRequestCount     = 0;
   uint32_t unloadCount          = 0;
   uint32_t uncompletedLoadCount = 0;
+  // this frame only, the fields above keep the last nonzero value
+  uint32_t frameLoadCount       = 0;
+  uint32_t frameLoadClusters    = 0;
+  uint64_t frameLoadDeviceBytes = 0;
+  uint64_t frameLoadStoredBytes = 0;
   uint32_t maxLoadCount         = 0;
   uint32_t maxUnloadCount       = 0;
 

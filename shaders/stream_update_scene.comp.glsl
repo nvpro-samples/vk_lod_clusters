@@ -219,7 +219,9 @@ void main()
     uint discreteLodLevel          = sgpatch.discreteLodLevel;
     uint geometryID                = sgpatch.geometryID;
     geometries[geometryID].discreteLodLevel  = uint8_t(discreteLodLevel);
-    geometries[geometryID].cachedBlasAddress = sgpatch.cachedBlasAddress;
+    streaming.cachedBlasAddresses.d[geometryID * GEOMETRY_CACHED_BLAS_STRIDE
+                                    + GEOMETRY_CACHED_BLAS_SLOT(geometries[geometryID].lodLevelsCount,
+                                                                sgpatch.discreteLodLevel)] = sgpatch.cachedBlasAddress;
   }
 #endif
 }

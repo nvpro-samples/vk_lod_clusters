@@ -165,6 +165,9 @@ struct Filters
   std::regex meshNames;
   std::regex materialNames;
   std::regex nodeNames;
+  // starts a new node group, see `SceneLoaderConfig::partitionNodeNames`
+  std::regex partitionNodeNames;
+  bool       usePartitionNodes = false;
 };
 
 
@@ -803,21 +806,34 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
   lodclusters::Filters  filters;
   lodclusters::Filters* usedFilters = nullptr;
 
-  if(!m_loaderConfig.skipMaterialNames.empty())
+  // a malformed expression fails the load instead of terminating
+  auto makeFilter = [&](const std::string& pattern, const char* option, std::regex& filter) {
+    if(pattern.empty())
+      return true;
+    try
+    {
+      filter      = std::regex(pattern);
+      usedFilters = &filters;
+      return true;
+    }
+    catch(const std::regex_error& e)
+    {
+      LOGE("--%s \"%s\" is not a valid regular expression: %s\n", option, pattern.c_str(), e.what());
+      return false;
+    }
+  };
+
+  if(!makeFilter(m_loaderConfig.skipMaterialNames, "skipmaterials", filters.materialNames)
+     || !makeFilter(m_loaderConfig.skipMeshNames, "skipmeshes", filters.meshNames)
+     || !makeFilter(m_loaderConfig.skipNodeNames, "skipnodes", filters.nodeNames)
+     || !makeFilter(m_loaderConfig.partitionNodeNames, "partitionnodes", filters.partitionNodeNames))
   {
-    usedFilters           = &filters;
-    filters.materialNames = std::regex(m_loaderConfig.skipMaterialNames);
+    return SCENE_RESULT_ERROR;
   }
-  if(!m_loaderConfig.skipMeshNames.empty())
-  {
-    usedFilters       = &filters;
-    filters.meshNames = std::regex(m_loaderConfig.skipMeshNames);
-  }
-  if(!m_loaderConfig.skipNodeNames.empty())
-  {
-    usedFilters       = &filters;
-    filters.nodeNames = std::regex(m_loaderConfig.skipNodeNames);
-  }
+  m_instanceNodeGroups.clear();
+  m_nodeGroupCount          = 0;
+  m_nodeGroupUngroupedCount = 0;
+  filters.usePartitionNodes = !m_loaderConfig.partitionNodeNames.empty();
 
 
   if(gltf->scenes_count > 0)
@@ -836,6 +852,16 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
       {
         addInstancesFromNodeGLTF(meshToGeometry, meshToMaterialSet, gltf.get(), &(gltf->nodes[nodeIdx]), glm::mat4(1), usedFilters);
       }
+    }
+  }
+
+  if(filters.usePartitionNodes)
+  {
+    m_nodeGroupUngroupedCount = std::count(m_instanceNodeGroups.begin(), m_instanceNodeGroups.end(), ~0u);
+    if(m_nodeGroupUngroupedCount)
+    {
+      LOGW("partition nodes: %zu of %zu instances are below no node matching \"%s\", the node regex layout puts them in one partition\n",
+           m_nodeGroupUngroupedCount, m_instanceNodeGroups.size(), m_loaderConfig.partitionNodeNames.c_str());
     }
   }
 
@@ -868,10 +894,16 @@ void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>&   meshToGeometry
                                      const struct cgltf_data*     data,
                                      const struct cgltf_node*     node,
                                      const glm::mat4              parentObjToWorldTransform,
-                                     struct Filters*              filters)
+                                     struct Filters*              filters,
+                                     uint32_t                     nodeGroup)
 {
   if(node == nullptr)
     return;
+
+  if(filters && filters->usePartitionNodes && node->name && std::regex_match(node->name, filters->partitionNodeNames))
+  {
+    nodeGroup = m_nodeGroupCount++;
+  }
 
   // Compute this node's object-to-world transform.
   // See https://github.com/KhronosGroup/glTF-Tutorials/blob/master/gltfTutorial/gltfTutorial_004_ScenesNodes.md .
@@ -1030,6 +1062,8 @@ void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>&   meshToGeometry
                                * (glm::mat4_cast(rotation) * glm::scale(glm::mat4(1.0f), scale)));
 
           m_instances.push_back(instance);
+          if(filters && filters->usePartitionNodes)
+            m_instanceNodeGroups.push_back(nodeGroup);
         }
       }
       else
@@ -1037,6 +1071,8 @@ void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>&   meshToGeometry
         m_geometryViews[instance.geometryID].instanceReferenceCount++;
         instance.matrix = nodeObjToWorldTransform;
         m_instances.push_back(instance);
+        if(filters && filters->usePartitionNodes)
+          m_instanceNodeGroups.push_back(nodeGroup);
       }
     }
   }
@@ -1045,7 +1081,8 @@ void Scene::addInstancesFromNodeGLTF(const std::vector<size_t>&   meshToGeometry
   const size_t numChildren = node->children_count;
   for(size_t childIdx = 0; childIdx < numChildren; childIdx++)
   {
-    addInstancesFromNodeGLTF(meshToGeometry, meshToMaterialSet, data, node->children[childIdx], nodeObjToWorldTransform, filters);
+    addInstancesFromNodeGLTF(meshToGeometry, meshToMaterialSet, data, node->children[childIdx], nodeObjToWorldTransform,
+                             filters, nodeGroup);
   }
 }
 

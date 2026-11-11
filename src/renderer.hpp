@@ -68,18 +68,45 @@ struct RendererConfig
   bool useTwoPassRejectLists     = true;
   bool useBlasSharing            = true;
   bool useBlasMerging            = true;
-  bool useBlasCaching            = false;
+  bool useBlasCaching            = true;
   bool useDiscreteLod            = false;
-  bool useShading                = true;
-  bool useDebugVisualization     = true;
-  bool useEXTmeshShader          = false;
-  bool useComputeRaster          = false;
-  bool usePrimitiveCulling       = false;
-  bool useDepthOnly              = false;
-  bool usePersistentTraversal    = true;
-  bool useVulkanMemoryModel      = false;
-  bool useAtomicLoadStore        = true;
-  int  textureLodMode            = 0;
+  // groups the instances spatially, which the early-out and the ptlas both consume. Neither
+  // does anything without it.
+  bool usePartitions = false;
+  bool usePtlas      = false;
+  // `initRayTracingPtlasInstances` takes these from the geometry's k-DOP hull, which spans
+  // every lod level.
+  bool usePtlasExplicitAabb = false;
+  // skip the per-instance kernels for partitions whose instances all sit on a persistent
+  // blas and whose lod situation has not moved. Independent of the ptlas.
+  bool usePartitionEarlyOut = true;
+  // how the instances are grouped into partitions, see ScenePartitionConfig::Layout
+  uint32_t partitionLayout = 1;
+  // fixed grid: world units per cell, takes precedence over `partitionGridCellsPerAxis` when non zero
+  float partitionGridCellSize = 0;
+  // fixed grid: shifts the world origin the cells are aligned to
+  glm::vec3 partitionGridOrigin = {0, 0, 0};
+  // fixed grid: cells along each axis over the scene bounds
+  uint32_t partitionGridCellsPerAxis = 16;
+  // derived layouts: instances a partition should hold, the bvh and quadtree leaf size or the initial grid resolution
+  uint32_t partitionDerivedTarget = 64;
+  // derived grid: hard cap for a single partition, the resolution is refined until it fits
+  uint32_t partitionDerivedMaxInstances = 1024;
+  // derived layouts: budget for the number of partitions, 0 only respects the device limit. Both
+  // the ptlas build cost and the trace cost track this rather than occupancy. The grid can only
+  // reach it approximately, since its derivation doubles `perAxis`; the bvh layouts hit it exactly, the
+  // quadtree to within two, a split adds up to three.
+  uint32_t partitionDerivedMaxCount = 4096;
+  bool     useShading               = true;
+  bool     useDebugVisualization    = true;
+  bool     useEXTmeshShader         = false;
+  bool     useComputeRaster         = false;
+  bool     usePrimitiveCulling      = false;
+  bool     useDepthOnly             = false;
+  bool     usePersistentTraversal   = true;
+  bool     useVulkanMemoryModel     = false;
+  bool     useAtomicLoadStore       = true;
+  int      textureLodMode           = 0;
 
   // basic path tracing: shading done in the ray-generation shader, 1 spp,
   // relies on DLSS Ray Reconstruction for denoising (noisy when DLSS is off).
@@ -132,6 +159,68 @@ public:
     }
   };
 
+  // The readback counters are single-frame samples and swing wildly - a forced revalidation
+  // frame reads completely differently from the frame next to it. Accumulated by the caller
+  // over exactly the frames the profiler is averaging, so a benchmark step can report the
+  // mean over the step rather than whatever the last frame happened to be.
+  struct FrameStats
+  {
+    uint64_t frames               = 0;
+    uint64_t traversalTasks       = 0;
+    uint64_t renderClusters       = 0;
+    uint64_t blasBuilds           = 0;
+    uint64_t ptlasUpdates         = 0;
+    uint64_t ptlasUpdatesPeak     = 0;
+    uint64_t ptlasDirtyPartitions = 0;
+    uint64_t activePartitions     = 0;
+    uint64_t activeInstances      = 0;
+    // times the profiler threw its averages away mid step (section set changed)
+    uint64_t profilerResets = 0;
+    // frames that had to process every partition anyway, see `partitionInvalidateAll`
+    uint64_t partitionInvalidateAllCount = 0;
+    // cached blas repatch reasons, see SceneStreaming::CachedBlasPatchCounts
+    uint64_t patchLowerDetail    = 0;
+    uint64_t patchHigherDetail   = 0;
+    uint64_t patchInvalidateOnly = 0;
+    uint64_t patchDeferred       = 0;
+    uint64_t patchUnsafeFreed    = 0;
+    uint64_t patchRetired        = 0;
+    // group unloads refused because a cached blas is built from them
+    uint64_t pinnedUnloads = 0;
+    // subset held only by a cached blas already replaced but still within its deferral window
+    uint64_t pinnedDeferredUnloads = 0;
+
+    uint64_t mean(uint64_t sum) const { return frames ? (sum + frames / 2) / frames : 0; }
+
+    FrameStats& operator+=(const FrameStats& other)
+    {
+      frames += other.frames;
+      traversalTasks += other.traversalTasks;
+      renderClusters += other.renderClusters;
+      blasBuilds += other.blasBuilds;
+      ptlasUpdates += other.ptlasUpdates;
+      ptlasUpdatesPeak = std::max(ptlasUpdatesPeak, other.ptlasUpdatesPeak);
+      ptlasDirtyPartitions += other.ptlasDirtyPartitions;
+      activePartitions += other.activePartitions;
+      activeInstances += other.activeInstances;
+      profilerResets += other.profilerResets;
+      partitionInvalidateAllCount += other.partitionInvalidateAllCount;
+      patchLowerDetail += other.patchLowerDetail;
+      patchHigherDetail += other.patchHigherDetail;
+      patchInvalidateOnly += other.patchInvalidateOnly;
+      patchDeferred += other.patchDeferred;
+      patchUnsafeFreed += other.patchUnsafeFreed;
+      patchRetired += other.patchRetired;
+      pinnedUnloads += other.pinnedUnloads;
+      pinnedDeferredUnloads += other.pinnedDeferredUnloads;
+      return *this;
+    }
+  };
+
+  inline const FrameStats& getFrameStats() const { return m_frameStats; }
+  inline void              resetFrameStats() { m_frameStats = {}; }
+  inline FrameStats&       getFrameStatsRW() { return m_frameStats; }
+
   inline ResourceUsageInfo getResourceUsage(bool reserved) const
   {
     return reserved ? m_resourceReservedUsage : m_resourceActualUsage;
@@ -140,6 +229,8 @@ public:
   uint32_t getMaxRenderClusters() const { return m_maxRenderClusters; }
   uint32_t getMaxTraversalTasks() const { return m_maxTraversalTasks; }
   uint32_t getMaxBlasBuilds() const { return m_maxBlasBuilds; }
+  // the settings after `init` dropped what the device or scene cannot do
+  const RendererConfig& getConfig() const { return m_config; }
 
   uint32_t getOriginalMaterialID(uint32_t renderMaterialID) const
   {
@@ -211,6 +302,8 @@ protected:
 
   ResourceUsageInfo m_resourceReservedUsage{};
   ResourceUsageInfo m_resourceActualUsage{};
+
+  FrameStats m_frameStats{};
 
   nvvk::DescriptorPack m_basicDset;
   VkShaderStageFlags   m_basicShaderFlags{};

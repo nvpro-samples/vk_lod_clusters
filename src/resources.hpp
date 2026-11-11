@@ -23,6 +23,7 @@
 #include <nvvk/descriptors.hpp>
 #include <nvvk/physical_device.hpp>
 #include <nvvk/graphics_pipeline.hpp>
+#include <nvvk/hdr_ibl.hpp>
 #include <nvvk/profiler_vk.hpp>
 #include <nvvkglsl/glsl.hpp>
 #include <vk_radix_sort.h>
@@ -84,6 +85,20 @@ struct FrameConfig
 
   uint32_t cachingEnabledLevels = 8;
   uint32_t cachingAgeThreshold  = 16;
+  // extra lod levels an instance may give up to reach the cached blas, 0 is exact
+  uint32_t cachingPushLevels = 0;
+  // hysteresis: extra levels for an instance already on the cached blas, keeps partitions quiet
+  uint32_t cachingStickyLevels = 0;
+  // early-out: a stable partition is reprocessed at least this often. Bounds how stale a
+  // skipped partition's lod decision may get, and is also the window over which the
+  // cached blas retention value is minimised. 0 uses the default.
+  uint32_t partitionRevalidateFrames = 64;
+  // early-out: partitions crossing or entering the frustum are processed every frame
+  bool partitionFrustumRevalidate = true;
+  // early-out: the frustum revalidation stops at this fraction of the scene size
+  float partitionFrustumDistance = 0.25f;
+  // early-out: step a pinned cached blas down instead of holding its groups forever
+  bool blasCacheRetire = true;
 
   // rasterization: how many tail lod levels may skip the lod traversal and
   // how many lod levels an instance's lod range may span (0 disables the test)
@@ -217,8 +232,15 @@ public:
     VkExtent2D targetSize{};
     VkExtent2D windowSize{};
     VkExtent2D targetSizeLast{};
+    // window, or the target of a fixed resolution
+    VkExtent2D referenceSize{};
 
-    glm::vec2 renderScale;
+    // render pixels per reference pixel: lod error, line width
+    float renderScale = 1;
+    // fixed target resolution, independent of the window: no resolve, the viewport letterboxes it
+    bool fixedSize = false;
+    // render pixels per window pixel: mouse position
+    glm::vec2 mouseScale{1.0f};
 
     // typically super resolution with respect to the window size
     // 0: off - use window resolution
@@ -230,14 +252,15 @@ public:
     // 720:  fix render resolution to 1280 x  720
     // 1080: fix render resolution to 1920 x 1080
     // 1440: fix render resolution to 2560 x 1440
+    // 2160: fix render resolution to 3840 x 2160
     // 1024: fix render resolution to square
     // 2048: fix render resolution to square
     // 4096: fix render resolution to square
-    int supersample = 0;
+    int  supersample    = 0;
+    bool hbaoQuarterRes = true;
 
-    bool  useResolved      = false;
-    bool  useRasterization = false;
-    float pixelScale       = 1;
+    bool useResolved      = false;
+    bool useRasterization = false;
 
     // linear HDR, tonemapped into `imgColorLdr`
     VkFormat colorFormat           = VK_FORMAT_R16G16B16A16_SFLOAT;
@@ -273,22 +296,34 @@ public:
   void init(VkDevice device, VkPhysicalDevice physicalDevice, VkInstance instance, const nvvk::QueueInfo& queue, const nvvk::QueueInfo& queueTransfer);
   void deinit();
 
-  bool initFramebuffer(const VkExtent2D& windowSize, int supersample);
+  bool initFramebuffer(const VkExtent2D& windowSize, int supersample, bool hbaoQuarterRes);
   void updateFramebufferRenderSizeDependent(VkCommandBuffer cmd);
   // rebuilds render-size dependent resources so rasterization-only targets (HBAO, raster atomic)
   // are only allocated while a rasterization renderer is active
   void setFramebufferUseRasterization(bool enabled);
 #if USE_DLSS
   void updateFramebufferDlss(VkCommandBuffer cmd);
+  // falls back to `eNone` if DLSS fails to initialize, or, without `m_dlssWaitForInit`, while its NGX init is still running
   void setFramebufferDlss(DlssMode mode, NVSDK_NGX_PerfQuality_Value dlssQuality);
   void setFramebufferDlss(bool enabled, NVSDK_NGX_PerfQuality_Value dlssQuality);
+
+  // NGX init and first feature creation take several seconds, they run on a worker thread
+  void initDlssAsync(DlssMode mode, NVSDK_NGX_PerfQuality_Value dlssQuality);
+  bool isDlssLoading() const;
+  // returns the mode whose async init just finished, eNone otherwise
+  DlssMode pollDlssInit();
+
+  bool m_dlssWaitForInit = true;
+  // set when an evaluation failed, the app then disables DLSS at the next safe point
+  bool m_dlssEvaluateFailed = false;
 #endif
   void deinitFramebufferRenderSizeDependent();
   void deinitFramebuffer();
 
   void updateFramebufferMemBytes();
+  void updateFramebufferScales();
 
-  glm::vec2 getFramebufferWindow2RenderScale() const;
+  glm::vec2 getFramebufferMouseScale() const;
 
   void beginFrame(uint32_t cycleIndex);
   void postProcessFrame(VkCommandBuffer cmd, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler);
@@ -300,6 +335,15 @@ public:
   // sampled by the raster and ray tracing shading, see `BINDINGS_SKY_ENV_TEX` etc.
   const VkDescriptorImageInfo& getSkyEnvDescriptor() const { return m_skyLighting.env.descriptor; }
   const VkDescriptorImageInfo& getSkyIrradianceDescriptor() const { return m_skyLighting.irradiance.descriptor; }
+
+  // HDRI environment, an empty path or a failed load leaves a 1x1 dummy bound. Waits for the device,
+  // renderers must re-create their descriptor sets afterwards.
+  bool loadEnvHdri(const std::filesystem::path& file);
+  bool hasEnvHdri() const { return m_envHdri.isValid(); }
+  // `BINDINGS_ENV_HDRI_TEX` and `BINDINGS_ENV_HDRI_ACCEL_SSBO`
+  const VkDescriptorImageInfo& getEnvHdriDescriptor() { return m_envHdri.getHdrImage().descriptor; }
+  nvvk::Buffer                 getEnvHdriAccel() const { return m_envHdri.getEnvAccel(); }
+  VkExtent2D                   getEnvHdriSize() const { return m_envHdri.getHdrImageSize(); }
 
   bool reloadShadingShaders();
   // renderers cannot run without the tonemap and sky bake pipelines
@@ -640,6 +684,7 @@ public:
   bool m_force16bitDispatch             = false;
   bool m_supportsMeshShaderNV           = false;
   bool m_supportsClusterRaytracing      = false;
+  bool m_supportsPartitionedTlas        = false;
   bool m_supportsBarycentrics           = false;
   bool m_supportsSmBuiltinsNV           = false;
   bool m_supportsPipelineExecutableInfo = false;
@@ -664,11 +709,10 @@ private:
 
   struct TonemapPass
   {
-    // without HBAO, compositing raw HBAO, compositing blurred HBAO
-    static const uint32_t VARIANT_PLAIN     = 0;
-    static const uint32_t VARIANT_HBAO      = 1;
-    static const uint32_t VARIANT_HBAO_BLUR = 2;
-    static const uint32_t VARIANTS          = 3;
+    // without HBAO, compositing HBAO
+    static const uint32_t VARIANT_PLAIN = 0;
+    static const uint32_t VARIANT_HBAO  = 1;
+    static const uint32_t VARIANTS      = 2;
 
     Shader               shaders[VARIANTS];
     nvvk::DescriptorPack dset;
@@ -692,6 +736,9 @@ private:
     shaderio::SkyBakePush baked{};
     bool                  valid = false;
   } m_skyLighting;
+
+  nvvk::HdrIbl m_envHdri;
+  uint32_t     m_envHdriVersion = 0;
 };
 
 

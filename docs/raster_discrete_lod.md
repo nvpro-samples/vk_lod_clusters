@@ -82,7 +82,7 @@ We tried a dedicated kernel with flat iteration over groups and clusters, but it
 
 An instance on the discrete path only ever touches the groups of its own level, so the coarser levels it relies on
 would age out and break the geometry's residency guarantee. The classification therefore does an `atomicMin` of the
-used level into `geometryCachedInfos[geometryID].cachedLevel`, and the streaming age filter resets the age of every
+used level into `geometryCachedRetain[geometryID]`, and the streaming age filter resets the age of every
 resident group at or above that level. This is exactly the mechanism "BLAS caching" uses, the host simply enables it for
 either technique.
 
@@ -107,7 +107,7 @@ In the source look for `USE_DISCRETE_LOD` and `useDiscreteLod`.
 Key changes in the shaders and device code are:
 * [`traversal_init_discrete_lod.comp.glsl`](../shaders/traversal_init_discrete_lod.comp.glsl): replaces
   `traversal_init.comp.glsl` when the technique is active. Classifies the instance, seeds the traversal at the LoD
-  level's node and does the `atomicMin` on `cachedLevel`. Rasterization only, so it carries none of the ray tracing
+  level's node and does the `atomicMin` on `geometryCachedRetain`. Rasterization only, so it carries none of the ray tracing
   branches, the same way [`traversal_init_blas_reuse.comp.glsl`](../shaders/traversal_init_blas_reuse.comp.glsl) carries
   none of the rasterization ones.
 * [`traversal.glsl`](../shaders/traversal.glsl): `classifyInstanceLod` is shared with

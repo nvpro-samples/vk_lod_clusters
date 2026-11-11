@@ -176,7 +176,7 @@ void main()
     }
     offsetRequested = subgroupBroadcastFirst(offsetRequested) + subgroupBallotExclusiveBitCount(voteRequested);
 
-    if (triggerRequest && offsetRequested <= streaming.request.maxLoads) {
+    if (triggerRequest && offsetRequested < streaming.request.maxLoads) {
       streaming.request.loadGeometryGroups.d[offsetRequested] = uvec2(geometryID, groupIndex);
     }
 

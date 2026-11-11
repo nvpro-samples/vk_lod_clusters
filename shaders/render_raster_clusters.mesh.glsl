@@ -4,11 +4,14 @@
  */
 
 /*
-  
+
   Shader Description
   ==================
 
   This mesh shader renders a single cluster.
+
+  EXT_mesh_shader variant, see `render_raster_clusters_nv.mesh.glsl`
+  for the NV_mesh_shader variant with primitive culling.
 
 */
 
@@ -23,23 +26,10 @@
 #extension GL_EXT_buffer_reference : enable
 #extension GL_EXT_buffer_reference2 : enable
 #extension GL_EXT_scalar_block_layout : enable
-#extension GL_KHR_shader_subgroup_ballot : require
-
-#if USE_EXT_MESH_SHADER
 #extension GL_EXT_mesh_shader : require
-#else
-#extension GL_NV_mesh_shader : require
-#endif
-
 #extension GL_EXT_control_flow_attributes : require
 
 #include "shaderio.h"
-
-// disable invalid config
-#if USE_PRIMITIVE_CULLING && (USE_EXT_MESH_SHADER || !USE_CULLING)
-#undef USE_PRIMITIVE_CULLING
-#define USE_PRIMITIVE_CULLING 0
-#endif
 
 layout(push_constant) uniform pushData
 {
@@ -102,13 +92,7 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
 // Used if we have less triangles than vertices per cluster.
 // Stores cluster-uniform outputs as perprimitive output.
 
-layout(location = 0)
-#if USE_EXT_MESH_SHADER
-    perprimitiveEXT
-#else
-    perprimitiveNV
-#endif
-    out PrimitiveAttributes
+layout(location = 0) perprimitiveEXT out PrimitiveAttributes
 {
   uint clusterID;
   uint instanceID;
@@ -165,7 +149,7 @@ const uint MESHLET_TRIANGLE_ITERATIONS = ((CLUSTER_TRIANGLE_COUNT + MESHSHADER_W
 
 ////////////////////////////////////////////
 
-#if USE_PRIMITIVE_CULLING || USE_TWO_SIDED
+#if USE_TWO_SIDED
 #define CULLING_NO_HIZ
 #include "culling.glsl"
 #endif
@@ -173,7 +157,8 @@ const uint MESHLET_TRIANGLE_ITERATIONS = ((CLUSTER_TRIANGLE_COUNT + MESHSHADER_W
 #define TEXTURING_SKIP_BINDLESS 1
 #include "texturing.glsl"
 
-#if USE_EXT_MESH_SHADER && USE_TWO_SIDED
+#if USE_TWO_SIDED
+// EXT mesh shader outputs cannot be read back
 shared vec4 s_vertices[CLUSTER_VERTEX_COUNT];
 #endif
 
@@ -182,20 +167,15 @@ shared vec4 s_vertices[CLUSTER_VERTEX_COUNT];
 
 void main()
 {
-#if USE_EXT_MESH_SHADER
   // EXT mesh shader's launch grid can overshoot actual work
   uint workGroupID = getWorkGroupIndexLinearized(gl_WorkGroupID);
 #if HAS_ALPHA_TEST
-  uint numRenderedClustersAlpha = build.numRenderedClustersAlpha;
+  uint numRenderedClusters = build.numRenderedClustersAlpha;
 #else
   uint numRenderedClusters = build.numRenderedClusters;
 #endif
   bool isValid = workGroupID < numRenderedClusters;
   uint loadID  = min(workGroupID, numRenderedClusters - 1);
-#else
-  uint workGroupID = gl_WorkGroupID.x;
-  uint loadID      = workGroupID;
-#endif
 
 #if HAS_ALPHA_TEST
   ClusterInfo cinfo = build.renderClusterInfosAlpha.d[loadID];
@@ -221,42 +201,22 @@ void main()
   uint vertMax = cluster.vertexCountMinusOne;
   uint triMax  = cluster.triangleCountMinusOne;
 
-#if USE_EXT_MESH_SHADER
   uint vertCount = (isValid && !clusterFiltered) ? vertMax + 1 : 0;
   uint triCount  = (isValid && !clusterFiltered) ? triMax + 1 : 0;
 
   SetMeshOutputsEXT(vertCount, triCount);
   if(triCount == 0)
     return;
-#else
-  if(clusterFiltered)
-  {
-    if(gl_LocalInvocationID.x == 0)
-      gl_PrimitiveCountNV = 0;
-    return;
-  }
-#if !USE_PRIMITIVE_CULLING
-  if(gl_LocalInvocationID.x == 0)
-  {
-    gl_PrimitiveCountNV = triMax + 1;
-  }
-#endif
-#endif
 
 #if USE_RENDER_STATS
   if(gl_LocalInvocationID.x == 0)
   {
 #if HAS_ALPHA_TEST
     atomicAdd(readback.numRenderedTrianglesAlpha, uint(triMax + 1));
-#else
-    atomicAdd(readback.numRenderedTriangles, uint(triMax + 1));
-#endif
-#if !USE_PRIMITIVE_CULLING
-#if HAS_ALPHA_TEST
     atomicAdd(readback.numRasteredTrianglesAlpha, uint(triMax + 1));
 #else
+    atomicAdd(readback.numRenderedTriangles, uint(triMax + 1));
     atomicAdd(readback.numRasteredTriangles, uint(triMax + 1));
-#endif
 #endif
   }
 #endif
@@ -274,14 +234,10 @@ void main()
 
     if(vert <= vertMax)
     {
-      vec4 hPos = view.viewProjMatrixRender * vec4(wPos, 1);
-#if USE_EXT_MESH_SHADER
+      vec4 hPos                            = view.viewProjMatrixRender * vec4(wPos, 1);
       gl_MeshVerticesEXT[vert].gl_Position = hPos;
-#else
-      gl_MeshVerticesNV[vert].gl_Position = hPos;
-#endif
 
-#if USE_EXT_MESH_SHADER && USE_TWO_SIDED
+#if USE_TWO_SIDED
       s_vertices[vert] = hPos;
 #endif
 
@@ -301,11 +257,10 @@ void main()
     }
   }
 
-#if USE_PRIMITIVE_CULLING
+#if USE_TWO_SIDED
+  // triangle loop reads other threads' vertex positions
   barrier();
 #endif
-
-  uint triOutCount = 0;
 
   [[unroll]] for(uint i = 0; i < uint(MESHLET_TRIANGLE_ITERATIONS); i++)
   {
@@ -317,69 +272,28 @@ void main()
 #if USE_TWO_SIDED
     bool effectiveTwoSided = resolveTriangleTwoSided(instance, clusterRef, triLoad);
 #endif
-    if(instance.flipWinding != 0
-#if USE_TWO_SIDED && !USE_EXT_MESH_SHADER
-       || (effectiveTwoSided
-           && !isFrontFacingHW(gl_MeshVerticesNV[indices.x].gl_Position, gl_MeshVerticesNV[indices.y].gl_Position,
-                               gl_MeshVerticesNV[indices.z].gl_Position))
-#elif USE_TWO_SIDED && USE_EXT_MESH_SHADER
-       || (effectiveTwoSided && !isFrontFacingHW(s_vertices[indices.x], s_vertices[indices.y], s_vertices[indices.z]))
+    // a two sided triangle is turned to face the camera, the winding flip is for one sided ones
+    bool swapWinding = instance.flipWinding != 0;
+#if USE_TWO_SIDED
+    if(effectiveTwoSided)
+      swapWinding = !isFrontFacingHW(s_vertices[indices.x], s_vertices[indices.y], s_vertices[indices.z]);
 #endif
-    )
+    if(swapWinding)
     {
       indices.xy = indices.yx;
     }
 #endif
 
-#if USE_PRIMITIVE_CULLING
-    bool isRendered = tri <= triMax
-                      && testTriangleHW(gl_MeshVerticesNV[indices.x].gl_Position, gl_MeshVerticesNV[indices.y].gl_Position,
-                                        gl_MeshVerticesNV[indices.z].gl_Position);
-
-    uvec4 voteRendered = subgroupBallot(isRendered);
-
-    uint triOut = subgroupBallotExclusiveBitCount(voteRendered) + triOutCount;
-    triOutCount += subgroupBallotBitCount(voteRendered);
-#else
-    bool isRendered = tri <= triMax;
-    uint triOut     = tri;
-#endif
-
-    if(isRendered)
+    if(tri <= triMax)
     {
-#if USE_EXT_MESH_SHADER
-      gl_PrimitiveTriangleIndicesEXT[triOut] = indices;
+      gl_PrimitiveTriangleIndicesEXT[tri] = indices;
 #if NEEDS_PRIMITIVE_IDS
-      gl_MeshPrimitivesEXT[triOut].gl_PrimitiveID = int(tri);
-#endif
-#else
-      gl_PrimitiveIndicesNV[triOut * 3 + 0] = indices.x;
-      gl_PrimitiveIndicesNV[triOut * 3 + 1] = indices.y;
-      gl_PrimitiveIndicesNV[triOut * 3 + 2] = indices.z;
-#if NEEDS_PRIMITIVE_IDS
-      gl_MeshPrimitivesNV[triOut].gl_PrimitiveID = int(tri);
-#endif
+      gl_MeshPrimitivesEXT[tri].gl_PrimitiveID = int(tri);
 #endif
 #if USE_PERPRIMITIVE_OUT && NEEDS_PRIMITIVE_IDS
-      OUTPRIM[triOut].instanceID = instanceID;
-      OUTPRIM[triOut].clusterID  = clusterID;
+      OUTPRIM[tri].instanceID = instanceID;
+      OUTPRIM[tri].clusterID  = clusterID;
 #endif
     }
   }
-#if USE_PRIMITIVE_CULLING
-  if(gl_LocalInvocationID.x == 0)
-  {
-    gl_PrimitiveCountNV = triOutCount;
-  }
-#if USE_RENDER_STATS
-  if(gl_LocalInvocationID.x == 0)
-  {
-#if HAS_ALPHA_TEST
-    atomicAdd(readback.numRasteredTrianglesAlpha, triOutCount);
-#else
-    atomicAdd(readback.numRasteredTriangles, triOutCount);
-#endif
-  }
-#endif
-#endif
 }

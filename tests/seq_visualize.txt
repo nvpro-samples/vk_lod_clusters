@@ -326,7 +326,7 @@ SEQUENCE "pathtrace_dlss_off"
 --dlss 0
 --pathtrace 1
 --visualize 0
---pathtracebounces 3
+--pathtracebounces 2
 
 SEQUENCE "pathtrace_dlss_on"
 --renderer 1
@@ -334,7 +334,7 @@ SEQUENCE "pathtrace_dlss_on"
 --dlssquality 2
 --pathtrace 1
 --visualize 0
---pathtracebounces 3
+--pathtracebounces 2
 
 SEQUENCE "pathtrace_off"
 --pathtrace 0

@@ -142,8 +142,12 @@ void main()
             // lowest lod level of any instance using the cached blas
             cachedLevelNeeded = lodLevel;
             // pretend we already triggered shareLevelMax
-            // triggering sharing isn't necessary after this point
-            shareLevelMax     = TRAVERSAL_INVALID_LOD_LEVEL - 1;
+            // triggering sharing isn't necessary after this point,
+            // but an election below it still has consumers in between
+            if (shareLevelMax == TRAVERSAL_INVALID_LOD_LEVEL)
+            {
+              shareLevelMax   = TRAVERSAL_INVALID_LOD_LEVEL - 1;
+            }
             // only do merging if instances existed before the cached level
             allowMerge        = numBuildInstances != 0;
           }

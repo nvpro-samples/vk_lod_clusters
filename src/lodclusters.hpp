@@ -62,6 +62,7 @@ public:
     GUI_SUPERSAMPLE,
     GUI_MESHLET,
     GUI_VISUALIZE,
+    GUI_PARTITIONLAYOUT,
   };
 
   enum ScreenshotMode
@@ -77,6 +78,7 @@ public:
 
     RendererType renderer    = RENDERER_RAYTRACE_CLUSTERS_LOD;
     int          supersample = 2;
+    bool         hbaoQuarter = true;
 
     bool facetShading = true;
     bool useStreaming = true;
@@ -97,6 +99,11 @@ public:
     float debugSaturation  = 1.15f;
     float aoRadius         = 0.1f;
     float fogDistance      = 0.0f;
+    // HDRI environment instead of the physical sky, once one is loaded
+    bool  useEnvHdri          = true;
+    float envHdriIntensity    = 1.0f;
+    float envHdriRotationDeg  = 0.0f;
+    float envHdriElevationDeg = 0.0f;
 
     float mirrorBoxScale  = 0.2f;
     float clickSpeedScale = 0.33f;
@@ -151,20 +158,28 @@ public:
   void registerRecentFilesHandler();
 
   void setSupportsClusterRaytracing(bool supported) { m_resources.m_supportsClusterRaytracing = supported; }
+  void setSupportsPartitionedTlas(bool supported) { m_resources.m_supportsPartitionedTlas = supported; }
   void setSupportsBarycentrics(bool supported) { m_resources.m_supportsBarycentrics = supported; }
   void setSupportsMeshShaderNV(bool supported) { m_resources.m_supportsMeshShaderNV = supported; }
   void setSupportsSmBuiltinsNV(bool supported) { m_resources.m_supportsSmBuiltinsNV = supported; }
   void setSupportsPipelineExecutableInfo(bool supported) { m_resources.m_supportsPipelineExecutableInfo = supported; }
   bool getShowDebugUI() const { return m_showDebugUI; }
+#if USE_DLSS
+  // otherwise renders without DLSS until its NGX init finished
+  void setDlssWaitForInit(bool wait) { m_resources.m_dlssWaitForInit = wait; }
+#endif
 
   bool isProcessingOnly() const { return !m_sceneFilePathDropNew.empty() && m_sceneLoaderConfig.processingOnly; }
   void doProcessingOnly();
+
+  // accumulate the readback means over the frames the profiler is averaging
+  void accumulateFrameStats();
 
   void parameterSequenceCallback(const nvutils::ParameterSequencer::State& state);
 
 private:
   // saves the window or the rendered viewport, headless always uses the viewport
-  void saveScreenshot(ScreenshotMode mode, const std::string& filename);
+  void saveScreenshot(ScreenshotMode mode, const std::string& filename, int quality = 100);
 
   VkExtent2D                 m_windowSize;
   Info                       m_info;
@@ -215,12 +230,28 @@ private:
 #else
   bool m_showDebugUI = false;
 #endif
-  int            m_frames                  = 0;
-  double         m_animTime                = 0;
-  ScreenshotMode m_sequenceScreenshotMode  = SCREENSHOT_OFF;
+  bool           m_dlssDelayLoad          = true;
+  bool           m_streamingResetRequest  = false;  // one-shot, cleared once applied
+  int            m_frames                 = 0;
+  double         m_animTime               = 0;
+  ScreenshotMode m_sequenceScreenshotMode = SCREENSHOT_OFF;
+  // profiler's averaged-frame count last time the readback means were accumulated
+  uint32_t       m_statsNumAveragedLast    = 0;
   ScreenshotMode m_screenshotMode          = SCREENSHOT_VIEWPORT;
   int            m_screenshotFrameInterval = 0;  // save a screenshot every n frames, 0 disables
   std::string    m_screenshotTimeStamp;          // session startup time, keeps screenshots of multiple runs apart
+
+  glm::vec2 m_headlessPicking     = {-1, -1};  // relative to the viewport, negative uses the mouse
+  glm::vec2 m_headlessPickingLast = {-1, -1};
+  int       m_headlessPickingWait = -1;  // rendered frames until the readback has the result, -1 idle
+
+  // per-frame readback samples since the profiler's last reset, the newest `numAveraged` of
+  // them are the window the timers average over
+  std::array<Renderer::FrameStats, nvutils::ProfilerTimeline::MAX_LAST_FRAMES> m_statsSamples;
+
+  uint32_t             m_statsSampleCount    = 0;
+  Renderer::FrameStats m_statsTotal          = {};
+  uint64_t             m_statsProfilerResets = 0;
 
   Tweak m_tweak;
   Tweak m_tweakLast;
@@ -266,6 +297,10 @@ private:
   float       m_cameraSpeed    = 0;
   float       m_cameraClipNear = 0;
   float       m_cameraClipFar  = 0;
+  int         m_cameraGltf     = 0;
+
+  std::filesystem::path m_envHdriFile;
+  std::filesystem::path m_envHdriFileLast;
   //std::filesystem::path  m_cameraFilePath;
 
   // Fixed camera paths (fly-through), see camera_path.hpp.
@@ -288,6 +323,7 @@ private:
   double                m_cameraPathU        = 0.0;    // normalized playback position [0,1]
   int                   m_cameraPathFrames   = 128;    // fixed: total frames for a full traversal
   int                   m_cameraPathFrame    = 0;      // fixed: current frame
+  bool                  m_cameraPathLoop     = false;  // fixed: wrap instead of holding at the end
   int                   m_cameraPathEditKey  = -1;     // UI: selected keyframe
 
   std::unique_ptr<RenderScene> m_renderScene;
@@ -390,6 +426,11 @@ private:
   }
 
   void viewportUI(ImVec2 corner, ImVec2 imageSize);
+
+  // world space position under the mouse, false without a hit
+  bool getHitPosition(const shaderio::Readback& readback, glm::dvec3& hitPos);
+  // "Hit Info" panel text, Ctrl+H copies it
+  std::string getHitInfoText(const shaderio::Readback& readback, bool pickingValid, const glm::dvec3& hitPos);
 
   // the individual panels of `onUIRender`, each is a no-op when its window is hidden
   void uiSettings();

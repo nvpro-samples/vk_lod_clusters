@@ -68,16 +68,7 @@ float ComputeAO(vec3 V, vec3 N, float InvR2)
   return clamp(lambertian * falloff * g_Ssao.amount, 0, 1);
 }
 
-vec2 WindowToClip(vec2 windowPos)
-{
-  return (windowPos.xy + g_Ssao.view.pixelOffset) * g_Ssao.view.windowToClipScale.xy + g_Ssao.view.windowToClipBias.xy;
-}
-
-vec3 ViewDepthToViewPos(vec2 clipPosXY, float viewDepth)
-{
-  return vec3(clipPosXY * g_Ssao.clipToView.xy * viewDepth, viewDepth);
-}
-
+#include "hbao_common.glsl"
 
 #define M_PI 3.14159265f
 
@@ -86,64 +77,68 @@ void main()
 {
   uvec3 globalId = gl_GlobalInvocationID;
 
-  int sliceIndex = int(globalId.z);
+  int   sliceIndex  = int(globalId.z);
   ivec2 sliceOffset = ivec2(sliceIndex & 3, sliceIndex >> 2);
+  ivec2 quarterPos  = ivec2(globalId.xy);
+  if(any(greaterThanEqual(quarterPos, g_Ssao.quarterSize)))
+    return;
 
-  ivec2 pixelPos = (ivec2(globalId.xy) << 2) + sliceOffset;
-  ivec2 quarterResPixelPos = pixelPos >> 2;
+  ivec2 pixelPos = quarterPos * 4 + sliceOffset;  // in AO pixels
 
-  float pixelViewDepth = texelFetch(texLinearDepth, ivec3(quarterResPixelPos, sliceIndex), 0).x;
-  vec3 pixelNormal     = texelFetch(texViewNormal, ivec2(pixelPos), 0).xyz * 2 - 1;
-
-  pixelNormal = normalize(pixelNormal);
-
-  vec2 pixelClipPos = WindowToClip(pixelPos);
-  vec3 pixelViewPos = ViewDepthToViewPos(pixelClipPos.xy, pixelViewDepth);
-
-  float radiusWorld = g_Ssao.radiusWorld * max(1.0, pixelViewDepth * g_Ssao.invBackgroundViewDepth);
-  float radiusPixels = radiusWorld * g_Ssao.radiusToScreen / pixelViewDepth;
+  float pixelViewDepth = texelFetch(texLinearDepth, ivec3(quarterPos, sliceIndex), 0).x;
 
   float result = 0;
 
-  if (radiusPixels > 1)
+  // the background and the padding past the AO size have nothing to occlude
+  if(pixelViewDepth > 0 && all(lessThan(pixelPos, g_Ssao.aoSize)))
   {
-    float invRadiusWorld2 = 1.0f / (radiusWorld * radiusWorld);
+    vec3 pixelNormal  = normalize(texelFetch(texViewNormal, pixelPos, 0).xyz * 2 - 1);
+    vec3 pixelViewPos = hbaoViewPos(hbaoWindowToClip(pixelPos), pixelViewDepth);
 
-    float angle = g_RandomValues[(pixelPos.x & 3) + ((pixelPos.y & 3) << 2)] * M_PI;
-    vec2 sincos = vec2(sin(angle), cos(angle));
+    float radiusWorld  = g_Ssao.radiusWorld * max(1.0, pixelViewDepth * g_Ssao.invBackgroundViewDepth);
+    float radiusPixels = radiusWorld * g_Ssao.radiusToScreen / pixelViewDepth;
 
-    int numSamples = 16;
-    float numValidSamples = 0;
-
-    [[unroll]]
-    for (int nSample = 0; nSample < numSamples; nSample++)
+    if (radiusPixels > 1)
     {
-      vec2 sampleOffset = g_SamplePositions[nSample];
-      sampleOffset = vec2(
-          sampleOffset.x * sincos.y - sampleOffset.y * sincos.x, 
-          sampleOffset.x * sincos.x + sampleOffset.y * sincos.y);
+      float invRadiusWorld2 = 1.0f / (radiusWorld * radiusWorld);
 
-      vec2 sampleWindowPos = pixelPos + sampleOffset * radiusPixels + 0.5;
-      ivec2 sampleWindowPosInt = ivec2(floor(sampleWindowPos * 0.25));
+      float angle = g_RandomValues[(pixelPos.x & 3) + ((pixelPos.y & 3) << 2)] * M_PI;
+      vec2 sincos = vec2(sin(angle), cos(angle));
 
-      float sampleViewDepth = texelFetch(texLinearDepth, ivec3(sampleWindowPosInt, sliceIndex), 0).x;
-      vec2 actualClipPos = WindowToClip(vec2(sampleWindowPosInt) * 4.0 + sliceOffset + 0.5);
+      float numValidSamples = 0;
 
-      if (sampleViewDepth > 0 && any(not(equal(quarterResPixelPos, sampleWindowPosInt))) && all(lessThan(abs(actualClipPos.xy), vec2(1.0))))
+      [[unroll]]
+      for (int nSample = 0; nSample < 16; nSample++)
       {
-        vec3 sampleViewPos = ViewDepthToViewPos(actualClipPos, sampleViewDepth);
-        vec3 pixelToSample = sampleViewPos - pixelViewPos;
-        float AO = ComputeAO(pixelToSample, pixelNormal, invRadiusWorld2);
-        result += AO;
+        vec2 sampleOffset = g_SamplePositions[nSample];
+        sampleOffset = vec2(
+            sampleOffset.x * sincos.y - sampleOffset.y * sincos.x, 
+            sampleOffset.x * sincos.x + sampleOffset.y * sincos.y);
+
+        vec2  sampleWindowPos  = vec2(pixelPos) + sampleOffset * radiusPixels + 0.5;
+        ivec2 sampleQuarterPos = ivec2(floor(sampleWindowPos * 0.25));
+        ivec2 samplePixelPos   = sampleQuarterPos * 4 + sliceOffset;
+
+        // the same slice texel as the centre, or off the AO image
+        if(all(equal(sampleQuarterPos, quarterPos)) || any(lessThan(samplePixelPos, ivec2(0)))
+           || any(greaterThanEqual(samplePixelPos, g_Ssao.aoSize)))
+          continue;
+
+        float sampleViewDepth = texelFetch(texLinearDepth, ivec3(sampleQuarterPos, sliceIndex), 0).x;
+        if(sampleViewDepth <= 0)
+          continue;
+
+        vec3 sampleViewPos = hbaoViewPos(hbaoWindowToClip(samplePixelPos), sampleViewDepth);
+        result += ComputeAO(sampleViewPos - pixelViewPos, pixelNormal, invRadiusWorld2);
         numValidSamples += 1;
       }
-    }
 
-    if (numValidSamples > 0)
-    {
-      result /= numValidSamples;
+      if (numValidSamples > 0)
+      {
+        result /= numValidSamples;
+      }
     }
   }
   
-  imageStore(imgResultArray, ivec3(quarterResPixelPos.xy, sliceIndex), vec4(result));
+  imageStore(imgResultArray, ivec3(quarterPos.xy, sliceIndex), vec4(result));
 }

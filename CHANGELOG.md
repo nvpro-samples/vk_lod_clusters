@@ -1,4 +1,72 @@
 # Changelog for vk_lod_clusters
+* 2026-11-10:
+
+  * New instance partitions (`--partitions 1`, off by default) and, built on them, the partitioned TLAS (`--ptlas 1`, `VK_NV_partitioned_acceleration_structure`), which only rewrites the instances whose BLAS changed. The partition early-out skips the per-instance work of unchanged partitions with either TLAS. See [docs/partitions_and_ptlas.md](docs/partitions_and_ptlas.md).
+  * `--blascaching` is on by default.
+  * `--cachingpushlevels` and `--cachingstickylevels` let an instance give up or keep extra lod levels to stay on the cached BLAS. `--cachingenabledlevels` is limited to 16.
+  * `--camerapathloop 1` makes `--runcamerapath` wrap, `<framecount>` is then one lap.
+
+* 2026-11-09:
+
+  * Bugfix: with BLAS caching and sharing both active, reaching the cached lod level discarded a sharing instance elected at a finer level. That instance still built its BLAS, but the instances between the two levels traversed for their own (or the merged) BLAS instead of sharing it. Most visible with `--cachingenabledlevels` below `--sharingenabledlevels`. Thanks to Calvin Hsu.
+
+* 2026-11-04:
+
+  * `--cullminpixelsize` (UI: Traversal > Other settings) replaces the `CULL_MIN_PIXEL_SIZE` define. Boxes smaller than this in render pixels are culled; the default 1 is lossless, 2 drops small objects but can render much less in scenes with many distant instances.
+
+* 2026-11-03:
+
+  * Bugfix: with a small `--rendertraversalbits` the persistent traversal kernel could size the group pass launch before all groups were written, so groups were skipped although the tasks fit. Rasterization rendered nothing at 11 bits on the bunny grid.
+
+* 2026-11-02:
+
+  * Bugfix: hiz culling clamped lookups two texels short of the screen edge and rounded odd render sizes down, so occluded tests at the right/top edge could wrongly pass or fail. Odd sizes are handled now. The MSAA first pass also skipped the last row and column.
+
+* 2026-10-26:
+
+  * HBAO runs at quarter resolution by default (`--hbaoquarter 0` for full), upsampled depth-aware.
+  * HBAO normals are rebuilt per pixel from the plane-consistent neighbours, which removes the dark dashes along creases.
+* 2026-10-21:
+
+  * `--gridunique` is now a fraction (0..1) of grid copies with unique geometries, `0` and `1` behave as before.
+  * The "blas" visualization colors by geometry when BLAS sharing is off, so copies of one geometry share a color.
+  * The cluster rasterization mesh shader is split per extension: [render_raster_clusters.mesh.glsl](shaders/render_raster_clusters.mesh.glsl) for `EXT_mesh_shader` and [render_raster_clusters_nv.mesh.glsl](shaders/render_raster_clusters_nv.mesh.glsl) for `NV_mesh_shader`, which is the only one with primitive culling.
+  * Bugfix: the EXT mesh shader did not compile with alpha testing (`--extmeshshader 1` on a scene with alpha masked materials). `tests/seq_materials.txt` covers it now.
+  * Bugfix: the mesh shader's two sided winding test read other threads' vertex positions without a barrier.
+
+* 2026-10-19:
+
+  * Fixed `--supersample` resolutions keep their aspect ratio in the viewport (letterboxed) and viewport screenshots are saved at that resolution.
+  * Viewport screenshot keys: `F12` saves jpg, `Shift+F12` png. `F11` is no longer used. They save the displayed image, e.g. the window-sized resolve of `--supersample 2`.
+  * Bugfix: hit info crashed when hovering copies of the default scene's bunny grid, or any grid with unique geometries.
+
+* 2026-10-14:
+
+  * New `--streamingreset` resets the streaming state, e.g. per parameter sequence.
+  * New `--headlesspicking x y` picks at a position relative to the viewport instead of the mouse and logs the hit info. Ctrl+H copies the hit info to the clipboard.
+  * Bugfix: with a fixed `--supersample` resolution such as 2160 and DLSS, the lod pixel error depended on the window size. It is now measured in pixels of that resolution.
+  * Bugfix: mouse-over picking at fixed `--supersample` resolutions without DLSS.
+
+* 2026-10-13:
+
+  * **`--pathtracebounces` now counts indirect bounces, one less than before.** 0 is direct lighting only. Subtract 1 in existing configs and sequences. The default is now 1 bounce plus the ambient last bounce below, which comes close to the old default of 3.
+  * New `--pathtraceambient` ("AO settings > Ambient last bounce", on by default) lights the path tracer's last hit like ray tracing: sun shadow ray plus the baked sky, occluded by sky visibility and reflection rays. `--pathtraceambientfill` keeps a fraction of it in occluded directions.
+  * Bugfix: the path tracer lost part of the sky lighting at the last hit of each path.
+  * New `--cameragltf` picks which of the scene's glTF cameras to start with.
+  * New `--windowsize`, also sets the viewport of headless runs.
+  * New `--hdrifile` (or drop a `.hdr` file) lights all renderers with an HDRI instead of the physical sky, `--hdri 0` switches back to the sky, `--hdriintensity`, `--hdrirotation` and `--hdrielevation` adjust it ("Lighting" UI). Ray tracing and rasterization get its sun only through the baked ambient, without shadows.
+
+* 2026-10-12:
+
+  * DLSS falls back to native rendering on a failed evaluation or an unsupported quality mode, `--dlssquality` no longer lists ultra quality.
+  * Bugfix: ray tracing with DLSS crashed in unsupported quality modes such as `--dlssquality 4`.
+  * Bugfix: DLSS-RR was always created for max performance and without the reversed-Z depth flag, and ray tracing wrote misses at the near plane.
+
+* 2026-10-9:
+
+  * DLSS loads on a worker thread, overlapping scene loading, and only once it is requested. With a window the sample renders without DLSS until it is ready, the ui option is greyed out meanwhile (`--dlssdelayload 0` waits instead, as headless runs and sequence files always do). Afterwards the other DLSS mode loads in the background too.
+  * DLSS SDK 310.9.1, its default ray reconstruction model is RR2 (preset F).
+
 * 2026-10-6:
 
   * New `--cameraclipnear` and `--cameraclipfar` override the default camera clip planes, as fraction of the scene diagonal or absolute when negative, like `--aoradius`.

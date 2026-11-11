@@ -98,6 +98,8 @@ struct KDopHull
 // Brute force over all C(32,3) plane triples, cheap next to the rest of the load.
 // The result is dilated by a small fraction of the extent, so rounding in the intersection
 // cannot leave it underbounding the geometry.
+// Exceeding the vertex budget retries with the slabs conservatively rebased to the
+// identity frame, see `kdopRebaseToIdentity`.
 void kdopBuildHull(KDopHull& hull, const KDop& dop, const glm::vec3& boxLo, const glm::vec3& boxHi);
 
 }  // namespace lodclusters

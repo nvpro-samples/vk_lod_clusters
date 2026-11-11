@@ -10,6 +10,7 @@
 #include "shaderio_scene.h"
 #include "shaderio_streaming.h"
 #include "shaderio_building.h"
+#include "shaderio_ptlas.h"
 #include "nvshaders/sky_io.h.slang"
 #include "nvshaders/tonemap_io.h.slang"
 
@@ -27,6 +28,8 @@
 #define VISUALIZE_BLAS_REUSE 9
 #define VISUALIZE_DEPTH_ONLY 10
 #define VISUALIZE_DISCRETE_LOD 11
+#define VISUALIZE_PARTITION 12
+#define VISUALIZE_PARTITION_ACTIVE 13
 
 // Texture LOD selection for material sampling, resolved entirely at compile time via TEXTURE_LOD_MODE.
 // Raster uses hardware quad derivatives; the ray tracer / path tracer turn the ray-cone footprint into
@@ -61,14 +64,16 @@
 #define BINDINGS_HIZ_TEX 7
 #define BINDINGS_STREAMING_UBO 8
 #define BINDINGS_STREAMING_SSBO 9
-#define BINDINGS_TLAS 10
-#define BINDINGS_RAYTRACING_DEPTH 11
-#define BINDINGS_RASTER_ATOMIC 12
+#define BINDINGS_RAYTRACING_DEPTH 10
+#define BINDINGS_RASTER_ATOMIC 11
 // DLSS buffers start here as well
-#define BINDINGS_RENDER_TARGET 13
+#define BINDINGS_RENDER_TARGET 12
 // physical sky lighting for raster and ray tracing, baked by `sky_bake.comp.glsl`
 #define BINDINGS_SKY_ENV_TEX 20
 #define BINDINGS_SKY_IRRADIANCE_TEX 21
+// HDRI environment, lat-long with the sampling pdf in alpha, and its alias table, see `environment.glsl`
+#define BINDINGS_ENV_HDRI_TEX 22
+#define BINDINGS_ENV_HDRI_ACCEL_SSBO 23
 
 // dedicated descriptor set of the clas allocator visualization
 #define BINDINGS_ALLOCATOR_VIS_IMAGE 0
@@ -78,14 +83,15 @@
 #define BINDINGS_TONEMAP_OUT 3
 // HBAO composite, see `hbao_apply.glsl`
 #define BINDINGS_TONEMAP_HBAO_UBO 4
-#define BINDINGS_TONEMAP_HBAO_DEPTHARRAY 5
-#define BINDINGS_TONEMAP_HBAO_RESULTARRAY 6
+#define BINDINGS_TONEMAP_HBAO_DEPTH 5
+#define BINDINGS_TONEMAP_HBAO_RESULT 6
 
 // dedicated descriptor set of the sky bake
 #define BINDINGS_SKYBAKE_ENV 0
 #define BINDINGS_SKYBAKE_IRRADIANCE 1
 // the frame constants, to write `FrameConstants::skyLighting`
 #define BINDINGS_SKYBAKE_FRAME_SSBO 2
+// also reads BINDINGS_ENV_HDRI_TEX
 
 #define SKY_ENV_SIZE 128
 #define SKY_ENV_MIPS 6
@@ -109,6 +115,8 @@
 #define BUILD_SETUP_TRAVERSAL_RUN_PASS_NODES_ONLY 3
 #define BUILD_SETUP_DRAW 4
 #define BUILD_SETUP_BLAS_INSERTION 5
+#define BUILD_SETUP_PTLAS_OPS 6
+#define BUILD_SETUP_PARTITION_ACTIVE 7
 
 /////////////////////////////////////////
 
@@ -130,6 +138,17 @@
 #define BLAS_INSERT_CLUSTERS_WORKGROUP 64
 #define INSTANCES_ASSIGN_BLAS_WORKGROUP 64
 #define INSTANCES_CLASSIFY_LOD_WORKGROUP 64
+#define PARTITION_SETUP_WORKGROUP 64
+#define GEOMETRY_CACHED_RETAIN_WORKGROUP 64
+// instance_classify_lod, traversal_init_blas_reuse and instance_assign_blas all use 64,
+// so one indirect dispatch serves the partition early-out for all three
+#define PARTITION_ACTIVE_INSTANCES_WORKGROUP 64
+#define PARTITION_BLOCK_COMPACT_WORKGROUP 64
+// The partition-sorted instance array is split into blocks of this size; the early-out
+// compacts block ids rather than instance ids, so the per-frame work is proportional to
+// the block count (thousands) rather than the instance count (millions). Smaller blocks
+// track the active partitions more tightly but leave more blocks to compact.
+#define PARTITION_INSTANCE_BLOCK_SIZE 1024
 #define GEOMETRY_BLAS_SHARING_WORKGROUP 64
 #define BLAS_CACHING_SETUP_BUILD_WORKGROUP 64
 #define BLAS_CACHING_SETUP_COPY_WORKGROUP 64
@@ -159,12 +178,8 @@
 // Both options yield different sorts of artifacts, but removing yields better performance.
 #define FORCE_INVISIBLE_CULLED_REMOVES_INSTANCE 1
 
-// sub-pixel cull next to the hiz occlusion test, boxes below this screen-space size
-// in both dimensions cannot be shaded anyway.
-#define CULL_MIN_PIXEL_SIZE 1.0
-
 // in the second pass of two pass culling, passing instances below this size are culled. Much
-// bigger than the lossless CULL_MIN_PIXEL_SIZE: re-traversal only refreshes lod and
+// bigger than the lossless `FrameConstants::cullMinPixelSize`: re-traversal only refreshes lod and
 // visibility over a few pixels, yet costs as much as any other instance.
 #define CULL_SECOND_PASS_MIN_PIXEL_SIZE 8.0
 
@@ -382,6 +397,18 @@ struct PathRayPayload
 
 #endif
 
+// replaces the physical sky when enabled
+struct EnvHdri
+{
+  uint  enabled;
+  float intensity;
+  // around the up axis, then tilted towards the horizon, radians
+  float rotation;
+  float elevation;
+  uint  width;
+  uint  height;
+};
+
 struct SkyLighting
 {
   // sun disk integrated over the path tracer's sun cone, for a surface facing it
@@ -407,7 +434,12 @@ struct FrameConstants
 
   vec2 viewportf;
   vec2 hizSize;
-  vec4 hizSizeFactors;
+  // exact screen extent in hiz uv, scales and clamps lookups
+  vec2 hizSizeFactors;
+  // sub-pixel cull next to the hiz occlusion test, boxes below this size in render pixels in both
+  // dimensions are culled. 1 is lossless, larger values drop small objects.
+  float cullMinPixelSize;
+  uint  _pad0;
 
   vec4 viewPos;
   vec4 viewDir;
@@ -476,6 +508,10 @@ struct FrameConstants
   // basic path tracing
   int   pathtraceNumBounces;
   float pathtraceFireflyClamp;
+  // last path vertex is lit like ray tracing: sun shadow ray plus baked sky times AO
+  int pathtraceAmbientTail;
+  // ambient that the AO rays find occluded still receives this fraction, a stand-in for bounce light
+  float pathtraceAmbientFill;
 
   TonemapperData tonemapper;
   uint           tonemapMode;
@@ -495,6 +531,8 @@ struct FrameConstants
   // haze along the primary ray, per world unit, 0 disables
   float fogDensity;
 
+  EnvHdri envHdri;
+
   // written by `sky_bake.comp.glsl` when the sky changes, the host upload stops before it.
   // must stay last.
   SkyLighting skyLighting;
@@ -503,9 +541,12 @@ struct FrameConstants
 struct SkyBakePush
 {
   SkyPhysicalParameters sky;
-  vec3                  upDir;
-  uint                  mode;
-  uint                  mip;
+  EnvHdri               envHdri;
+  // bumped per loaded HDRI, so a new file re-bakes
+  uint envHdriVersion;
+  vec3 upDir;
+  uint mode;
+  uint mip;
 };
 
 struct Readback
@@ -536,12 +577,22 @@ struct Readback
 
   uint64_t blasActualSizes;
 
+  // ptlas
+  uint numPtlasUpdates;
+  uint numPtlasDirtyPartitions;
+  // partition early-out: what actually got processed this frame
+  uint numActivePartitions;
+  uint numActiveInstances;
+  // non zero when every partition was forced to be processed regardless of being stable
+  uint partitionInvalidateAllCount;
+
   // auto-exposure: grid-sampled luminance accumulation in the tonemap pass (float32 atomics)
   float autoExposureLumaSum;
   uint  autoExposureSampleCount;
 
 #ifdef __cplusplus
-  uint32_t clusterTriangleId;
+  // the uint64_t on the GLSL side are 8 byte aligned, also in scalar layout
+  alignas(8) uint32_t clusterTriangleId;
   uint32_t _packedDepth0;
 
   uint32_t instanceId;

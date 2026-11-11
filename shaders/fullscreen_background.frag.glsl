@@ -10,7 +10,7 @@
 
   Only used for TARGETS_RASTERIZATION
   
-  A fragment shader that fills the background with the procedural sky.
+  A fragment shader that fills the background with the environment, the procedural sky or an HDRI.
 */
 
 #version 460
@@ -36,6 +36,8 @@ layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuff
   FrameConstants view;
 };
 
+#include "environment.glsl"
+
 ///////////////////////////////////////////////////
 
 layout(location = 0, index = 0) out vec4 out_Color;
@@ -52,7 +54,7 @@ void main()
   vec4 clipRay = view.projMatrixI * vec4(screenPos, 1.0, 1.0);
   vec3 rayDir  = normalize((view.viewMatrixI * vec4(normalize(clipRay.xyz), 0.0)).xyz);
 
-  vec3 skyColor = evalPhysicalSky(view.skyPhysical, rayDir);
+  vec3 skyColor = evalEnvironment(view.skyPhysical, view.envHdri, rayDir);
 
   out_Color = vec4(skyColor, 1);
 

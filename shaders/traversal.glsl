@@ -382,12 +382,12 @@ bool queryWasVisible(mat4x3 instanceTransform, vec3 bboxMin, vec3 bboxMax)
 
   bool inFrustum = intersectFrustum(useLast ? build.cullViewProjMatrixLast : build.cullViewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
   bool isVisible = inFrustum &&
-    (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, CULL_MIN_PIXEL_SIZE) && intersectHiz(clipMin, clipMax, useLast ? 0 : 1)));
+    (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, view.cullMinPixelSize) && intersectHiz(clipMin, clipMax, useLast ? 0 : 1)));
 #else
   // always test against last frame visiblity
   bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
   bool isVisible = inFrustum &&
-    (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, CULL_MIN_PIXEL_SIZE) && intersectHiz(clipMin, clipMax, 0)));
+    (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, view.cullMinPixelSize) && intersectHiz(clipMin, clipMax, 0)));
 #endif
 
   return isVisible;
@@ -429,12 +429,12 @@ bool queryClusterWasVisible(mat4x3 instanceTransform, BBox bbox, inout bool outR
   bool useLast   = build.cullPass == 0;
   bool inFrustum = intersectFrustum(useLast ? build.cullViewProjMatrixLast : build.cullViewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
   bool isVisible = inFrustum &&
-    (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, CULL_MIN_PIXEL_SIZE) && intersectHiz(clipMin, clipMax, useLast ? 0 : 1)));
+    (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, view.cullMinPixelSize) && intersectHiz(clipMin, clipMax, useLast ? 0 : 1)));
 #else
   // test if visible in last frame
   bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
   bool isVisible = inFrustum &&
-    (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, CULL_MIN_PIXEL_SIZE) && intersectHiz(clipMin, clipMax, 0)));
+    (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, view.cullMinPixelSize) && intersectHiz(clipMin, clipMax, 0)));
 
 #if USE_TWO_PASS_CULLING
   if (build.cullPass == 1)
@@ -449,7 +449,7 @@ bool queryClusterWasVisible(mat4x3 instanceTransform, BBox bbox, inout bool outR
       // test against current
       inFrustum = intersectFrustum(build.cullViewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
       isVisible = inFrustum &&
-        (!clipValid || (intersectSize(clipMin, clipMax, CULL_MIN_PIXEL_SIZE) && intersectHiz(clipMin, clipMax, 1)));
+        (!clipValid || (intersectSize(clipMin, clipMax, view.cullMinPixelSize) && intersectHiz(clipMin, clipMax, 1)));
     }
   }
 #endif

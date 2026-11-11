@@ -240,11 +240,13 @@ void main()
   #if USE_TWO_SIDED
     bool effectiveTwoSided = resolveTriangleTwoSided(instance, clusterRef, triLoad);
   #endif
-    if(instance.flipWinding != 0
+    // a two sided triangle is turned to face the camera, the winding flip is for one sided ones
+    bool swapWinding = instance.flipWinding != 0;
 #if USE_TWO_SIDED
-       || (effectiveTwoSided && !isFrontFacingSW(s_vertices[indices.x], s_vertices[indices.y], s_vertices[indices.z]))
+    if(effectiveTwoSided)
+      swapWinding = !isFrontFacingSW(s_vertices[indices.x], s_vertices[indices.y], s_vertices[indices.z]);
 #endif
-    )
+    if(swapWinding)
     {
       indices.xy = indices.yx;
     }

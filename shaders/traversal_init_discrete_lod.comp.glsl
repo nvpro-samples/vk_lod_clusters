@@ -142,7 +142,7 @@ void main()
   
 #if USE_TWO_PASS_CULLING
   bool inFrustum = intersectFrustum( build.cullPass == 0 ? build.cullViewProjMatrixLast : build.cullViewProjMatrix, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix), clipMin, clipMax, clipValid);
-  bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, CULL_MIN_PIXEL_SIZE) && intersectHiz(clipMin, clipMax, build.cullPass)));
+  bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, view.cullMinPixelSize) && intersectHiz(clipMin, clipMax, build.cullPass)));
 
 #if !USE_TWO_PASS_REJECT_LISTS
   // if smallish and was already drawn, don't process again
@@ -153,7 +153,7 @@ void main()
 
 #else
   bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix), clipMin, clipMax, clipValid);
-  bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, CULL_MIN_PIXEL_SIZE) && intersectHiz(clipMin, clipMax, 0)));
+  bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, view.cullMinPixelSize) && intersectHiz(clipMin, clipMax, 0)));
 #endif
 
   // Solo-instance filter: ~0u disables the filter.
@@ -280,7 +280,7 @@ void main()
         // The instance only touches the groups of its own lod level, so the
         // coarser levels would age out and break the geometry's residency level.
         // The streaming age filter keeps everything from here on alive.
-        atomicMin(build.geometryCachedInfos.d[geometryID].cachedLevel, discreteLodLevel);
+        atomicMin(build.geometryCachedRetain.d[geometryID], discreteLodLevel);
       }
     }
   }

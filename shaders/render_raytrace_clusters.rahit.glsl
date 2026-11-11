@@ -91,9 +91,6 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
 };
 #endif
 
-layout(set = 0, binding = BINDINGS_TLAS) uniform accelerationStructureEXT asScene;
-
-
 layout(set = 1, binding = 0) uniform sampler2D bindlessTextures[];
 
 /////////////////////////////////

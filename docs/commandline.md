@@ -12,7 +12,7 @@ change `--scene`.
 * `--supersample 0` disables the super sampling that otherwise doubles rendering resolution in each dimension. 
 * `--clasallocator 0` disables the more complex gpu-driven allocator when streaming and uses the simple move based CLAS compaction instead. It moves all resident CLAS whenever a group is unloaded, which makes `--blascaching` ineffective while it is used, see [BLAS Caching](blas_caching.md).
 * `--gridcopies N` set the number of model copies in the scene.
-* `--gridunique 0` disables the generation of unique geometries for every model copy. Greatly reduces memory consumption by truly instancing everything. It's on for the sample bunny scene by default, but off otherwise.
+* `--gridunique F` fraction (0..1) of model copies that get their own geometries, `1` = all unique, `0` = none. Lower values greatly reduce memory consumption by instancing more. It's on for the sample bunny scene by default, but off otherwise.
 * `--streaming 0` disables streaming system and uses preloaded scene (warning this can use a lot of memory, use above `--gridunique 0` to reduce)
 * `--vsync 0` disable vsync. If changing vsync via UI does not work, try to use the driver's *NVIDIA Control Panel* and set `Vulkan/OpenGL present method: native`.
 * `--autoloadcache 0` disables loading scenes from cache file.
@@ -23,7 +23,7 @@ change `--scene`.
 * `--multimaterials 1 --attributes 7 --texturedmaterials 1` enables textured PBR materials (see [Materials](materials.md) below).
 * `--maxtexturemegabytes <MiB>` sets an upper VRAM budget for material textures (default **4096**; **0** = no limit). See [Materials](materials.md).
 * All megabyte budgets (`--maxgeomegabytes`, `--maxclasmegabytes`, `--startclasmegabytes`, `--clasgrowmegabytes`, `--maxblascachingmegabytes`, `--maxtransfermegabytes`, `--maxtexturemegabytes`) also accept a **negative** value, which is interpreted as a percentage of the device local heap. For example `--maxgeomegabytes -10 --maxclasmegabytes -10` reserves 10 % of VRAM each, independent of the GPU in use.
-* `--dlss 1` enables DLSS when built with `USE_DLSS` (Super Resolution in rasterization, denoising in ray tracing). Use `--dlssquality <0-3>` to set quality (max performance through ultra performance).
+* `--dlss 1` enables DLSS when built with `USE_DLSS` (Super Resolution in rasterization, denoising in ray tracing). Use `--dlssquality <0-3>` to set quality (max performance through ultra performance). DLSS loads in the background and switches on once ready, `--dlssdelayload 0` waits for it instead (always the case headless and with sequence files).
 * `--camerastring "..."` sets the initial camera (copy/paste from the _Misc Settings → Camera_ widget).
 * `--addcamerapath "..."` defines a camera fly-through path (repeatable, see [Camera Path](camera_paths.md)).
 * `--loadcamerapaths "file.txt"` replaces all paths with the definitions from a text file (see [Camera Path](camera_paths.md)).

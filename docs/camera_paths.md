@@ -13,7 +13,8 @@ A camera path is a keyframed fly-through defined entirely within this sample. It
 
 **Command line / benchmarking:**
 
-Paths are defined with one or more `--addcamerapath` options; the index equals the order in which they were added (the first is `0`). `--loadcamerapaths "file.txt"` instead replaces the whole set with the paths from a text file (see the format below). Paths given on the command line are **global** and take precedence: when any are present the per-scene `<scene>.camerapaths.txt` file is not auto-loaded. `--runcamerapath <index> <framecount>` then spreads the selected path across exactly `<framecount>` rendered frames (frame `f` maps to path position `f / (framecount-1)`), so it is fully deterministic.
+Paths are defined with one or more `--addcamerapath` options; the index equals the order in which they were added (the first is `0`). `--loadcamerapaths "file.txt"` instead replaces the whole set with the paths from a text file (see the format below). Paths given on the command line are **global** and take precedence: when any are present the per-scene `<scene>.camerapaths.txt` file is not auto-loaded. `--runcamerapath <index> <framecount>` then spreads the selected path across exactly `<framecount>` rendered frames (frame `f` maps to path position `f / (framecount-1)`), so it is fully deterministic. `--camerapathloop 1` wraps
+instead of holding at the end, so `<framecount>` sets one lap; it needs a closed path.
 
 > Note: the per-scene file is loaded only after its scene finishes loading (which is asynchronous), so a command-line `--runcamerapath` at startup cannot reference it yet. For benchmarking either provide the path on the command line with `--addcamerapath` / `--loadcamerapaths`, or place `--runcamerapath` inside the sequences of a `--sequencefile` (which run after the scene is resident).
 

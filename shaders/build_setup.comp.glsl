@@ -166,6 +166,20 @@ void main()
     buildRW.traversalNodeWriteCounter = nodeCount;
   #if USE_PERSISTENT_TRAVERSAL_KERNEL
     buildRW.traversalTaskCounter = int(nodeCount);
+    if (nodeCount == 0)
+    {
+      // no subgroup will take the task counter to zero, groups only come from traversal_init
+      uint groupCount     = min(buildRW.traversalGroupWriteCounter, build.maxTraversalInfos);
+      uint workGroupCount = (groupCount + TRAVERSAL_GROUPS_WORKGROUP - 1) / TRAVERSAL_GROUPS_WORKGROUP;
+    #if USE_16BIT_DISPATCH
+      uvec3 grid = fit16bitLaunchGrid(workGroupCount);
+      buildRW.indirectDispatchGroups.gridX = grid.x;
+      buildRW.indirectDispatchGroups.gridY = grid.y;
+      buildRW.indirectDispatchGroups.gridZ = grid.z;
+    #else
+      buildRW.indirectDispatchGroups.gridX = workGroupCount;
+    #endif
+    }
   #else
     buildRW.traversalNodeStart  = 0;
     buildRW.traversalNodeEnd    = nodeCount;
@@ -380,6 +394,58 @@ void main()
     buildRW.indirectDrawClusterBoxesNV.first = 0;
   #endif
     buildRW.numRenderedClusters = numRenderedClusters;
+  }
+#endif
+#if USE_PARTITION_EARLY_OUT
+  else if (push.setup == BUILD_SETUP_PARTITION_ACTIVE)
+  {
+    // one workgroup per PARTITION_ACTIVE_INSTANCES_WORKGROUP instances of each active block
+    uint activeBlocks = buildRW.activeBlockCounter;
+
+    // must match how `cmdLinearDispatch` lays out the linear path, because the consuming
+    // kernels resolve their index through `getWorkGroupIndex`
+    uint workGroups = activeBlocks * (PARTITION_INSTANCE_BLOCK_SIZE / PARTITION_ACTIVE_INSTANCES_WORKGROUP);
+    uvec3 grid      = USE_16BIT_DISPATCH != 0 ? fit16bitLaunchGrid(workGroups) : uvec3(workGroups, 1, 1);
+
+    buildRW.indirectDispatchActiveInstances.gridX = grid.x;
+    buildRW.indirectDispatchActiveInstances.gridY = grid.y;
+    buildRW.indirectDispatchActiveInstances.gridZ = grid.z;
+
+    readback.numActivePartitions = buildRW.partitionActiveCounter;
+    readback.partitionInvalidateAllCount       = build.partitionInvalidateAll;
+    readback.numActiveInstances  = activeBlocks * PARTITION_INSTANCE_BLOCK_SIZE;
+  }
+#endif
+#if USE_PTLAS
+  else if (push.setup == BUILD_SETUP_PTLAS_OPS)
+  {
+    // all instances were written at init, only change the blas of those
+    // instances whose blas actually changed
+    uint updateCount = buildRW.ptlasUpdateCounter;
+    
+    if (updateCount == 0)
+    {
+      // a build without operations empties the ptlas, so re-write one instance with
+      // the blas it already uses
+      PtlasInstanceUpdate instanceUpdate;
+      instanceUpdate.instanceIndex     = 0;
+      instanceUpdate.instanceSbtOffset = 0;
+      instanceUpdate.blasReference     = build.ptlasInstanceBlas.d[0];
+      
+      build.ptlasInstanceUpdates.d[0] = instanceUpdate;
+      updateCount = 1;
+    }
+    
+    PtlasOperation operation;
+    operation.opType     = PTLAS_OP_UPDATE_INSTANCE;
+    operation.argCount   = updateCount;
+    operation.argAddress = uint64_t(build.ptlasInstanceUpdates);
+    operation.argStride  = PTLAS_INSTANCE_UPDATE_SIZE;
+    
+    build.ptlasOperations.d[0]     = operation;
+    build.ptlasOperationCount.d[0] = 1;
+    
+    readback.numPtlasUpdates = buildRW.ptlasUpdateCounter;
   }
 #endif
 }

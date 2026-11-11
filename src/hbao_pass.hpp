@@ -45,6 +45,7 @@ public:
   {
     uint32_t targetWidth;
     uint32_t targetHeight;
+    bool     quarterRes = true;
 
     VkDescriptorImageInfo sourceDepth;
     VkDescriptorImageInfo targetColor;
@@ -53,6 +54,7 @@ public:
   struct FrameImages
   {
     nvvk::Image resultArray;
+    nvvk::Image result;  // blurred (visibility, view depth) at AO size
     nvvk::Image linearDepthArray;
     nvvk::Image viewNormal;
   };
@@ -112,8 +114,8 @@ private:
   {
     shaderc::SpvCompilationResult deinterleave{};
     shaderc::SpvCompilationResult calc{};
-    shaderc::SpvCompilationResult applyRaw{};
-    shaderc::SpvCompilationResult applyBlurred{};
+    shaderc::SpvCompilationResult blur{};
+    shaderc::SpvCompilationResult apply{};
     shaderc::SpvCompilationResult viewNormal{};
   };
 
@@ -121,8 +123,8 @@ private:
   {
     VkPipeline deinterleave{};
     VkPipeline calc{};
-    VkPipeline applyRaw{};
-    VkPipeline applyBlurred{};
+    VkPipeline blur{};
+    VkPipeline apply{};
     VkPipeline viewNormal{};
   };
 

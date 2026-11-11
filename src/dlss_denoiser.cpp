@@ -5,16 +5,43 @@
 
 #include <nvutils/logger.hpp>
 #include <nvutils/timers.hpp>
+#include <nvvk/check_error.hpp>
 #include <nvvk/debug_util.hpp>
 #include <imgui/imgui.h>
 
 #include "dlss_denoiser.hpp"
 
+void DlssDenoiser::initAsync()
+{
+  if(!m_initialized && !m_initFuture.valid())
+  {
+    m_initFuture = std::async(std::launch::async, [this]() { initDenoiser(); });
+  }
+}
+
+bool DlssDenoiser::pollInit()
+{
+  if(m_initFuture.valid() && m_initFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+  {
+    m_initFuture.get();
+    finishWarmup(true);
+    return true;
+  }
+  return false;
+}
+
 bool DlssDenoiser::ensureInitialized()
 {
+  if(m_initFuture.valid())
+  {
+    m_initFuture.get();
+    finishWarmup(true);
+    return true;
+  }
   if(!m_initialized)
   {
     initDenoiser();
+    finishWarmup(true);
     return true;
   }
   return false;
@@ -33,6 +60,11 @@ void DlssDenoiser::init(const InitInfo& info)
 
 void DlssDenoiser::deinit()
 {
+  if(m_initFuture.valid())
+  {
+    m_initFuture.get();
+  }
+  finishWarmup(false);
   if(m_info.resourceAllocator != nullptr)
   {
     m_dlssGBuffers.deinit();
@@ -74,6 +106,7 @@ void DlssDenoiser::initDenoiser()
   };
   // ngxInitInfo.loggingLevel = NVSDK_NGX_LOGGING_LEVEL_VERBOSE;
 
+  m_dlssSupported            = false;
   NVSDK_NGX_Result ngxResult = m_ngx.init(ngxInitInfo);
   if(ngxResult == NVSDK_NGX_Result_Success)
   {
@@ -84,7 +117,57 @@ void DlssDenoiser::initDenoiser()
   {
     LOGW("NGX init failed: %d - DLSS unsupported\n", ngxResult);
   }
+  else
+  {
+    warmupFeature();
+  }
   m_initialized = true;
+}
+
+void DlssDenoiser::warmupFeature()
+{
+  // the first feature creation is slow, do it once with a throw-away feature. Its commands initialize
+  // state that later features share, finishWarmup submits them.
+  const VkCommandPoolCreateInfo poolInfo{.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                                         .flags            = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+                                         .queueFamilyIndex = m_info.queueFamilyIndex};
+  NVVK_CHECK(vkCreateCommandPool(m_device, &poolInfo, nullptr, &m_warmupPool));
+  const VkCommandBufferAllocateInfo allocInfo{.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                              .commandPool        = m_warmupPool,
+                                              .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                                              .commandBufferCount = 1};
+  NVVK_CHECK(vkAllocateCommandBuffers(m_device, &allocInfo, &m_warmupCmd));
+  const VkCommandBufferBeginInfo beginInfo{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                           .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+  NVVK_CHECK(vkBeginCommandBuffer(m_warmupCmd, &beginInfo));
+
+  DlssRayReconstruction::SupportedSizes supportedSizes{};
+  if(NVSDK_NGX_SUCCEED(DlssRayReconstruction::querySupportedInputSizes(m_ngx, {{128, 128}, NVSDK_NGX_PerfQuality_Value_MaxQuality},
+                                                                       &supportedSizes)))
+  {
+    m_warmup.cmdInit(m_warmupCmd, m_ngx,
+                     {.depthInverted = true, .inputSize = supportedSizes.optimalSize, .outputSize = {128, 128}});
+  }
+
+  NVVK_CHECK(vkEndCommandBuffer(m_warmupCmd));
+}
+
+void DlssDenoiser::finishWarmup(bool submit)
+{
+  if(!m_warmupPool)
+    return;
+
+  if(submit)
+  {
+    const VkSubmitInfo submitInfo{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &m_warmupCmd};
+    NVVK_CHECK(vkQueueSubmit(m_info.queue, 1, &submitInfo, VK_NULL_HANDLE));
+    NVVK_CHECK(vkQueueWaitIdle(m_info.queue));
+  }
+
+  m_warmup.deinit();
+  vkDestroyCommandPool(m_device, m_warmupPool, nullptr);
+  m_warmupPool = VK_NULL_HANDLE;
+  m_warmupCmd  = VK_NULL_HANDLE;
 }
 
 
@@ -96,7 +179,7 @@ VkDescriptorImageInfo DlssDenoiser::getDescriptorImageInfo(DlssBufferType name) 
 
 bool DlssDenoiser::isAvailable() const
 {
-  return m_dlssSupported && m_initialized;
+  return !m_initFuture.valid() && m_dlssSupported && m_initialized;
 }
 
 bool DlssDenoiser::isActive() const
@@ -114,7 +197,8 @@ VkExtent2D DlssDenoiser::updateSize(VkCommandBuffer cmd, VkExtent2D size, NVSDK_
   // Choose the size of the DLSS buffers
   DlssRayReconstruction::SupportedSizes supportedSizes{};
   NVSDK_NGX_Result ngxResult = DlssRayReconstruction::querySupportedInputSizes(m_ngx, {size, quality}, &supportedSizes);
-  if(NVSDK_NGX_FAILED(ngxResult))
+  // unsupported quality modes report success with a zero size
+  if(NVSDK_NGX_FAILED(ngxResult) || supportedSizes.optimalSize.width == 0 || supportedSizes.optimalSize.height == 0)
   {
     LOGE("DLSS-RR size query failed: %d\n", ngxResult);
     return size;
@@ -122,8 +206,10 @@ VkExtent2D DlssDenoiser::updateSize(VkCommandBuffer cmd, VkExtent2D size, NVSDK_
   m_renderingSize = supportedSizes.optimalSize;
 
   DlssRayReconstruction::InitInfo initInfo{
-      .inputSize  = m_renderingSize,
-      .outputSize = size,
+      .quality       = quality,
+      .depthInverted = true,
+      .inputSize     = m_renderingSize,
+      .outputSize    = size,
   };
   m_dlss.deinit();
   vkDeviceWaitIdle(m_device);
@@ -172,16 +258,16 @@ void DlssDenoiser::setResource(DlssRayReconstruction::ResourceType resourceId, V
   m_dlss.setResource({resourceId, image, imageView, format});
 }
 
-void DlssDenoiser::denoise(VkCommandBuffer cmd, glm::vec2 jitter, const glm::mat4& modelView, const glm::mat4& projection, bool reset /*= false*/)
+bool DlssDenoiser::denoise(VkCommandBuffer cmd, glm::vec2 jitter, const glm::mat4& modelView, const glm::mat4& projection, bool reset /*= false*/)
 {
   if(!isActive())
-    return;
+    return false;
 
   NVSDK_NGX_Result ngxResult = m_dlss.cmdDenoise(cmd, m_ngx, {jitter, modelView, projection, reset});
   if(NVSDK_NGX_FAILED(ngxResult))
   {
     LOGE("DLSS-RR evaluation failed: %d\n", ngxResult);
-    return;
+    return false;
   }
 
   static bool s_loggedFirstEvaluation = false;
@@ -190,6 +276,7 @@ void DlssDenoiser::denoise(VkCommandBuffer cmd, glm::vec2 jitter, const glm::mat
     LOGI("DLSS-RR first evaluation succeeded.\n");
     s_loggedFirstEvaluation = true;
   }
+  return true;
 }
 
 void DlssDenoiser::onUi()

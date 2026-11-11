@@ -3,104 +3,48 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// based on
-// https://github.com/NVIDIA-RTX/Donut/blob/main/shaders/passes/ssao_blur_cs.hlsl
+// The HBAO visibility of a framebuffer pixel, shared by `hbao_apply.comp.glsl` and the tonemap pass.
+// The includer declares `g_Ssao`, `texDepth` (the depth buffer) and `texResult` (`hbao_blur.comp.glsl`).
+//
+// With downscale 2 a pixel falls between four AO pixels. Each is weighted by a tent of the distance
+// to the pixel it sampled and by how close the view depth it was computed at is to this pixel's own
+// (zero at 10% apart), so silhouettes do not bleed occlusion onto what is in front or behind. When
+// none is close the closest one wins.
 
-// The HBAO composite factor of a pixel, shared by `hbao_apply.comp.glsl` and the tonemap pass.
-// The includer declares `g_Ssao`, `texDepthArray` and `texResultArray`. With NVHBAO_BLUR the
-// workgroup must be 16x16 and every invocation must call it, it synchronizes the workgroup.
+#include "hbao_common.glsl"
 
-#ifndef NVHBAO_BLUR
-#define NVHBAO_BLUR 0
-#endif
-
-void divrem(float a, float b, out float div, out float rem)
+float hbaoVisibility(ivec2 pixel)
 {
-  a = (a + 0.5) / b;
-  div = floor(a);
-  rem = floor(fract(a) * b);
-}
+  float viewZ = hbaoViewDepth(texelFetch(texDepth, pixel, 0).x);
+  if(viewZ <= 0.0)
+    return 1.0;
 
-#if NVHBAO_BLUR
-// Warning: do not change the group size or shared array dimensions without a complete understanding of the data loading method.
-shared vec2 s_DepthAndSSAO[24][24];
-#endif
+  if(g_Ssao.downscale <= 1)
+    return texelFetch(texResult, pixel, 0).r;
 
-float hbaoOcclusion(uvec2 groupId, uvec2 threadId, uvec2 globalId)
-{
-#if NVHBAO_BLUR
-  int linearIdx = int((threadId.y << 4) + threadId.x);
+  ivec2 aoMax = g_Ssao.aoSize - 1;
+  ivec2 base  = (pixel - 1) >> 1;
 
-  if (linearIdx < 144)
+  float totalAo     = 0.0;
+  float totalWeight = 0.0;
+  float bestDiff    = 1e30;
+  float bestAo      = 1.0;
+  for(int i = 0; i < 4; i++)
   {
-    // Rename the threads to a 3x3x16 grid where X and Y are "offsetUV" and Z is "slice"
-
-    vec2 offsetUVf;
-    float a, slice;
-    divrem(linearIdx, 3.0, a, offsetUVf.x);
-    divrem(a, 3.0, slice, offsetUVf.y);
-
-    offsetUVf *= 8;
-    ivec2 offsetUV = ivec2(offsetUVf);
-
-    ivec2 pixelPos = (ivec2(groupId.xy) * 16) + offsetUV;
-
-    vec2 UV = (vec2(pixelPos) + 1.0) * g_Ssao.invQuantizedGbufferSize.xy;
-
-    // Load 4 pixels from each texture, overall the thread group loads a 24x24 block of pixels.
-    // For a 16x16 thread group, 20x20 pixels would be enough, but it's impossible to do that with Gather.
-    
-    // Each Gather instruction loads 4 adjacent pixels from a deinterleaved array, and the
-    // screen-space distance between those pixels is 4, not 1.
-
-    offsetUV.x += int(slice) & 3;
-    offsetUV.y += int(slice) >> 2;
-
-    vec4 depths = textureGather(texDepthArray, vec3(UV, slice));
-    vec4 occlusions = textureGather(texResultArray, vec3(UV, slice));
-
-    s_DepthAndSSAO[offsetUV.y + 4][offsetUV.x + 0] = vec2(depths.x, occlusions.x);
-    s_DepthAndSSAO[offsetUV.y + 4][offsetUV.x + 4] = vec2(depths.y, occlusions.y);
-    s_DepthAndSSAO[offsetUV.y + 0][offsetUV.x + 4] = vec2(depths.z, occlusions.z);
-    s_DepthAndSSAO[offsetUV.y + 0][offsetUV.x + 0] = vec2(depths.w, occlusions.w);
-  }
-
-  barrier();
-
-  float totalWeight = 0;
-
-  float totalOcclusion = 0;
-  float pixelDepth = s_DepthAndSSAO[threadId.y + 4][threadId.x + 4].x;
-
-  float rcpPixelDepth = 1.0 / (pixelDepth);
-
-  const bool enableFilter = true;
-  const int filterLeft = enableFilter ? 3 : 4;
-  const int filterRight = enableFilter ? 6 : 4;
-  ivec2 filterOffset;
-  for (filterOffset.y = filterLeft; filterOffset.y <= filterRight; filterOffset.y++)
-  {
-    for (filterOffset.x = filterLeft; filterOffset.x <= filterRight; filterOffset.x++)
+    ivec2 aoPixel  = clamp(base + ivec2(i & 1, i >> 1), ivec2(0), aoMax);
+    vec2  tap      = texelFetch(texResult, aoPixel, 0).rg;
+    vec2  d        = abs(vec2(hbaoFramebufferPixel(aoPixel) - pixel)) * 0.5;
+    float bilinear = max(1.0 - d.x, 0.0) * max(1.0 - d.y, 0.0) + 1e-3;
+    // the background (view depth 0) comes out at 1 and weighs nothing
+    float relDiff = abs(tap.y - viewZ) / viewZ;
+    float weight  = bilinear * clamp(1.0 - relDiff * 10.0, 0.0, 1.0);
+    totalAo += tap.x * weight;
+    totalWeight += weight;
+    if(relDiff < bestDiff)
     {
-      vec2 sampleDAO = s_DepthAndSSAO[threadId.y + filterOffset.y][threadId.x + filterOffset.x].xy;
-      float sampleDepth = sampleDAO.x;
-      float sampleOcclusion = sampleDAO.y;
-      
-      float weight = clamp(1.0 - abs(pixelDepth - sampleDepth) * rcpPixelDepth * g_Ssao.radiusWorld, 0 , 1);
-      totalOcclusion += sampleOcclusion * weight;
-      totalWeight += weight;
+      bestDiff = relDiff;
+      bestAo   = tap.x;
     }
   }
-  
-  totalOcclusion *= 1.0 / (totalWeight);
-#else
-  float totalOcclusion = 0;
-  ivec2 quarterResPos = ivec2(globalId.xy) / 4;
-  ivec2 subPos        = ivec2(globalId.xy & 3);
-  int   slicePos      = subPos.y * 4 + subPos.x;
-  
-  totalOcclusion = texelFetch(texResultArray, ivec3(quarterResPos, slicePos), 0).x;    
-#endif
-  
-  return pow(clamp(1.0 - totalOcclusion, 0, 1), g_Ssao.powerExponent);
+  return totalWeight > 1e-4 ? totalAo / totalWeight : bestAo;
 }

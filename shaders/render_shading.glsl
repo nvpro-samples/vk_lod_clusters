@@ -92,6 +92,26 @@ vec3 visualizeColor(uint visData, uint instanceID)
   }
 #endif
 #if TARGETS_RAY_TRACING
+  else if (view.visualize == VISUALIZE_PARTITION || view.visualize == VISUALIZE_PARTITION_ACTIVE) {
+  #if USE_PARTITIONS
+    uint partitionIndex = build.instancePartitions.d[instanceID];
+
+    if (view.visualize == VISUALIZE_PARTITION) {
+      return colorizeID(partitionIndex).xyz;
+    }
+
+    // red where the per-instance kernels ran this frame, green where the early-out skipped them,
+    // same reading as the blas reuse colors: red costs work, green is free
+  #if USE_PARTITION_EARLY_OUT
+    bool isActive = build.partitionLastFrame.d[partitionIndex] == build.frameIndex;
+  #else
+    bool isActive = true;
+  #endif
+    return isActive ? vec3(0.9, 0.1, 0.1) : vec3(0.1, 0.9, 0.1);
+  #else
+    return vec3(0.95);
+  #endif
+  }
   else if (view.visualize == VISUALIZE_BLAS || view.visualize == VISUALIZE_BLAS_REUSE) {
     InstanceBuildInfo instanceBuildInfo = build.instanceBuildInfos.d[instanceID];
     uint              blasBuildIndex    = instanceBuildInfo.blasBuildIndex;
@@ -146,6 +166,13 @@ vec3 visualizeColor(uint visData, uint instanceID)
       instanceID = blasBuildIndex & ~(BLAS_BUILD_INDEX_SHARE_BIT);
     }
   #endif
+  #if !USE_BLAS_SHARING
+    // every instance builds its own blas, so color by geometry to show which copies are unique
+    if (!lowDetail && (blasBuildIndex & BLAS_BUILD_INDEX_CACHE_BIT) == 0)
+    {
+      instanceID = instances[instanceID].geometryID;
+    }
+  #endif
     return lowDetail ? vec3(0.9, 0.1, 0.1) : colorizeID(instanceID).xyz;
   }
 #endif
@@ -190,6 +217,7 @@ ShadingMaterial loadMaterial(uint materialID, vec2 oTexCoord, inout vec3 wNormal
   shadingMaterial.emissive      = unpackUnorm4x8(material.packedEmissive).xyz;
   shadingMaterial.specularColor = packedSpecular.xyz;
   shadingMaterial.specular      = packedSpecular.w;
+  shadingMaterial.occlusion     = 1.0;
 #if HAS_TEXTURED_MATERIALS
   // glTF packs roughness in the G channel and metalness in the B channel of the metallic-roughness texture.
   vec3 metallicRoughness    = sampleBindless(material.metallicRoughnessTexture, oTexCoord, texLod).xyz;
@@ -554,7 +582,7 @@ float ambientOcclusion(vec3 wPos, vec3 wNormal, uint32_t sampleCount, float radi
     #if !HAS_ALPHA_TEST
       flags |= gl_RayFlagsOpaqueEXT;
     #endif
-    traceRayEXT(asScene, flags,
+    traceRayEXT(accelerationStructureEXT(build.tlasAddress), flags,
                 mask /*0xFF*/, 0, 1, 1, offsetRay(wPos, wDirection, wNormal), 1e-4f, wDirection, radius, 1);
     if(rayHitAO > 0.f)
     {
@@ -577,7 +605,8 @@ float traceShadowRay(vec3 wPos, vec3 wNormal, vec3 wDirection)
   #endif
   float minT       = view.shadowRayMinT * (1.0f + distance(wPos, view.viewMatrixI[3].xyz) * view.shadowRayDistanceBias);
   float maxT       = 10000000.0f;
-  traceRayEXT(asScene, flags, mask, 0, 1, 1, offsetRay(wPos, wDirection, wNormal), minT, wDirection, maxT, 1);
+  traceRayEXT(accelerationStructureEXT(build.tlasAddress), flags, mask, 0, 1, 1,
+              offsetRay(wPos, wDirection, wNormal), minT, wDirection, maxT, 1);
 
   return (rayHitAO > 0.f) ? 0.0F : 1.0f;
 }

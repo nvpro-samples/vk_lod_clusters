@@ -127,7 +127,7 @@ bool queryIsVisible(mat4x3 instanceTransform, BBox bbox, inout bool outRenderClu
 
   bool inFrustum = intersectFrustum(build.cullViewProjMatrix, bboxMin, bboxMax, instanceTransform, clipMin, clipMax, clipValid);
   bool isVisible = inFrustum &&
-    (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, CULL_MIN_PIXEL_SIZE) && intersectHiz(clipMin, clipMax, 1)));
+    (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, view.cullMinPixelSize) && intersectHiz(clipMin, clipMax, 1)));
 
 #if USE_SW_RASTER
   // check if sw rasterization is okay to use (not near/far clipped and smaller than threshold)

@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <future>
+
 #include <glm/glm.hpp>
 
 #include "nvvk/gbuffers.hpp"
@@ -28,6 +30,9 @@ public:
   {
     VkInstance               instance{};
     nvvk::ResourceAllocator* resourceAllocator{};
+    uint32_t                 queueFamilyIndex{};
+    // main thread queue, runs the warm-up feature's creation commands
+    VkQueue queue{};
 
     // optional for UI/imgui
     nvvk::SamplerPool* samplerPool{};
@@ -42,8 +47,15 @@ public:
 
   void deinitResources();
   void initUpscaler();
+  // runs initUpscaler on a worker thread, ensureInitialized waits for it. The quality picks the
+  // preset that is warmed up, each has its own network.
+  void initAsync(NVSDK_NGX_PerfQuality_Value quality);
+  bool isInitPending() const { return m_initFuture.valid(); }
+  // completes initAsync if it finished, returns true if so
+  bool pollInit();
 
-  bool ensureInitialized();
+  bool ensureInitialized(NVSDK_NGX_PerfQuality_Value quality);
+  bool isInitialized() const { return !m_initFuture.valid() && m_initialized; }
   bool isAvailable() const;
   bool isActive() const;
 
@@ -63,13 +75,24 @@ public:
   VkFormat                     getColorFormat(DlssBufferType type) const { return m_bufferInfos[type]; }
 
 private:
+  void warmupFeature();
+  // main thread, after the init finished
+  void finishWarmup(bool submit);
+
   InitInfo m_info{};
   bool     m_initialized  = false;
   bool     m_hasResources = false;
   bool     m_dlssCreated  = false;
 
+  std::future<void> m_initFuture;
+
   NgxContext          m_ngx{};
   DlssSuperResolution m_dlss{};
+
+  DlssSuperResolution         m_warmup{};
+  VkCommandPool               m_warmupPool{};
+  VkCommandBuffer             m_warmupCmd{};
+  NVSDK_NGX_PerfQuality_Value m_warmupQuality = NVSDK_NGX_PerfQuality_Value_MaxQuality;
 
   std::vector<VkFormat> m_bufferInfos = {
       {VK_FORMAT_R16G16B16A16_SFLOAT},  // DLSS input color

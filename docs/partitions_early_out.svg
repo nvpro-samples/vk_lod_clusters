@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="700" height="330" version="1.1" viewBox="0 0 700 330" xmlns="http://www.w3.org/2000/svg">
+ <style>
+  text { font-family: 'NVIDIA Sans', 'NVIDIA Sans Regular', Arial, sans-serif; font-size: 12px; fill: #333333; }
+  .small { font-size: 10px; }
+  .title { font-size: 13px; font-weight: bold; }
+  .fg-stroke { stroke: #595959; }
+  .fg-fill { fill: #595959; }
+  .grid { stroke: #595959; stroke-opacity: 0.35; }
+  text.onfill { fill: #333333; }
+  @media (prefers-color-scheme: dark) {
+    text { fill: #dddddd; }
+    .fg-stroke { stroke: #dddddd; }
+    .fg-fill { fill: #dddddd; }
+    .grid { stroke: #dddddd; stroke-opacity: 0.35; }
+  }
+ </style>
+ <defs>
+  <marker id="arrow" overflow="visible" markerHeight="1" markerWidth="1" orient="auto-start-reverse" preserveAspectRatio="xMidYMid" viewBox="0 0 1 1"><path class="fg-fill" d="m1 0-3 3h-2l3-3-3-3h2z" fill-rule="evenodd"/></marker>
+  <pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#ea9999"/><line x1="0" y1="0" x2="0" y2="6" stroke="#cc0000" stroke-width="2.5"/></pattern>
+  <pattern id="hatchgreen" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#b6d7a8"/><line x1="0" y1="0" x2="0" y2="6" stroke="#cc0000" stroke-width="1.5"/></pattern>
+ </defs>
+ <text x="30" y="22" class="title">1. partition_setup: one thread per partition</text>
+ <rect x="30.0" y="34" width="91.2" height="26" fill="#b6d7a8" class="fg-stroke" stroke-width="1"/>
+ <text x="75.6" y="51" text-anchor="middle" class="onfill">P0</text>
+ <rect x="121.2" y="34" width="39.1" height="26" fill="#ea9999" class="fg-stroke" stroke-width="1"/>
+ <text x="140.7" y="51" text-anchor="middle" class="onfill">P1</text>
+ <rect x="160.2" y="34" width="195.3" height="26" fill="#b6d7a8" class="fg-stroke" stroke-width="1"/>
+ <text x="257.9" y="51" text-anchor="middle" class="onfill">P2</text>
+ <rect x="355.6" y="34" width="52.1" height="26" fill="#b6d7a8" class="fg-stroke" stroke-width="1"/>
+ <text x="381.6" y="51" text-anchor="middle" class="onfill">P3</text>
+ <rect x="407.7" y="34" width="117.2" height="26" fill="#ea9999" class="fg-stroke" stroke-width="1"/>
+ <text x="466.3" y="51" text-anchor="middle" class="onfill">P4</text>
+ <rect x="524.9" y="34" width="65.1" height="26" fill="#b6d7a8" class="fg-stroke" stroke-width="1"/>
+ <text x="557.4" y="51" text-anchor="middle" class="onfill">P5</text>
+ <text x="596" y="51" class="small">sorted</text>
+ <text x="596" y="63" class="small">instances</text>
+ <text x="30" y="98" class="title">2. active partitions set the bits of the blocks they cover</text>
+ <rect x="30.0" y="110" width="91.2" height="26" fill="url(#hatchgreen)"/>
+ <rect x="121.2" y="110" width="39.1" height="26" fill="#ea9999"/>
+ <rect x="160.2" y="110" width="3.1" height="26" fill="url(#hatchgreen)"/>
+ <rect x="30.0" y="110" width="133.4" height="26" fill="none" class="fg-stroke" stroke-width="2"/>
+ <text x="34.0" y="150" class="small">block 0: 1</text>
+ <rect x="163.4" y="110" width="133.4" height="26" fill="#b6d7a8"/>
+ <rect x="163.4" y="110" width="133.4" height="26" fill="none" class="fg-stroke" stroke-width="1"/>
+ <text x="167.4" y="150" class="small">block 1: 0</text>
+ <rect x="296.7" y="110" width="58.9" height="26" fill="url(#hatchgreen)"/>
+ <rect x="355.6" y="110" width="52.1" height="26" fill="url(#hatchgreen)"/>
+ <rect x="407.7" y="110" width="22.4" height="26" fill="#ea9999"/>
+ <rect x="296.7" y="110" width="133.4" height="26" fill="none" class="fg-stroke" stroke-width="2"/>
+ <text x="300.7" y="150" class="small">block 2: 1</text>
+ <rect x="430.1" y="110" width="94.8" height="26" fill="#ea9999"/>
+ <rect x="524.9" y="110" width="38.5" height="26" fill="url(#hatchgreen)"/>
+ <rect x="430.1" y="110" width="133.4" height="26" fill="none" class="fg-stroke" stroke-width="2"/>
+ <text x="434.1" y="150" class="small">block 3: 1</text>
+ <rect x="563.4" y="110" width="26.6" height="26" fill="#b6d7a8"/>
+ <rect x="563.4" y="110" width="26.6" height="26" fill="none" class="fg-stroke" stroke-width="1"/>
+ <text x="567.4" y="150" class="small">block 4: 0</text>
+ <line x1="30.0" y1="60" x2="30.0" y2="110" class="grid" stroke-dasharray="3 3"/>
+ <line x1="121.2" y1="60" x2="121.2" y2="110" class="grid" stroke-dasharray="3 3"/>
+ <line x1="160.2" y1="60" x2="160.2" y2="110" class="grid" stroke-dasharray="3 3"/>
+ <line x1="355.6" y1="60" x2="355.6" y2="110" class="grid" stroke-dasharray="3 3"/>
+ <line x1="407.7" y1="60" x2="407.7" y2="110" class="grid" stroke-dasharray="3 3"/>
+ <line x1="524.9" y1="60" x2="524.9" y2="110" class="grid" stroke-dasharray="3 3"/>
+ <text x="30" y="184" class="title">3. partition_block_compact: active block ids, indirect dispatch</text>
+ <rect x="30" y="196" width="46" height="26" fill="#ea9999" class="fg-stroke" stroke-width="1"/>
+ <text x="53.0" y="213" text-anchor="middle" class="onfill">0</text>
+ <rect x="76" y="196" width="46" height="26" fill="#ea9999" class="fg-stroke" stroke-width="1"/>
+ <text x="99.0" y="213" text-anchor="middle" class="onfill">2</text>
+ <rect x="122" y="196" width="46" height="26" fill="#ea9999" class="fg-stroke" stroke-width="1"/>
+ <text x="145.0" y="213" text-anchor="middle" class="onfill">3</text>
+ <path d="M176 209 H228" class="fg-stroke" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+ <rect x="242" y="188" width="190" height="24" rx="4" fill="#eeeeee" class="fg-stroke" stroke-width="1"/>
+ <text x="337" y="204" text-anchor="middle" style="fill:#333333">instance_classify_lod</text>
+ <rect x="242" y="218" width="190" height="24" rx="4" fill="#eeeeee" class="fg-stroke" stroke-width="1"/>
+ <text x="337" y="234" text-anchor="middle" style="fill:#333333">traversal_init_blas_reuse</text>
+ <rect x="242" y="248" width="190" height="24" rx="4" fill="#eeeeee" class="fg-stroke" stroke-width="1"/>
+ <text x="337" y="264" text-anchor="middle" style="fill:#333333">instance_assign_blas</text>
+ <path d="M438 260 h30" class="fg-stroke" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+ <text x="480" y="256" class="small">TLAS: rebuilt over</text>
+ <text x="480" y="269" class="small">all instances</text>
+ <text x="480" y="288" class="small">PTLAS: updates only</text>
+ <text x="480" y="301" class="small">the changed BLAS</text>
+ <rect x="30" y="296" width="14" height="14" fill="#ea9999" class="fg-stroke" stroke-width="0.5"/>
+ <text x="50" y="307">active</text>
+ <rect x="110" y="296" width="14" height="14" fill="#b6d7a8" class="fg-stroke" stroke-width="0.5"/>
+ <text x="130" y="307">stable, skipped</text>
+ <rect x="240" y="296" width="14" height="14" fill="url(#hatchgreen)" class="fg-stroke" stroke-width="0.5"/>
+ <text x="260" y="307">stable, dragged along by its block</text>
+</svg>

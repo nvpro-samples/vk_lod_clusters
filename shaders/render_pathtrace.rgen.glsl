@@ -12,8 +12,8 @@
   here in the ray-generation shader: the closest-hit only reports the hit and
   this shader runs the multi-bounce loop.
 
-  Lighting is the physical sky (evalPhysicalSky) with importance-sampled
-  next-event estimation (samplePhysicalSky) and MIS against the BSDF. The BSDF
+  Lighting is the physical sky (evalPhysicalSky) or an HDRI (environment.glsl) with
+  importance-sampled next-event estimation and MIS against the BSDF. The BSDF
   reuses this project's simplified material model (computeBrdfCos / GGX eval
   helpers) with a stochastic diffuse/specular lobe split for indirect bounces.
 
@@ -90,8 +90,6 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
 };
 #endif
 
-layout(set = 0, binding = BINDINGS_TLAS) uniform accelerationStructureEXT asScene;
-
 layout(set = 0, binding = BINDINGS_RAYTRACING_DEPTH, r32f) uniform image2D imgRaytracingDepth;
 layout(set = 0, binding = BINDINGS_RENDER_TARGET, rgba16f) uniform image2D imgColor;
 #if USE_DLSS
@@ -121,6 +119,8 @@ layout(location = 1) rayPayloadEXT float          rayHitAO;
 #include "texturing.glsl"
 #include "render_shading.glsl"
 #include "render_pathtrace_hit.glsl"
+#define ENV_HDRI_SAMPLING 1
+#include "environment.glsl"
 
 //////////////////////////////////////////////////////////////
 
@@ -214,7 +214,8 @@ float ptTraceShadowRay(vec3 wPos, vec3 wNormal, vec3 wDir, float coneWidth, floa
   rayHit.coneWidth  = coneWidth;
   rayHit.coneSpread = coneSpread;
   float minT = view.shadowRayMinT * (1.0 + distance(wPos, view.viewMatrixI[3].xyz) * view.shadowRayDistanceBias);
-  traceRayEXT(asScene, flags, 0xFF, 0, 1, 0, offsetRay(wPos, wDir, wNormal), minT, wDir, 1e7, 0);
+  traceRayEXT(accelerationStructureEXT(build.tlasAddress), flags, 0xFF, 0, 1, 0, offsetRay(wPos, wDir, wNormal),
+              minT, wDir, 1e7, 0);
   return rayHit.hitT < 0.0 ? 1.0 : 0.0;
 }
 
@@ -222,7 +223,8 @@ float ptTraceShadowRay(vec3 wPos, vec3 wNormal, vec3 wDir, float coneWidth, floa
 // shadow and would flood crevices with flat light; modulate it by a short cosine-hemisphere occlusion trace
 // (like the RT path's ambient term). Same payload/miss setup as ptTraceShadowRay, but with a bounded
 // tMax = radius so only nearby geometry occludes. Returns 1 = fully open, down to 0.2 = deep crevice.
-float ptTraceAO(vec3 wPos, vec3 wGeoNormal, uint sampleCount, float radius, float coneWidth, float coneSpread, inout uint seed)
+// unoccluded fraction of the cosine hemisphere within `radius`
+float ptTraceVisibility(vec3 wPos, vec3 wGeoNormal, uint sampleCount, float radius, float coneWidth, float coneSpread, inout uint seed)
 {
   if(sampleCount == 0u || radius <= 0.0)
     return 1.0;
@@ -242,12 +244,58 @@ float ptTraceAO(vec3 wPos, vec3 wGeoNormal, uint sampleCount, float radius, floa
     rayHit.hitT       = 1.0;  // occluded sentinel; miss (index 0) flips it to -1 when nothing is within radius
     rayHit.coneWidth  = coneWidth;
     rayHit.coneSpread = coneSpread;
-    traceRayEXT(asScene, flags, 0xFF, 0, 1, 0, offsetRay(wPos, d, wGeoNormal), 0.001, d, radius, 0);
+    traceRayEXT(accelerationStructureEXT(build.tlasAddress), flags, 0xFF, 0, 1, 0, offsetRay(wPos, d, wGeoNormal),
+                0.001, d, radius, 0);
     if(rayHit.hitT >= 0.0)
       occluded++;
   }
-  float ao = float(sampleCount - occluded) / float(sampleCount);
+  return float(sampleCount - occluded) / float(sampleCount);
+}
+
+float ptTraceAO(vec3 wPos, vec3 wGeoNormal, uint sampleCount, float radius, float coneWidth, float coneSpread, inout uint seed)
+{
+  if(sampleCount == 0u || radius <= 0.0)
+    return 1.0;
+  float ao = ptTraceVisibility(wPos, wGeoNormal, sampleCount, radius, coneWidth, coneSpread, seed);
   return max(0.2, ao * ao);  // match RT ambientOcclusion() floor + contrast curve
+}
+
+// Ends the path like the ray tracer shades: the sun through a shadow ray, and the baked sky
+// (irradiance + prefiltered env) for the dome and everything a further bounce would have found,
+// the diffuse occluded by sky visibility rays, the specular by one reflection ray. Occluded directions
+// keep `pathtraceAmbientFill` of it as bounce light.
+vec3 ptAmbientTail(ShadingMaterial mat, PathHit hit, vec3 N, vec3 V, float NdotV, float coneWidth, float coneSpread, inout uint seed)
+{
+  vec3 color  = vec3(0);
+  vec3 sunDir = normalize(view.skyPhysical.sunDirection);
+  if(view.lightMixer > 0.0 && dot(N, sunDir) > 0.0 && dot(hit.wGeoNormal, sunDir) > 0.0)
+  {
+    float visibility = ptTraceShadowRay(hit.wShadowPos, hit.wGeoNormal, sunDir, coneWidth, coneSpread);
+    color += view.skyLighting.sunIrradiance * (view.lightMixer * visibility) * computeBrdfCos(mat, N, sunDir, V, NdotV);
+  }
+
+  // unbounded, sky occlusion rather than local AO: a roof further away than the AO radius still blocks the sky
+  float visibility = ptTraceVisibility(hit.wPos, hit.wGeoNormal, uint(view.ambientOcclusionSamples), view.farPlane,
+                                       coneWidth, coneSpread, seed);
+  float ambient    = mix(view.pathtraceAmbientFill, 1.0, visibility) * mat.occlusion * view.skyAmbientScale;
+
+  float perceptualRoughness = max(mat.roughness, 0.04f);
+  float alphaRoughness      = perceptualRoughness * perceptualRoughness;
+  vec2  envBrdf             = envBRDFApprox(perceptualRoughness, NdotV);
+  vec3  specularWeight      = materialF0(mat) * envBrdf.x + materialF90(mat) * envBrdf.y;
+  vec3  specular = textureLod(texSkyEnv, reflect(-V, N), perceptualRoughness * float(SKY_ENV_MIPS - 1)).xyz;
+  vec3  diffuse  = texture(texSkyIrradiance, N).xyz * mat.albedo * (1.0f - mat.metallic);
+
+  // The hemisphere AO misses that a reflection sees the neighbouring geometry rather than the sky,
+  // which over-brightens metals. One unbounded ray along a sampled GGX direction occludes the specular.
+  vec3 tx, ty;
+  computeDefaultBasis(N, tx, ty);
+  vec3  L           = sampleGgxDirection(N, tx, ty, -V, alphaRoughness, rand(seed), rand(seed));
+  float specularVis = dot(L, hit.wGeoNormal) > 0.0 ? ptTraceShadowRay(hit.wShadowPos, hit.wGeoNormal, L, coneWidth, coneSpread) : 0.0;
+  float specularAmbient = mix(view.pathtraceAmbientFill, 1.0, specularVis) * mat.occlusion * view.skyAmbientScale;
+  color += (vec3(1.0f) - specularWeight) * diffuse * ambient + specularWeight * specular * specularAmbient;
+
+  return color;
 }
 
 //////////////////////////////////////////////////////////////
@@ -321,10 +369,10 @@ void main()
 
   uint rayFlags = USE_FORCED_TWO_SIDED != 0 ? 0 : gl_RayFlagsCullBackFacingTrianglesEXT;
  
-  // do less bounces in visualization modes, given the flat detail.
-  int maxBounces = view.visualize == VISUALIZE_SHADED
-               ? max(view.pathtraceNumBounces, 1)
-               : min(max(view.pathtraceNumBounces, 1), 2);
+  // path vertices: the primary hit plus one per bounce, 0 bounces is direct lighting only.
+  // Visualization modes bounce at most once, given the flat detail.
+  int maxDepth = 1 + (view.visualize == VISUALIZE_SHADED ? max(view.pathtraceNumBounces, 0)
+                                                         : clamp(view.pathtraceNumBounces, 0, 1));
 
   // Hacky reflective box (ported from the raster / ray tracer, see render_raytrace.rgen.glsl): only the
   // primary camera ray reflects off an axis-aligned box; path-traced bounces ignore it. When the box's
@@ -342,7 +390,8 @@ void main()
       rayHit.hitT       = -1.0;
       rayHit.coneWidth  = coneWidth;
       rayHit.coneSpread = coneSpread;
-      traceRayEXT(asScene, rayFlags, 0xff, 0, 1, 0, rayOrigin, tMin, rayDir, mirrorT, 0);
+      traceRayEXT(accelerationStructureEXT(build.tlasAddress), rayFlags, 0xff, 0, 1, 0, rayOrigin, tMin, rayDir,
+                  mirrorT, 0);
       if(rayHit.hitT < 0.0)
       {
         // Axis-aligned face normal of the box: the dominant axis of (hitPoint - center).
@@ -375,13 +424,13 @@ void main()
   bool vizModulate = view.visualize != VISUALIZE_SHADED && view.visualize != VISUALIZE_GREY && view.visualize != VISUALIZE_VIS_BUFFER;
   vec3 vizColor    = vec3(1);
 
-  for(int bounce = 0; bounce < maxBounces; bounce++)
+  for(int bounce = 0; bounce < maxDepth; bounce++)
   {
     // hand the current ray cone (at the ray origin) to the any-hit / hit shaders for this trace
     rayHit.hitT       = -1.0;
     rayHit.coneWidth  = coneWidth;
     rayHit.coneSpread = coneSpread;
-    traceRayEXT(asScene, rayFlags, 0xff, 0, 1, 0, rayOrigin, tMin, rayDir, tMax, 0);
+    traceRayEXT(accelerationStructureEXT(build.tlasAddress), rayFlags, 0xff, 0, 1, 0, rayOrigin, tMin, rayDir, tMax, 0);
 
     // ---------------------------------------------------------
     // Environment (physical sky) on miss
@@ -399,15 +448,18 @@ void main()
       if(view.visualize == VISUALIZE_VIS_BUFFER)
         break;
 
-      vec3  envColor = evalPhysicalSky(view.skyPhysical, rayDir);
+      vec4  env      = evalEnvironmentLod(view.skyPhysical, view.envHdri, rayDir, 0.0);
+      vec3  envColor = env.xyz;
       float misW     = 1.0;
       if(bounce > 0)
       {
-        float envPdf = samplePhysicalSkyPDF(skyZUp, skyZUpDir(rayDir));
+        float envPdf = view.envHdri.enabled != 0 ? env.w : samplePhysicalSkyPDF(skyZUp, skyZUpDir(rayDir));
         misW         = ptPowerHeuristic(lastBsdfPdf, envPdf);
       }
-      // the sky behind the scene is not dimmed, only its lighting
-      if(bounce > 0 && dot(rayDir, view.skyPhysical.sunDirection) < cos(1.5 * 0.00465 * view.skyPhysical.sunDiskScale))
+      // the sky behind the scene is not dimmed, only its lighting. An HDRI has no separate sun.
+      if(bounce > 0
+         && (view.envHdri.enabled != 0
+             || dot(rayDir, view.skyPhysical.sunDirection) < cos(1.5 * 0.00465 * view.skyPhysical.sunDiskScale)))
         envColor *= view.skyAmbientScale;
       radiance += throughput * misW * envColor;
       break;
@@ -534,7 +586,7 @@ void main()
       const float flashVsSky   = 0.5;  // flashlight capped at 50% of the sky brightness
       float flashIntensity     = 1.0 - view.lightMixer;
       vec3  flashDir           = normalize(view.wLightPos.xyz - hit.wPos);
-      float skyBrightness      = ptLuminance(evalPhysicalSky(view.skyPhysical, normalize(view.wUpDir.xyz)));
+      float skyBrightness      = view.skyLighting.upLuminance;
       float ao                 = ptTraceAO(hit.wPos, hit.wGeoNormal, uint(view.ambientOcclusionSamples),
                                            view.ambientOcclusionRadius, coneWidth, coneSpread, seed);
       radiance += throughput * (ao * flashIntensity * skyBrightness * flashVsSky) * computeShading(mat, N, flashDir, V, NdotV);
@@ -548,20 +600,37 @@ void main()
     vec3  f0                  = materialF0(mat);
     float pSpec               = specularLobeProbability(diffuseAlbedo, f0);
 
+    if(view.pathtraceAmbientTail != 0 && bounce == maxDepth - 1)
+    {
+      radiance += throughput * ptAmbientTail(mat, hit, N, V, NdotV, coneWidth, coneSpread, seed);
+      break;
+    }
+
     vec3 tx, ty;
     computeDefaultBasis(N, tx, ty);
 
     // ---------------------------------------------------------
-    // Next-event estimation: importance-sample the physical sky
+    // Next-event estimation: importance-sample the physical sky or the HDRI
     // ---------------------------------------------------------
     {
-      SkySamplingResult sky = samplePhysicalSky(skyZUp, vec2(rand(seed), rand(seed)));
-      sky.direction         = skyZUpDir(sky.direction);
+      SkySamplingResult sky;
+      if(view.envHdri.enabled != 0)
+      {
+        vec4 env      = sampleEnvironmentHdri(view.skyPhysical, view.envHdri, vec3(rand(seed), rand(seed), rand(seed)), sky.direction);
+        sky.radiance  = env.xyz;
+        sky.pdf       = env.w;
+      }
+      else
+      {
+        sky           = samplePhysicalSky(skyZUp, vec2(rand(seed), rand(seed)));
+        sky.direction = skyZUpDir(sky.direction);
+      }
       if(sky.pdf > 0.0 && dot(N, sky.direction) > 0.0)
       {
         vec3  f    = computeBrdfCos(mat, N, sky.direction, V, NdotV);
         float bp   = bsdfPdf(N, V, sky.direction, alphaRoughness, pSpec);
-        float misW = ptPowerHeuristic(sky.pdf, bp);
+        // the last vertex traces no BSDF ray that could pick up the rest of the sky
+        float misW = bounce == maxDepth - 1 ? 1.0 : ptPowerHeuristic(sky.pdf, bp);
         if(misW > 0.0 && (f.x + f.y + f.z) > 0.0)
         {
           float visibility = ptTraceShadowRay(hit.wShadowPos, hit.wGeoNormal, sky.direction, coneWidth, coneSpread);
@@ -570,7 +639,7 @@ void main()
           // is scaled by lightMixer so it cross-fades with the camera flashlight like the RT path
           // (lightMixer==1 -> sun only; ->0 fades the sun out as the flashlight fades in, no overbright).
           float sunCosThreshold = cos(1.5 * 0.00465 * view.skyPhysical.sunDiskScale);
-          bool  isSun    = dot(sky.direction, view.skyPhysical.sunDirection) >= sunCosThreshold;
+          bool  isSun    = view.envHdri.enabled == 0 && dot(sky.direction, view.skyPhysical.sunDirection) >= sunCosThreshold;
           float sunScale = isSun ? view.lightMixer : view.skyAmbientScale;
           radiance += throughput * (sky.radiance / sky.pdf) * f * misW * visibility * sunScale;
         }
@@ -672,7 +741,8 @@ void main()
       radiance *= view.pathtraceFireflyClamp / lum;
   }
 
-  float hitDepth = 1.0;
+  // misses at the far plane, which is 0 with reversed-Z
+  float hitDepth = 0.0;
   if(hitValid)
   {
     vec4 screenPos = view.viewProjMatrix * vec4(firstHitPos, 1);

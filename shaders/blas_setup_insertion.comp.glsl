@@ -94,6 +94,11 @@ void main()
     uint referencesCount  = build.instanceBuildInfos.d[instanceID].clusterReferencesCount;
     if (referencesCount > 0)
     {
+      // consumed here rather than reset in `traversal_init`, which a skipped partition never
+      // reaches. `traversal_blas_merging` dispatches over resident groups, so it can add to
+      // an instance that did not run.
+      build.instanceBuildInfos.d[instanceID].clusterReferencesCount = 0;
+
       uint referencesOffset = atomicAdd(buildRW.blasClasCounter, referencesCount);
       uint buildOffset      = atomicAdd(buildRW.blasBuildCounter, 1);
       

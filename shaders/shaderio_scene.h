@@ -85,6 +85,16 @@ enum ClusterStateBits
 
 #define SHADERIO_ORIGINAL_MESH_GROUP 0xffffffffu
 #define SHADERIO_MAX_LOD_LEVELS 32
+
+// Cached blas entries per geometry, in `SceneStreaming::cachedBlasAddresses`, indexed
+// [geometryID * GEOMETRY_CACHED_BLAS_STRIDE + slot]. Slot is counted from the coarsest
+// lod level, so it is implied by the level and needs no parallel array. Slot 0 stays
+// empty, the coarsest level is the pre-built low detail blas, and an empty entry falls
+// back to it in `instance_assign_blas`. Fixed stride: the index must come from the geometryID alone,
+// and the live `cachingEnabledLevels` only governs how many slots are used.
+#define GEOMETRY_CACHED_BLAS_STRIDE 16
+#define GEOMETRY_CACHED_BLAS_SLOT(lodLevelsCount, level)                                                               \
+  min(uint(GEOMETRY_CACHED_BLAS_STRIDE - 1), uint(lodLevelsCount) - 1u - uint(level))
 #define SHADERIO_MAX_NODE_CHILDREN 32
 #define SHADERIO_MAX_GROUP_CLUSTERS 128
 #define SHADERIO_MAX_CLUSTER_TRIANGLES 256
@@ -330,8 +340,11 @@ struct Geometry
   uint32_t lowDetailClusterID;
   uint64_t lowDetailBlasAddress;
 
-  // only for USE_BLAS_CACHING in streaming
-  uint64_t cachedBlasAddress;
+  // ray tracing: streaming frame of the last cached blas build, which can reuse the replaced
+  // one's address, the ptlas still needs an update then (USE_BLAS_CACHING)
+  uint32_t cachedBuildFrame;
+  // keeps Geometry at 128 B, exactly two cachelines
+  uint32_t _reserved;
 
   // object space geometry bbox
   BBox bbox;

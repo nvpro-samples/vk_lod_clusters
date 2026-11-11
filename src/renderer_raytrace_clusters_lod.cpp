@@ -15,6 +15,7 @@
 #include <cmath>
 
 #include "renderer.hpp"
+#include "partitioned_acceleration_structures.hpp"
 
 #define USE_LARGE_BUFFER_BLAS 1
 
@@ -38,9 +39,15 @@ private:
 
   void initRayTracingPipeline(Resources& res);
   bool initRayTracingBlas(Resources& res, RenderScene& scene, VkDeviceSize& scratchSize);
-  void initRayTracingTlas(Resources& res, VkDeviceSize& scratchSize);
+  void initRayTracingTlas(Resources& res, RenderScene& rscene, VkDeviceSize& scratchSize);
+  bool initRayTracingPtlas(Resources& res, RenderScene& rscene, VkDeviceSize& scratchSize);
+  // the initial build writing all instances, needs the scratch and the build data
+  void initRayTracingPtlasInstances(Resources& res, RenderScene& rscene);
+  // the partition arrays the early-out reads, independent of the ptlas
+  void initInstancePartitions(Resources& res, RenderScene& rscene);
 
   void updateRayTracingTlas(VkCommandBuffer cmd, Resources& res, bool update = false);
+  void updateRayTracingPtlas(VkCommandBuffer cmd);
 
 
   struct Shaders
@@ -66,6 +73,9 @@ private:
     Shader computeInstanceAssignBlas;
     Shader computeInstanceClassifyLod;
     Shader computeGeometryBlasSharing;
+    Shader computeGeometryCachedRetain;
+    Shader computePartitionSetup;
+    Shader computePartitionBlockCompact;
   };
 
   struct Pipelines
@@ -86,6 +96,9 @@ private:
     VkPipeline computeInstanceAssignBlas    = nullptr;
     VkPipeline computeInstanceClassifyLod   = nullptr;
     VkPipeline computeGeometryBlasSharing   = nullptr;
+    VkPipeline computeGeometryCachedRetain  = nullptr;
+    VkPipeline computePartitionSetup        = nullptr;
+    VkPipeline computePartitionBlockCompact = nullptr;
   };
 
   VkPhysicalDeviceRayTracingPipelinePropertiesKHR m_rtProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
@@ -126,6 +139,12 @@ private:
   VkAccelerationStructureBuildGeometryInfoKHR m_tlasBuildInfo{};
   nvvk::AccelerationStructure                 m_tlas;
 
+  // for m_config.usePtlas
+  PartitionedTlas m_ptlas;
+  // holds the operation count, followed by the operation of the frame
+  nvvk::Buffer m_ptlasOperationsBuffer;
+  uint32_t     m_partitionCount = 0;
+
   nvvk::Buffer m_scratchBuffer;
 };
 
@@ -158,6 +177,9 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("USE_BLAS_SHARING", m_config.useBlasSharing ? "1" : "0");
   options.AddMacroDefinition("USE_BLAS_MERGING", m_config.useBlasSharing && m_config.useBlasMerging ? "1" : "0");
   options.AddMacroDefinition("USE_BLAS_CACHING", m_config.useBlasCaching ? "1" : "0");
+  options.AddMacroDefinition("USE_PTLAS", m_config.usePtlas ? "1" : "0");
+  options.AddMacroDefinition("USE_PARTITIONS", (m_config.usePtlas || m_config.usePartitionEarlyOut) ? "1" : "0");
+  options.AddMacroDefinition("USE_PARTITION_EARLY_OUT", m_config.usePartitionEarlyOut ? "1" : "0");
   options.AddMacroDefinition("USE_RENDER_STATS", m_config.useRenderStats ? "1" : "0");
   options.AddMacroDefinition("USE_DLSS", supportsDLSS && m_config.useDlss ? "1" : "0");
   options.AddMacroDefinition("ALLOW_VERTEX_NORMALS", rscene.scene->m_hasVertexNormals ? "1" : "0");
@@ -244,6 +266,17 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   }
   if(m_config.useBlasCaching)
   {
+    res.compileShader(m_shaders.computeGeometryCachedRetain, VK_SHADER_STAGE_COMPUTE_BIT,
+                      "geometry_cached_retain.comp.glsl", &options);
+  }
+  if(m_config.usePartitionEarlyOut)
+  {
+    res.compileShader(m_shaders.computePartitionSetup, VK_SHADER_STAGE_COMPUTE_BIT, "partition_setup.comp.glsl", &options);
+    res.compileShader(m_shaders.computePartitionBlockCompact, VK_SHADER_STAGE_COMPUTE_BIT,
+                      "partition_block_compact.comp.glsl", &options);
+  }
+  if(m_config.useBlasCaching)
+  {
     res.compileShader(m_shaders.computeBlasCachingSetupCopy, VK_SHADER_STAGE_COMPUTE_BIT,
                       "blas_caching_setup_copy.comp.glsl", &options);
     res.compileShader(m_shaders.computeBlasCachingSetupBuild, VK_SHADER_STAGE_COMPUTE_BIT,
@@ -281,6 +314,22 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
   if(!res.m_physicalDeviceInfo.features12.vulkanMemoryModelDeviceScope)
   {
     m_config.useVulkanMemoryModel = false;
+  }
+  // both are consumers of the partitions, only this local copy is cleared so the requested
+  // settings come back when partitions are re-enabled
+  m_config.usePtlas = m_config.usePtlas && m_config.usePartitions && res.m_supportsPartitionedTlas;
+  // without blas reuse `traversal_init` traverses every instance, the early-out would build
+  // blas for skipped instances that are never assigned
+  m_config.usePartitionEarlyOut = m_config.usePartitionEarlyOut && m_config.usePartitions && useBlasReuse();
+  if(m_config.usePtlas)
+  {
+    // fixed grid and node regex layouts are not bounded by the device limit
+    uint32_t maxPartitionCount = PartitionedTlas::getProperties(res.m_physicalDevice).maxPartitionCount;
+    if(rscene.scene->m_partitions.size() > maxPartitionCount)
+    {
+      LOGW("ptlas disabled: %zu partitions exceed the device limit of %u\n", rscene.scene->m_partitions.size(), maxPartitionCount);
+      m_config.usePtlas = false;
+    }
   }
 
 #if USE_DLSS
@@ -334,13 +383,24 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
       return false;
     }
 
-    // TLAS creation
-    initRayTracingTlas(res, scratchSize);
+    // the PTLAS instances are written later, they need the build data
+    if(!m_config.usePtlas)
+    {
+      initRayTracingTlas(res, rscene, scratchSize);
+    }
+    else if(!initRayTracingPtlas(res, rscene, scratchSize))
+    {
+      LOGE("RendererRayTraceClustersLod PTLAS setup failed\n");
+      deinit(res);
+      return false;
+    }
 
-    // streaming also stores newly built clas in scratch
+    // streaming also stores newly built clas in scratch, the ptlas build needs it 256 byte aligned
     res.createBuffer(m_scratchBuffer, scratchSize,
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR,
-                     VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0, m_accProperties.minAccelerationStructureScratchOffsetAlignment);
+                     VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0,
+                     std::max<VkDeviceSize>(m_accProperties.minAccelerationStructureScratchOffsetAlignment,
+                                            PartitionedTlas::ADDRESS_ALIGNMENT));
     NVVK_DBG_NAME(m_scratchBuffer.buffer);
 
     m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_scratchBuffer.bufferSize, "operations", "rt scratch");
@@ -378,7 +438,36 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
 
     m_sceneBuildShaderio.instanceVisibility =
         mem.append(sizeof(uint8_t) * nvutils::align_up(m_renderInstances.size(), TRAVERSAL_INIT_WORKGROUP), 4);
+    m_sceneBuildShaderio.instanceCachedSticky =
+        mem.append(sizeof(uint8_t) * nvutils::align_up(m_renderInstances.size(), TRAVERSAL_INIT_WORKGROUP), 4);
     m_sceneBuildShaderio.blasBuildInfos = mem.append(sizeof(shaderio::BlasBuildInfo) * m_maxBlasBuilds, 16);
+    if(m_config.usePtlas)
+    {
+      m_sceneBuildShaderio.ptlasInstanceUpdates =
+          mem.append(sizeof(shaderio::PtlasInstanceUpdate) * m_renderInstances.size(), 16);
+      m_sceneBuildShaderio.ptlasInstanceBlas = mem.append(sizeof(uint64_t) * m_renderInstances.size(), 8);
+      m_sceneBuildShaderio.ptlasPartitionUpdates =
+          mem.append(sizeof(uint32_t) * std::max(size_t(1), rscene.scene->m_partitions.size()), 4);
+    }
+    if(m_config.usePtlas || m_config.usePartitionEarlyOut)
+    {
+      m_sceneBuildShaderio.instancePartitions = mem.append(sizeof(uint32_t) * m_renderInstances.size(), 4);
+    }
+    if(m_config.usePartitionEarlyOut)
+    {
+      const size_t numPartitions                  = std::max(size_t(1), rscene.scene->m_partitions.size());
+      m_sceneBuildShaderio.partitionInstanceOrder = mem.append(sizeof(uint32_t) * m_renderInstances.size(), 4);
+      m_sceneBuildShaderio.partitionRanges        = mem.append(sizeof(glm::uvec2) * numPartitions, 8);
+      m_sceneBuildShaderio.partitionNonPersistent = mem.append(sizeof(uint32_t) * numPartitions, 4);
+      m_sceneBuildShaderio.partitionLastFrame     = mem.append(sizeof(uint32_t) * numPartitions, 4);
+      m_sceneBuildShaderio.partitionBboxes        = mem.append(sizeof(shaderio::BBox) * numPartitions, 16);
+      m_sceneBuildShaderio.partitionVisible       = mem.append(sizeof(uint32_t) * numPartitions, 4);
+      const uint32_t numBlocks =
+          uint32_t((m_renderInstances.size() + PARTITION_INSTANCE_BLOCK_SIZE - 1) / PARTITION_INSTANCE_BLOCK_SIZE);
+      m_sceneBuildShaderio.numInstanceBlocks  = numBlocks;
+      m_sceneBuildShaderio.partitionBlockBits = mem.append(sizeof(uint32_t) * ((numBlocks + 31) / 32), 4);
+      m_sceneBuildShaderio.activeBlocks       = mem.append(sizeof(uint32_t) * numBlocks, 4);
+    }
     m_sceneBuildShaderio.instanceBuildInfos = mem.append(sizeof(shaderio::InstanceBuildInfo) * m_renderInstances.size(), 16);
 
     if(m_config.useBlasSharing)
@@ -389,6 +478,8 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
 
     if(m_config.useBlasCaching)
     {
+      m_sceneBuildShaderio.geometryCachedRetain = mem.append(sizeof(uint32_t) * m_sceneBuildShaderio.numGeometries, 4);
+      m_sceneBuildShaderio.geometryCachedRetainNext = mem.append(sizeof(uint32_t) * m_sceneBuildShaderio.numGeometries, 4);
       m_sceneBuildShaderio.geometryCachedInfos =
           mem.append(sizeof(shaderio::GeometryCachedInfo) * m_sceneBuildShaderio.numGeometries, 8);
 
@@ -425,6 +516,22 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
 
     m_sceneBuildShaderio.renderClusterInfos += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.instanceVisibility += m_sceneDataBuffer.address;
+    m_sceneBuildShaderio.instanceCachedSticky += m_sceneDataBuffer.address;
+    if(m_config.usePtlas || m_config.usePartitionEarlyOut)
+    {
+      m_sceneBuildShaderio.instancePartitions += m_sceneDataBuffer.address;
+    }
+    if(m_config.usePartitionEarlyOut)
+    {
+      m_sceneBuildShaderio.partitionInstanceOrder += m_sceneDataBuffer.address;
+      m_sceneBuildShaderio.partitionRanges += m_sceneDataBuffer.address;
+      m_sceneBuildShaderio.partitionNonPersistent += m_sceneDataBuffer.address;
+      m_sceneBuildShaderio.partitionLastFrame += m_sceneDataBuffer.address;
+      m_sceneBuildShaderio.partitionBboxes += m_sceneDataBuffer.address;
+      m_sceneBuildShaderio.partitionVisible += m_sceneDataBuffer.address;
+      m_sceneBuildShaderio.partitionBlockBits += m_sceneDataBuffer.address;
+      m_sceneBuildShaderio.activeBlocks += m_sceneDataBuffer.address;
+    }
     m_sceneBuildShaderio.blasBuildInfos += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.blasBuildSizes += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.blasBuildAddresses += m_sceneDataBuffer.address;
@@ -432,6 +539,12 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     m_sceneBuildShaderio.instanceSortKeys += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.instanceSortValues += m_sceneDataBuffer.address;
     m_sceneBuildShaderio.instanceBuildInfos += m_sceneDataBuffer.address;
+    if(m_config.usePtlas)
+    {
+      m_sceneBuildShaderio.ptlasInstanceUpdates += m_sceneDataBuffer.address;
+      m_sceneBuildShaderio.ptlasInstanceBlas += m_sceneDataBuffer.address;
+      m_sceneBuildShaderio.ptlasPartitionUpdates += m_sceneDataBuffer.address;
+    }
     m_sceneBuildShaderio.traversalGroupInfos += m_sceneDataBuffer.address;
     if(m_config.useBlasSharing)
     {
@@ -440,8 +553,17 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     if(m_config.useBlasCaching)
     {
       m_sceneBuildShaderio.geometryCachedInfos += m_sceneDataBuffer.address;
+      m_sceneBuildShaderio.geometryCachedRetain += m_sceneDataBuffer.address;
+      m_sceneBuildShaderio.geometryCachedRetainNext += m_sceneDataBuffer.address;
       m_sceneBuildShaderio.cachedBlasClusterAddressesDst += m_sceneDataBuffer.address;
       m_sceneBuildShaderio.cachedBlasClusterAddressesSrc += m_sceneDataBuffer.address;
+    }
+
+    // read before its first write
+    {
+      std::vector<uint8_t> zeros(m_renderInstances.size(), 0);
+      res.simpleUploadBuffer(m_sceneDataBuffer, m_sceneBuildShaderio.instanceCachedSticky - m_sceneDataBuffer.address,
+                             zeros.size(), zeros.data());
     }
 
     res.createBuffer(m_sceneTraversalBuffer, sizeof(uint64_t) * m_sceneBuildShaderio.maxTraversalInfos,
@@ -469,6 +591,21 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
           logMemoryUsage(m_sceneGeometryHistogramBuffer.bufferSize, "operations", "build geo");
 
       m_sceneBuildShaderio.geometryHistograms = m_sceneGeometryHistogramBuffer.address;
+    }
+
+    if(m_config.usePtlas || m_config.usePartitionEarlyOut)
+    {
+      initInstancePartitions(res, rscene);
+    }
+
+    // the shaders reach the scene by address, a ptlas has no object to bind
+    if(!m_config.usePtlas)
+    {
+      m_sceneBuildShaderio.tlasAddress = m_tlas.address;
+    }
+    else
+    {
+      initRayTracingPtlasInstances(res, rscene);
     }
   }
 
@@ -499,10 +636,11 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
       bindings.addBinding(BINDINGS_STREAMING_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
       bindings.addBinding(BINDINGS_STREAMING_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, m_stageFlags);
     }
-    bindings.addBinding(BINDINGS_TLAS, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_RAYTRACING_DEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_SKY_ENV_TEX, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_SKY_IRRADIANCE_TEX, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, m_stageFlags);
+    bindings.addBinding(BINDINGS_ENV_HDRI_TEX, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, m_stageFlags);
+    bindings.addBinding(BINDINGS_ENV_HDRI_ACCEL_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_stageFlags);
     bindings.addBinding(BINDINGS_RENDER_TARGET, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_stageFlags);
 #if USE_DLSS
     if(m_config.useDlss)
@@ -535,11 +673,11 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
       writeSets.append(m_dsetPack.makeWrite(BINDINGS_STREAMING_SSBO), rscene.sceneStreaming.getShaderStreamingBuffer());
       writeSets.append(m_dsetPack.makeWrite(BINDINGS_STREAMING_UBO), rscene.sceneStreaming.getShaderStreamingBuffer());
     }
-    writeSets.append(m_dsetPack.makeWrite(BINDINGS_TLAS), m_tlas);
-
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_RAYTRACING_DEPTH), res.m_frameBuffer.imgRaytracingDepth);
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_SKY_ENV_TEX), res.getSkyEnvDescriptor());
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_SKY_IRRADIANCE_TEX), res.getSkyIrradianceDescriptor());
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_ENV_HDRI_TEX), res.getEnvHdriDescriptor());
+    writeSets.append(m_dsetPack.makeWrite(BINDINGS_ENV_HDRI_ACCEL_SSBO), res.getEnvHdriAccel());
 #if USE_DLSS
     if(m_config.useDlss)
     {
@@ -608,6 +746,15 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
         res.createComputePipeline(compInfo, m_shaders.computeTraversalMerge, m_pipelines.computeTraversalMerge);
       }
     }
+    if(m_config.useBlasCaching)
+    {
+      res.createComputePipeline(compInfo, m_shaders.computeGeometryCachedRetain, m_pipelines.computeGeometryCachedRetain);
+    }
+    if(m_config.usePartitionEarlyOut)
+    {
+      res.createComputePipeline(compInfo, m_shaders.computePartitionSetup, m_pipelines.computePartitionSetup);
+      res.createComputePipeline(compInfo, m_shaders.computePartitionBlockCompact, m_pipelines.computePartitionBlockCompact);
+    }
 
     if(m_config.useBlasCaching)
     {
@@ -627,6 +774,7 @@ static uint32_t getWorkGroupCount(uint32_t numThreads, uint32_t workGroupSize)
 
 void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, RenderScene& rscene, const FrameConfig& frame, nvvk::ProfilerGpuTimer& profiler)
 {
+
   VkMemoryBarrier memBarrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
 
   m_sceneBuildShaderio.errorOverDistanceThreshold = updateLodPixelError(res, rscene, frame);
@@ -639,12 +787,39 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
   m_sceneBuildShaderio.culledErrorScale      = std::max(1.0f, frame.culledErrorScale);
   m_sceneBuildShaderio.sharingPushCulled     = frame.sharingPushCulled;
   m_sceneBuildShaderio.sharingTolerantLevels = frame.sharingTolerantLevels;
-  m_sceneBuildShaderio.sharingEnabledLevels  = frame.sharingEnabledLevels;
+  // the ui range, larger values would route instances without a cached blas to it
+  m_sceneBuildShaderio.cachingPushLevels   = std::min(frame.cachingPushLevels, uint32_t(SHADERIO_MAX_LOD_LEVELS));
+  m_sceneBuildShaderio.cachingStickyLevels = std::min(frame.cachingStickyLevels, uint32_t(SHADERIO_MAX_LOD_LEVELS));
+  // The retention window is only honest while every partition is guaranteed to be visited
+  // within it, so with the early-out on, forced revalidation is not optional.
+  uint32_t revalidateFrames = frame.partitionRevalidateFrames;
+  if(m_config.usePartitionEarlyOut && revalidateFrames == 0)
+  {
+    revalidateFrames = FrameConfig().partitionRevalidateFrames;
+  }
+  // restart the retention window once per revalidation cycle. Only the early-out skips
+  // instances, without it the retention follows the current frame.
+  uint32_t retainCycle                            = m_config.usePartitionEarlyOut ? std::max(1u, revalidateFrames) : 1u;
+  m_sceneBuildShaderio.cachedRetainReset          = (m_frameIndex % retainCycle) == 0 ? 1 : 0;
+  m_sceneBuildShaderio.partitionRevalidateFrames  = revalidateFrames;
+  m_sceneBuildShaderio.partitionFrustumRevalidate = frame.partitionFrustumRevalidate ? 1 : 0;
+  // the grid bounds cover all grid copies, a far plane is often set far beyond the scene
+  const shaderio::BBox& sceneBbox = rscene.scene->m_gridBbox;
+  m_sceneBuildShaderio.partitionFrustumDepth = frame.partitionFrustumDistance * glm::length(sceneBbox.hi - sceneBbox.lo);
+  m_sceneBuildShaderio.partitionActiveCounter = 0;
+  m_sceneBuildShaderio.activeBlockCounter     = 0;
+  m_sceneBuildShaderio.numPartitions          = m_partitionCount;
+  m_sceneBuildShaderio.sharingEnabledLevels   = frame.sharingEnabledLevels;
 
   // skyLighting is baked on the device
   vkCmdUpdateBuffer(cmd, res.m_commonBuffers.frameConstants.buffer, 0, offsetof(shaderio::FrameConstants, skyLighting),
                     (const uint32_t*)&frame.frameConstants);
   vkCmdFillBuffer(cmd, res.m_commonBuffers.readBack.buffer, 0, sizeof(shaderio::Readback), 0);
+  if(m_config.usePtlas && m_partitionCount)
+  {
+    vkCmdFillBuffer(cmd, m_sceneDataBuffer.buffer, m_sceneBuildShaderio.ptlasPartitionUpdates - m_sceneDataBuffer.address,
+                    sizeof(uint32_t) * m_partitionCount, 0);
+  }
   vkCmdFillBuffer(cmd, m_sceneTraversalBuffer.buffer, 0, m_sceneTraversalBuffer.bufferSize, ~0);
 
   if(m_config.useBlasSharing)
@@ -670,7 +845,14 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     settings.blasCacheMaxClusters  = m_maxRenderClusters;
     settings.blasCacheMaxBuilds    = m_maxBlasBuilds;
     settings.blasCacheAgeThreshold = frame.cachingAgeThreshold;
-    settings.blasCacheMinLevel     = frame.cachingEnabledLevels;
+    // deeper levels would share the last cached blas slot
+    settings.blasCacheMinLevel = std::min(frame.cachingEnabledLevels, uint32_t(GEOMETRY_CACHED_BLAS_STRIDE));
+    // an instance is only refreshed when its partition is processed, and forced revalidation
+    // bounds that gap. Holding a replaced cached blas past it keeps a skipped instance from
+    // ever meeting reused memory.
+    settings.blasCacheDeferFrames = m_config.usePartitionEarlyOut ? revalidateFrames + 4 : 0;
+    settings.blasCachePinGroups   = m_config.usePartitionEarlyOut;
+    settings.blasCacheRetire      = m_config.usePartitionEarlyOut && frame.blasCacheRetire;
 
     rscene.sceneStreaming.cmdBeginFrame(cmd, res.m_queueStates.primary, res.m_queueStates.transfer, settings, profiler);
 
@@ -682,6 +864,14 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     }
   }
 
+
+  if(m_config.usePartitionEarlyOut)
+  {
+    // Only a cached blas freed without waiting out its hold can leave a skipped partition
+    // pointing at reused memory. A patch on its own does not, see `deferCachedBlasFree`.
+    bool unsafeFree = rscene.useStreaming && rscene.sceneStreaming.consumeUnsafeCachedBlasFree() != 0;
+    m_sceneBuildShaderio.partitionInvalidateAll = (m_frameIndex == 0 || unsafeFree) ? 1 : 0;
+  }
 
   vkCmdUpdateBuffer(cmd, m_sceneBuildBuffer.buffer, 0, sizeof(shaderio::SceneBuilding), (const uint32_t*)&m_sceneBuildShaderio);
 
@@ -721,6 +911,48 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
                           m_sortingAuxBuffer.buffer, 0, nullptr, 0);
     }
 
+    if(m_config.usePartitionEarlyOut)
+    {
+      auto timerSection = profiler.cmdFrameSection(cmd, "Partition Setup");
+
+      vkCmdFillBuffer(cmd, m_sceneDataBuffer.buffer, m_sceneBuildShaderio.partitionBlockBits - m_sceneDataBuffer.address,
+                      sizeof(uint32_t) * ((m_sceneBuildShaderio.numInstanceBlocks + 31) / 32), 0);
+
+      memBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &memBarrier,
+                           0, nullptr, 0, nullptr);
+
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computePartitionSetup);
+      res.cmdLinearDispatch(cmd, getWorkGroupCount(m_partitionCount, PARTITION_SETUP_WORKGROUP));
+
+      memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                           &memBarrier, 0, nullptr, 0, nullptr);
+
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computePartitionBlockCompact);
+      res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numInstanceBlocks, PARTITION_BLOCK_COMPACT_WORKGROUP));
+
+      memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                           &memBarrier, 0, nullptr, 0, nullptr);
+
+      // turn the compacted count into the dispatch the per-instance kernels use
+      uint32_t buildSetupID = BUILD_SETUP_PARTITION_ACTIVE;
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeBuildSetup);
+      vkCmdPushConstants(cmd, m_pipelineLayout, m_stageFlags, 0, sizeof(uint32_t), &buildSetupID);
+      vkCmdDispatch(cmd, 1, 1, 1);
+
+      memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 1,
+                           &memBarrier, 0, nullptr, 0, nullptr);
+    }
+
     if(useBlasReuse())
     {
       auto timerSection = profiler.cmdFrameSection(cmd, "Instance Classify");
@@ -730,7 +962,14 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
                               rscene.sceneTextures.getDsetPack().getSetPtr(), 0, nullptr);
 
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeInstanceClassifyLod);
-      res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, INSTANCES_CLASSIFY_LOD_WORKGROUP));
+      if(m_config.usePartitionEarlyOut)
+      {
+        vkCmdDispatchIndirect(cmd, m_sceneBuildBuffer.buffer, offsetof(shaderio::SceneBuilding, indirectDispatchActiveInstances));
+      }
+      else
+      {
+        res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, INSTANCES_CLASSIFY_LOD_WORKGROUP));
+      }
 
       memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
       memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
@@ -751,6 +990,21 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
                            &memBarrier, 0, nullptr, 0, nullptr);
     }
 
+    if(m_config.useBlasCaching)
+    {
+      // `cachedLevel` is final for this frame, fold it into the retention value the
+      // streaming age filter reads. See geometry_cached_retain.comp.glsl.
+      auto timerSection = profiler.cmdFrameSection(cmd, "Geometry Cached Retain");
+
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeGeometryCachedRetain);
+      res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numGeometries, GEOMETRY_CACHED_RETAIN_WORKGROUP));
+
+      memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                           &memBarrier, 0, nullptr, 0, nullptr);
+    }
+
     if(useBlasReuse() || m_config.useSorting)
     {
       memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -765,7 +1019,16 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
                             rscene.sceneTextures.getDsetPack().getSetPtr(), 0, nullptr);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalInit);
-    res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TRAVERSAL_INIT_WORKGROUP));
+    // only the blas reuse variant resolves its instance through `partitionInstanceOrder`,
+    // `traversal_init.comp.glsl` indexes flat and must keep the linear dispatch
+    if(m_config.usePartitionEarlyOut && useBlasReuse())
+    {
+      vkCmdDispatchIndirect(cmd, m_sceneBuildBuffer.buffer, offsetof(shaderio::SceneBuilding, indirectDispatchActiveInstances));
+    }
+    else
+    {
+      res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, TRAVERSAL_INIT_WORKGROUP));
+    }
 
     memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
@@ -1052,18 +1315,46 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     auto timerSection = profiler.cmdFrameSection(cmd, "Tlas Preparation");
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeInstanceAssignBlas);
-    res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, INSTANCES_ASSIGN_BLAS_WORKGROUP));
+    if(m_config.usePartitionEarlyOut)
+    {
+      vkCmdDispatchIndirect(cmd, m_sceneBuildBuffer.buffer, offsetof(shaderio::SceneBuilding, indirectDispatchActiveInstances));
+    }
+    else
+    {
+      res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, INSTANCES_ASSIGN_BLAS_WORKGROUP));
+    }
 
+    // compute as well: the ptlas operation setup reads the update counter
     memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
-    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
                          0, 1, &memBarrier, 0, nullptr, 0, nullptr);
   }
 
   {
+    // deliberately the same name for both, so a ptlas on/off comparison reads one timer
     auto timerSection = profiler.cmdFrameSection(cmd, "Tlas Build");
 
-    updateRayTracingTlas(cmd, res, m_frameIndex != 0);
+    if(m_config.usePtlas)
+    {
+      // the operation depends on how many instances changed their blas
+      uint32_t buildSetupID = BUILD_SETUP_PTLAS_OPS;
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeBuildSetup);
+      vkCmdPushConstants(cmd, m_pipelineLayout, m_stageFlags, 0, sizeof(uint32_t), &buildSetupID);
+      vkCmdDispatch(cmd, 1, 1, 1);
+
+      memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      memBarrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_SHADER_READ_BIT;
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                           0, 1, &memBarrier, 0, nullptr, 0, nullptr);
+
+      updateRayTracingPtlas(cmd);
+    }
+    else
+    {
+      updateRayTracingTlas(cmd, res, m_frameIndex != 0);
+    }
 
     memBarrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_SHADER_WRITE_BIT;
     memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR
@@ -1113,8 +1404,12 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
   {
     auto timerSection = profiler.cmdFrameSection(cmd, "DLSS");
 
-    res.m_frameBuffer.dlssDenoiser.denoise(cmd, frame.frameConstants.jitter, frame.frameConstants.viewMatrix,
-                                           frame.frameConstants.projMatrix);
+    // on failure the app disables DLSS before the next frame
+    if(!res.m_frameBuffer.dlssDenoiser.denoise(cmd, frame.frameConstants.jitter, frame.frameConstants.viewMatrix,
+                                               frame.frameConstants.projMatrix))
+    {
+      res.m_dlssEvaluateFailed = true;
+    }
   }
 #endif
 
@@ -1143,6 +1438,8 @@ void RendererRayTraceClustersLod::deinit(Resources& res)
   deinitBasics(res);
 
   res.m_allocator.destroyBuffer(m_tlasInstancesBuffer);
+  res.m_allocator.destroyBuffer(m_ptlasOperationsBuffer);
+  m_ptlas.deinit(res);
   res.m_allocator.destroyBuffer(m_scratchBuffer);
   res.m_allocator.destroyAcceleration(m_tlas);
   res.m_allocator.destroyBuffer(m_sceneBuildBuffer);
@@ -1376,7 +1673,7 @@ void RendererRayTraceClustersLod::initRayTracingPipeline(Resources& res)
   }
 }
 
-void RendererRayTraceClustersLod::initRayTracingTlas(Resources& res, VkDeviceSize& scratchSize)
+void RendererRayTraceClustersLod::initRayTracingTlas(Resources& res, RenderScene& rscene, VkDeviceSize& scratchSize)
 {
   std::vector<VkAccelerationStructureInstanceKHR> tlasInstances(m_renderInstances.size());
 
@@ -1395,9 +1692,12 @@ void RendererRayTraceClustersLod::initRayTracingTlas(Resources& res, VkDeviceSiz
       instance.flags |= VK_GEOMETRY_INSTANCE_TRIANGLE_FRONT_COUNTERCLOCKWISE_BIT_KHR;
     }
 
-    // patched in at render time
-    instance.accelerationStructureReference = 0;
-    tlasInstances[i]                        = instance;
+    // Seeded with the geometry's pre-built low detail blas, which `initClas` has already built
+    // for every geometry, so an instance the early-out skips from the first frame on is valid.
+    instance.accelerationStructureReference =
+        rscene.useStreaming ? rscene.sceneStreaming.getLowDetailBlasAddress(m_renderInstances[i].geometryID) :
+                              rscene.scenePreloaded.getLowDetailBlasAddress(m_renderInstances[i].geometryID);
+    tlasInstances[i] = instance;
   }
 
   // Create a buffer holding the actual instance data (matrices++) for use by the AS builder
@@ -1443,6 +1743,182 @@ void RendererRayTraceClustersLod::initRayTracingTlas(Resources& res, VkDeviceSiz
 
   scratchSize = std::max(scratchSize, sizeInfo.buildScratchSize);
   LOGI("raytracer: TLAS build scratchsize %d KiB\n", uint32_t((sizeInfo.buildScratchSize + 1023) / 1024));
+}
+
+// layout of `m_ptlasOperationsBuffer`: the number of operations, followed by the operation itself
+static const VkDeviceSize PTLAS_OPERATION_OFFSET = 16;
+
+bool RendererRayTraceClustersLod::initRayTracingPtlas(Resources& res, RenderScene& rscene, VkDeviceSize& scratchSize)
+{
+  const std::vector<Scene::Partition>& partitions = rscene.scene->m_partitions;
+
+  uint32_t maxInstancesPerPartition = 0;
+  for(const Scene::Partition& partition : partitions)
+  {
+    maxInstancesPerPartition = std::max(maxInstancesPerPartition, partition.instanceCount);
+  }
+
+  PartitionedTlas::Config config;
+  config.instanceCount            = uint32_t(m_renderInstances.size());
+  config.partitionCount           = uint32_t(partitions.size());
+  config.maxInstancesPerPartition = maxInstancesPerPartition;
+  config.buildFlags               = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+
+  m_partitionCount = config.partitionCount;
+
+  if(m_ptlas.init(res, config) != VK_SUCCESS)
+  {
+    return false;
+  }
+  m_resourceReservedUsage.rtTlasMemBytes += m_ptlas.getAccelerationStructureSize();
+
+  // shares `m_scratchBuffer`, the ptlas build is its last use within the frame
+  scratchSize = std::max(scratchSize, m_ptlas.getScratchSize());
+
+  // the operation itself is filled in by `build_setup.comp.glsl`, it depends on the number
+  // of instances that changed their blas
+  res.createBuffer(m_ptlasOperationsBuffer, PTLAS_OPERATION_OFFSET + sizeof(shaderio::PtlasOperation),
+                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
+  NVVK_DBG_NAME(m_ptlasOperationsBuffer.buffer);
+  m_resourceReservedUsage.operationsMemBytes += m_ptlasOperationsBuffer.bufferSize;
+
+  return true;
+}
+
+void RendererRayTraceClustersLod::initRayTracingPtlasInstances(Resources& res, RenderScene& rscene)
+{
+  const uint32_t instanceCount = uint32_t(m_renderInstances.size());
+
+  m_sceneBuildShaderio.tlasAddress         = m_ptlas.getAddress();
+  m_sceneBuildShaderio.ptlasOperationCount = m_ptlasOperationsBuffer.address;
+  m_sceneBuildShaderio.ptlasOperations     = m_ptlasOperationsBuffer.address + PTLAS_OPERATION_OFFSET;
+
+  // The full instance descriptions are written once here. Every frame after only updates the blas
+  // reference of changed instances, so the descriptions don't need to stay resident.
+  // An instance may only be updated if it was written with explicit bounds or without a blas.
+  // Without explicit bounds it starts empty and frame 0 updates every instance.
+  std::vector<VkPartitionedAccelerationStructureWriteInstanceDataNV> instanceWrites(instanceCount);
+  std::vector<uint64_t>                                              instanceBlas(instanceCount);
+
+  for(uint32_t i = 0; i < instanceCount; i++)
+  {
+    const Scene::Instance& sceneInstance = rscene.scene->m_instances[i];
+
+    instanceBlas[i] = !m_config.usePtlasExplicitAabb ? 0 :
+                      rscene.useStreaming ? rscene.sceneStreaming.getLowDetailBlasAddress(m_renderInstances[i].geometryID) :
+                                            rscene.scenePreloaded.getLowDetailBlasAddress(m_renderInstances[i].geometryID);
+
+    VkPartitionedAccelerationStructureWriteInstanceDataNV& instanceWrite = instanceWrites[i];
+
+    instanceWrite = {};
+    memcpy(&instanceWrite.transform, &m_renderInstances[i].worldMatrix, sizeof(VkTransformMatrixKHR));
+    instanceWrite.instanceID            = i;  // gl_InstanceCustomIndexEXT
+    instanceWrite.instanceMask          = 0xFF;
+    instanceWrite.instanceIndex         = i;
+    instanceWrite.partitionIndex        = rscene.scene->m_instancePartitions[i];
+    instanceWrite.accelerationStructure = instanceBlas[i];
+
+    // no need to use m_renderInstances[i].flipWinding, as ray tracing handles
+    // negative determinants automatically
+    if(m_config.flipWinding)
+    {
+      instanceWrite.instanceFlags |= VK_PARTITIONED_ACCELERATION_STRUCTURE_INSTANCE_FLAG_TRIANGLE_FLIP_FACING_BIT_NV;
+    }
+
+    if(m_config.usePtlasExplicitAabb)
+    {
+      // The geometry's k-DOP hull spans every lod level, so the bounds stay valid whichever
+      // blas is referenced, and transforming its vertices gives the extent the spec asks for
+      // rather than the bound of a transformed box.
+      shaderio::BBox bbox = rscene.scene->getInstanceWorldBBox(sceneInstance);
+
+      instanceWrite.explicitAABB[0] = bbox.lo.x;
+      instanceWrite.explicitAABB[1] = bbox.lo.y;
+      instanceWrite.explicitAABB[2] = bbox.lo.z;
+      instanceWrite.explicitAABB[3] = bbox.hi.x;
+      instanceWrite.explicitAABB[4] = bbox.hi.y;
+      instanceWrite.explicitAABB[5] = bbox.hi.z;
+      instanceWrite.instanceFlags |= VK_PARTITIONED_ACCELERATION_STRUCTURE_INSTANCE_FLAG_ENABLE_EXPLICIT_BOUNDING_BOX_NV;
+    }
+  }
+
+  // `instance_assign_blas.comp.glsl` only emits updates for instances that differ from this
+  res.simpleUploadBuffer(m_sceneDataBuffer, m_sceneBuildShaderio.ptlasInstanceBlas - m_sceneDataBuffer.address,
+                         sizeof(uint64_t) * instanceCount, instanceBlas.data());
+
+  nvvk::Buffer writesBuffer;
+  res.createBuffer(writesBuffer, sizeof(shaderio::PtlasInstanceWrite) * instanceCount,
+                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
+  res.simpleUploadBuffer(writesBuffer, instanceWrites.data());
+
+  struct
+  {
+    uint32_t                 count;
+    uint32_t                 _pad[(PTLAS_OPERATION_OFFSET - sizeof(uint32_t)) / sizeof(uint32_t)];
+    shaderio::PtlasOperation operation;
+  } initialOps = {};
+  static_assert(offsetof(decltype(initialOps), operation) == PTLAS_OPERATION_OFFSET);
+
+  initialOps.count                = 1;
+  initialOps.operation.opType     = PTLAS_OP_WRITE_INSTANCE;
+  initialOps.operation.argCount   = instanceCount;
+  initialOps.operation.argAddress = writesBuffer.address;
+  initialOps.operation.argStride  = PTLAS_INSTANCE_WRITE_SIZE;
+  res.simpleUploadBuffer(m_ptlasOperationsBuffer, 0, sizeof(initialOps), &initialOps);
+
+  VkCommandBuffer cmd = res.createTempCmdBuffer();
+
+  VkMemoryBarrier memBarrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+  memBarrier.srcAccessMask   = VK_ACCESS_TRANSFER_WRITE_BIT;
+  memBarrier.dstAccessMask   = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, 0,
+                       1, &memBarrier, 0, nullptr, 0, nullptr);
+
+  m_ptlas.cmdBuild(cmd, m_ptlasOperationsBuffer.address + PTLAS_OPERATION_OFFSET, m_ptlasOperationsBuffer.address,
+                   m_scratchBuffer.address, false);
+  res.tempSyncSubmit(cmd);
+
+  res.m_allocator.destroyBuffer(writesBuffer);
+}
+
+void RendererRayTraceClustersLod::initInstancePartitions(Resources& res, RenderScene& rscene)
+{
+  const std::vector<Scene::Partition>& partitions = rscene.scene->m_partitions;
+
+  m_partitionCount = uint32_t(partitions.size());
+
+  // membership is fixed, so the assignment, the ordering and the ranges are uploaded once
+  res.simpleUploadBuffer(m_sceneDataBuffer, m_sceneBuildShaderio.instancePartitions - m_sceneDataBuffer.address,
+                         sizeof(uint32_t) * m_renderInstances.size(),
+                         const_cast<uint32_t*>(rscene.scene->m_instancePartitions.data()));
+
+  if(!m_config.usePartitionEarlyOut)
+    return;
+
+  std::vector<glm::uvec2> ranges(partitions.size());
+  for(size_t i = 0; i < partitions.size(); i++)
+  {
+    ranges[i] = glm::uvec2(partitions[i].instanceOffset, partitions[i].instanceCount);
+  }
+  res.simpleUploadBuffer(m_sceneDataBuffer, m_sceneBuildShaderio.partitionInstanceOrder - m_sceneDataBuffer.address,
+                         sizeof(uint32_t) * m_renderInstances.size(),
+                         const_cast<uint32_t*>(rscene.scene->m_partitionInstanceOrder.data()));
+
+  std::vector<shaderio::BBox> bboxes(partitions.size());
+  for(size_t i = 0; i < partitions.size(); i++)
+  {
+    bboxes[i] = partitions[i].bbox;
+  }
+  res.simpleUploadBuffer(m_sceneDataBuffer, m_sceneBuildShaderio.partitionBboxes - m_sceneDataBuffer.address,
+                         sizeof(shaderio::BBox) * bboxes.size(), bboxes.data());
+  res.simpleUploadBuffer(m_sceneDataBuffer, m_sceneBuildShaderio.partitionRanges - m_sceneDataBuffer.address,
+                         sizeof(glm::uvec2) * ranges.size(), ranges.data());
+}
+
+void RendererRayTraceClustersLod::updateRayTracingPtlas(VkCommandBuffer cmd)
+{
+  m_ptlas.cmdBuild(cmd, m_ptlasOperationsBuffer.address + PTLAS_OPERATION_OFFSET, m_ptlasOperationsBuffer.address,
+                   m_scratchBuffer.address, true);
 }
 
 void RendererRayTraceClustersLod::updateRayTracingTlas(VkCommandBuffer cmd, Resources& res, bool update)

@@ -23,7 +23,10 @@
                            `FrameConstants::skyLighting`.
 
   The sky is analytic, so it is evaluated directly instead of sampling a
-  higher-resolution source.
+  higher-resolution source. An HDRI is read from the mip whose texels match
+  each sample's solid angle [Krivanek and Colbert 2008, "Real-time Shading with
+  Filtered Importance Sampling"], so its sun does not alias into fireflies. It
+  has no separate sun, the dome keeps it.
 
   Follows nvpro_core2's environment prefiltering
   https://github.com/nvpro-samples/nvpro_core2/blob/main/nvshaders/hdr_prefilter_glossy.slang
@@ -54,6 +57,8 @@ layout(scalar, binding = BINDINGS_SKYBAKE_FRAME_SSBO, set = 0) buffer frameConst
   FrameConstants view;
 };
 
+#include "environment.glsl"
+
 const uint SAMPLES = 1024;
 
 float sunConeCos()
@@ -61,8 +66,16 @@ float sunConeCos()
   return cos(1.5 * 0.00465 * push.sky.sunDiskScale);
 }
 
-vec3 evalSkyDome(vec3 dir)
+// `pdf` of the sample that picked `dir`, among SAMPLES, selects the HDRI mip
+vec3 evalSkyDome(vec3 dir, float pdf)
 {
+  if(push.envHdri.enabled != 0)
+  {
+    float texelSolidAngle  = 4.0 * M_PI / float(push.envHdri.width * push.envHdri.height);
+    float sampleSolidAngle = 1.0 / (float(SAMPLES) * max(pdf, 1e-6));
+    float lod              = max(0.0, 0.5 * log2(sampleSolidAngle / texelSolidAngle) + 1.0);
+    return evalEnvironmentLod(push.sky, push.envHdri, dir, lod).xyz;
+  }
   if(push.sky.sunDiskScale > 1e-5 && dot(dir, push.sky.sunDirection) >= sunConeCos())
     return vec3(0);
   return evalPhysicalSky(push.sky, dir);
@@ -125,8 +138,10 @@ void main()
       float angle      = 1.5 * 0.00465 * push.sky.sunDiskScale;
       float solidAngle = angle < 0.001 ? M_PI * angle * angle : 2.0 * M_PI * (1.0 - zMin);
 
-      view.skyLighting.sunIrradiance = push.sky.sunDiskScale > 1e-5 ? sum * (solidAngle / float(SAMPLES)) : vec3(0);
-      view.skyLighting.upLuminance   = dot(evalPhysicalSky(push.sky, push.upDir), vec3(0.2126, 0.7152, 0.0722));
+      bool hasSun                    = push.envHdri.enabled == 0 && push.sky.sunDiskScale > 1e-5;
+      view.skyLighting.sunIrradiance = hasSun ? sum * (solidAngle / float(SAMPLES)) : vec3(0);
+      view.skyLighting.upLuminance =
+          dot(evalEnvironmentLod(push.sky, push.envHdri, push.upDir, 4.0).xyz, vec3(0.2126, 0.7152, 0.0722));
     }
     return;
   }
@@ -148,15 +163,18 @@ void main()
       vec2  xi  = hammersley(i, SAMPLES);
       float r   = sqrt(xi.x);
       float phi = 2.0 * M_PI * xi.y;
-      vec3  L   = r * cos(phi) * t + r * sin(phi) * b + sqrt(max(0.0, 1.0 - xi.x)) * N;
-      result += evalSkyDome(L);
+      float cosL = sqrt(max(0.0, 1.0 - xi.x));
+      vec3  L    = r * cos(phi) * t + r * sin(phi) * b + cosL * N;
+      result += evalSkyDome(L, cosL * M_1_PI);
     }
     result /= float(SAMPLES);
     imageStore(imgIrradiance, ivec3(texel), vec4(result, 1));
   }
   else if(push.mip == 0)
   {
-    imageStore(imgEnv[0], ivec3(texel), vec4(evalSkyDome(N), 1));
+    // one cube texel's solid angle, as a pdf over SAMPLES
+    float texelSolidAngle = 4.0 * M_PI / (6.0 * float(size * size));
+    imageStore(imgEnv[0], ivec3(texel), vec4(evalSkyDome(N, 1.0 / (float(SAMPLES) * texelSolidAngle)), 1));
   }
   else
   {
@@ -175,7 +193,11 @@ void main()
       float NdotL = dot(N, L);
       if(NdotL > 0.0)
       {
-        result += evalSkyDome(L) * NdotL;
+        // pdf of L with N = V: D(H) * NdotH / (4 VdotH), and NdotH = VdotH
+        float a2 = alpha * alpha;
+        float d  = cosTh * cosTh * (a2 - 1.0) + 1.0;
+        float D  = a2 / (M_PI * d * d);
+        result += evalSkyDome(L, D * 0.25) * NdotL;
         weight += NdotL;
       }
     }

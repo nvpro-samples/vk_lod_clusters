@@ -141,7 +141,7 @@ void main()
   
 #if TARGETS_RASTERIZATION && USE_TWO_PASS_CULLING
   bool inFrustum = intersectFrustum( build.cullPass == 0 ? build.cullViewProjMatrixLast : build.cullViewProjMatrix, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix), clipMin, clipMax, clipValid);
-  bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, CULL_MIN_PIXEL_SIZE) && intersectHiz(clipMin, clipMax, build.cullPass)));
+  bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, view.cullMinPixelSize) && intersectHiz(clipMin, clipMax, build.cullPass)));
 
 #if !USE_TWO_PASS_REJECT_LISTS
   // if smallish and was already drawn, don't process again
@@ -152,7 +152,7 @@ void main()
 
 #else
   bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix), clipMin, clipMax, clipValid);
-  bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, CULL_MIN_PIXEL_SIZE) && intersectHiz(clipMin, clipMax, 0)));
+  bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, view.cullMinPixelSize) && intersectHiz(clipMin, clipMax, 0)));
 #endif
 
 #if TARGETS_RASTERIZATION
@@ -292,16 +292,19 @@ void main()
     build.instanceBuildInfos.d[instanceID].blasBuildIndex         = blasBuildIndex;
     
     // We might want to remove the instance completely if not visible, or just use the low detail blas
-  #if USE_CULLING && USE_FORCED_INVISIBLE_CULLING && FORCE_INVISIBLE_CULLED_REMOVES_INSTANCE
+    // (ptlas resolves the fallback in `instance_assign_blas.comp.glsl` instead)
+  #if !USE_PTLAS
+    #if USE_CULLING && USE_FORCED_INVISIBLE_CULLING && FORCE_INVISIBLE_CULLED_REMOVES_INSTANCE
     if(!isVisible && build.frameIndex != 0){
       // first frame must always have a valid BLAS due to TLAS BUILD, other frames are TLAS UPDATE
       build.tlasInstances.d[instanceID].blasReference             = 0;
     }
     else
-  #endif
+    #endif
     {
       build.tlasInstances.d[instanceID].blasReference             = geometry.lowDetailBlasAddress;
     }
+  #endif
   }
 #elif TARGETS_RASTERIZATION
   // drives the two pass culling and VISUALIZE_DISCRETE_LOD

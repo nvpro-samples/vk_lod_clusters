@@ -10,6 +10,8 @@
 #include <meshoptimizer.h>
 #include <nvutils/logger.hpp>
 #include <nvutils/parallel_work.hpp>
+#include <nvutils/timers.hpp>
+#include <fmt/format.h>
 #include <nvutils/file_operations.hpp>
 #include <nvutils/hash_operations.hpp>
 #include <glm/gtc/constants.hpp>
@@ -440,7 +442,10 @@ Scene::Result Scene::init(const std::filesystem::path& filePath,
 
   m_originalInstanceCount = m_instances.size();
   m_originalGeometryCount = m_geometryViews.size();
-  m_activeGeometryCount   = m_originalGeometryCount;
+  m_activeToOriginal.resize(m_originalGeometryCount);
+  m_activeInstanceFactor.assign(m_originalGeometryCount, 1);
+  for(size_t i = 0; i < m_originalGeometryCount; i++)
+    m_activeToOriginal[i] = uint32_t(i);
 
   computeInstanceBBoxes();
   m_gridBbox = m_bbox;
@@ -537,7 +542,35 @@ void Scene::updateSceneGrid(const SceneGridConfig& gridConfig)
   size_t numOldCopies = m_instances.size() / m_originalInstanceCount;
 
   m_instances.resize(m_originalInstanceCount * copiesCount);
-  m_activeGeometryCount = gridConfig.uniqueGeometriesForCopies ? m_originalGeometryCount * copiesCount : m_originalGeometryCount;
+
+  // geometry sets in total, including the original. Which copies get a unique set
+  // is random (own rng, so the grid placement is unaffected), all other copies keep the original set.
+  float uniqueFraction = std::clamp(gridConfig.uniqueGeometries, 0.0f, 1.0f);
+  size_t uniqueSets = std::clamp(size_t(std::lround(double(uniqueFraction) * double(copiesCount))), size_t(1), copiesCount);
+
+  m_activeToOriginal.resize(m_originalGeometryCount * uniqueSets);
+  m_activeInstanceFactor.assign(m_activeToOriginal.size(), 0);
+  for(size_t i = 0; i < m_activeToOriginal.size(); i++)
+    m_activeToOriginal[i] = uint32_t(i % m_originalGeometryCount);
+
+  std::vector<size_t> copySets(copiesCount, 0);
+  {
+    std::vector<size_t> candidates(copiesCount - 1);
+    for(size_t i = 0; i < candidates.size(); i++)
+      candidates[i] = i + 1;
+    std::default_random_engine uniqueRng(1337);
+    std::shuffle(candidates.begin(), candidates.end(), uniqueRng);
+    candidates.resize(uniqueSets - 1);
+    std::sort(candidates.begin(), candidates.end());
+    for(size_t i = 0; i < candidates.size(); i++)
+      copySets[candidates[i]] = i + 1;
+  }
+
+  for(size_t copy = 0; copy < copiesCount; copy++)
+  {
+    for(size_t i = 0; i < m_originalGeometryCount; i++)
+      m_activeInstanceFactor[copySets[copy] * m_originalGeometryCount + i]++;
+  }
 
   std::default_random_engine            rng(2342);
   std::uniform_real_distribution<float> randomUnorm(0.0f, 1.0f);
@@ -685,11 +718,8 @@ void Scene::updateSceneGrid(const SceneGridConfig& gridConfig)
       // copy state from reference
       instance = m_instances[i];
 
-      if(gridConfig.uniqueGeometriesForCopies)
-      {
-        // apply unique set if geometryIDs to this set of instances
-        instance.geometryID += uint32_t(c * m_originalGeometryCount);
-      }
+      // apply the copy's set of geometryIDs to this set of instances
+      instance.geometryID += uint32_t(copySets[c] * m_originalGeometryCount);
 
       // modify matrix for the grid
       glm::mat4 worldMatrix = m_instances[i].matrix;
@@ -712,6 +742,9 @@ void Scene::updateSceneGrid(const SceneGridConfig& gridConfig)
   m_gridBbox = m_bbox;
   computeInstanceBBoxes();
   std::swap(m_gridBbox, m_bbox);
+
+  // the instances changed in place, the partitions must be rebuilt
+  m_instancePartitions.clear();
 }
 
 void Scene::computeInstanceBBoxes()

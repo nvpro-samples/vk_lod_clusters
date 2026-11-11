@@ -25,6 +25,7 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
 #extension GL_EXT_scalar_block_layout : enable
 #extension GL_EXT_shader_atomic_float : require
+#extension GL_EXT_samplerless_texture_functions : require
 
 #include "shaderio.h"
 #include "nvshaders/tonemap_functions.h.slang"
@@ -42,8 +43,8 @@ layout(scalar, binding = BINDINGS_TONEMAP_HBAO_UBO, set = 0) uniform hbaoBuffer
 {
   NVHBAOData g_Ssao;
 };
-layout(binding = BINDINGS_TONEMAP_HBAO_DEPTHARRAY, set = 0) uniform sampler2DArray texDepthArray;
-layout(binding = BINDINGS_TONEMAP_HBAO_RESULTARRAY, set = 0) uniform sampler2DArray texResultArray;
+layout(binding = BINDINGS_TONEMAP_HBAO_DEPTH, set = 0) uniform texture2D texDepth;
+layout(binding = BINDINGS_TONEMAP_HBAO_RESULT, set = 0) uniform sampler2D texResult;
 
 #include "hbao_apply.glsl"
 #endif
@@ -66,17 +67,12 @@ void main()
   ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
   ivec2 size  = imageSize(imgIn);
 
-#if TONEMAP_HBAO
-  // before any early out, the blurred variant synchronizes the workgroup
-  float occlusion = hbaoOcclusion(gl_WorkGroupID.xy, gl_LocalInvocationID.xy, gl_GlobalInvocationID.xy);
-#endif
-
   if(any(greaterThanEqual(pixel, size)))
     return;
 
   vec3 color = imageLoad(imgIn, pixel).xyz;
 #if TONEMAP_HBAO
-  color *= occlusion;
+  color *= hbaoVisibility(pixel);
 #endif
 
   if(view.tonemapMode == TONEMAP_MODE_BYPASS)

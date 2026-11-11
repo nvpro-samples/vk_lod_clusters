@@ -140,11 +140,12 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene)
   optionsNoAlpha.AddMacroDefinition("HAS_ALPHA_TEST", "0");
   options.AddMacroDefinition("HAS_ALPHA_TEST", rscene.scene->m_hasAlphaMask ? "1" : "0");
 
-  res.compileShader(m_shaders.graphicsMesh, VK_SHADER_STAGE_MESH_BIT_NV, "render_raster_clusters.mesh.glsl",
-                    &optionsNoAlpha, "noalpha");
+  const char* meshShaderFile = m_config.useEXTmeshShader ? "render_raster_clusters.mesh.glsl" : "render_raster_clusters_nv.mesh.glsl";
+
+  res.compileShader(m_shaders.graphicsMesh, VK_SHADER_STAGE_MESH_BIT_NV, meshShaderFile, &optionsNoAlpha, "noalpha");
   res.compileShader(m_shaders.graphicsFragment, VK_SHADER_STAGE_FRAGMENT_BIT, "render_raster.frag.glsl", &optionsNoAlpha, "noalpha");
 
-  res.compileShader(m_shaders.graphicsMeshAlpha, VK_SHADER_STAGE_MESH_BIT_NV, "render_raster_clusters.mesh.glsl", &options, "alpha");
+  res.compileShader(m_shaders.graphicsMeshAlpha, VK_SHADER_STAGE_MESH_BIT_NV, meshShaderFile, &options, "alpha");
   res.compileShader(m_shaders.graphicsFragmentAlpha, VK_SHADER_STAGE_FRAGMENT_BIT, "render_raster.frag.glsl", &options, "alpha");
 
   res.compileShader(m_shaders.computeTraversalPresort, VK_SHADER_STAGE_COMPUTE_BIT, "traversal_presort.comp.glsl", &options);
@@ -174,9 +175,15 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
 {
   m_resourceReservedUsage = {};
   m_config                = config;
+  // partitions are a ray tracing feature
+  m_config.usePartitions        = false;
+  m_config.usePtlas             = false;
+  m_config.usePartitionEarlyOut = false;
   res.setFramebufferUseRasterization(true);
 #if USE_DLSS
-  m_config.useDlss = m_config.useDlss && res.m_frameBuffer.dlssUpscaler.isAvailable();
+  // NGX is only initialized once DLSS is requested
+  m_config.useDlss = m_config.useDlss
+                     && (!res.m_frameBuffer.dlssUpscaler.isInitialized() || res.m_frameBuffer.dlssUpscaler.isAvailable());
   res.setFramebufferDlss(m_config.useDlss ? Resources::DlssMode::eSuperResolution : Resources::DlssMode::eNone, m_config.dlssQuality);
   // setFramebufferDlss falls back to eNone if the upscaler fails to initialize at
   // runtime; reflect that before compiling shaders / building pipelines so they all
@@ -267,8 +274,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
 
     if(m_config.useDiscreteLod)
     {
-      m_sceneBuildShaderio.geometryCachedInfos =
-          mem.append(sizeof(shaderio::GeometryCachedInfo) * m_sceneBuildShaderio.numGeometries, 8);
+      m_sceneBuildShaderio.geometryCachedRetain = mem.append(sizeof(uint32_t) * m_sceneBuildShaderio.numGeometries, 4);
     }
 
     // two pass culling and VISUALIZE_DISCRETE_LOD both read the instance state
@@ -301,7 +307,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
 
     if(m_config.useDiscreteLod)
     {
-      m_sceneBuildShaderio.geometryCachedInfos += m_sceneDataBuffer.address;
+      m_sceneBuildShaderio.geometryCachedRetain += m_sceneDataBuffer.address;
     }
 
     if(m_config.useComputeRaster)
@@ -513,9 +519,9 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
 
   if(m_config.useDiscreteLod)
   {
-    // required start value for the atomicMin on `cachedLevel` in `traversal_init_discrete_lod.comp.glsl`
-    vkCmdFillBuffer(cmd, m_sceneDataBuffer.buffer, m_sceneBuildShaderio.geometryCachedInfos - m_sceneDataBuffer.address,
-                    sizeof(shaderio::GeometryCachedInfo) * m_sceneBuildShaderio.numGeometries, ~0);
+    // required start value for the atomicMin in `traversal_init_discrete_lod.comp.glsl`
+    vkCmdFillBuffer(cmd, m_sceneDataBuffer.buffer, m_sceneBuildShaderio.geometryCachedRetain - m_sceneDataBuffer.address,
+                    sizeof(uint32_t) * m_sceneBuildShaderio.numGeometries, ~0);
   }
 
   if(m_config.useComputeRaster)
@@ -868,6 +874,7 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
       res.cmdHBAO(cmd, frame, profiler);
     }
     res.cmdPrepareDlssSrEvaluation(cmd);
+    // on failure the app disables DLSS before the next frame
     res.cmdEvaluateDlssSr(cmd, frame.frameConstants.jitter, profiler);
   }
 #endif
