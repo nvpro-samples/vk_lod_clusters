@@ -204,6 +204,71 @@ void main()
 
   #endif
   }
+  else if (push.setup == BUILD_SETUP_HIT_DEMAND_INIT)
+  {
+    // reset the demand-BFS queue counters; stream_hit_propagation seeds afterwards
+    buildRW.hitDemandWriteCounter = 0;
+    buildRW.hitDemandStart        = 0;
+    buildRW.hitDemandEnd          = 0;
+    buildRW.hitDemandPass         = 0;
+  }
+  else if (push.setup == BUILD_SETUP_HIT_DEMAND_RUN)
+  {
+    // first frontier == the seeds appended by stream_hit_propagation.
+    // record the unclamped peak so the UI can warn when traversalNodeInfos is too
+    // small (the demand BFS shares that array with the traversal).
+    readback.numHitDemandTasks = buildRW.hitDemandWriteCounter;
+
+    uint count = min(buildRW.hitDemandWriteCounter, build.maxTraversalInfos);
+  #if USE_PERSISTENT_HIT_DEMAND_KERNEL
+    buildRW.traversalNodeWriteCounter = count;
+    buildRW.traversalNodeReadCounter  = 0;
+    buildRW.traversalTaskCounter      = int(count);
+  #else
+    // continue appending children after the seeds (overshoot is dropped by the
+    // shader's slot < maxTraversalInfos guard)
+    buildRW.hitDemandWriteCounter = count;
+    buildRW.hitDemandStart        = 0;
+    buildRW.hitDemandEnd          = count;
+
+    uint gridCount = (count + STREAM_HIT_DEMAND_TREE_WORKGROUP - 1) / STREAM_HIT_DEMAND_TREE_WORKGROUP;
+  #if USE_16BIT_DISPATCH
+    uvec3 grid = fit16bitLaunchGrid(gridCount);
+    buildRW.indirectDispatchHitDemand.gridX = grid.x;
+    buildRW.indirectDispatchHitDemand.gridY = grid.y;
+    buildRW.indirectDispatchHitDemand.gridZ = grid.z;
+  #else
+    buildRW.indirectDispatchHitDemand.gridX = gridCount;
+    buildRW.indirectDispatchHitDemand.gridY = 1;
+    buildRW.indirectDispatchHitDemand.gridZ = 1;
+  #endif
+  #endif
+  }
+  else if (push.setup == BUILD_SETUP_HIT_DEMAND_RUN_PASS)
+  {
+    // advance the frontier: the next pass processes what the previous pass appended.
+    buildRW.hitDemandPass = buildRW.hitDemandPass + 1;
+
+    readback.numHitDemandTasks = max(readback.numHitDemandTasks, buildRW.hitDemandWriteCounter);
+
+    uint start = min(buildRW.hitDemandEnd, build.maxTraversalInfos);
+    uint end   = min(buildRW.hitDemandWriteCounter, build.maxTraversalInfos);
+    buildRW.hitDemandStart = start;
+    buildRW.hitDemandEnd   = end;
+
+    uint count     = end - start;
+    uint gridCount = (count + STREAM_HIT_DEMAND_TREE_WORKGROUP - 1) / STREAM_HIT_DEMAND_TREE_WORKGROUP;
+  #if USE_16BIT_DISPATCH
+    uvec3 grid = fit16bitLaunchGrid(gridCount);
+    buildRW.indirectDispatchHitDemand.gridX = grid.x;
+    buildRW.indirectDispatchHitDemand.gridY = grid.y;
+    buildRW.indirectDispatchHitDemand.gridZ = grid.z;
+  #else
+    buildRW.indirectDispatchHitDemand.gridX = gridCount;
+    buildRW.indirectDispatchHitDemand.gridY = 1;
+    buildRW.indirectDispatchHitDemand.gridZ = 1;
+  #endif
+  }
 #if !USE_PERSISTENT_TRAVERSAL_KERNEL
   else if (push.setup == BUILD_SETUP_TRAVERSAL_RUN_PASS_COMBINED || push.setup == BUILD_SETUP_TRAVERSAL_RUN_PASS_NODES_ONLY)
   {

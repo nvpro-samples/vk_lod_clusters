@@ -80,6 +80,45 @@ float hitBbox(vec3 rayPos, vec3 rayDir, vec3 bboxMin, vec3 bboxMax)
   return t1 > max(t0, 0.0) ? t0 : -1.0;
 }
 
+// near intersection with a sphere (the outside of its surface)
+float hitSphere(vec3 rayPos, vec3 rayDir, vec3 center, float radius)
+{
+  vec3  oc = rayPos - center;
+  float b  = dot(oc, rayDir);
+  float c  = dot(oc, oc) - radius * radius;
+  float h  = b * b - c;
+  if(h < 0.0)
+    return -1.0;
+  float t = -b - sqrt(h);
+  return t > 0.0 ? t : -1.0;
+}
+
+// intersection with a flat circular aperture (a lens opening) at 'center',
+// facing along 'normal', clipped to 'radius'
+float hitDisc(vec3 rayPos, vec3 rayDir, vec3 center, vec3 normal, float radius)
+{
+  float denom = dot(rayDir, normal);
+  if(denom == 0.0)
+    return -1.0;
+  float t = dot(center - rayPos, normal) / denom;
+  if(t <= 0.0)
+    return -1.0;
+  vec3 p = rayPos + rayDir * t;
+  return dot(p - center, p - center) <= radius * radius ? t : -1.0;
+}
+
+// direction through the lens: a narrower rectilinear camera magnified by lensZoom (like a zoom
+// lens rather than a refracting surface), plus a radial distortion that reaches lensDistortion
+// at the rim
+vec3 lensZoomDirection(vec3 wDir)
+{
+  vec3  vDir   = mat3(view.viewMatrix) * wDir;
+  vec2  tanA   = vDir.xy / -vDir.z;
+  float rimTan = view.lensSize / view.lensDist;
+  tanA *= (1.0 + view.lensDistortion * dot(tanA, tanA) / (rimTan * rimTan)) / view.lensZoom;
+  return normalize(mat3(view.viewMatrixI) * vec3(tanA, -1.0));
+}
+
 void main()
 {
   // for writing debugging values to stats.debug etc.
@@ -125,24 +164,58 @@ void main()
   float mirrorT;
   bool  fogApplied = false;
 
-  if(view.useMirrorBox != 0)
+  if(view.opticalMode != OPTICAL_MODE_NONE)
   {
-    mirrorT   = hitBbox(origin.xyz, direction.xyz, mirrorCenter - mirrorSize, mirrorCenter + mirrorSize);
-    mirrorHit = mirrorT > 0;
-    if(mirrorHit)
+    if(view.opticalMode == OPTICAL_MODE_LENS)
     {
-      mirrorHitPoint = origin.xyz + direction.xyz * mirrorT;
-      mirrorNormal   = mirrorHitPoint - mirrorCenter;
-      vec3 signs     = sign(mirrorNormal);
-      mirrorNormal   = abs(mirrorNormal);
-      mirrorNormal = vec3(equal(mirrorNormal, vec3(max(max(mirrorNormal.x, mirrorNormal.y), mirrorNormal.z)))) * signs;
+      // lens: a flat circular aperture facing the camera, lensDist ahead of the eye
+      // along the view direction. See `lensZoomDirection`.
+      vec3 lensCenter = origin.xyz + view.viewDir.xyz * view.lensDist;
+      vec3 axis       = -view.viewDir.xyz;  // faces the camera
+      mirrorT         = hitDisc(origin.xyz, direction.xyz, lensCenter, axis, view.lensSize);
+      mirrorHit       = mirrorT > 0;
+      if(mirrorHit)
+      {
+        mirrorHitPoint = origin.xyz + direction.xyz * mirrorT;
+        mirrorNormal   = axis;
 
-      tMax = mirrorT;
+        tMax = mirrorT;
+      }
+    }
+    else if(view.opticalMode == OPTICAL_MODE_SPHERE)
+    {
+      // convex spherical mirror: reflect off the outside of the sphere,
+      // like a chrome ball — a demagnified wide-angle view of the scene
+      mirrorT   = hitSphere(origin.xyz, direction.xyz, mirrorCenter, mirrorSize);
+      mirrorHit = mirrorT > 0;
+      if(mirrorHit)
+      {
+        mirrorHitPoint = origin.xyz + direction.xyz * mirrorT;
+        mirrorNormal   = normalize(mirrorHitPoint - mirrorCenter);
+
+        tMax = mirrorT;
+      }
+    }
+    else
+    {
+      mirrorT   = hitBbox(origin.xyz, direction.xyz, mirrorCenter - mirrorSize, mirrorCenter + mirrorSize);
+      mirrorHit = mirrorT > 0;
+      if(mirrorHit)
+      {
+        mirrorHitPoint = origin.xyz + direction.xyz * mirrorT;
+        mirrorNormal   = mirrorHitPoint - mirrorCenter;
+        vec3 signs     = sign(mirrorNormal);
+        mirrorNormal   = abs(mirrorNormal);
+        mirrorNormal = vec3(equal(mirrorNormal, vec3(max(max(mirrorNormal.x, mirrorNormal.y), mirrorNormal.z)))) * signs;
+
+        tMax = mirrorT;
+      }
     }
   }
 #endif
 
-  // Ray cone for texture LOD (and future streaming LOD): width 0 at the eye, spread = per-pixel angle.
+  // Ray cone for texture LOD and hit-based streaming LOD: width 0 at the eye, spread = per-pixel angle.
+  // The hit-streaming registration scales this shared footprint into its geometry-error budget.
   rayHit.coneWidth  = 0.0;
   rayHit.coneSpread = view.pixelAngle;
 
@@ -154,25 +227,57 @@ void main()
               0  // rayPayloadNV location qualifier
   );
 
+  // the lens is see-through, its depth must not occlude what is behind it in the hiz
+  bool lensHit = false;
 #if ALLOW_SHADING
-  if(view.useMirrorBox != 0)
+  if(view.opticalMode != OPTICAL_MODE_NONE)
   {
     if(rayHit.hitT == 0 && mirrorHit)
     {
+      bool isLens = view.opticalMode == OPTICAL_MODE_LENS;
+      lensHit     = isLens;
+
+      vec3 secondaryOrigin = mirrorHitPoint;
+      vec3 secondaryDir    = reflect(direction.xyz, mirrorNormal);
+
+      if(isLens)
+      {
+        secondaryDir = lensZoomDirection(direction.xyz);
+      }
+
 #if DEBUG_VISUALIZATION && ALLOW_SHADING
-      rayHit.rayDifferentialX = reflect(rayHit.rayDifferentialX, mirrorNormal);
-      rayHit.rayDifferentialY = reflect(rayHit.rayDifferentialY, mirrorNormal);
+      if(isLens)
+      {
+        rayHit.rayDifferentialX = lensZoomDirection(rayHit.rayDifferentialX);
+        rayHit.rayDifferentialY = lensZoomDirection(rayHit.rayDifferentialY);
+      }
+      else
+      {
+        rayHit.rayDifferentialX = reflect(rayHit.rayDifferentialX, mirrorNormal);
+        rayHit.rayDifferentialY = reflect(rayHit.rayDifferentialY, mirrorNormal);
+      }
 #endif
-      // Propagate the cone to the mirror: the reflected ray starts with the width accumulated over the
-      // eye->mirror distance (specular reflection leaves the spread unchanged).
-      rayHit.coneWidth  = view.pixelAngle * mirrorT;
-      rayHit.coneSpread = view.pixelAngle;
+      // the traveled distance accumulates into the width at the reflection point.
+      // A planar mirror leaves the spread unchanged; a curved mirror changes it by
+      // twice the normal variation: spread' = spread + 2 * curvature * width. The
+      // convex sphere widens the cone, so the demagnified image demands coarser detail.
+      float mirrorConeWidth = view.pixelAngle * mirrorT;
+      rayHit.coneWidth      = mirrorConeWidth;
+      if(isLens)
+      {
+        // the zoom narrows the spread by the magnification (ignoring the distortion)
+        rayHit.coneSpread = view.pixelAngle / view.lensZoom;
+      }
+      else if(view.opticalMode == OPTICAL_MODE_SPHERE)
+      {
+        rayHit.coneSpread = view.pixelAngle + 2.0f * mirrorConeWidth / mirrorSize;
+      }
 
       traceRayEXT(accelerationStructureEXT(build.tlasAddress),
                   USE_FORCED_TWO_SIDED != 0 ? 0 : gl_RayFlagsCullBackFacingTrianglesEXT, 0xff,
                   0, 1,  // hit offset, hit stride
                   0,  // miss offset
-                  mirrorHitPoint, 0, reflect(direction.xyz, mirrorNormal), view.farPlane + mirrorT,
+                  secondaryOrigin, 0, secondaryDir, view.farPlane + mirrorT,
                   0  // rayPayloadNV location qualifier
       );
 
@@ -201,7 +306,7 @@ void main()
   // misses at the far plane, which is 0 with reversed-Z
   float hitDepth = 0;
 
-  if(hitValid)
+  if(hitValid && !lensHit)
   {
     vec4 screenPos = view.viewProjMatrix * vec4(hitPos, 1);
     hitDepth       = screenPos.z / screenPos.w;

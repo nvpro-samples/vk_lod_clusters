@@ -30,6 +30,8 @@ bool Scene::storeCached(const GeometryView& view, uint64_t dataSize, void* data)
   {
     serialization::storeAndAdvance(isValid, dataAddress, dataEnd, view.groupData);
     serialization::storeAndAdvance(isValid, dataAddress, dataEnd, view.groupInfos);
+    serialization::storeAndAdvance(isValid, dataAddress, dataEnd, view.groupOverlapInfos);
+    serialization::storeAndAdvance(isValid, dataAddress, dataEnd, view.groupOverlapEntries);
     serialization::storeAndAdvance(isValid, dataAddress, dataEnd, view.lodLevels);
     serialization::storeAndAdvance(isValid, dataAddress, dataEnd, view.lodNodes);
     serialization::storeAndAdvance(isValid, dataAddress, dataEnd, view.lodNodeBboxes);
@@ -104,6 +106,8 @@ uint64_t Scene::storeCached(const GeometryView& view, FILE* outFile)
   {
     fileWriteAligned(isValid, dataSize, outFile, view.groupData);
     fileWriteAligned(isValid, dataSize, outFile, view.groupInfos);
+    fileWriteAligned(isValid, dataSize, outFile, view.groupOverlapInfos);
+    fileWriteAligned(isValid, dataSize, outFile, view.groupOverlapEntries);
     fileWriteAligned(isValid, dataSize, outFile, view.lodLevels);
     fileWriteAligned(isValid, dataSize, outFile, view.lodNodes);
     fileWriteAligned(isValid, dataSize, outFile, view.lodNodeBboxes);
@@ -135,6 +139,8 @@ bool Scene::loadCached(GeometryView& view, uint64_t dataSize, const void* data)
   {
     serialization::loadAndAdvance(isValid, dataAddress, dataEnd, view.groupData);
     serialization::loadAndAdvance(isValid, dataAddress, dataEnd, view.groupInfos);
+    serialization::loadAndAdvance(isValid, dataAddress, dataEnd, view.groupOverlapInfos);
+    serialization::loadAndAdvance(isValid, dataAddress, dataEnd, view.groupOverlapEntries);
     serialization::loadAndAdvance(isValid, dataAddress, dataEnd, view.lodLevels);
     serialization::loadAndAdvance(isValid, dataAddress, dataEnd, view.lodNodes);
     serialization::loadAndAdvance(isValid, dataAddress, dataEnd, view.lodNodeBboxes);
@@ -249,6 +255,8 @@ void Scene::loadCachedGeometry(GeometryStorage& storage, size_t geometryIndex)
 
   fillVector(storage.groupData, view.groupData);
   fillVector(storage.groupInfos, view.groupInfos);
+  fillVector(storage.groupOverlapInfos, view.groupOverlapInfos);
+  fillVector(storage.groupOverlapEntries, view.groupOverlapEntries);
   fillVector(storage.lodLevels, view.lodLevels);
   fillVector(storage.lodNodes, view.lodNodes);
   fillVector(storage.lodNodeBboxes, view.lodNodeBboxes);

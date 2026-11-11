@@ -102,7 +102,11 @@ hitAttributeEXT vec2 barycentrics;
 /////////////////////////////////
 
 layout(location = 0) rayPayloadInEXT RayPayload rayHit;
+#if USE_HIT_STREAMING_LOD
+layout(location = 1) rayPayloadEXT RayPayloadAO rayHitAO;
+#else
 layout(location = 1) rayPayloadEXT float rayHitAO;
+#endif
 
 /////////////////////////////////
 
@@ -117,6 +121,10 @@ layout(location = 1) rayPayloadEXT float rayHitAO;
 #include "texturing.glsl"
 #include "render_shading.glsl"
 
+#if USE_STREAMING && USE_HIT_STREAMING
+#include "streaming.glsl"
+#endif
+
 /////////////////////////////////
 
 void main()
@@ -128,6 +136,31 @@ void main()
   uint clusterID  = gl_ClusterIDNV_;
   uint instanceID = gl_InstanceID;
   uint triangleID = gl_PrimitiveID;
+  
+#if USE_HIT_STREAMING_LOD
+  // ray cone width at this hit, also continued by the secondary rays below.
+  // abs: a converging cone (negative spread after a concave mirror) shrinks
+  // through its focus and grows again — past the focus the continued cone
+  // diverges, hence the spread sign flip.
+  float hitConeWidthSigned = rayHit.coneWidth + rayHit.coneSpread * gl_HitTEXT;
+  float hitConeWidth       = abs(hitConeWidthSigned);
+  float hitConeSpread      = hitConeWidthSigned < 0 ? -rayHit.coneSpread : rayHit.coneSpread;
+#endif
+
+#if USE_STREAMING && USE_HIT_STREAMING
+#if USE_HIT_STREAMING_LOD
+  // The unified ray cone is in pixel-footprint units (spread = view.pixelAngle), shared with texture LOD;
+  // hit-based streaming LOD needs geometry-error-budget units (spread = errorOverDistanceThreshold). Both
+  // are proportional to tan(fov/2)/height, so convert the footprint with this per-frame ratio.
+  float coneToError = build.errorOverDistanceThreshold / view.pixelAngle;
+  streamingRegisterHitLod(clusterID, rayHit.coneWidth * coneToError, rayHit.coneSpread * coneToError, gl_WorldRayOriginEXT, gl_ObjectToWorldEXT);
+  streamingRegisterInstanceDemand(instanceID, clusterID, rayHit.coneWidth * coneToError, rayHit.coneSpread * coneToError, gl_WorldRayOriginEXT,
+                                  view.viewPos.xyz, gl_ObjectToWorldEXT, build.errorOverDistanceThreshold, view.nearPlane,
+                                  build.instanceHitDemand);
+#else
+  streamingRegisterHit(clusterID);
+#endif
+#endif
 
   RenderInstance instance = instances[instanceID];
   Geometry       geometry = geometries[instance.geometryID];
@@ -278,7 +311,11 @@ void main()
     float sunContribution  = 1.0;
     vec3  directionToLight = view.skyPhysical.sunDirection;
     if(view.doShadow == 1)
-      sunContribution = traceShadowRay(wShadowPos, wGeoNormal, directionToLight);
+      sunContribution = traceShadowRay(wShadowPos, wGeoNormal, directionToLight
+#if USE_HIT_STREAMING_LOD
+                                       , hitConeWidth, hitConeSpread
+#endif
+      );
 
     // Ray-cone texture LOD: the cone (width/spread at the ray origin) arrives via the payload and is
     // propagated to this hit - width = coneWidth + coneSpread * gl_HitTEXT. For the primary ray this is

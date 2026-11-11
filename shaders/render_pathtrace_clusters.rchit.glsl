@@ -21,6 +21,12 @@
 
 #extension GL_EXT_ray_tracing : require
 #extension GL_EXT_ray_tracing_position_fetch : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_atomic_int64 : enable
+#extension GL_EXT_buffer_reference : enable
+#extension GL_EXT_buffer_reference2 : enable
+#extension GL_EXT_scalar_block_layout : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int32 : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
@@ -36,14 +42,59 @@ spirv_decorate(extensions = ["SPV_NV_cluster_acceleration_structure"], capabilit
 
 /////////////////////////////////
 
+layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuffer
+{
+  FrameConstants view;
+};
+
+layout(scalar, binding = BINDINGS_SCENEBUILDING_UBO, set = 0) uniform buildBuffer
+{
+  SceneBuilding build;
+};
+
+#if USE_STREAMING
+layout(scalar, binding = BINDINGS_STREAMING_UBO, set = 0) uniform streamingBuffer
+{
+  SceneStreaming streaming;
+};
+layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBufferRW
+{
+  SceneStreaming streamingRW;
+};
+#endif
+
+/////////////////////////////////
+
 hitAttributeEXT vec2 barycentrics;
 
 layout(location = 0) rayPayloadInEXT PathRayPayload rayHit;
+
+#if USE_STREAMING && USE_HIT_STREAMING
+#include "streaming.glsl"
+#endif
 
 /////////////////////////////////
 
 void main()
 {
+#if USE_STREAMING && USE_HIT_STREAMING
+  // Register this hit for hit-based streaming so the path tracer drives residency (primary ray and every
+  // GI bounce), mirroring render_raytrace_clusters.rchit. The ray-gen writes the propagated ray cone into
+  // the payload before each trace.
+  uint clusterID  = uint(gl_ClusterIDNV_);
+  uint instanceID = gl_InstanceID;
+#if USE_HIT_STREAMING_LOD
+  // unified pixel-footprint cone -> geometry-error budget (see render_raytrace_clusters.rchit)
+  float coneToError = build.errorOverDistanceThreshold / view.pixelAngle;
+  streamingRegisterHitLod(clusterID, rayHit.coneWidth * coneToError, rayHit.coneSpread * coneToError, gl_WorldRayOriginEXT, gl_ObjectToWorldEXT);
+  streamingRegisterInstanceDemand(instanceID, clusterID, rayHit.coneWidth * coneToError, rayHit.coneSpread * coneToError, gl_WorldRayOriginEXT,
+                                  view.viewPos.xyz, gl_ObjectToWorldEXT, build.errorOverDistanceThreshold, view.nearPlane,
+                                  build.instanceHitDemand);
+#else
+  streamingRegisterHit(clusterID);
+#endif
+#endif
+
   rayHit.hitT       = gl_HitTEXT;
   rayHit.instanceID = gl_InstanceID;
   rayHit.clusterID  = uint(gl_ClusterIDNV_);

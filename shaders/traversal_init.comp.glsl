@@ -221,7 +221,13 @@ void main()
   #if USE_CULLING && TARGETS_RAY_TRACING
     if (visibilityState == 0) errorScale = build.culledErrorScale;
   #endif
-  
+  #if USE_HIT_STREAMING_LOD
+    // per-instance finer-detail demand (magnifier): without this the early-out
+    // below would leave a mirror-only-visible instance on the low-detail blas.
+    // min() so the demand overrides the culledErrorScale penalty.
+    errorScale = min(errorScale, instanceHitErrorScale(build.instanceHitScale, instanceID));
+  #endif
+
     mat4 transform = build.traversalViewMatrix * toMat4(worldMatrix);
   
     // if there is no need to traverse the pen ultimate lod level,

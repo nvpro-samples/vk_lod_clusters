@@ -99,7 +99,7 @@ void main()
     {
     #if STREAMING_DEBUG_ADDRESSES
       streaming.resident.groups.d[oldResidentID].group = Group_in(STREAMING_INVALID_ADDRESS_START);
-    #endif      
+    #endif
     }
     else
     {
@@ -130,6 +130,19 @@ void main()
       // insert ourselves into the list of all active groups
       streaming.resident.activeGroups.d[streaming.update.loadActiveGroupsOffset + loadGroupIndex] = groupResidentID;
       
+      // hit streaming (freshly streamed in data should be treated hit):
+      // seed the frame stamp so the recency-gated stream-in keeps advancing
+      // ~one level per streaming update. The width is seeded with *least*
+      // demand (zero bits) — lod demand for the region comes from the coarser
+      // overlap groups' real hit widths until this group is rendered and hit
+      // itself; a maximum-demand seed would linger in the slowly relaxing
+      // smoothed width and locally disable the clamp. This also overwrites
+      // stale values of a previous occupant of the resident slot.
+      streaming.resident.groupHitFrames.d[groupResidentID] =
+          STREAMING_HITFRAME_NO_FINER_BIT
+          | (STREAMING_HITFRAME_CYCLIC(streaming.frameIndex) << STREAMING_HITFRAME_FRAME_SHIFT);
+      streaming.resident.groupHitWidths.d[groupResidentID] = 0;
+      
       // We might have a bit of divergence here, but shouldn't be a mission critical issue
       
       // All new groups need to build new clusters.
@@ -151,6 +164,9 @@ void main()
         streaming.resident.clusters.d[clusterResidentID] = uint64_t(clusterRef);
         
       #if TARGETS_RAY_TRACING
+        // only for hit streaming
+        streaming.resident.clusterGroups.d[clusterResidentID] = groupResidentID;
+      
         Cluster cluster = clusterRef.d;
       
         ClasBuildInfo buildInfo;

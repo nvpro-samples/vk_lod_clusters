@@ -172,6 +172,9 @@ struct SceneBuilding
 
   float errorOverDistanceThreshold;
   float culledErrorScale;
+  // USE_HIT_STREAMING_LOD: a group also opens while the camera metric at this multiple
+  // of the errorScale wants it, regardless of ray demand. 0 disables.
+  float hitCameraErrorScale;
   float swRasterThreshold;
 
   uint sharingEnabledLevels;
@@ -231,6 +234,16 @@ struct SceneBuilding
   uint traversalGroupStart;
   uint traversalGroupEnd;
 
+  // faster hit-streaming demand BFS (post-traversal, USE_HIT_STREAMING). It reuses
+  // the `traversalNodeInfos` storage as its work queue (free once traversal is done)
+  // but keeps its own counters so it never interferes with the traversal state.
+  // Each queue entry packs {geometryID<<32 | groupIndex}; the front is descended one
+  // finer lod transition per pass. See stream_hit_demand_tree.comp.glsl.
+  uint hitDemandWriteCounter;  // atomic append cursor into traversalNodeInfos
+  uint hitDemandStart;         // current frontier pass processes [start,end)
+  uint hitDemandEnd;
+  uint hitDemandPass;
+
   // result of traversal init & scratch for traversal run
   // array size is [maxTraversalInfos]
   // `setupSecondPass` swaps this to `rejectNodeInfos` for the second cull pass
@@ -271,6 +284,7 @@ struct SceneBuilding
   DispatchIndirectCommand indirectDispatchGroups;
   DispatchIndirectCommand indirectDispatchRejectInstances;
   DispatchIndirectCommand indirectDispatchRejectClusters;
+  DispatchIndirectCommand indirectDispatchHitDemand;
 
   // rasterization related
   //////////////////////////////////////////////////
@@ -327,6 +341,26 @@ struct SceneBuilding
   // 1 if the instance used its geometry's cached blas last frame, persists across frames
   BUFFER_REF(uint8s_inout) instanceCachedSticky;
 
+  // Only for USE_HIT_STREAMING_LOD. Per-instance demand for detail *finer* than
+  // the camera-distance metric would pick (e.g. a magnifying glass / converging
+  // refraction). Stores the absolute `errorScale` a ray footprint demanded (< 1
+  // is finer), or a large FLT_MAX "no demand" sentinel. Combined with min() into
+  // the camera/culled errorScale everywhere a metric is evaluated, so only
+  // demanding instances refine (overriding even culledErrorScale for a
+  // mirror-only-visible instance) and the blas-sharing classification learns they
+  // need their own finer blas. Written by `streamingRegisterInstanceDemand`
+  // (atomicMin over the frame's ray hits), consumed and reset by
+  // `instance_hit_scale`. See the design in docs/hitbased_streaming.md.
+  BUFFER_REF(uint32s_inout) instanceHitDemand;
+  // filtered `instanceHitDemand`, what classify and traversal actually read:
+  // bits 0..7 the level, errorScale = 2^-level with 0 = no demand, bits 8..31 the
+  // frames the level has been held without demand.
+  BUFFER_REF(uint32s_inout) instanceHitScale;
+  // per geometry, the finest lod level any traversal can open next frame given the ray
+  // demand, classify raises `lodLevelMin` to it. Written by `stream_hit_propagation`,
+  // ~0 when it did not run.
+  BUFFER_REF(uint32s_inout) geometryHitDemandLevel;
+
   // instance sorting
   BUFFER_REF(uint32s_inout) instanceSortValues;
   BUFFER_REF(uint32s_inout) instanceSortKeys;
@@ -378,7 +412,8 @@ struct SceneBuilding
   BUFFER_REF(uint32s_in) instancePartitions;
   // instance ids grouped by partition
   BUFFER_REF(uint32s_in) partitionInstanceOrder;
-  // x = first entry in `partitionInstanceOrder`, y = instance count
+  // x = first entry in `partitionInstanceOrder`, y = instance count.
+  // Also allocated for USE_PTLAS, its statistics read the instance count.
   BUFFER_REF(uvec2s_in) partitionRanges;
   // instances in the partition that did NOT resolve to a persistent blas, counted by
   // `traversal_init_blas_reuse`. 0 means the partition is stable and can be skipped:

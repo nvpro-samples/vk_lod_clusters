@@ -463,6 +463,7 @@ Scene::Result Scene::init(const std::filesystem::path& filePath,
     m_maxPerGeometryTriangles = std::max(m_maxPerGeometryTriangles, geometry.totalTriangleCount);
     m_maxPerGeometryVertices  = std::max(m_maxPerGeometryVertices, geometry.totalVerticesCount);
     m_maxPerGeometryClusters  = std::max(m_maxPerGeometryClusters, geometry.totalClustersCount);
+    m_maxPerGeometryGroups    = std::max(m_maxPerGeometryGroups, uint32_t(geometry.groupInfos.size()));
     m_maxClusterVertices      = std::max(m_maxClusterVertices, geometry.clusterMaxVerticesCount);
     m_maxClusterTriangles     = std::max(m_maxClusterTriangles, geometry.clusterMaxTrianglesCount);
     m_maxLodLevelsCount       = std::max(m_maxLodLevelsCount, geometry.lodLevelsCount);
@@ -512,8 +513,10 @@ Scene::Result Scene::init(const std::filesystem::path& filePath,
   LOGI("hi clusters:  %" PRIu64 "\n", m_hiClustersCount);
   LOGI("hi triangles: %" PRIu64 "\n", m_hiTrianglesCount);
   LOGI("hi triangles/cluster: %.2f\n", double(m_hiTrianglesCount) / double(m_hiClustersCount));
+  LOGI("max geo clusters:  %d\n", m_maxPerGeometryClusters);
+  LOGI("max geo groups: %d\n", m_maxPerGeometryGroups);
 
-  if(!m_loadedFromCache && m_loaderConfig.autoSaveCache)
+  if(!m_loadedFromCache)
   {
     saveCache();
   }
@@ -850,12 +853,14 @@ void Scene::processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex
   {
     (GeometryBase&)geometryView = geometryStorage;
 
-    geometryView.groupData        = geometryStorage.groupData;
-    geometryView.groupInfos       = geometryStorage.groupInfos;
-    geometryView.lodLevels        = geometryStorage.lodLevels;
-    geometryView.lodNodes         = geometryStorage.lodNodes;
-    geometryView.lodNodeBboxes    = geometryStorage.lodNodeBboxes;
-    geometryView.localMaterialIDs = geometryStorage.localMaterialIDs;
+    geometryView.groupData           = geometryStorage.groupData;
+    geometryView.groupInfos          = geometryStorage.groupInfos;
+    geometryView.groupOverlapInfos   = geometryStorage.groupOverlapInfos;
+    geometryView.groupOverlapEntries = geometryStorage.groupOverlapEntries;
+    geometryView.lodLevels           = geometryStorage.lodLevels;
+    geometryView.lodNodes            = geometryStorage.lodNodes;
+    geometryView.lodNodeBboxes       = geometryStorage.lodNodeBboxes;
+    geometryView.localMaterialIDs    = geometryStorage.localMaterialIDs;
   }
 
   // always reset

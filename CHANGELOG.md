@@ -1,4 +1,13 @@
 # Changelog for vk_lod_clusters
+* 2026-11-11:
+
+  **WARNING** Old cache files are not compatible anymore (`geoVersion` 16). Cluster group overlap information added for hit-based streaming propagation.
+
+  * New hit-based streaming for ray tracing (`--hitstreaming 1`, off by default): what rays hit decides which cluster groups are loaded and unloaded and, with `--hitstreaminglod`, the level of detail. See [docs/hitbased_streaming.md](docs/hitbased_streaming.md). Thanks Jan Schmid and Christian Rouet for help.
+  * _"Optical Effect"_ (`--opticalmode`) replaces the reflective box checkbox in ray and path tracing: 1 mirror box (`M`), 2 mirror sphere, 3 magnifier lens (`L`, `--lenszoom`).
+  * `--streamingagethreshold` sets the unload frame delay, `--memoryreportframes` logs a memory report every N frames.
+  * `--autosavecache` is removed, a processed scene always stores its cache file. Large scenes already wrote it during processing.
+
 * 2026-11-10:
 
   * New instance partitions (`--partitions 1`, off by default) and, built on them, the partitioned TLAS (`--ptlas 1`, `VK_NV_partitioned_acceleration_structure`), which only rewrites the instances whose BLAS changed. The partition early-out skips the per-instance work of unchanged partitions with either TLAS. See [docs/partitions_and_ptlas.md](docs/partitions_and_ptlas.md).
@@ -26,6 +35,7 @@
 
   * HBAO runs at quarter resolution by default (`--hbaoquarter 0` for full), upsampled depth-aware.
   * HBAO normals are rebuilt per pixel from the plane-consistent neighbours, which removes the dark dashes along creases.
+
 * 2026-10-21:
 
   * `--gridunique` is now a fraction (0..1) of grid copies with unique geometries, `0` and `1` behave as before.

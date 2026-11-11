@@ -89,7 +89,17 @@ void main()
     Group_in groupRef = streaming.resident.groups.d[residentID].group;
     uint geometryID   = streaming.resident.groups.d[residentID].geometryID;
     
-    streamingAgeFilter(residentID, geometryID, groupRef, streaming.useBlasCaching != 0);
+    streamingAgeFilter(residentID, geometryID, groupRef, streaming.useBlasCaching != 0, streaming.useHitStreaming != 0);
+
+#if STREAM_DEBUG_RESIDENCY
+    uint age      = streaming.resident.groups.d[residentID].age;
+    uint hitDelta = streamingHitFrameDelta(streaming.resident.groupHitFrames.d[residentID]);
+    bool cached   = streaming.useBlasCaching != 0
+                  && streaming.resident.groups.d[residentID].lodLevel >= build.geometryCachedRetain.d[geometryID];
+    uint bin = cached ? 4 : age > 1 ? 3 : hitDelta <= 2 ? 0 : hitDelta <= 32 ? 1 : 2;
+    atomicAdd(readback.debugA[bin], uint(groupRef.d.clusterCount));
+    atomicAdd(readback.debugB[bin], 1);
+#endif
   }
 }
 

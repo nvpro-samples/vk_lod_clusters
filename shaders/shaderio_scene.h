@@ -103,6 +103,10 @@ enum ClusterStateBits
 #define SHADERIO_LOCAL_MATERIAL_MASK SHADERIO_MAX_LOCAL_MATERIALS
 #define SHADERIO_PER_TRIANGLE_MATERIALS 0xFF
 
+// bit width of the tightly packed group indices in the packed overlap entry array
+// (see GroupOverlapInfo and decode20Bit); 20 bits per group index.
+#define SHADERIO_GROUP_OVERLAP_ENTRY_BITS 20
+
 struct BBox
 {
   vec3 lo;
@@ -270,6 +274,18 @@ BBox Cluster_getBBox(Cluster_in cluster)
 }
 #endif
 
+// packed per-group overlap table: one GroupOverlapInfo per group indexes a run of
+// `countCoarse + countFine` entries in a flat group-index array (immediate coarser
+// groups first, then immediate finer groups). Stores both +/-1 lod directions in a
+// single compact table, derived from the generating-group DAG (exact same-surface).
+struct GroupOverlapInfo
+{
+  uint16_t countCoarse;
+  uint16_t countFine;
+  uint32_t offset;  // entry index into the flat group overlap entry array
+};
+BUFFER_REF_DECLARE_ARRAY(GroupOverlapInfos_in, GroupOverlapInfo, , 8);
+
 #ifdef __cplusplus
 // must match `nvclusterlod::InteriorNode`
 struct NodeRange
@@ -343,7 +359,6 @@ struct Geometry
   // ray tracing: streaming frame of the last cached blas build, which can reuse the replaced
   // one's address, the ptlas still needs an update then (USE_BLAS_CACHING)
   uint32_t cachedBuildFrame;
-  // keeps Geometry at 128 B, exactly two cachelines
   uint32_t _reserved;
 
   // object space geometry bbox
@@ -362,6 +377,31 @@ struct Geometry
   // only addresses < STREAMING_INVALID_ADDRESS_BEGIN can be dereferenced.
   BUFFER_REF(uint64s_inout) streamingGroupAddresses;
 
+  // packed per-group overlap table (see GroupOverlapInfo): persistent, one info
+  // per group indexing a run of coarser-then-finer immediate (+/-1 lod) overlap
+  // group indices in the flat entry array. Available for every group regardless
+  // of residency.
+  BUFFER_REF(GroupOverlapInfos_in) groupOverlapInfos;
+  BUFFER_REF(uint32s_in) groupOverlapEntries;
+
+  // faster stream-in (USE_HIT_STREAMING_LOD): persistent per-global-group demand,
+  // packed like a groupHitFrames entry minus the no-finer bit (cyclic frame in
+  // bits 30..16, inverted width in bits 15..0). Written every frame by
+  // `stream_hit_demand_tree.comp.glsl`, which seeds it from the resident groups' hit
+  // width and floods it coarse->fine one lod transition per frame through the
+  // persistent overlap table, so a non-resident finer group can be demanded (and
+  // requested) without waiting for each intermediate level to become resident
+  // first. Consumed by `streamingDemandsFiner`.
+  BUFFER_REF(uint32s_inout) groupDemand;
+
+  // total group count of this geometry. The per-reverse-lod-level flat prefix
+  // offsets that the level-wise demand pass (stream_hit_demand_tree.comp.glsl) binary
+  // searches live in a scene-wide compact, level-major buffer rather than here
+  // (SceneStreaming::m_geometryLevelOffsets, indexed [reverseLevel*numGeometries +
+  // geometryIndex] and passed to the shader by address), so this hot struct — copied
+  // per traversal thread — stays small.
+  uint32_t groupsCount;
+
   // preloaded (null if streaming)
   // clusters
   BUFFER_REF(uint64s_in) preloadedGroups;
@@ -372,7 +412,7 @@ struct Geometry
 };
 BUFFER_REF_DECLARE(Geometry_in, Geometry, readonly, 16);
 BUFFER_REF_DECLARE(Geometry_inout, Geometry, , 16);
-BUFFER_REF_DECLARE_SIZE(Geometry_size, Geometry, 128);
+BUFFER_REF_DECLARE_SIZE(Geometry_size, Geometry, 160);
 
 struct RenderMaterial
 {

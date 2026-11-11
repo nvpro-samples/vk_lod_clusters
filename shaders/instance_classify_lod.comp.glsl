@@ -152,6 +152,13 @@ void main()
     // instance is not primary visible, apply different error scale
     if (visibilityState == 0) errorScale = build.culledErrorScale;
   #endif
+  #if USE_HIT_STREAMING_LOD
+    // a ray footprint finer than the camera distance implies (magnifier) lowers
+    // the errorScale, so this instance's classified lodLevelMin becomes finer and
+    // it drops out of blas sharing into its own higher-detail blas. min() so the
+    // demand overrides the culledErrorScale of a mirror-only-visible instance.
+    errorScale = min(errorScale, instanceHitErrorScale(build.instanceHitScale, instanceID));
+  #endif
   
     mat4 transform = build.traversalViewMatrix * toMat4(worldMatrix);
     vec3 oViewPos  = (worldMatrixI * vec4(view.viewPos.xyz,1));
@@ -183,6 +190,29 @@ void main()
 
       lodLevelMin = classification.lodLevelMin;
       lodLevelMax = classification.lodLevelMax;
+
+    #if USE_HIT_STREAMING_LOD
+      // traversal opens no group finer than the rays demand, so neither may the routing,
+      // else an instance the camera wants detailed but no ray reaches keeps traversing into
+      // an empty blas and its partition awake. ~0 until propagation ran once.
+      uint demandLevel = build.geometryHitDemandLevel.d[geometryID];
+      if (demandLevel <= geometryLodLevelMax)
+      {
+        if (build.hitCameraErrorScale > 0 && demandLevel > lodLevelMin)
+        {
+          // the camera floor opens groups without ray demand, see `testForHitCameraFloor`
+          InstanceLodClassification floorClassification =
+              classifyInstanceLod(geometry, mat4x3(transform), oViewPos, uniformScale,
+                                  errorScale * build.hitCameraErrorScale, 0, false);
+          if (floorClassification.lodLevelMinFound)
+          {
+            demandLevel = min(demandLevel, floorClassification.lodLevelMin);
+          }
+        }
+        lodLevelMin = max(lodLevelMin, demandLevel);
+        lodLevelMax = max(lodLevelMax, lodLevelMin);
+      }
+    #endif
 
       if (visibilityState == 0 && build.sharingPushCulled != 0)
       {

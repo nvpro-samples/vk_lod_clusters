@@ -63,6 +63,7 @@ struct FrameConfig
   bool  showClusterBboxes  = false;
   bool  freezeCulling      = false;
   bool  freezeLoD          = false;
+  bool  freezeStreaming    = false;
   bool  hbaoActive         = true;
   bool  adaptiveError      = false;
   float lodPixelError      = 1.0f;
@@ -75,6 +76,19 @@ struct FrameConfig
   // how many frames until we schedule a group for unloading
   uint32_t streamingAgeThreshold    = 16;
   float    streamingUnloadThreshold = 0.0f;
+
+  // all-levels-rolling propagation (STREAM_PROPAGATION_ALL_LEVELS_ROLLING): number of coarsest
+  // lod levels swept in full every frame (cheap - few groups - giving coarse data single-frame
+  // stream-in reach); the remaining finer levels advance one per frame. >= 1; >= lod levels
+  // reproduces the full sweep.
+  uint32_t streamRollingCoarseLevels = 4;
+
+  // scales the acceptable error derived from hit ray-cone widths when
+  // hit-based lod clamping is active (RendererConfig::useHitStreamingLod)
+  float hitLodWidthFactor = 1.0f;
+  // hit-based lod clamping: groups also open while the camera metric at this multiple of
+  // the error wants them, regardless of ray hits. 0 disables
+  float hitLodCameraScale = 0.0f;
 
   // how much threads to use in the persistent kernels
   uint32_t traversalPersistentThreads = 2048;
@@ -610,6 +624,15 @@ public:
         m_cmd = m_resources.createTempCmdBuffer();
       }
       vkCmdFillBuffer(m_cmd, dst.buffer, 0, dst.bufferSize, fillValue);
+    }
+
+    void fillBuffer(const nvvk::Buffer& dst, size_t offset, size_t size, uint32_t fillValue)
+    {
+      if(!m_cmd)
+      {
+        m_cmd = m_resources.createTempCmdBuffer();
+      }
+      vkCmdFillBuffer(m_cmd, dst.buffer, offset, size, fillValue);
     }
 
     // must call flush at end of operations

@@ -23,6 +23,19 @@ using namespace glm;
 // a group takes on load, or unload.
 #define STREAMING_DEBUG_FREEGAPS_OVERLAP 0
 
+// hit streaming statistics binned by lod-level (written by
+// stream_hit_propagation.comp.glsl into the readback debug arrays). bins are
+// relative to each geometry's coarsest lod level (bin 0 = coarsest):
+//   debugA = resident groups hit within 32 frames, debugB = resident groups,
+//   debugC = total groups (independent of residency)
+#define STREAM_DEBUG_HIT_STATS 0
+
+// resident clusters binned by why they are kept (written by stream_agefilter_groups.comp.glsl
+// into debugA, debugB counts groups): 0 used by traversal and hit within 2 frames,
+// 1 used and hit within 3..32, 2 used and hit older, 3 unused within the unload delay,
+// 4 kept by blas caching
+#define STREAM_DEBUG_RESIDENCY 0
+
 #endif
 
 /////////////////////////////////////////
@@ -48,6 +61,80 @@ using namespace glm;
 
 // must fit in uint16_t
 #define STREAMING_CACHED_BLAS_MAX_CLUSTERS 0xFFFF
+
+// hit tracking packs the per-group hit state into a single uint32:
+//
+//   bit  31     STREAMING_HITFRAME_NO_FINER_BIT, set when no finer (generating)
+//               group is resident. Inverted polarity: hit registration is a
+//               single atomicMax that always sets it, so a fresh hit wins; the
+//               flag only matters for stale frames and stream_hit_propagation
+//               rewrites frame and flag together every frame.
+//   bits 30..16 cyclic frame index of the last hit (15 bit). Consumers compare
+//               via cyclic deltas; the propagation pass re-normalizes stamps past
+//               the current frame so the atomicMax ordering survives the wrap.
+//   bits 15..0  ray-cone width in object space, inverted fixed-point log2 (larger
+//               = smaller width), so atomicMax yields "newest frame, then smallest
+//               width". Only with USE_HIT_STREAMING_LOD; plain writes zero.
+#define STREAMING_HITFRAME_NO_FINER_BIT (1u << 31)
+#define STREAMING_HITFRAME_FRAME_SHIFT 16
+#define STREAMING_HITFRAME_FRAME_MASK 0x7FFFu
+#define STREAMING_HITFRAME_WIDTH_MASK 0xFFFFu
+// The frame stamp cycles through BASE..MASK. 0 is "never": zero-filled buffers and entries
+// older than BASE frames. The propagation re-stamps resident entries carried over the wrap
+// below BASE.
+#define STREAMING_HITFRAME_FRAME_BASE 0x1000u
+#define STREAMING_HITFRAME_PERIOD (STREAMING_HITFRAME_FRAME_MASK + 1 - STREAMING_HITFRAME_FRAME_BASE)
+#define STREAMING_HITFRAME_CYCLIC(frameIndex) (STREAMING_HITFRAME_FRAME_BASE + (frameIndex) % STREAMING_HITFRAME_PERIOD)
+// the demand descent only re-stamps the groups it visits, so every geometry's `groupDemand` is
+// cleared once within this many frames, before an old stamp could alias as fresh
+#define STREAMING_HITFRAME_DEMAND_CLEAR_FRAMES 8192
+
+// fixed-point log2 encoding range of the object-space hit cone width,
+// covers [2^-32, 2^32) with ~0.1% steps
+#define STREAMING_HITLOD_WIDTH_LOG2_MIN (-32.0f)
+#define STREAMING_HITLOD_WIDTH_LOG2_SCALE (65535.0f / 64.0f)
+
+// recency window (in frames) within which a hit entry drives the lod demand
+// tests. Must be larger than the per-lod-level lag of the hit propagation pass
+// (one level per frame) and smaller than the hit-unload threshold.
+#define STREAMING_HITLOD_DEMAND_WINDOW 32
+
+// The demand BFS (`stream_hit_demand_tree.comp.glsl`) does not re-stamp every demanded
+// group every frame: during descent it stops at any finer group still fresher than
+// this threshold, re-flooding a subtree only once it ages past it. Half the window
+// gives ~2x headroom over the one-level-per-frame refresh wave. Keep strictly below
+// STREAMING_HITLOD_DEMAND_WINDOW.
+#define STREAMING_HITLOD_DEMAND_REFRESH (STREAMING_HITLOD_DEMAND_WINDOW / 2)
+
+// stream_hit_demand_tree.comp.glsl coarse->fine demand descent:
+// stops descending from low-detail seeds. A seed within STREAMING_HITLOD_DEMAND_PRUNE_COARSE
+// levels of the coarsest (highest lod-level) still relaxes its immediate finer children's
+// demand, but does not enqueue them, so the descent stops there instead of flooding the
+// whole fine subtree - distant low-detail geometry does not need fine detail streamed in.
+// The value counts how many coarse levels to prune (1 == coarsest level only).
+// stream_hit_propagation.comp.glsl tags such a seed via the entry's top bit.
+#define STREAMING_HITLOD_DEMAND_PRUNE_COARSE 0
+
+// demand-queue entry (uint64): groupIndex in the low 32 bits, geometryID in the high
+// 32. The top bit of the geometryID field carries the coarse-seed tag above.
+#define STREAMING_HITLOD_DEMAND_COARSE_CHILDREN_BIT 0x80000000u  // within uint(entry >> 32)
+#define STREAMING_HITLOD_DEMAND_GEOMETRY_MASK 0x7FFFFFFFu
+
+// per-frame relaxation of the smoothed demand width (`groupHitWidths`), in log2
+// encoding steps. Hits pull it finer instantly; without hits it relaxes toward
+// coarse by this step (64 = 1/16 octave/frame, ~one lod level per 16 frames),
+// keeping the demand stable when a group's finest hits drop out for a few frames.
+#define STREAMING_HITLOD_WIDTH_RELAX 64
+
+// lower bound on the per-instance demand scale (`instanceHitDemand`, see
+// `streamingRegisterInstanceDemand`). A magnifying footprint lowers the instance's
+// traversal errorScale by this factor at most, bounding the extra traversal/BLAS
+// cost. Each halving is ~one lod level, so 1/128 ~ 7 levels of headroom.
+#define STREAMING_HITLOD_INSTANCE_SCALE_MIN (1.0f / 128.0f)
+
+// `instance_hit_scale` lets the filtered per-instance scale step back coarser only
+// after this many frames without a demand at its current level
+#define STREAMING_HITLOD_INSTANCE_HOLD_FRAMES 32
 
 /////////////////////////////////////////
 
@@ -78,6 +165,12 @@ struct StreamingRequest
   uint taskIndex;
   uint errorUpdate;
   uint errorAgeFilter;
+  uint errorHitPropagation;
+  // context of errorHitPropagation, see `stream_hit_propagation.comp.glsl`
+  uint errorHitGeometryID;
+  uint errorHitGroupID;
+  uint errorHitIndex;  // code 2: generating group index, code 3: finer group's residentID
+  uint errorHitLimit;  // code 2: geometry's group count, code 3: maxResidentGroups
   uint errorClasNotFound;
   uint errorClasList;
   uint errorClasAlloc;
@@ -221,6 +314,9 @@ struct StreamingResident
   uint activeGroupsCount;
   uint activeClustersCount;
 
+  uint loGroupsCount;
+  uint loClustersCount;
+
   BUFFER_REF(uint32s_in) activeGroups;
 
   // Resident content:
@@ -238,6 +334,17 @@ struct StreamingResident
   BUFFER_REF(uint64s_inout) clusters;
   BUFFER_REF(uint64s_inout) clasAddresses;
   BUFFER_REF(uint32s_inout) clasSizes;
+
+  // hit tracking
+  // packed per-group hit state: cyclic frame of the last hit (own or inherited
+  // from finer groups), the smallest recent cone width, and whether no finer
+  // group is resident. See the STREAMING_HITFRAME_* defines.
+  BUFFER_REF(uint32s_inout) groupHitFrames;
+  // smoothed demand width per group, same inverted encoding as the hit width bits
+  // (larger = finer, zero = no demand). Maintained by stream_hit_propagation.
+  BUFFER_REF(uint32s_inout) groupHitWidths;
+  // resident cluster index -> resident group index
+  BUFFER_REF(uint32s_in) clusterGroups;
 
   uint64_t clasBaseAddress;
   uint64_t clasMaxSize;
@@ -301,6 +408,12 @@ struct SceneStreaming
   uint    frameIndex;
   uint    useBlasCaching;
   uint    clasPositionTruncateBits;
+  uint    useHitStreaming;
+  uint    maxResidentGroups;
+  uint    useHitStreamingLod;
+  // scales the acceptable error derived from hit cone widths (default 1.0,
+  // higher values clamp to coarser detail)
+  float hitLodWidthFactor;
 
   // see GEOMETRY_CACHED_BLAS_STRIDE. 0 means no entry.
   BUFFER_REF(uint64s_inout) cachedBlasAddresses;

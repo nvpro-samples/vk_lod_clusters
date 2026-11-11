@@ -31,6 +31,8 @@ layout(scalar, binding = BINDINGS_FRAME_UBO, set = 0) uniform frameConstantsBuff
 
 #if RAYTRACING_PAYLOAD_INDEX == 0
 layout(location = RAYTRACING_PAYLOAD_INDEX) rayPayloadInEXT RayPayload rayHit;
+#elif USE_HIT_STREAMING_LOD
+layout(location = RAYTRACING_PAYLOAD_INDEX) rayPayloadInEXT RayPayloadAO rayHit;
 #else
 layout(location = RAYTRACING_PAYLOAD_INDEX) rayPayloadInEXT float rayHit;
 #endif
@@ -54,6 +56,8 @@ void main()
   rayHit.color = vec3(0);
   rayHit.hitT  = 0;
 #endif
+#elif USE_HIT_STREAMING_LOD
+  rayHit.hit = 0;
 #else
   rayHit = 0;
 #endif

@@ -84,8 +84,31 @@ SEQUENCE "ptlas_on_no_blascaching"
 --blascaching 0
 --visualize 9
 
+# hit streaming on top. A magnifying lens lowers an instance's hit lod scale, which has to
+# wake its partition, see instance_hit_scale.comp.glsl
+SEQUENCE "ptlas_hitstreaming"
+--blascaching 1
+--hitstreaming 1
+--visualize 9
+
+SEQUENCE "ptlas_hitstreaminglod_lens"
+--hitstreaminglod 1
+--opticalmode 3
+--lenssize 0.1
+--lensdistance 0.5
+--lenszoom 4
+--visualize 13
+
+SEQUENCE "ptlas_hitstreaminglod_lens_pathtrace"
+--pathtrace 1
+--visualize 9
+
 # and back to no partitions, to check the renderer unwinds rather than staying on them
 SEQUENCE "ptlas_recover_partitions_off"
+--pathtrace 0
+--hitstreaming 0
+--hitstreaminglod 0
+--opticalmode 0
 --blascaching 1
 --partitions 0
 --ptlas 0

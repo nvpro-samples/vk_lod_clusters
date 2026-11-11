@@ -63,6 +63,7 @@ public:
     GUI_MESHLET,
     GUI_VISUALIZE,
     GUI_PARTITIONLAYOUT,
+    GUI_OPTICAL,
   };
 
   enum ScreenshotMode
@@ -83,8 +84,9 @@ public:
     bool facetShading = true;
     bool useStreaming = true;
 
-    bool autoResetTimers = false;
-    bool autoSharing     = true;
+    bool     autoResetTimers      = false;
+    uint32_t autoResetTimersDelay = 8;  // frames skipped after a config/sequence change (sample-side, unclamped)
+    bool     autoSharing          = true;
 
     bool  hbaoActive = true;
     float hbaoRadius = 0.05f;
@@ -177,6 +179,11 @@ public:
 
   void parameterSequenceCallback(const nvutils::ParameterSequencer::State& state);
 
+  // builds the per-frame memory/stats report body (caller must have a valid m_renderer)
+  void appendMemoryReport(std::string& message);
+  // wraps appendMemoryReport with a "MemoryReport <label> = { ... }" envelope and logs it
+  void logMemoryReport(const std::string& label);
+
 private:
   // saves the window or the rendered viewport, headless always uses the viewport
   void saveScreenshot(ScreenshotMode mode, const std::string& filename, int quality = 100);
@@ -240,6 +247,7 @@ private:
   ScreenshotMode m_screenshotMode          = SCREENSHOT_VIEWPORT;
   int            m_screenshotFrameInterval = 0;  // save a screenshot every n frames, 0 disables
   std::string    m_screenshotTimeStamp;          // session startup time, keeps screenshots of multiple runs apart
+  uint32_t       m_memoryReportInterval = 0;     // log a memory report every N frames (0 = off)
 
   glm::vec2 m_headlessPicking     = {-1, -1};  // relative to the viewport, negative uses the mouse
   glm::vec2 m_headlessPickingLast = {-1, -1};
@@ -364,10 +372,10 @@ private:
   RendererConfig            m_rendererConfig;
   RendererConfig            m_rendererConfigLast;
 
-  std::vector<uint32_t> m_streamClasHistogram;
-  std::vector<uint32_t> m_streamGeometryHistogram;
-  uint32_t              m_streamHistogramMax    = 0;
-  int32_t               m_streamHistogramOffset = 0;
+  std::vector<uint32_t> m_streamClasHistory;
+  std::vector<uint32_t> m_streamGeometryHistory;
+  uint32_t              m_streamHistoryMax    = 0;
+  int32_t               m_streamHistoryOffset = 0;
 
   uint32_t m_equalFrames = 0;
 

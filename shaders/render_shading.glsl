@@ -553,6 +553,24 @@ vec3 pointOffset(vec3 p, vec3 pa, vec3 pb, vec3 pc, vec3 na, vec3 nb, vec3 nc, v
 }
 
 
+// AO/shadow payload accessor, the payload is a struct when hit-based lod
+// clamping tracks the ray cone (see shaderio::RayPayloadAO)
+#if USE_HIT_STREAMING_LOD && !USE_PATHTRACING
+#define RAYHITAO_HIT rayHitAO.hit
+#else
+#define RAYHITAO_HIT rayHitAO
+#endif
+
+// shadow rays reach the AO hit groups by skipping the primary hit group(s): 2 when alpha-masked geometry
+// adds a second primary hit group, otherwise 1. Keeps the SBT offset valid without a placeholder any-hit group.
+#if HAS_ALPHA_TEST
+#define AO_HITGROUP_SBT_OFFSET 2
+#else
+#define AO_HITGROUP_SBT_OFFSET 1
+#endif
+
+// AO rays register no hits for hit-based streaming: their random directions would keep far groups
+// resident and, varying per frame with DLSS, wake partitions. Only the shadow ray registers.
 float ambientOcclusion(vec3 wPos, vec3 wNormal, uint32_t sampleCount, float radius)
 {
   if (sampleCount == 0) return 0.7f;
@@ -576,7 +594,7 @@ float ambientOcclusion(vec3 wPos, vec3 wNormal, uint32_t sampleCount, float radi
 
     vec3 wDirection  = vec3(cos(r1) * sq, sin(r1) * sq, sqrt(r2));
     wDirection       = wDirection.x * x + wDirection.y * y + wDirection.z * z;
-    rayHitAO         = 1.f;
+    RAYHITAO_HIT     = 1.f;
     uint mask        = 0xFF;
     uint  flags      = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT;
     #if !HAS_ALPHA_TEST
@@ -584,7 +602,7 @@ float ambientOcclusion(vec3 wPos, vec3 wNormal, uint32_t sampleCount, float radi
     #endif
     traceRayEXT(accelerationStructureEXT(build.tlasAddress), flags,
                 mask /*0xFF*/, 0, 1, 1, offsetRay(wPos, wDirection, wNormal), 1e-4f, wDirection, radius, 1);
-    if(rayHitAO > 0.f)
+    if(RAYHITAO_HIT > 0.f)
     {
       occlusion++;
     }
@@ -595,20 +613,37 @@ float ambientOcclusion(vec3 wPos, vec3 wNormal, uint32_t sampleCount, float radi
 
 
 // Returns 0.0 if there is a hit along the light direction and 1.0, if nothing was hit
-float traceShadowRay(vec3 wPos, vec3 wNormal, vec3 wDirection)
+float traceShadowRay(vec3 wPos, vec3 wNormal, vec3 wDirection
+#if USE_HIT_STREAMING_LOD && !USE_PATHTRACING
+                     , float coneWidthStart, float coneSpread
+#endif
+)
 {
-  rayHitAO         = 1.f;
-  uint  mask       = 0xFF;
-  uint  flags      = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT;
-  #if !HAS_ALPHA_TEST
-    flags |= gl_RayFlagsOpaqueEXT;
-  #endif
+  RAYHITAO_HIT     = 1.f;
+#if USE_HIT_STREAMING_LOD && !USE_PATHTRACING
+  // the shadow ray continues the cone of the surface it starts from
+  rayHitAO.coneWidth  = coneWidthStart;
+  rayHitAO.coneSpread = coneSpread;
+#endif
   float minT       = view.shadowRayMinT * (1.0f + distance(wPos, view.viewMatrixI[3].xyz) * view.shadowRayDistanceBias);
   float maxT       = 10000000.0f;
-  traceRayEXT(accelerationStructureEXT(build.tlasAddress), flags, mask, 0, 1, 1,
-              offsetRay(wPos, wDirection, wNormal), minT, wDirection, maxT, 1);
 
-  return (rayHitAO > 0.f) ? 0.0F : 1.0f;
+  #if USE_AO_HITGROUP
+    uint  flags      = gl_RayFlagsTerminateOnFirstHitEXT;
+    #if !HAS_ALPHA_TEST
+      flags |= gl_RayFlagsOpaqueEXT;
+    #endif
+    traceRayEXT(accelerationStructureEXT(build.tlasAddress), flags, 0xFF, AO_HITGROUP_SBT_OFFSET, 1, 1, offsetRay(wPos, wDirection, wNormal), minT, wDirection, maxT, 1);
+  #else
+    uint  mask       = 0xFF;
+    uint  flags      = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT;
+    #if !HAS_ALPHA_TEST
+      flags |= gl_RayFlagsOpaqueEXT;
+    #endif
+    traceRayEXT(accelerationStructureEXT(build.tlasAddress), flags, mask, 0, 1, 1, offsetRay(wPos, wDirection, wNormal), minT, wDirection, maxT, 1);
+  #endif
+
+  return (RAYHITAO_HIT > 0.f) ? 0.0F : 1.0f;
 }
 
 float determinant(vec3 a, vec3 b, vec3 c)

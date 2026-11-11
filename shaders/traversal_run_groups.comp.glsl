@@ -111,6 +111,9 @@ layout(local_size_x=TRAVERSAL_GROUPS_WORKGROUP) in;
 
 #include "culling.glsl"
 #include "traversal.glsl"
+#if USE_STREAMING
+#include "streaming.glsl"
+#endif
 
 ////////////////////////////////////////////
 
@@ -153,6 +156,12 @@ void main()
   // instance is not primary visible, apply different error scale
   if ((visibilityState & INSTANCE_VISIBLE_BIT) == 0) errorScale = build.culledErrorScale;
   #endif
+#endif
+#if USE_HIT_STREAMING_LOD
+  // must match the errorScale used in traversal_run.comp.glsl so the cluster
+  // render decision (which uses the negated metric test) agrees with which
+  // groups the node pass opened for this instance.
+  errorScale = min(errorScale, instanceHitErrorScale(build.instanceHitScale, instanceID));
 #endif
   mat4x3 traversalMatrix = mat4x3(build.traversalViewMatrix * toMat4(worldMatrix));
 
@@ -197,7 +206,7 @@ void main()
   #if USE_BLAS_MERGING && TARGETS_RAY_TRACING
     // handled in traversal_run
   #else
-    streaming.resident.groups.d[group.residentID].age = uint16_t(0);
+    streamingRegisterTraversed(group.residentID);
   #endif
 #else
   // can directly access the group
@@ -218,6 +227,7 @@ void main()
   {
     bool forceCluster = false;
     bool isValid = true;
+    uint32_t clusterGeneratingGroup = SHADERIO_ORIGINAL_MESH_GROUP;
 
     {
     #if USE_CULLING && (TARGETS_RASTERIZATION || USE_FORCED_INVISIBLE_CULLING)
@@ -246,7 +256,7 @@ void main()
       // In streaming, it may also occur that the generating group isn't loaded, that also
       // means this cluster is the highest detail available.
       
-      uint32_t clusterGeneratingGroup = forceTraverse ? SHADERIO_ORIGINAL_MESH_GROUP : Group_getGeneratingGroup(groupRef, clusterIndex);
+      clusterGeneratingGroup = forceTraverse ? SHADERIO_ORIGINAL_MESH_GROUP : Group_getGeneratingGroup(groupRef, clusterIndex);
     #if USE_STREAMING
       if (clusterGeneratingGroup != SHADERIO_ORIGINAL_MESH_GROUP
           && geometry.streamingGroupAddresses.d[clusterGeneratingGroup] < STREAMING_INVALID_ADDRESS_START)
@@ -290,6 +300,17 @@ void main()
     const bool isVisible = true;
   #endif
     bool traverse      = testForTraversal(traversalMatrix, uniformScale, traversalMetric, errorScale);
+#if USE_HIT_STREAMING_LOD
+    if (traverse && !forceCluster)
+    {
+      // lod clamp: mirrors the group-node clamp in traversal_run.comp.glsl —
+      // the finer generating group only suppresses this cluster if it would
+      // actually have been opened there
+      traverse = streamingDemandsFiner(clusterGeneratingGroup, geometry.groupOverlapInfos,
+                                       geometry.groupDemand, traversalMetric.maxQuadricError)
+                 || testForHitCameraFloor(traversalMatrix, uniformScale, traversalMetric, errorScale);
+    }
+#endif
     bool lodAccept     = !traverse || forceCluster;                  // clusters use negated test or are forced
     bool renderClusterAny = isValid && lodAccept;
 

@@ -141,6 +141,10 @@ void StreamingResident::init(Resources& res, const StreamingConfig& config, uint
   m_residentActiveOffset   = ranges.append(sizeof(shaderio::uint32_t) * m_maxGroups, 4);
   m_residentActiveUpdateOffset = ranges.append(sizeof(shaderio::uint32_t) * m_maxGroups * STREAMING_MAX_ACTIVE_TASKS, 4);
 
+  m_residentGroupHitFramesOffset = ranges.append(sizeof(shaderio::uint32_t) * m_maxGroups, 4);
+  m_residentGroupHitWidthsOffset = ranges.append(sizeof(shaderio::uint32_t) * m_maxGroups, 4);
+  m_residentClusterGroupsOffset  = ranges.append(sizeof(shaderio::uint32_t) * m_maxClusters, 4);
+
   std::vector<uint32_t> sharingQueueFamilies;
   if(config.useAsyncTransfer)
   {
@@ -157,11 +161,14 @@ void StreamingResident::init(Resources& res, const StreamingConfig& config, uint
                         VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
   NVVK_DBG_NAME(m_residentActiveHostBuffer.buffer);
 
-  m_shaderData              = {};
-  m_shaderData.groups       = m_residentBuffer.address + m_residentGroupsOffset;
-  m_shaderData.groupIDs     = m_residentBuffer.address + m_residentGroupIDsOffset;
-  m_shaderData.clusters     = m_residentBuffer.address + m_residentClustersOffset;
-  m_shaderData.activeGroups = m_residentBuffer.address + m_residentActiveOffset;
+  m_shaderData                = {};
+  m_shaderData.groups         = m_residentBuffer.address + m_residentGroupsOffset;
+  m_shaderData.groupIDs       = m_residentBuffer.address + m_residentGroupIDsOffset;
+  m_shaderData.clusters       = m_residentBuffer.address + m_residentClustersOffset;
+  m_shaderData.activeGroups   = m_residentBuffer.address + m_residentActiveOffset;
+  m_shaderData.groupHitFrames = m_residentBuffer.address + m_residentGroupHitFramesOffset;
+  m_shaderData.groupHitWidths = m_residentBuffer.address + m_residentGroupHitWidthsOffset;
+  m_shaderData.clusterGroups  = m_residentBuffer.address + m_residentClusterGroupsOffset;
 }
 
 void StreamingResident::deinit(Resources& res)
@@ -294,7 +301,7 @@ void StreamingResident::deinitClas(Resources& res)
   m_allocatedClasBytes                   = 0;
 }
 
-void StreamingResident::reset(shaderio::StreamingResident& shaderData)
+void StreamingResident::reset(Resources::BatchedUploader& uploader, shaderio::StreamingResident& shaderData)
 {
   // pending removals reference groups no longer in the active list,
   // their IDs must still be given back
@@ -314,6 +321,29 @@ void StreamingResident::reset(shaderio::StreamingResident& shaderData)
   m_activeTrianglesCount = m_lowDetailTrianglesCount;
 
   m_groupIndicesUpdateRange = {};
+
+#if STREAMING_DEBUG_ADDRESSES
+  // re-invalidate the groups table beyond the persistent lo groups,
+  // the update kernel's debug check tests against it when residentIDs
+  // get reused after the reset (as in `uploadInitialState`)
+  uint32_t                  invalidCount = m_maxGroups - m_lowDetailGroupsCount;
+  shaderio::StreamingGroup* shaderGroups =
+      uploader.uploadBuffer(m_residentBuffer, m_residentGroupsOffset + sizeof(shaderio::StreamingGroup) * m_lowDetailGroupsCount,
+                            sizeof(shaderio::StreamingGroup) * invalidCount, (shaderio::StreamingGroup*)nullptr);
+  for(uint32_t g = 0; g < invalidCount; g++)
+  {
+    shaderGroups[g]       = {};
+    shaderGroups[g].group = STREAMING_INVALID_ADDRESS_START;
+  }
+#endif
+
+  // groupHitFrames must not carry stale values against the restarted frame index
+  uploader.fillBuffer(m_residentBuffer, m_residentGroupHitFramesOffset, sizeof(uint32_t) * m_maxGroups, 0);
+  // smoothed demand widths restart at "no demand"
+  uploader.fillBuffer(m_residentBuffer, m_residentGroupHitWidthsOffset, sizeof(uint32_t) * m_maxGroups, 0);
+
+  m_shaderData.loGroupsCount   = m_lowDetailGroupsCount;
+  m_shaderData.loClustersCount = m_lowDetailClustersCount;
 
   // adjust active list in shaders to skip persistent
   m_shaderData.activeGroupsCount   = m_activeGroupsCount - m_lowDetailGroupsCount;
@@ -347,6 +377,10 @@ void StreamingResident::uploadInitialState(Resources::BatchedUploader& uploader,
                                                    sizeof(shaderio::uint64_t) * m_activeClustersCount,
                                                    (uint64_t*)nullptr, Resources::DONT_FLUSH);
 
+  uint32_t* shaderClusterGroups = uploader.uploadBuffer(m_residentBuffer, m_residentClusterGroupsOffset,
+                                                        sizeof(shaderio::uint32_t) * m_activeClustersCount,
+                                                        (uint32_t*)nullptr, Resources::DONT_FLUSH);
+
   uint32_t* shaderGroupIDs = uploader.uploadBuffer(m_residentBuffer, m_residentGroupIDsOffset,
                                                    sizeof(shaderio::uint32_t) * m_lowDetailGroupsCount,
                                                    (uint32_t*)nullptr, Resources::DONT_FLUSH);
@@ -365,6 +399,7 @@ void StreamingResident::uploadInitialState(Resources::BatchedUploader& uploader,
     for(uint32_t c = 0; c < group.clusterCount; c++)
     {
       shaderClusters[group.clusterResidentID + c] = group.deviceAddress + sizeof(shaderio::Group) + sizeof(shaderio::Cluster) * c;
+      shaderClusterGroups[group.clusterResidentID + c] = g;
     }
     m_lowDetailMaxGroupClusters = std::max(m_lowDetailMaxGroupClusters, uint32_t(group.clusterCount));
   }
@@ -375,6 +410,13 @@ void StreamingResident::uploadInitialState(Resources::BatchedUploader& uploader,
     shaderGroups[g].group = STREAMING_INVALID_ADDRESS_START;
   }
 #endif
+
+  // hit tracking starts out stale with no demand (device memory isn't zeroed)
+  uploader.fillBuffer(m_residentBuffer, m_residentGroupHitFramesOffset, sizeof(uint32_t) * m_maxGroups, 0);
+  uploader.fillBuffer(m_residentBuffer, m_residentGroupHitWidthsOffset, sizeof(uint32_t) * m_maxGroups, 0);
+
+  m_shaderData.loGroupsCount   = m_lowDetailGroupsCount;
+  m_shaderData.loClustersCount = m_lowDetailClustersCount;
 
   // adjust active list in shaders to skip persistent
   m_shaderData.activeGroupsCount   = m_activeGroupsCount - m_lowDetailGroupsCount;
@@ -1091,13 +1133,19 @@ bool StreamingStorage::canTransfer(const TaskInfo& task, size_t size) const
   return task.usedMemory + size <= m_maxTransferBytes;
 }
 
-void* StreamingStorage::appendTransfer(TaskInfo& task, const nvvk::BufferSubAllocation& dstHandle, size_t positionsSize, VkBuffer posBuffer, size_t posDstOffset)
+void* StreamingStorage::appendTransfer(TaskInfo&                        task,
+                                       const nvvk::BufferSubAllocation& dstHandle,
+                                       size_t                           positionsSize,
+                                       VkBuffer                         posBuffer,
+                                       size_t                           posDstOffset,
+                                       size_t                           posSrcOffset)
 {
   nvvk::BufferRange dstBinding = m_dataAllocator.subRange(dstHandle);
 
-  // staging holds the whole blob (persistent part + trailing positions).
+  // staging holds the whole blob (persistent part + trailing positions, which
+  // may also be part of the persistent copy).
   // Group data must be aligned to 16 bytes.
-  size_t stagingSize = nvutils::align_up(dstBinding.range + positionsSize, size_t(16));
+  size_t stagingSize = nvutils::align_up(std::max(size_t(dstBinding.range), posSrcOffset + positionsSize), size_t(16));
   assert(task.usedMemory + stagingSize <= m_maxTransferBytes);
 
   size_t transferOffset  = task.baseOffset;
@@ -1147,7 +1195,7 @@ void* StreamingStorage::appendTransfer(TaskInfo& task, const nvvk::BufferSubAllo
     m_posCopyTarget = posBuffer;
 
     VkBufferCopy region;
-    region.srcOffset = transferOffset + dstBinding.range;
+    region.srcOffset = transferOffset + posSrcOffset;
     region.dstOffset = posDstOffset;
     region.size      = positionsSize;
     m_posCopyRegions.push_back(region);

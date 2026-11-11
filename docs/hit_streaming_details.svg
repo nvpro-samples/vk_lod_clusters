@@ -1,0 +1,149 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1700 800" width="1700" height="800" font-family="'NVIDIA Sans', 'NVIDIA Sans Regular', Arial, sans-serif">
+<defs>
+<marker id="aRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e8141c"/></marker>
+<marker id="aBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4472c4"/></marker>
+<marker id="aPurple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9b30d9"/></marker>
+<marker id="aPink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#e020c8"/></marker>
+<marker id="aOrange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f39c12"/></marker>
+<g id="hit" fill="none" stroke="#7cb342" stroke-width="2"><circle r="16"/><line x1="-11.3" y1="-11.3" x2="11.3" y2="11.3"/><line x1="-11.3" y1="11.3" x2="11.3" y2="-11.3"/></g>
+</defs>
+<rect width="1700" height="800" fill="#ffffff"/>
+<text x="370" y="40" fill="#e8141c" font-size="26" text-anchor="middle">Ray hit tagging</text>
+<text x="760" y="40" fill="#1f5fa8" font-size="26" text-anchor="middle">Hit propagation</text>
+<text x="1330" y="40" fill="#e020c8" font-size="26" text-anchor="middle">Stream-In test</text>
+<rect x="40" y="140" width="54" height="42" fill="#fbe3c8" stroke="#f39c12" stroke-width="1.5"/>
+<rect x="94" y="140" width="54" height="42" fill="#fbe3c8" stroke="#f39c12" stroke-width="1.5"/>
+<rect x="148" y="140" width="54" height="42" fill="#fbe3c8" stroke="#f39c12" stroke-width="1.5"/>
+<rect x="202" y="140" width="54" height="42" fill="#fbe3c8" stroke="#f39c12" stroke-width="1.5"/>
+<rect x="256" y="140" width="54" height="42" fill="#fbe3c8" stroke="#f39c12" stroke-width="1.5"/>
+<use href="#hit" x="229.0" y="161.0"/>
+<path d="M229.0,62 L229.0,136" fill="none" stroke="#e8141c" stroke-width="2" marker-end="url(#aRed)"/>
+<text x="40" y="225" fill="#f39c12" font-size="20" xml:space="preserve">U32 SceneBuilding.</text>
+<text x="40" y="252" fill="#f39c12" font-size="18" xml:space="preserve">instanceHitDemand[]</text>
+<text x="40" y="279" fill="#f39c12" font-size="18" xml:space="preserve">• raw errorScale as float bits,</text>
+<text x="40" y="306" fill="#f39c12" font-size="18" xml:space="preserve">  atomicMin over the frame's hits</text>
+<text x="40" y="333" fill="#f39c12" font-size="18" xml:space="preserve">• &lt; 1.0 lowers error for higher</text>
+<text x="40" y="360" fill="#f39c12" font-size="18" xml:space="preserve">  detail (magnification)</text>
+<path d="M330,161.0 C360,161.0 360,441.0 314,441.0" fill="none" stroke="#f39c12" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#aOrange)"/>
+<text x="352" y="320.0" fill="#f39c12" font-size="15" font-style="italic" transform="rotate(90 352 320.0)" text-anchor="middle">filter</text>
+<rect x="40" y="420" width="54" height="42" fill="#fbe3c8" stroke="#f39c12" stroke-width="1.5"/>
+<rect x="94" y="420" width="54" height="42" fill="#fbe3c8" stroke="#f39c12" stroke-width="1.5"/>
+<rect x="148" y="420" width="54" height="42" fill="#fbe3c8" stroke="#f39c12" stroke-width="1.5"/>
+<rect x="202" y="420" width="54" height="42" fill="#fbe3c8" stroke="#f39c12" stroke-width="1.5"/>
+<rect x="256" y="420" width="54" height="42" fill="#fbe3c8" stroke="#f39c12" stroke-width="1.5"/>
+<use href="#hit" x="229.0" y="441.0"/>
+<text x="40" y="505" fill="#f39c12" font-size="20" xml:space="preserve">U32 SceneBuilding.</text>
+<text x="40" y="532" fill="#f39c12" font-size="18" xml:space="preserve">instanceHitScale[]</text>
+<text x="40" y="559" fill="#f39c12" font-size="18" xml:space="preserve">• level, errorScale = 2^-level</text>
+<text x="40" y="586" fill="#f39c12" font-size="18" xml:space="preserve">• held frames before coarsening</text>
+<text x="40" y="613" fill="#f39c12" font-size="18" xml:space="preserve">• read by classify + traversal</text>
+<text x="40" y="690" fill="#f39c12" font-size="17" xml:space="preserve">U32 geometryHitDemandLevel[]</text>
+<text x="40" y="714" fill="#f39c12" font-size="16" xml:space="preserve">• per geometry, raises lodLevelMin</text>
+<rect x="400" y="140" width="55" height="42" fill="#c9d9f5" stroke="#4472c4" stroke-width="1.5"/>
+<rect x="455" y="140" width="55" height="42" fill="#c9d9f5" stroke="#4472c4" stroke-width="1.5"/>
+<rect x="510" y="140" width="55" height="42" fill="#c9d9f5" stroke="#4472c4" stroke-width="1.5"/>
+<rect x="565" y="140" width="55" height="42" fill="#c9d9f5" stroke="#4472c4" stroke-width="1.5"/>
+<rect x="620" y="140" width="55" height="42" fill="#c9d9f5" stroke="#4472c4" stroke-width="1.5"/>
+<use href="#hit" x="537.5" y="161.0"/>
+<use href="#hit" x="647.5" y="161.0" stroke-dasharray="4 3" opacity="0.8"/>
+<path d="M537.5,62 L537.5,136" fill="none" stroke="#e8141c" stroke-width="2" marker-end="url(#aRed)"/>
+<path d="M537.5,184 Q592.5,222 647.5,186" fill="none" stroke="#4472c4" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#aBlue)"/>
+<text x="592.5" y="228" fill="#4472c4" font-size="14" font-style="italic" text-anchor="middle">fine → coarse</text>
+<text x="400" y="250" fill="#1f5fa8" font-size="20" xml:space="preserve">U32 Resident.groupHitFrames[]</text>
+<text x="400" y="277" fill="#1f5fa8" font-size="18" xml:space="preserve">• frame index (15 bit)</text>
+<text x="400" y="304" fill="#1f5fa8" font-size="18" xml:space="preserve">• cone width (inv. log2, 16 bit)</text>
+<text x="400" y="331" fill="#1f5fa8" font-size="18" xml:space="preserve">• no finer group resident (bit 31)</text>
+<text x="400" y="358" fill="#1f5fa8" font-size="18" xml:space="preserve">• coarser groups inherit the</text>
+<text x="400" y="385" fill="#1f5fa8" font-size="18" xml:space="preserve">  newest hit of resident finer ones</text>
+<rect x="400" y="445" width="55" height="42" fill="#c9d9f5" stroke="#4472c4" stroke-width="1.5"/>
+<rect x="455" y="445" width="55" height="42" fill="#c9d9f5" stroke="#4472c4" stroke-width="1.5"/>
+<rect x="510" y="445" width="55" height="42" fill="#c9d9f5" stroke="#4472c4" stroke-width="1.5"/>
+<rect x="565" y="445" width="55" height="42" fill="#c9d9f5" stroke="#4472c4" stroke-width="1.5"/>
+<rect x="620" y="445" width="55" height="42" fill="#c9d9f5" stroke="#4472c4" stroke-width="1.5"/>
+<use href="#hit" x="537.5" y="466.0"/>
+<text x="400" y="530" fill="#1f5fa8" font-size="20" xml:space="preserve">U32 Resident.groupHitWidths[]</text>
+<text x="400" y="557" fill="#1f5fa8" font-size="18" xml:space="preserve">• smoothed demand width</text>
+<text x="400" y="584" fill="#1f5fa8" font-size="18" xml:space="preserve">• hits pull it finer at once,</text>
+<text x="400" y="611" fill="#1f5fa8" font-size="18" xml:space="preserve">  relaxes coarser per frame</text>
+<rect x="400" y="660" width="300" height="92" rx="6" fill="none" stroke="#4472c4" stroke-dasharray="5 4"/>
+<text x="414" y="686" fill="#1f5fa8" font-size="17" font-weight="600" xml:space="preserve">Age filter hit-unload:</text>
+<text x="414" y="711" fill="#1f5fa8" font-size="16" xml:space="preserve">stale and no finer group resident,</text>
+<text x="414" y="736" fill="#1f5fa8" font-size="16" xml:space="preserve">so groups leave fine → coarse</text>
+<rect x="780" y="140" width="43" height="42" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="823" y="140" width="43" height="42" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="866" y="140" width="43" height="42" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="909" y="140" width="43" height="42" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="952" y="140" width="43" height="42" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="995" y="140" width="43" height="42" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="1038" y="140" width="43" height="42" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="1081" y="140" width="43" height="42" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="1124" y="140" width="43" height="42" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="1167" y="140" width="43" height="42" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<use href="#hit" x="887.5" y="161.0"/>
+<use href="#hit" x="1016.5" y="161.0"/>
+<use href="#hit" x="1145.5" y="161.0"/>
+<path d="M541.5,138 Q712.5,10 883.5,136" fill="none" stroke="#4472c4" stroke-width="2" marker-end="url(#aBlue)"/>
+<text x="742.5" y="98" fill="#4472c4" font-size="15" font-style="italic" text-anchor="middle">seed</text>
+<path d="M891.5,138 Q952.0,70 1014.5,136" fill="none" stroke="#9b30d9" stroke-width="2" marker-end="url(#aPurple)"/>
+<path d="M1020.5,138 Q1081.0,70 1143.5,136" fill="none" stroke="#9b30d9" stroke-width="2" marker-end="url(#aPurple)"/>
+<text x="780" y="225" fill="#8a2be2" font-size="20" xml:space="preserve">U32 Geometry.groupDemand[]</text>
+<text x="780" y="252" fill="#8a2be2" font-size="18" xml:space="preserve">• frame index</text>
+<text x="780" y="279" fill="#8a2be2" font-size="18" xml:space="preserve">• demand width</text>
+<text x="780" y="306" fill="#8a2be2" font-size="18" xml:space="preserve">• flooded coarse → fine via the overlaps,</text>
+<text x="780" y="333" fill="#8a2be2" font-size="18" xml:space="preserve">  one lod step per pass (demand_tree</text>
+<text x="780" y="360" fill="#8a2be2" font-size="18" xml:space="preserve">  BFS or demand_levels sweep)</text>
+<rect x="780" y="420" width="43" height="42" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="823" y="420" width="43" height="42" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="866" y="420" width="43" height="42" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="909" y="420" width="43" height="42" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="952" y="420" width="43" height="42" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="995" y="420" width="43" height="42" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="1038" y="420" width="43" height="42" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="1081" y="420" width="43" height="42" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="1124" y="420" width="43" height="42" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="1167" y="420" width="43" height="42" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<text x="780" y="505" fill="#8a2be2" font-size="20" xml:space="preserve">U64 Geometry.groupOverlapInfos[]</text>
+<text x="780" y="532" fill="#8a2be2" font-size="18" xml:space="preserve">• u16 coarse count</text>
+<text x="780" y="559" fill="#8a2be2" font-size="18" xml:space="preserve">• u16 fine count</text>
+<text x="780" y="586" fill="#8a2be2" font-size="18" xml:space="preserve">• u32 entry offset</text>
+<rect x="780" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="798" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="816" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="834" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="852" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="870" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="888" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="906" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="924" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="942" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="960" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="978" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="996" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="1014" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="1032" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="1050" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="1068" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="1086" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="1104" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="1122" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="1140" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="1158" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="1176" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<rect x="1194" y="640" width="18" height="36" fill="#e3d5f2" stroke="#9b30d9" stroke-width="1.5"/>
+<text x="780" y="712" fill="#8a2be2" font-size="20" xml:space="preserve">U32 Geometry.groupOverlapEntries[]</text>
+<text x="780" y="739" fill="#8a2be2" font-size="18" xml:space="preserve">• 20 bit indices densely packed,</text>
+<text x="780" y="766" fill="#8a2be2" font-size="18" xml:space="preserve">  coarser first, then finer</text>
+<rect x="1300" y="140" width="43" height="42" fill="#d9d9d9" stroke="#8c8c8c" stroke-width="1.5"/>
+<rect x="1343" y="140" width="43" height="42" fill="#d9d9d9" stroke="#8c8c8c" stroke-width="1.5"/>
+<rect x="1386" y="140" width="43" height="42" fill="#d9d9d9" stroke="#8c8c8c" stroke-width="1.5"/>
+<rect x="1429" y="140" width="43" height="42" fill="#d9d9d9" stroke="#8c8c8c" stroke-width="1.5"/>
+<rect x="1472" y="140" width="43" height="42" fill="#d9d9d9" stroke="#8c8c8c" stroke-width="1.5"/>
+<path d="M1403.5,138 Q1276.5,50 1149.5,136" fill="none" stroke="#e020c8" stroke-width="2" marker-end="url(#aPink)"/>
+<text x="1300" y="225" fill="#222222" font-size="20" xml:space="preserve">LoD tree nodes for DAG cut</text>
+<text x="1300" y="252" fill="#222222" font-size="18" xml:space="preserve">evaluation, streamingDemandsFiner:</text>
+<text x="1300" y="279" fill="#222222" font-size="18" xml:space="preserve">• clamps which groups traversal</text>
+<text x="1300" y="306" fill="#222222" font-size="18" xml:space="preserve">  opens</text>
+<text x="1300" y="333" fill="#222222" font-size="18" xml:space="preserve">• triggers stream-in requests</text>
+<text x="1300" y="360" fill="#222222" font-size="18" xml:space="preserve">• OR camera floor</text>
+<text x="1300" y="387" fill="#222222" font-size="18" xml:space="preserve">  (--hitstreamingcamerascale)</text>
+</svg>

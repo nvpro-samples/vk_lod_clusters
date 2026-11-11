@@ -228,6 +228,7 @@ void main()
       if (atomicAdd(build.ptlasPartitionUpdates.d[partitionIndex], 1) == 0)
       {
         atomicAdd(readback.numPtlasDirtyPartitions, 1);
+        atomicAdd(readback.numPtlasDirtyInstances, build.partitionRanges.d[partitionIndex].y);
       }
     }
   #endif

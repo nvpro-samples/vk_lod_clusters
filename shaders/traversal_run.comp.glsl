@@ -164,6 +164,9 @@ layout(local_size_x=TRAVERSAL_RUN_WORKGROUP) in;
 
 #include "culling.glsl"
 #include "traversal.glsl"
+#if USE_STREAMING
+#include "streaming.glsl"
+#endif
 
 ////////////////////////////////////////////
 
@@ -256,7 +259,16 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
     if ((visibilityState & INSTANCE_VISIBLE_BIT) == 0) errorScale = build.culledErrorScale;
   #endif
 #endif
-  bool traverse      = forceTraverse || testForTraversal(mat4x3(build.traversalViewMatrix * toMat4(worldMatrix)), uniformScale, traversalMetric, errorScale);
+#if USE_HIT_STREAMING_LOD
+  // per-instance finer-detail demand (magnifier): a smaller errorScale keeps the
+  // camera metric descending finer for this instance only, so the finer group
+  // tests below become reachable. min() overrides a mirror-only instance's
+  // culledErrorScale; the per-group `streamingDemandsFiner` clamp still gates which
+  // finer groups actually open.
+  errorScale = min(errorScale, instanceHitErrorScale(build.instanceHitScale, instanceID));
+#endif
+  mat4x3 traversalMatrix = mat4x3(build.traversalViewMatrix * toMat4(worldMatrix));
+  bool traverse      = forceTraverse || testForTraversal(traversalMatrix, uniformScale, traversalMetric, errorScale);
   bool traverseNode  = isValid && (traverse);                    // nodes test if we can descend
 
   bool isGroup = PACKED_GET(traversalInfo.packedNode, Node_packed_isGroup) != 0;
@@ -312,6 +324,19 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
   }
 #endif
 
+#if USE_HIT_STREAMING_LOD
+  if (traverseNode && isGroup)
+  {
+    // lod clamp: only open a group (render finer content, request it when not
+    // resident, keep it alive) when a recent ray footprint demands finer detail.
+    // Must match the generating-group test in `traversal_run_groups.comp.glsl`.
+    uint groupIndex = PACKED_GET(traversalInfo.packedNode, Node_packed_groupIndex);
+    traverseNode = streamingDemandsFiner(groupIndex, geometry.groupOverlapInfos, geometry.groupDemand,
+                                         traversalMetric.maxQuadricError)
+                   || testForHitCameraFloor(traversalMatrix, uniformScale, traversalMetric, errorScale);
+  }
+#endif
+
 #if USE_STREAMING
   if (traverseNode)
   {
@@ -333,7 +358,7 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
     //   if the address is <  STREAMING_INVALID_ADDRESS_START:
     //      then it's valid and the group is resident and we can dereference it.
     //   if the address is >= STREAMING_INVALID_ADDRESS_START:
-    //      then it then the group is not resident and the lower bits encode the frame 
+    //      then the group is not resident and the lower bits encode the frame 
     //      index when the group was requested last.
     if (isGroup)
     {
@@ -352,20 +377,28 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
           uint64_t lastRequestFrameIndex = atomicMax(geometry.streamingGroupAddresses.d[groupIndex], streaming.request.frameIndex);
           
           // we haven't made the request this frame, so trigger it
+        #if USE_HIT_STREAMING
+          bool triggerRequest = lastRequestFrameIndex != streaming.request.frameIndex &&
+            streamingTestOverlapHits(groupIndex, geometry.groupOverlapInfos, geometry.groupDemand);
+        #else
           bool triggerRequest = lastRequestFrameIndex != streaming.request.frameIndex;
-          
-          uvec4 voteRequested  = subgroupBallot(triggerRequest);
-          uint  countRequested = subgroupBallotBitCount(voteRequested);
-          uint offsetRequested = 0;
-          if (subgroupElect()) {
-            offsetRequested = atomicAdd(streamingRW.request.loadCounter, countRequested);
-          }
-          offsetRequested = subgroupBroadcastFirst(offsetRequested);
-          offsetRequested += subgroupBallotExclusiveBitCount(voteRequested);
-          
-          if (triggerRequest && offsetRequested < streaming.request.maxLoads) {
-            // while streaming data is based on geometry 
-            streaming.request.loadGeometryGroups.d[offsetRequested] = uvec2(geometryID, groupIndex);
+        #endif
+        
+          if (subgroupAny(triggerRequest)) 
+          {
+            uvec4 voteRequested  = subgroupBallot(triggerRequest);
+            uint  countRequested = subgroupBallotBitCount(voteRequested);
+            uint offsetRequested = 0;
+            if (subgroupElect()) {
+              offsetRequested = atomicAdd(streamingRW.request.loadCounter, countRequested);
+            }
+            offsetRequested = subgroupBroadcastFirst(offsetRequested);
+            offsetRequested += subgroupBallotExclusiveBitCount(voteRequested);
+            
+            if (triggerRequest && offsetRequested < streaming.request.maxLoads) {
+              // while streaming data is based on geometry 
+              streaming.request.loadGeometryGroups.d[offsetRequested] = uvec2(geometryID, groupIndex);
+            }
           }
         }
       }
@@ -373,8 +406,8 @@ void processSubTask(const TraversalInfo subgroupTasks, uint taskID, uint taskSub
       else
       {
         // keep alive, unless mergedBuild which is not allowed to affect residency
-        Group group = Group_in(groupAddress).d;
-        streaming.resident.groups.d[group.residentID].age = uint16_t(0);
+        Group_in groupRef = Group_in(groupAddress);
+        streamingRegisterTraversed(groupRef.d.residentID);
       }
     #endif
     }

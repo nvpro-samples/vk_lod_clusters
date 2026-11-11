@@ -112,6 +112,8 @@ public:
 
   // reset streaming state
   void reset();
+  // clears the `groupDemand` of this frame's slice of geometries, see STREAMING_HITFRAME_DEMAND_CLEAR_FRAMES
+  void cmdClearGroupDemandSlice(VkCommandBuffer cmd) const;
 
   // reload internal shaders
   bool reloadShaders()
@@ -125,6 +127,9 @@ public:
     bool                                 useBlasCaching        = false;
     bool                                 useDiscreteLod        = false;
     float                                unloadThreshold       = 0.0f;
+    bool                                 useHitStreaming       = false;
+    bool                                 useHitStreamingLod    = false;
+    float                                hitLodWidthFactor     = 1.0f;
     bool                                 freeze                = false;
     uint32_t                             blasCacheAgeThreshold = 16;
     uint32_t                             blasCacheMaxClusters  = 0;
@@ -196,6 +201,8 @@ public:
   const nvvk::Buffer&             getShaderStreamingBuffer() const { return m_shaderBuffer; }
   const shaderio::SceneStreaming& getShaderStreamingData() const { return m_shaderData; }
   const StreamingConfig&          getStreamingConfig() const { return m_config; }
+  uint32_t                        getTotalActiveGroups() const { return m_totalActiveGroups; }
+  VkDeviceAddress                 getGeometryLevelOffsetsAddress() const { return m_geometryLevelOffsets.address; }
 
   // device side memory usage, reserved or current state
   size_t getClasSize(bool reserved) const;
@@ -288,16 +295,19 @@ private:
 
   struct PersistentGeometry
   {
-    nvvk::BufferTyped<shaderio::Node>     nodes;
-    nvvk::BufferTyped<shaderio::BBox>     nodeBboxes;
-    nvvk::BufferTyped<shaderio::LodLevel> lodLevels;
-    nvvk::BufferTyped<uint64_t>           groupAddresses;
-    nvvk::Buffer                          lowDetailGroupsData;
-    uint32_t                              lodLevelsCount                                = 0;
-    uint32_t                              lodLoadedGroupsCount[SHADERIO_MAX_LOD_LEVELS] = {};
-    uint32_t                              lodGroupsCount[SHADERIO_MAX_LOD_LEVELS]       = {};
-    uint32_t                              cachedBlasUpdateFrame                         = 0;
-    uint32_t                              cachedBlasLevel                               = TRAVERSAL_INVALID_LOD_LEVEL;
+    nvvk::BufferTyped<shaderio::Node>             nodes;
+    nvvk::BufferTyped<shaderio::BBox>             nodeBboxes;
+    nvvk::BufferTyped<shaderio::LodLevel>         lodLevels;
+    nvvk::BufferTyped<uint64_t>                   groupAddresses;
+    nvvk::BufferTyped<shaderio::GroupOverlapInfo> groupOverlapInfos;
+    nvvk::BufferTyped<uint32_t>                   groupOverlapEntries;
+    nvvk::BufferTyped<uint32_t>                   groupDemand;
+    nvvk::Buffer                                  lowDetailGroupsData;
+    uint32_t                                      lodLevelsCount                                = 0;
+    uint32_t                                      lodLoadedGroupsCount[SHADERIO_MAX_LOD_LEVELS] = {};
+    uint32_t                                      lodGroupsCount[SHADERIO_MAX_LOD_LEVELS]       = {};
+    uint32_t                                      cachedBlasUpdateFrame                         = 0;
+    uint32_t                                      cachedBlasLevel = TRAVERSAL_INVALID_LOD_LEVEL;
     // last published `shaderio::Geometry::discreteLodLevel` for USE_DISCRETE_LOD
     uint32_t                  discreteLodLevel     = TRAVERSAL_INVALID_LOD_LEVEL;
     nvvk::BufferSubAllocation cachedBlasAllocation = {};
@@ -315,6 +325,16 @@ private:
 
   // CPU decode scratch, reused across group decompression (single-threaded)
   std::vector<uint32_t> m_decompressScratch;
+
+  // faster stream-in: compact level-major table [reverseLevel*numGeometries + geometryIndex]
+  // of per-reverse-lod-level flat prefix offsets, binary-searched by the level-wise demand
+  // pass. Kept out of shaderio::Geometry (that struct is copied per traversal thread); the
+  // demand shader receives its address via push constant.
+  nvvk::BufferTyped<uint32_t> m_geometryLevelOffsets;
+
+  // faster stream-in: total groups across all active geometries in the flat
+  // global-group space (prefix sum), sizes the single stream_hit_demand_tree dispatch
+  uint32_t m_totalActiveGroups = 0;
 
   // per lod-level residency of the persistent geometries, maintained incrementally
   // during loads/unloads (see `getResidentStats`)

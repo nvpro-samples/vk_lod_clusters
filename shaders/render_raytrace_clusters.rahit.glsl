@@ -100,7 +100,11 @@ hitAttributeEXT vec2 barycentrics;
 /////////////////////////////////
 
 layout(location = 0) rayPayloadInEXT RayPayload rayHit;
+#if USE_HIT_STREAMING_LOD
+layout(location = 1) rayPayloadEXT RayPayloadAO rayHitAO;
+#else
 layout(location = 1) rayPayloadEXT float rayHitAO;
+#endif
 
 /////////////////////////////////
 
@@ -120,7 +124,9 @@ layout(location = 1) rayPayloadEXT float rayHitAO;
 // different (location 1) payload, so only the former have the RayPayload ray cone / differentials.
 bool hasPrimaryRayPayload()
 {
-  return (gl_IncomingRayFlagsEXT & gl_RayFlagsSkipClosestHitShaderEXT) == 0;
+  // AO/shadow rays either skip the closest hit shader, or with USE_AO_HITGROUP
+  // use terminate on first hit, primary rays do neither
+  return (gl_IncomingRayFlagsEXT & (gl_RayFlagsSkipClosestHitShaderEXT | gl_RayFlagsTerminateOnFirstHitEXT)) == 0;
 }
 
 void main()
@@ -178,6 +184,8 @@ void main()
 
   uint texIndex = resolveAlphaMaskTextureIndex(instance, clusterRef, triangleID);
   float alpha   = sampleBindless(texIndex, oTexCoord, texLod).a;
+  // No hit registration for streaming here: the closest-hits register the hit that is kept,
+  // with the ray's own cone, shadow rays through the AO hit group.
   if(alpha < 0.333)
   {
     ignoreIntersectionEXT;

@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <algorithm>
+
 #include <glm/gtc/constants.hpp>
 #include <nvutils/logger.hpp>
 #include <meshoptimizer.h>
@@ -799,7 +801,7 @@ void Scene::buildGeometryLod(ProcessingInfo& processingInfo, GeometryStorage& ge
     if(lastLodLevel.groupCount != 1 || lastLodLevel.clusterCount != 1)
     {
       assert(0);
-      LOGE("clodBuild failed: last lod level has more than one cluster\n");
+      LOGE("clodBuild failed: last lod level not single cluster: %d g %d c\n", lastLodLevel.groupCount, lastLodLevel.clusterCount);
       std::exit(-1);
     }
 
@@ -813,6 +815,8 @@ void Scene::buildGeometryLod(ProcessingInfo& processingInfo, GeometryStorage& ge
   geometry.groupInfos.shrink_to_fit();
   geometry.groupData.shrink_to_fit();
   geometry.lodLevels.shrink_to_fit();
+
+  buildGeometryLodOverlap(processingInfo, geometry);
 
   buildGeometryLodHierarchy(geometry);
 
@@ -999,4 +1003,139 @@ void Scene::buildGeometryLodHierarchy(GeometryStorage& geometry)
     }
   }
 }
+
+
+// writes the `entryIndex`-th 20-bit value into a tightly packed uint32 word stream
+// (little-endian bit order, matching decode20Bit in streaming.glsl). The word array
+// must be padded with one extra word so the straddling write stays in bounds.
+static inline void encode20Bit(std::vector<uint32_t>& words, uint32_t entryIndex, uint32_t value)
+{
+  uint64_t bitPos = uint64_t(entryIndex) * SHADERIO_GROUP_OVERLAP_ENTRY_BITS;
+  uint32_t word   = uint32_t(bitPos >> 5);
+  uint32_t off    = uint32_t(bitPos & 31);
+  value &= 0xFFFFF;
+  words[word] |= value << off;
+  if(off + SHADERIO_GROUP_OVERLAP_ENTRY_BITS > 32)
+    words[word + 1] |= value >> (32 - off);
+}
+
+void Scene::buildGeometryLodOverlap(ProcessingInfo& processingInfo, GeometryStorage& geometry)
+{
+  // Build the packed per-group overlap table storing, for every group, its
+  // immediate coarser (level+1) and immediate finer (level-1) overlapping groups
+  // derived from the generating-group DAG (exact same-surface links):
+  //   fine[G]   = distinct generating groups of G's clusters (one level finer)
+  //   coarse[F] = distinct groups that generate from F (reverse; one level coarser)
+  // Both directions are stored uncapped; the immediate-level fan-out is bounded
+  // (see the group_overlaps_packed statistics).
+
+  size_t groupCount = geometry.groupInfos.size();
+  if(groupCount > (size_t(1) << SHADERIO_GROUP_OVERLAP_ENTRY_BITS))
+  {
+    // larger indices would alias in the packed entries. Without links the groups count as
+    // having no coarser overlap, so hit streaming falls back to the camera for this geometry.
+    LOGW("geometry with %zu lod groups: the hit streaming overlap links address %u, it gets none\n", groupCount,
+         1u << SHADERIO_GROUP_OVERLAP_ENTRY_BITS);
+    geometry.groupOverlapInfos.assign(groupCount, shaderio::GroupOverlapInfo{});
+    geometry.groupOverlapEntries.assign(1, 0);
+    return;
+  }
+
+  // per-group { count, offset } into a flat entry array, one per direction
+  struct Overlaps
+  {
+    uint32_t count  = 0;
+    uint32_t offset = 0;
+  };
+
+  // fine[g] = distinct finer (generating) groups of g's clusters. Reserve one
+  // entry slot per cluster (upper bound on the distinct count), so fine[g].offset
+  // is the cluster prefix and fine[g].count the actual distinct count.
+  std::vector<Overlaps> fine(groupCount);
+  uint32_t              fineCapacity = 0;
+  for(size_t g = 0; g < groupCount; g++)
+  {
+    fine[g].offset = fineCapacity;
+    fineCapacity += geometry.groupInfos[g].clusterCount;
+  }
+
+  std::vector<uint32_t> fineEntries(std::max<uint32_t>(fineCapacity, 1));
+
+  // pass 1: gather + dedup each group's generating groups
+  for(size_t idx = 0; idx < groupCount; idx++)
+  {
+    const GroupInfo& groupInfo = geometry.groupInfos[idx];
+    GroupView        groupView(geometry.groupData, groupInfo);
+
+    uint32_t* dst = fineEntries.data() + fine[idx].offset;
+    uint32_t  n   = 0;
+    for(uint32_t c = 0; c < groupInfo.clusterCount; c++)
+    {
+      uint32_t genGroupIdx = groupView.clusterGeneratingGroups[c];
+      if(genGroupIdx != ~0u)
+        dst[n++] = genGroupIdx;
+    }
+    std::sort(dst, dst + n);
+    fine[idx].count = uint32_t(std::unique(dst, dst + n) - dst);
+  }
+
+  // coarse[f] = groups that generate from f (transpose of fine), stored
+  // contiguously: count references per f, prefix-sum into offsets, then scatter.
+  // No separate dedup is needed: fine[g] is already distinct, so each g is
+  // scattered into coarse[f] at most once. Iterating g in ascending order also
+  // leaves every coarse list sorted.
+  std::vector<Overlaps> coarse(groupCount);
+  for(size_t g = 0; g < groupCount; g++)
+  {
+    const uint32_t* f = fineEntries.data() + fine[g].offset;
+    for(uint32_t i = 0; i < fine[g].count; i++)
+      coarse[f[i]].count++;
+  }
+  uint32_t coarseTotal = 0;
+  for(size_t g = 0; g < groupCount; g++)
+  {
+    coarse[g].offset = coarseTotal;
+    coarseTotal += coarse[g].count;
+  }
+
+  std::vector<uint32_t> coarseEntries(std::max<uint32_t>(coarseTotal, 1));
+  std::vector<uint32_t> coarseFill(groupCount);
+  for(size_t g = 0; g < groupCount; g++)
+    coarseFill[g] = coarse[g].offset;
+  for(size_t g = 0; g < groupCount; g++)
+  {
+    const uint32_t* f = fineEntries.data() + fine[g].offset;
+    for(uint32_t i = 0; i < fine[g].count; i++)
+      coarseEntries[coarseFill[f[i]]++] = uint32_t(g);
+  }
+
+  // flatten into { info per group } + a flat array of 20-bit tightly packed group
+  // indices (coarse then fine per group). See decode20Bit in streaming.glsl.
+  geometry.groupOverlapInfos.resize(groupCount);
+
+  size_t totalEntries = size_t(coarseTotal) * 2;  // coarse + fine, equal totals
+
+  // one extra padding word so the straddling read (baseIndex + 1) stays in bounds
+  geometry.groupOverlapEntries.assign((totalEntries * SHADERIO_GROUP_OVERLAP_ENTRY_BITS + 31) / 32 + 1, 0);
+
+  uint32_t offset = 0;
+  for(size_t g = 0; g < groupCount; g++)
+  {
+    const uint32_t* coarsePtr = coarseEntries.data() + coarse[g].offset;
+    const uint32_t* finePtr   = fineEntries.data() + fine[g].offset;
+
+    assert(coarse[g].count <= 0xFFFF && fine[g].count <= 0xFFFF);
+
+    shaderio::GroupOverlapInfo& info = geometry.groupOverlapInfos[g];
+    info.countCoarse                 = uint16_t(coarse[g].count);
+    info.countFine                   = uint16_t(fine[g].count);
+    info.offset                      = offset;
+
+    for(uint32_t i = 0; i < coarse[g].count; i++)
+      encode20Bit(geometry.groupOverlapEntries, offset++, coarsePtr[i]);
+    for(uint32_t i = 0; i < fine[g].count; i++)
+      encode20Bit(geometry.groupOverlapEntries, offset++, finePtr[i]);
+  }
+}
+
 }  // namespace lodclusters

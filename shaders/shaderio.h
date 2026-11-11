@@ -48,6 +48,25 @@
 #endif
 #endif
 
+// Hit-streaming demand propagation strategy: how the persistent per-group demand
+// (`Geometry::groupDemand`) floods coarse->fine for faster stream-in. Selected via
+// STREAM_PROPAGATION_MODE (recompiles); see docs/hitbased_streaming.md.
+#define STREAM_PROPAGATION_RESIDENT_LEVELS 0   // resident-seeded, single hop (~1 level per stream round-trip)
+#define STREAM_PROPAGATION_RESIDENT_SUBTREE 1  // resident-seeded work-proportional multi-pass BFS (demanded subtrees)
+#define STREAM_PROPAGATION_ALL_LEVELS 2        // level-wise full sweep over every group, coarsest->finest
+#define STREAM_PROPAGATION_ALL_LEVELS_ROLLING                                                                          \
+  3  // like ALL_LEVELS but host dispatches one reverse level per frame; compiles as ALL_LEVELS
+
+#ifndef STREAM_PROPAGATION_MODE
+#define STREAM_PROPAGATION_MODE STREAM_PROPAGATION_RESIDENT_SUBTREE
+#endif
+
+// optical effect applied to the mirror box (see FrameConstants::opticalMode)
+#define OPTICAL_MODE_NONE 0
+#define OPTICAL_MODE_BOX 1
+#define OPTICAL_MODE_SPHERE 2
+#define OPTICAL_MODE_LENS 3
+
 #define MESHSHADER_BBOX_VERTICES 8
 #define MESHSHADER_BBOX_LINES 12
 #define MESHSHADER_BBOX_THREADS 4
@@ -117,6 +136,10 @@
 #define BUILD_SETUP_BLAS_INSERTION 5
 #define BUILD_SETUP_PTLAS_OPS 6
 #define BUILD_SETUP_PARTITION_ACTIVE 7
+// faster hit-streaming demand BFS (post-traversal), see stream_hit_demand_tree.comp.glsl
+#define BUILD_SETUP_HIT_DEMAND_INIT 8       // reset the demand queue counters (before seeding)
+#define BUILD_SETUP_HIT_DEMAND_RUN 9        // first frontier range from the seeds
+#define BUILD_SETUP_HIT_DEMAND_RUN_PASS 10  // advance the frontier one BFS level
 
 /////////////////////////////////////////
 
@@ -140,6 +163,7 @@
 #define INSTANCES_CLASSIFY_LOD_WORKGROUP 64
 #define PARTITION_SETUP_WORKGROUP 64
 #define GEOMETRY_CACHED_RETAIN_WORKGROUP 64
+#define INSTANCE_HIT_SCALE_WORKGROUP 64
 // instance_classify_lod, traversal_init_blas_reuse and instance_assign_blas all use 64,
 // so one indirect dispatch serves the partition early-out for all three
 #define PARTITION_ACTIVE_INSTANCES_WORKGROUP 64
@@ -157,6 +181,10 @@
 #define STREAM_UPDATE_SCENE_WORKGROUP 64
 #define STREAM_UPDATE_CLAS_GEOMETRY_INDICES_WORKGROUP 64
 #define STREAM_AGEFILTER_GROUPS_WORKGROUP 128
+// smaller than the age-filter groups: the demand-tree kernel distributes each
+// group's finer children across the subgroup, so 2 subgroups per workgroup keeps
+// the per-subgroup packing tight (see stream_hit_demand_tree.comp.glsl)
+#define STREAM_HIT_DEMAND_TREE_WORKGROUP 64
 #define STREAM_COMPACTION_NEW_CLAS_WORKGROUP 128
 #define STREAM_COMPACTION_OLD_CLAS_WORKGROUP 64
 #define STREAM_ALLOCATOR_LOAD_GROUPS_WORKGROUP 64
@@ -297,12 +325,22 @@ using namespace glm;
 #define USE_PERSISTENT_TRAVERSAL_KERNEL 0
 #endif
 
+// persistent producer/consumer variant of the hit-demand BFS descent
+// (stream_hit_demand_tree.comp.glsl); reuses the traversal queue counters.
+#ifndef USE_PERSISTENT_HIT_DEMAND_KERNEL
+#define USE_PERSISTENT_HIT_DEMAND_KERNEL 0
+#endif
+
 #ifndef MAX_VISIBLE_CLUSTERS
 #define MAX_VISIBLE_CLUSTERS 1024
 #endif
 
+#ifndef USE_HIT_STREAMING
+#define USE_HIT_STREAMING 1
+#endif
+
 #ifndef TARGETS_RASTERIZATION
-#define TARGETS_RASTERIZATION 1
+#define TARGETS_RASTERIZATION 0
 #endif
 
 #define TARGETS_RAY_TRACING (!(TARGETS_RASTERIZATION))
@@ -346,7 +384,8 @@ struct RayPayload
   float hitT;
   // Ray cone carried into traversal (matches PathRayPayload): width/spread at the ray ORIGIN, so the
   // closest-hit material sampling and the alpha any-hit share the propagated footprint (and it accumulates
-  // across the mirror reflection), plus streaming-LOD hooks can read the footprint. width(t) = coneWidth + coneSpread*t.
+  // across the mirror reflection). The hit-based streaming-LOD hooks read the SAME footprint, so geometry
+  // LOD ranging and texture LOD are driven by one unified ray cone. width(t) = coneWidth + coneSpread*t.
   float coneWidth;
   float coneSpread;
 #if USE_DLSS && ALLOW_SHADING
@@ -373,7 +412,7 @@ struct PathRayPayload
   uint  clusterID;
   uint  triangleID;
   vec2  bary;
-  // Ray cone carried into traversal (Akenine-Moeller ray cones) so the alpha-mask any-hit - and future
+  // Ray cone carried into traversal (Akenine-Moeller ray cones) so the alpha-mask any-hit - and the
   // streaming-LOD hooks in the hit shaders - use the SAME propagated footprint as the ray-gen material
   // sampling. Width/spread are taken at the ray ORIGIN; a hit at distance t has width = coneWidth + coneSpread * t.
   float coneWidth;
@@ -394,6 +433,19 @@ struct PathRayPayload
   vec3 wireBaryDeltas;
 #endif
 };
+
+#if USE_HIT_STREAMING_LOD
+// payload of AO/shadow rays (location 1), otherwise a plain float
+struct RayPayloadAO
+{
+  // 1.0 when the ray hit something (or was left untouched), 0.0 on miss
+  float hit;
+  // ray cone continued from the surface the secondary ray starts at (width at origin + spread, world space),
+  // sharing the unified footprint used for texture LOD.
+  float coneWidth;
+  float coneSpread;
+};
+#endif
 
 #endif
 
@@ -456,7 +508,6 @@ struct FrameConstants
   vec4 wMirrorBox;
 
   uint  colorXor;
-  uint  useMirrorBox;
   uint  visualize;
   float fov;
 
@@ -501,6 +552,22 @@ struct FrameConstants
   float texLodBiasScale;  // exp2(texLodBias), for the gradient paths
   float pixelAngle;
   int   facetShading;
+  // optical effect for the mirror box: OPTICAL_MODE_BOX (flat box mirror),
+  // OPTICAL_MODE_SPHERE (convex chrome ball) or OPTICAL_MODE_LENS (a
+  // camera-anchored magnifier)
+  uint opticalMode;
+
+  // OPTICAL_MODE_LENS: magnification of the view through the lens, a narrower
+  // rectilinear camera like a zoom lens, and an optional radial distortion
+  // (< 0 barrel, > 0 pincushion) relative to the lens rim
+  float lensZoom;
+  float lensDistortion;
+
+  // the magnifier lens is anchored to the camera; its aperture radius and the
+  // distance it is kept ahead of the eye along the view direction (its center
+  // is derived from these, independent of wMirrorBox)
+  float lensSize;
+  float lensDist;
 
   // lights all visualizations except the raw ones, in all renderers
   SkyPhysicalParameters skyPhysical;
@@ -556,6 +623,7 @@ struct Readback
   uint     numRenderClustersAlpha;
   uint     numRenderClustersAlphaSW;
   uint     numTraversalTasks;
+  uint     numHitDemandTasks;  // peak demand-BFS queue usage (shares the traversalNodeInfos array)
   uint     numTraversedTasks;
   uint     numRejectInstances;
   uint     numRejectNodes;
@@ -580,11 +648,15 @@ struct Readback
   // ptlas
   uint numPtlasUpdates;
   uint numPtlasDirtyPartitions;
+  // all instances within the dirty partitions
+  uint numPtlasDirtyInstances;
   // partition early-out: what actually got processed this frame
   uint numActivePartitions;
   uint numActiveInstances;
   // non zero when every partition was forced to be processed regardless of being stable
   uint partitionInvalidateAllCount;
+  // instances whose filtered hit lod scale changed, see instance_hit_scale.comp.glsl
+  uint numInstanceHitScaleChanges;
 
   // auto-exposure: grid-sampled luminance accumulation in the tonemap pass (float32 atomics)
   float autoExposureLumaSum;

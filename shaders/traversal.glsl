@@ -506,6 +506,32 @@ bool queryClusterUsesAlpha(uint instanceID, Group_in groupRef, Group group, uint
 
 #endif
 
+#if USE_HIT_STREAMING_LOD
+// per-instance demand for detail finer than the camera metric (see
+// `streamingRegisterInstanceDemand`, filtered by `instance_hit_scale`). Returns the
+// absolute errorScale a ray footprint demanded, or a large "no demand" sentinel.
+// Combine with min(): a smaller errorScale lets the camera metric descend finer for
+// this instance only,
+// and min() lets the demand override even the culledErrorScale of a
+// mirror-only-visible instance. Must be applied identically wherever a metric is
+// evaluated (traversal_init, instance_classify_lod, traversal_run(_groups)) so the
+// render cut stays consistent.
+float instanceHitErrorScale(uint32s_inout instanceHitScale, uint instanceID)
+{
+  uint level = instanceHitScale.d[instanceID] & 0xFF;
+  return level != 0 ? exp2(-float(level)) : uintBitsToFloat(0x7F7FFFFFu);
+}
+
+// camera floor for the lod clamp: the camera metric at a coarser errorScale opens a group
+// without ray demand, so regions no ray reached yet (fast camera turns) are not left at the
+// coarsest level. OR-ed with `streamingDemandsFiner` at both group tests, monotonic like it.
+bool testForHitCameraFloor(mat4x3 instanceToEye, float uniformScale, TraversalMetric metric, float errorScale)
+{
+  return build.hitCameraErrorScale > 0
+         && testForTraversal(instanceToEye, uniformScale, metric, errorScale * build.hitCameraErrorScale);
+}
+#endif
+
 // Whether a geometry takes part in the sharing election, which needs at least two
 // instances. Caching does not depend on this, it only needs `lodLevelMin`.
 bool testForBlasSharing(Geometry geometry)

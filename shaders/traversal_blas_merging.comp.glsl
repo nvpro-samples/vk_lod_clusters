@@ -88,17 +88,33 @@ layout(local_size_x=TRAVERSAL_BLAS_MERGING_WORKGROUP) in;
 void main()
 {
   uint threadID = getGlobalInvocationIndex(gl_GlobalInvocationID);
+  uint loCount  = streaming.resident.loGroupsCount;
 
+  // The persistent low detail groups lead the dispatch. They are never aged, but the merged blas
+  // needs their cluster whenever its generating group is not resident, other resident groups would
+  // otherwise be all that is left of the geometry.
   // can load pre-emptively given the array is guaranteed to be sized as multiple of STREAM_AGEFILTER_CLUSTERS_WORKGROUP
-  uint residentID   = streaming.resident.activeGroups.d[threadID];
-  bool isValid      = threadID < streaming.resident.activeGroupsCount;
+  uint residentID   = threadID < loCount ? threadID : streaming.resident.activeGroups.d[threadID - loCount];
+  bool isValid      = threadID < loCount + streaming.resident.activeGroupsCount;
 
   if (isValid)
   {
     Group_in groupRef = streaming.resident.groups.d[residentID].group;
     uint geometryID   = streaming.resident.groups.d[residentID].geometryID;
-    
-    streamingAgeFilter(residentID, geometryID, groupRef, USE_BLAS_CACHING != 0);
+
+    if (threadID >= loCount)
+    {
+      streamingAgeFilter(residentID, geometryID, groupRef, USE_BLAS_CACHING != 0, USE_HIT_STREAMING != 0);
+#if STREAM_DEBUG_RESIDENCY
+      uint age      = streaming.resident.groups.d[residentID].age;
+      uint hitDelta = streamingHitFrameDelta(streaming.resident.groupHitFrames.d[residentID]);
+      bool cached   = USE_BLAS_CACHING != 0
+                    && streaming.resident.groups.d[residentID].lodLevel >= build.geometryCachedRetain.d[geometryID];
+      uint bin = cached ? 4 : age > 1 ? 3 : hitDelta <= 2 ? 0 : hitDelta <= 32 ? 1 : 2;
+      atomicAdd(readback.debugA[bin], uint(groupRef.d.clusterCount));
+      atomicAdd(readback.debugB[bin], 1);
+#endif
+    }
     
     // if this groups' geometry requires a merged instance blas, then contribute all resident highest
     // detail clusters to it.

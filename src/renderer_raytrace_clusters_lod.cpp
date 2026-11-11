@@ -55,6 +55,7 @@ private:
     Shader rayGen;
     Shader rayClosestHit;
     Shader rayAnyHit;
+    Shader rayClosestHitAO;
     Shader rayMiss;
     Shader rayMissAO;
 
@@ -76,6 +77,10 @@ private:
     Shader computeGeometryCachedRetain;
     Shader computePartitionSetup;
     Shader computePartitionBlockCompact;
+    Shader computeInstanceHitScale;
+
+    Shader computeHitPropagation;
+    Shader computeHitDemand;
   };
 
   struct Pipelines
@@ -99,6 +104,10 @@ private:
     VkPipeline computeGeometryCachedRetain  = nullptr;
     VkPipeline computePartitionSetup        = nullptr;
     VkPipeline computePartitionBlockCompact = nullptr;
+    VkPipeline computeInstanceHitScale      = nullptr;
+
+    VkPipeline computeHitPropagation = nullptr;
+    VkPipeline computeHitDemand      = nullptr;
   };
 
   VkPhysicalDeviceRayTracingPipelinePropertiesKHR m_rtProperties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
@@ -156,6 +165,13 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   }
 
   shaderc::CompileOptions options = res.makeCompilerOptions();
+
+  // persistent producer/consumer demand descent only makes sense for the multi-level BFS
+  // (resident subtree); resident-levels is a deliberate single hop per frame, and the sweep
+  // (all levels) uses a different shader. Gate the macro so build_setup and the demand
+  // shader agree, and so the host dispatch below matches.
+  const bool usePersistentDemandBFS =
+      m_config.usePersistentHitDemand && m_config.streamPropagationMode == STREAM_PROPAGATION_RESIDENT_SUBTREE;
 #if USE_DLSS
   bool supportsDLSS = true;
 #else
@@ -202,6 +218,7 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("TRAVERSAL_VULKAN_MEMORY_MODEL",
                              m_config.usePersistentTraversal && m_config.useVulkanMemoryModel ? "1" : "0");
   options.AddMacroDefinition("TRAVERSAL_ATOMIC_LOAD_STORE", m_config.useAtomicLoadStore ? "1" : "0");
+  options.AddMacroDefinition("USE_PERSISTENT_HIT_DEMAND_KERNEL", usePersistentDemandBFS ? "1" : "0");
   // Ray/path tracer texture LOD mode (overrides the TARGETS_RASTERIZATION-derived default in shaderio.h).
   options.AddMacroDefinition("TEXTURE_LOD_MODE", m_config.textureLodMode == 1 ? "TEXLODMODE_LOD" :
                                                  m_config.textureLodMode == 2 ? "TEXLODMODE_IMPLICIT" :
@@ -209,6 +226,13 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   options.AddMacroDefinition("HAS_ALPHA_TEST", rscene.scene->m_hasAlphaMask ? "1" : "0");
   options.AddMacroDefinition("HAS_TEXTURED_MATERIALS", rscene.scene->m_hasTexturedMaterials ? "1" : "0");
   options.AddMacroDefinition("USE_PATHTRACING", m_config.usePathtrace ? "1" : "0");
+  // path depth up to which sun shadow rays register hits, the ray tracer only has primary hits
+  uint32_t shadowHitDepth = m_config.useHitStreaming ? uint32_t(std::max(m_config.hitStreamingShadowDepth, 1)) : 0;
+  options.AddMacroDefinition("HIT_STREAMING_SHADOW_DEPTH", fmt::format("{}", shadowHitDepth));
+  options.AddMacroDefinition("USE_AO_HITGROUP", shadowHitDepth > 0 ? "1" : "0");
+  options.AddMacroDefinition("USE_HIT_STREAMING", m_config.useHitStreaming ? "1" : "0");
+  // implies USE_STREAMING and USE_HIT_STREAMING
+  options.AddMacroDefinition("USE_HIT_STREAMING_LOD", m_config.useHitStreamingLod ? "1" : "0");
 
   shaderc::CompileOptions optionsAO = options;
   options.AddMacroDefinition("RAYTRACING_PAYLOAD_INDEX", "0");
@@ -222,12 +246,17 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
   const char* rahitFile = pt ? "render_pathtrace_clusters.rahit.glsl" : "render_raytrace_clusters.rahit.glsl";
   const char* rmissFile = pt ? "render_pathtrace.rmiss.glsl" : "render_raytrace.rmiss.glsl";
 
+  m_hasAlphaMask = rscene.scene->m_hasAlphaMask;
   res.compileShader(m_shaders.rayGen, VK_SHADER_STAGE_RAYGEN_BIT_KHR, rgenFile, &options);
   res.compileShader(m_shaders.rayClosestHit, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, rchitFile, &options);
-  // the any-hit only alpha-tests cutout geometry; skip it (and its hit group) when the scene has none
-  m_hasAlphaMask = rscene.scene->m_hasAlphaMask;
+  // the any-hit only alpha-tests cutout geometry; compile it (and its hit groups) only when the scene has any
   if(m_hasAlphaMask)
     res.compileShader(m_shaders.rayAnyHit, VK_SHADER_STAGE_ANY_HIT_BIT_KHR, rahitFile, &options);
+  // shadow ray closest-hit that records hits for hit-based streaming, traced via the AO hit
+  // group (AO rays skip it). The path tracer's shadow rays run its own closest-hit, so this
+  // stage is unused when path tracing.
+  res.compileShader(m_shaders.rayClosestHitAO, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
+                    "render_raytrace_clusters_ao.rchit.glsl", &optionsAO);
   res.compileShader(m_shaders.rayMiss, VK_SHADER_STAGE_MISS_BIT_KHR, rmissFile, &options, "primary");
   res.compileShader(m_shaders.rayMissAO, VK_SHADER_STAGE_MISS_BIT_KHR, rmissFile, &optionsAO, "ao");
 
@@ -275,12 +304,40 @@ bool RendererRayTraceClustersLod::initShaders(Resources& res, RenderScene& rscen
     res.compileShader(m_shaders.computePartitionBlockCompact, VK_SHADER_STAGE_COMPUTE_BIT,
                       "partition_block_compact.comp.glsl", &options);
   }
+  if(m_config.useHitStreamingLod)
+  {
+    res.compileShader(m_shaders.computeInstanceHitScale, VK_SHADER_STAGE_COMPUTE_BIT, "instance_hit_scale.comp.glsl", &options);
+  }
   if(m_config.useBlasCaching)
   {
     res.compileShader(m_shaders.computeBlasCachingSetupCopy, VK_SHADER_STAGE_COMPUTE_BIT,
                       "blas_caching_setup_copy.comp.glsl", &options);
     res.compileShader(m_shaders.computeBlasCachingSetupBuild, VK_SHADER_STAGE_COMPUTE_BIT,
                       "blas_caching_setup_build.comp.glsl", &options);
+  }
+
+  if(rscene.useStreaming && m_config.useHitStreaming)
+  {
+    // hit-streaming demand propagation strategy (see shaderio.h STREAM_PROPAGATION_*):
+    // resident levels / subtree (0/1) share the BFS shader (differing only in host pass
+    // count); all levels (2) and its rolling variant (3) use the level-wise sweep shader.
+    // Rolling is a host-only distinction (one reverse level per frame), so it compiles
+    // identically to ALL_LEVELS.
+    const bool useLevelsSweep = m_config.streamPropagationMode == STREAM_PROPAGATION_ALL_LEVELS
+                                || m_config.streamPropagationMode == STREAM_PROPAGATION_ALL_LEVELS_ROLLING;
+    shaderc::CompileOptions streamOptions = res.makeCompilerOptions();
+    // build_setup writes their indirect grids
+    streamOptions.AddMacroDefinition("SUBGROUP_SIZE", fmt::format("{}", res.m_physicalDeviceInfo.properties11.subgroupSize));
+    streamOptions.AddMacroDefinition("USE_16BIT_DISPATCH", fmt::format("{}", res.m_use16bitDispatch ? 1 : 0));
+    streamOptions.AddMacroDefinition("STREAM_PROPAGATION_MODE", m_config.streamPropagationMode == STREAM_PROPAGATION_RESIDENT_LEVELS ?
+                                                                    "STREAM_PROPAGATION_RESIDENT_LEVELS" :
+                                                                useLevelsSweep ? "STREAM_PROPAGATION_ALL_LEVELS" :
+                                                                                 "STREAM_PROPAGATION_RESIDENT_SUBTREE");
+    // must match the value given to build_setup via `options` above (the two cooperate)
+    streamOptions.AddMacroDefinition("USE_PERSISTENT_HIT_DEMAND_KERNEL", usePersistentDemandBFS ? "1" : "0");
+    res.compileShader(m_shaders.computeHitPropagation, VK_SHADER_STAGE_COMPUTE_BIT, "stream_hit_propagation.comp.glsl", &streamOptions);
+    res.compileShader(m_shaders.computeHitDemand, VK_SHADER_STAGE_COMPUTE_BIT,
+                      useLevelsSweep ? "stream_hit_demand_levels.comp.glsl" : "stream_hit_demand_tree.comp.glsl", &streamOptions);
   }
 
   return res.verifyShaders(m_shaders);
@@ -337,6 +394,10 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
   m_config.useDlss = m_config.useDlss && res.m_frameBuffer.dlssMode == Resources::DlssMode::eRayReconstruction
                      && res.m_frameBuffer.dlssDenoiser.isActive();
 #endif
+
+  // lod clamping is built on top of hit-based streaming, so it only applies when that is on
+  // (enabling lod alone does not implicitly turn hit streaming on)
+  m_config.useHitStreamingLod = m_config.useHitStreamingLod && m_config.useHitStreaming && rscene.useStreaming;
 
   if(!initShaders(res, rscene))
   {
@@ -452,12 +513,13 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     if(m_config.usePtlas || m_config.usePartitionEarlyOut)
     {
       m_sceneBuildShaderio.instancePartitions = mem.append(sizeof(uint32_t) * m_renderInstances.size(), 4);
+      m_sceneBuildShaderio.partitionRanges =
+          mem.append(sizeof(glm::uvec2) * std::max(size_t(1), rscene.scene->m_partitions.size()), 8);
     }
     if(m_config.usePartitionEarlyOut)
     {
       const size_t numPartitions                  = std::max(size_t(1), rscene.scene->m_partitions.size());
       m_sceneBuildShaderio.partitionInstanceOrder = mem.append(sizeof(uint32_t) * m_renderInstances.size(), 4);
-      m_sceneBuildShaderio.partitionRanges        = mem.append(sizeof(glm::uvec2) * numPartitions, 8);
       m_sceneBuildShaderio.partitionNonPersistent = mem.append(sizeof(uint32_t) * numPartitions, 4);
       m_sceneBuildShaderio.partitionLastFrame     = mem.append(sizeof(uint32_t) * numPartitions, 4);
       m_sceneBuildShaderio.partitionBboxes        = mem.append(sizeof(shaderio::BBox) * numPartitions, 16);
@@ -469,6 +531,13 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
       m_sceneBuildShaderio.activeBlocks       = mem.append(sizeof(uint32_t) * numBlocks, 4);
     }
     m_sceneBuildShaderio.instanceBuildInfos = mem.append(sizeof(shaderio::InstanceBuildInfo) * m_renderInstances.size(), 16);
+
+    if(m_config.useHitStreamingLod)
+    {
+      m_sceneBuildShaderio.instanceHitDemand = mem.append(sizeof(uint32_t) * m_renderInstances.size(), 4);
+      m_sceneBuildShaderio.instanceHitScale  = mem.append(sizeof(uint32_t) * m_renderInstances.size(), 4);
+      m_sceneBuildShaderio.geometryHitDemandLevel = mem.append(sizeof(uint32_t) * m_sceneBuildShaderio.numGeometries, 4);
+    }
 
     if(m_config.useBlasSharing)
     {
@@ -520,11 +589,11 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
     if(m_config.usePtlas || m_config.usePartitionEarlyOut)
     {
       m_sceneBuildShaderio.instancePartitions += m_sceneDataBuffer.address;
+      m_sceneBuildShaderio.partitionRanges += m_sceneDataBuffer.address;
     }
     if(m_config.usePartitionEarlyOut)
     {
       m_sceneBuildShaderio.partitionInstanceOrder += m_sceneDataBuffer.address;
-      m_sceneBuildShaderio.partitionRanges += m_sceneDataBuffer.address;
       m_sceneBuildShaderio.partitionNonPersistent += m_sceneDataBuffer.address;
       m_sceneBuildShaderio.partitionLastFrame += m_sceneDataBuffer.address;
       m_sceneBuildShaderio.partitionBboxes += m_sceneDataBuffer.address;
@@ -544,6 +613,12 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
       m_sceneBuildShaderio.ptlasInstanceUpdates += m_sceneDataBuffer.address;
       m_sceneBuildShaderio.ptlasInstanceBlas += m_sceneDataBuffer.address;
       m_sceneBuildShaderio.ptlasPartitionUpdates += m_sceneDataBuffer.address;
+    }
+    if(m_config.useHitStreamingLod)
+    {
+      m_sceneBuildShaderio.instanceHitDemand += m_sceneDataBuffer.address;
+      m_sceneBuildShaderio.instanceHitScale += m_sceneDataBuffer.address;
+      m_sceneBuildShaderio.geometryHitDemandLevel += m_sceneDataBuffer.address;
     }
     m_sceneBuildShaderio.traversalGroupInfos += m_sceneDataBuffer.address;
     if(m_config.useBlasSharing)
@@ -657,7 +732,9 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
 
     nvvk::createPipelineLayout(res.m_device, &m_pipelineLayout,
                                {m_dsetPack.getLayout(), rscene.sceneTextures.getDsetPack().getLayout()},
-                               {{m_stageFlags, 0, sizeof(uint32_t)}});
+                               // build-setup passes push a single uint; the all-levels demand
+                               // sweep pushes {reverseLevel, levelTotalGroups, geometryLevelOffsets}
+                               {{m_stageFlags, 0, sizeof(uint32_t) * 2 + sizeof(uint64_t)}});
 
     nvvk::WriteSetContainer writeSets;
     writeSets.append(m_dsetPack.makeWrite(BINDINGS_FRAME_UBO), res.m_commonBuffers.frameConstants);
@@ -755,12 +832,24 @@ bool RendererRayTraceClustersLod::init(Resources& res, RenderScene& rscene, cons
       res.createComputePipeline(compInfo, m_shaders.computePartitionSetup, m_pipelines.computePartitionSetup);
       res.createComputePipeline(compInfo, m_shaders.computePartitionBlockCompact, m_pipelines.computePartitionBlockCompact);
     }
+    if(m_config.useHitStreamingLod)
+    {
+      res.createComputePipeline(compInfo, m_shaders.computeInstanceHitScale, m_pipelines.computeInstanceHitScale);
+    }
 
     if(m_config.useBlasCaching)
     {
       res.createComputePipeline(compInfo, m_shaders.computeBlasCachingSetupCopy, m_pipelines.computeBlasCachingSetupCopy);
 
       res.createComputePipeline(compInfo, m_shaders.computeBlasCachingSetupBuild, m_pipelines.computeBlasCachingSetupBuild);
+    }
+    // use m_config: it matches the normalized config the shaders were compiled with,
+    // so the pipelines line up.
+    if(rscene.useStreaming && m_config.useHitStreaming)
+    {
+      res.createComputePipeline(compInfo, m_shaders.computeHitPropagation, m_pipelines.computeHitPropagation);
+
+      res.createComputePipeline(compInfo, m_shaders.computeHitDemand, m_pipelines.computeHitDemand);
     }
   }
 
@@ -783,8 +872,9 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
   m_sceneBuildShaderio.cullViewProjMatrix     = frame.cullViewProjMatrix;
   m_sceneBuildShaderio.cullViewProjMatrixLast = frame.cullViewProjMatrixLast;
 
-  m_sceneBuildShaderio.frameIndex            = m_frameIndex;
-  m_sceneBuildShaderio.culledErrorScale      = std::max(1.0f, frame.culledErrorScale);
+  m_sceneBuildShaderio.frameIndex       = m_frameIndex;
+  m_sceneBuildShaderio.culledErrorScale = std::max(1.0f, frame.culledErrorScale);
+  m_sceneBuildShaderio.hitCameraErrorScale = m_config.useHitStreamingLod ? std::max(0.0f, frame.hitLodCameraScale) : 0.0f;
   m_sceneBuildShaderio.sharingPushCulled     = frame.sharingPushCulled;
   m_sceneBuildShaderio.sharingTolerantLevels = frame.sharingTolerantLevels;
   // the ui range, larger values would route instances without a cached blas to it
@@ -835,12 +925,28 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
                     sizeof(shaderio::GeometryCachedInfo) * m_sceneBuildShaderio.numGeometries, ~0);
   }
 
+  if(m_config.useHitStreamingLod && m_frameIndex == 0)
+  {
+    // one-time init of the per-instance finer-detail demand, afterwards `instance_hit_scale`
+    // resets it every frame
+    vkCmdFillBuffer(cmd, m_sceneDataBuffer.buffer, m_sceneBuildShaderio.instanceHitDemand - m_sceneDataBuffer.address,
+                    sizeof(uint32_t) * m_renderInstances.size(), 0x7F7FFFFFu /* floatBitsToUint(FLT_MAX), == no demand */);
+    vkCmdFillBuffer(cmd, m_sceneDataBuffer.buffer, m_sceneBuildShaderio.instanceHitScale - m_sceneDataBuffer.address,
+                    sizeof(uint32_t) * m_renderInstances.size(), 0);
+    vkCmdFillBuffer(cmd, m_sceneDataBuffer.buffer, m_sceneBuildShaderio.geometryHitDemandLevel - m_sceneDataBuffer.address,
+                    sizeof(uint32_t) * m_sceneBuildShaderio.numGeometries, ~0u);
+  }
+
   if(rscene.useStreaming)
   {
     SceneStreaming::FrameSettings settings;
+    settings.freeze                = frame.freezeStreaming;
     settings.ageThreshold          = frame.streamingAgeThreshold;
     settings.unloadThreshold       = frame.streamingUnloadThreshold;
     settings.useBlasCaching        = m_config.useBlasCaching;
+    settings.useHitStreaming       = m_config.useHitStreaming;
+    settings.useHitStreamingLod    = m_config.useHitStreamingLod;
+    settings.hitLodWidthFactor     = std::max(0.01f, frame.hitLodWidthFactor);
     settings.blasCacheFlags        = m_config.clusterBlasFlags;
     settings.blasCacheMaxClusters  = m_maxRenderClusters;
     settings.blasCacheMaxBuilds    = m_maxBlasBuilds;
@@ -909,6 +1015,23 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
                           m_sceneBuildShaderio.instanceSortKeys - m_sceneDataBuffer.address, m_sceneDataBuffer.buffer,
                           m_sceneBuildShaderio.instanceSortValues - m_sceneDataBuffer.address,
                           m_sortingAuxBuffer.buffer, 0, nullptr, 0);
+    }
+
+    if(m_config.useHitStreamingLod)
+    {
+      // must run before the partition setup, a changed scale wakes its partition
+      auto timerSection = profiler.cmdFrameSection(cmd, "Instance Hit Scale");
+
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeInstanceHitScale);
+      res.cmdLinearDispatch(cmd, getWorkGroupCount(m_sceneBuildShaderio.numRenderInstances, INSTANCE_HIT_SCALE_WORKGROUP));
+
+      // the ray hit shaders atomicMin into the demand this reset
+      memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 1,
+                           &memBarrier, 0, nullptr, 0, nullptr);
     }
 
     if(m_config.usePartitionEarlyOut)
@@ -1127,7 +1250,8 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
       const shaderio::SceneStreaming& shaderData = rscene.sceneStreaming.getShaderStreamingData();
 
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeTraversalMerge);
-      res.cmdLinearDispatch(cmd, getWorkGroupCount(shaderData.resident.activeGroupsCount, TRAVERSAL_BLAS_MERGING_WORKGROUP));
+      res.cmdLinearDispatch(cmd, getWorkGroupCount(shaderData.resident.loGroupsCount + shaderData.resident.activeGroupsCount,
+                                                   TRAVERSAL_BLAS_MERGING_WORKGROUP));
     }
 
     memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -1152,6 +1276,248 @@ void RendererRayTraceClustersLod::render(VkCommandBuffer cmd, Resources& res, Re
     bool runAgeFilter = !(m_config.useBlasSharing && m_config.useBlasMerging);
 
     rscene.sceneStreaming.cmdPostTraversal(cmd, m_scratchBuffer.address, runAgeFilter, profiler);
+
+    if(m_config.useHitStreaming)
+    {
+      const shaderio::SceneStreaming& shaderData = rscene.sceneStreaming.getShaderStreamingData();
+
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, m_dsetPack.getSetPtr(), 0, nullptr);
+
+      // faster stream-in demand propagation (STREAM_PROPAGATION_MODE, see docs/hitbased_streaming.md).
+      // All modes fill the persistent per-group demand `groupDemand` that gates stream-in.
+      //  - resident levels / subtree (BFS): the propagation pass seeds and enqueues the
+      //    resident hit frontier; the demand pass descends the finer-overlap links. Resident
+      //    levels stops after one hop, resident subtree loops to the max lod depth.
+      //  - all levels (sweep): no queue; sweeps one reverse lod level per dispatch (coarsest
+      //    first), so every group is visited exactly once per frame. The rolling variant
+      //    dispatches only a single reverse level per frame instead of all of them.
+      const bool useDemandBFS = m_config.streamPropagationMode != STREAM_PROPAGATION_ALL_LEVELS
+                                && m_config.streamPropagationMode != STREAM_PROPAGATION_ALL_LEVELS_ROLLING;
+      // persistent drain only for the resident-subtree BFS; must match the shader macro
+      // gating in compileShaders (usePersistentDemandBFS).
+      const bool usePersistentDemand =
+          m_config.usePersistentHitDemand && m_config.streamPropagationMode == STREAM_PROPAGATION_RESIDENT_SUBTREE;
+      // after traversal read it, before propagation and the descent refill it. See
+      // `cmdClearGroupDemandSlice`, rides along with a transfer phase below when there is one.
+      bool clearDemand = useDemandBFS;
+
+      // reset the demand queue counters before the propagation pass seeds into them
+      if(useDemandBFS)
+      {
+        uint32_t buildSetupID = BUILD_SETUP_HIT_DEMAND_INIT;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeBuildSetup);
+        vkCmdPushConstants(cmd, m_pipelineLayout, m_stageFlags, 0, sizeof(uint32_t), &buildSetupID);
+        vkCmdDispatch(cmd, 1, 1, 1);
+
+        memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                             &memBarrier, 0, nullptr, 0, nullptr);
+      }
+
+      if(usePersistentDemand)
+      {
+        // The persistent demand kernel races consumers ahead of producers, so the queue's
+        // produce region must read the ~0 "empty" sentinel until a producer writes it (same
+        // mechanism as the frame-start clear the persistent traversal relies on). Traversal
+        // already dirtied traversalNodeInfos, so re-clear it before the propagation seeds land.
+        memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        memBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1,
+                             &memBarrier, 0, nullptr, 0, nullptr);
+
+        vkCmdFillBuffer(cmd, m_sceneTraversalBuffer.buffer, 0, m_sceneTraversalBuffer.bufferSize, ~0u);
+        if(clearDemand)
+        {
+          rscene.sceneStreaming.cmdClearGroupDemandSlice(cmd);
+          clearDemand = false;
+        }
+
+        memBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                             &memBarrier, 0, nullptr, 0, nullptr);
+      }
+      if(m_config.useHitStreamingLod)
+      {
+        // classify read last frame's value, propagation accumulates the next one
+        memBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        memBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1,
+                             &memBarrier, 0, nullptr, 0, nullptr);
+
+        vkCmdFillBuffer(cmd, m_sceneDataBuffer.buffer, m_sceneBuildShaderio.geometryHitDemandLevel - m_sceneDataBuffer.address,
+                        sizeof(uint32_t) * m_sceneBuildShaderio.numGeometries, ~0u);
+        if(clearDemand)
+        {
+          rscene.sceneStreaming.cmdClearGroupDemandSlice(cmd);
+          clearDemand = false;
+        }
+
+        memBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                             &memBarrier, 0, nullptr, 0, nullptr);
+      }
+      if(clearDemand)
+      {
+        // neither transfer phase above ran, traversal read the demand this frame
+        memBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        memBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1,
+                             &memBarrier, 0, nullptr, 0, nullptr);
+
+        rscene.sceneStreaming.cmdClearGroupDemandSlice(cmd);
+
+        memBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                             &memBarrier, 0, nullptr, 0, nullptr);
+      }
+      {
+        auto timerSection = profiler.cmdFrameSection(cmd, "Hit Propagation");
+
+        // besides the hit-frame inheritance, this pass (for the BFS modes) also seeds
+        // groupDemand and enqueues the resident hit frontier into the demand BFS queue.
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeHitPropagation);
+        res.cmdLinearDispatch(cmd, getWorkGroupCount(shaderData.resident.activeGroupsCount + shaderData.resident.loGroupsCount,
+                                                     STREAM_AGEFILTER_GROUPS_WORKGROUP));
+      }
+      {
+        auto timerSection = profiler.cmdFrameSection(cmd, "Hit Demand");
+
+        if(useDemandBFS)
+        {
+          // barrier: the propagation pass' seed writes (queue entries + counter and the
+          // seeded groupDemand) must be visible to the setup and the first descent pass.
+          memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+          memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+          vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                               &memBarrier, 0, nullptr, 0, nullptr);
+
+          // set up the first frontier range (the seeds) and its indirect dispatch
+          {
+            uint32_t buildSetupID = BUILD_SETUP_HIT_DEMAND_RUN;
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeBuildSetup);
+            vkCmdPushConstants(cmd, m_pipelineLayout, m_stageFlags, 0, sizeof(uint32_t), &buildSetupID);
+            vkCmdDispatch(cmd, 1, 1, 1);
+
+            memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT
+                                       | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 1,
+                                 &memBarrier, 0, nullptr, 0, nullptr);
+          }
+
+          if(usePersistentDemand)
+          {
+            // one persistent dispatch drains the entire queue (producer/consumer), instead
+            // of a host-synchronised dispatch per BFS level. BUILD_SETUP_HIT_DEMAND_RUN
+            // handed the seeds to the traversal counters above.
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeHitDemand);
+            res.cmdLinearDispatch(cmd, getWorkGroupCount(frame.traversalPersistentThreads, STREAM_HIT_DEMAND_TREE_WORKGROUP));
+
+            memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                                 &memBarrier, 0, nullptr, 0, nullptr);
+          }
+          else
+          {
+            // descend the frontier one BFS level per pass. The frontier empties once the
+            // demand front stops advancing (freshness prune), so late passes dispatch 0
+            // groups. Resident levels: one hop; resident subtree: up to the max lod depth.
+            uint32_t passes = m_config.streamPropagationMode == STREAM_PROPAGATION_RESIDENT_LEVELS ?
+                                  1u :
+                                  std::max(1u, rscene.scene->m_maxLodLevelsCount);
+            for(uint32_t pass = 0; pass < passes; pass++)
+            {
+              vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeHitDemand);
+              vkCmdDispatchIndirect(cmd, m_sceneBuildBuffer.buffer, offsetof(shaderio::SceneBuilding, indirectDispatchHitDemand));
+
+              memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+              memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+              vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                                   1, &memBarrier, 0, nullptr, 0, nullptr);
+
+              uint32_t buildSetupID = BUILD_SETUP_HIT_DEMAND_RUN_PASS;
+              vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeBuildSetup);
+              vkCmdPushConstants(cmd, m_pipelineLayout, m_stageFlags, 0, sizeof(uint32_t), &buildSetupID);
+              vkCmdDispatch(cmd, 1, 1, 1);
+
+              memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+              memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT
+                                         | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+              vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 1,
+                                   &memBarrier, 0, nullptr, 0, nullptr);
+            }
+          }
+        }
+        else
+        {
+          // all levels: sweep reverse lod levels coarsest->finest. A group's coarser overlaps
+          // are one reverse level up; each group gathers their groupDemand at delta<=1.
+          // backLodCount[k] = group count at reverse level k; the flat prefix offsets live in
+          // geometryLevelOffsets.
+          const auto& residentStats = rscene.sceneStreaming.getResidentStats();
+          uint32_t    passes        = std::max(1u, rscene.scene->m_maxLodLevelsCount);
+
+          struct
+          {
+            uint32_t        reverseLevel;
+            uint32_t        levelTotalGroups;
+            VkDeviceAddress geometryLevelOffsets;
+          } pushConstants;
+          pushConstants.geometryLevelOffsets = rscene.sceneStreaming.getGeometryLevelOffsetsAddress();
+
+          vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeHitDemand);
+
+          // sweep the coarsest `coarseSwept` reverse levels in full every frame; ALL_LEVELS does
+          // all of them, the rolling variant does only a UI-set count (cheap - coarse levels hold
+          // few groups - giving coarse data single-frame stream-in reach) and advances one of the
+          // remaining finer levels per frame below.
+          uint32_t coarseSwept = passes;
+          if(m_config.streamPropagationMode == STREAM_PROPAGATION_ALL_LEVELS_ROLLING)
+            coarseSwept = std::max(1u, std::min(passes, frame.streamRollingCoarseLevels));
+
+          for(uint32_t reverseLevel = 0; reverseLevel < coarseSwept; reverseLevel++)
+          {
+            // barrier: reverse level 0 reads the resident hit widths propagation wrote;
+            // level k reads the groupDemand its coarser level k-1 just wrote.
+            memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                                 &memBarrier, 0, nullptr, 0, nullptr);
+
+            pushConstants.reverseLevel     = reverseLevel;
+            pushConstants.levelTotalGroups = residentStats.backLodCount[reverseLevel];
+            vkCmdPushConstants(cmd, m_pipelineLayout, m_stageFlags, 0, sizeof(pushConstants), &pushConstants);
+            res.cmdLinearDispatch(cmd, getWorkGroupCount(pushConstants.levelTotalGroups, STREAM_AGEFILTER_GROUPS_WORKGROUP));
+          }
+
+          // rolling: advance one finer level per frame (cycling coarseSwept..passes-1). Consecutive
+          // frames advance consecutive levels, so a rolled level's coarser overlap was written last
+          // frame (delta 1), or this frame when it is the first finer level reading the last swept
+          // one. Phased by the streaming frameIndex, the clock the delta<=1 gather compares against.
+          if(coarseSwept < passes)
+          {
+            uint32_t reverseLevel = coarseSwept + (shaderData.frameIndex % (passes - coarseSwept));
+
+            memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                                 &memBarrier, 0, nullptr, 0, nullptr);
+
+            pushConstants.reverseLevel     = reverseLevel;
+            pushConstants.levelTotalGroups = residentStats.backLodCount[reverseLevel];
+            vkCmdPushConstants(cmd, m_pipelineLayout, m_stageFlags, 0, sizeof(pushConstants), &pushConstants);
+            res.cmdLinearDispatch(cmd, getWorkGroupCount(pushConstants.levelTotalGroups, STREAM_AGEFILTER_GROUPS_WORKGROUP));
+          }
+        }
+      }
+    }
 
     // no barrier needed here, given the critical barrier prior using these addresses
     // is directly prior running `m_pipelines.computeBlasInsertCluster`
@@ -1541,6 +1907,8 @@ void RendererRayTraceClustersLod::initRayTracingPipeline(Resources& res)
     eMiss,
     eMissAO,
     eClosestHit,
+    eClosestHitAO,
+    // eAnyHit is last so it can be dropped from stageCount when the scene has no alpha-masked geometry
     eAnyHit,
     eShaderGroupCount
   };
@@ -1557,18 +1925,22 @@ void RendererRayTraceClustersLod::initRayTracingPipeline(Resources& res)
     stages[s].pName = "main";
   }
 
-  stages[eRaygen].stage              = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
-  stageShaders[eRaygen].codeSize     = nvvkglsl::GlslCompiler::getSpirvSize(m_shaders.rayGen);
-  stageShaders[eRaygen].pCode        = nvvkglsl::GlslCompiler::getSpirv(m_shaders.rayGen);
-  stages[eMiss].stage                = VK_SHADER_STAGE_MISS_BIT_KHR;
-  stageShaders[eMiss].codeSize       = nvvkglsl::GlslCompiler::getSpirvSize(m_shaders.rayMiss);
-  stageShaders[eMiss].pCode          = nvvkglsl::GlslCompiler::getSpirv(m_shaders.rayMiss);
-  stages[eMissAO].stage              = VK_SHADER_STAGE_MISS_BIT_KHR;
-  stageShaders[eMissAO].codeSize     = nvvkglsl::GlslCompiler::getSpirvSize(m_shaders.rayMissAO);
-  stageShaders[eMissAO].pCode        = nvvkglsl::GlslCompiler::getSpirv(m_shaders.rayMissAO);
-  stages[eClosestHit].stage          = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
-  stageShaders[eClosestHit].codeSize = nvvkglsl::GlslCompiler::getSpirvSize(m_shaders.rayClosestHit);
-  stageShaders[eClosestHit].pCode    = nvvkglsl::GlslCompiler::getSpirv(m_shaders.rayClosestHit);
+  stages[eRaygen].stage                = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+  stageShaders[eRaygen].codeSize       = nvvkglsl::GlslCompiler::getSpirvSize(m_shaders.rayGen);
+  stageShaders[eRaygen].pCode          = nvvkglsl::GlslCompiler::getSpirv(m_shaders.rayGen);
+  stages[eMiss].stage                  = VK_SHADER_STAGE_MISS_BIT_KHR;
+  stageShaders[eMiss].codeSize         = nvvkglsl::GlslCompiler::getSpirvSize(m_shaders.rayMiss);
+  stageShaders[eMiss].pCode            = nvvkglsl::GlslCompiler::getSpirv(m_shaders.rayMiss);
+  stages[eMissAO].stage                = VK_SHADER_STAGE_MISS_BIT_KHR;
+  stageShaders[eMissAO].codeSize       = nvvkglsl::GlslCompiler::getSpirvSize(m_shaders.rayMissAO);
+  stageShaders[eMissAO].pCode          = nvvkglsl::GlslCompiler::getSpirv(m_shaders.rayMissAO);
+  stages[eClosestHit].stage            = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+  stageShaders[eClosestHit].codeSize   = nvvkglsl::GlslCompiler::getSpirvSize(m_shaders.rayClosestHit);
+  stageShaders[eClosestHit].pCode      = nvvkglsl::GlslCompiler::getSpirv(m_shaders.rayClosestHit);
+  stages[eClosestHitAO].stage          = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+  stageShaders[eClosestHitAO].codeSize = nvvkglsl::GlslCompiler::getSpirvSize(m_shaders.rayClosestHitAO);
+  stageShaders[eClosestHitAO].pCode    = nvvkglsl::GlslCompiler::getSpirv(m_shaders.rayClosestHitAO);
+  // eAnyHit is the last stage; assigned (and counted) only when the scene has alpha-masked geometry
   if(m_hasAlphaMask)
   {
     stages[eAnyHit].stage          = VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
@@ -1605,12 +1977,31 @@ void RendererRayTraceClustersLod::initRayTracingPipeline(Resources& res)
   group.closestHitShader = eClosestHit;
   shaderGroups.push_back(group);
 
-  // hit group with any-hit, for alpha-masked geometry (only when the scene has any)
+  // hit group with any-hit, for alpha-masked geometry (geometry index 1); present only when the scene has
+  // such geometry. The AO ray's SBT record offset (render_shading.glsl) adapts to the primary hit-group
+  // count so the AO groups below stay addressable either way.
   if(m_hasAlphaMask)
   {
     group.type             = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
     group.anyHitShader     = eAnyHit;
     group.closestHitShader = eClosestHit;
+    shaderGroups.push_back(group);
+  }
+
+  // closest hit shader for shadow hit tracking (opaque geometry index 0)
+  group.type             = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+  group.anyHitShader     = VK_SHADER_UNUSED_KHR;
+  group.generalShader    = VK_SHADER_UNUSED_KHR;
+  group.closestHitShader = eClosestHitAO;
+  shaderGroups.push_back(group);
+
+  // same for the alpha-masked geometry slot (geometry index 1),
+  // which additionally runs the alpha-test any-hit shader
+  if(m_hasAlphaMask)
+  {
+    group.type             = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+    group.anyHitShader     = eAnyHit;
+    group.closestHitShader = eClosestHitAO;
     shaderGroups.push_back(group);
   }
 
@@ -1892,14 +2283,18 @@ void RendererRayTraceClustersLod::initInstancePartitions(Resources& res, RenderS
                          sizeof(uint32_t) * m_renderInstances.size(),
                          const_cast<uint32_t*>(rscene.scene->m_instancePartitions.data()));
 
-  if(!m_config.usePartitionEarlyOut)
-    return;
-
+  // also used by the ptlas statistics
   std::vector<glm::uvec2> ranges(partitions.size());
   for(size_t i = 0; i < partitions.size(); i++)
   {
     ranges[i] = glm::uvec2(partitions[i].instanceOffset, partitions[i].instanceCount);
   }
+  res.simpleUploadBuffer(m_sceneDataBuffer, m_sceneBuildShaderio.partitionRanges - m_sceneDataBuffer.address,
+                         sizeof(glm::uvec2) * ranges.size(), ranges.data());
+
+  if(!m_config.usePartitionEarlyOut)
+    return;
+
   res.simpleUploadBuffer(m_sceneDataBuffer, m_sceneBuildShaderio.partitionInstanceOrder - m_sceneDataBuffer.address,
                          sizeof(uint32_t) * m_renderInstances.size(),
                          const_cast<uint32_t*>(rscene.scene->m_partitionInstanceOrder.data()));
@@ -1911,8 +2306,6 @@ void RendererRayTraceClustersLod::initInstancePartitions(Resources& res, RenderS
   }
   res.simpleUploadBuffer(m_sceneDataBuffer, m_sceneBuildShaderio.partitionBboxes - m_sceneDataBuffer.address,
                          sizeof(shaderio::BBox) * bboxes.size(), bboxes.data());
-  res.simpleUploadBuffer(m_sceneDataBuffer, m_sceneBuildShaderio.partitionRanges - m_sceneDataBuffer.address,
-                         sizeof(glm::uvec2) * ranges.size(), ranges.data());
 }
 
 void RendererRayTraceClustersLod::updateRayTracingPtlas(VkCommandBuffer cmd)

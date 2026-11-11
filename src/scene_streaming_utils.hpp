@@ -29,6 +29,9 @@ struct StreamingConfig
   bool allowBlasCaching           = true;
   bool useAsyncTransfer           = false;
   bool useDecoupledAsyncTransfer  = false;
+  // memory comparison: ray tracing also keeps the (unused) positions in the persistent group
+  // blob, as rasterization does
+  bool keepPersistentPositions = false;
 
   uint32_t maxPerFrameLoadRequests   = 128;
   uint32_t maxPerFrameUnloadRequests = 1024;
@@ -243,7 +246,7 @@ public:
   size_t       getMaxClasBytes() const { return m_maxClasBytes; }
   void         deinitClas(Resources& res);
   void         deinit(Resources& res);
-  void         reset(shaderio::StreamingResident& shaderData);
+  void         reset(Resources::BatchedUploader& uploader, shaderio::StreamingResident& shaderData);
 
   size_t getOperationsSize() const;
   size_t getClasOperationsSize() const;
@@ -339,8 +342,11 @@ private:
 
   nvvk::Buffer m_residentBuffer;
   uint64_t     m_residentGroupsOffset;
+  uint64_t     m_residentGroupHitFramesOffset;
+  uint64_t     m_residentGroupHitWidthsOffset;
   uint64_t     m_residentGroupIDsOffset;
   uint64_t     m_residentClustersOffset;
+  uint64_t     m_residentClusterGroupsOffset;
   uint64_t     m_residentActiveOffset;
   uint64_t     m_residentActiveUpdateOffset;
 
@@ -585,13 +591,14 @@ public:
   // then allocate
   bool allocate(nvvk::BufferSubAllocation& handle, GeometryGroup group, size_t sz, uint64_t& deviceAddress);
   // and get transfer space. staging holds the whole group blob; the persistent copy covers
-  // dstHandle. for ray tracing, positionsSize trailing bytes are split off into posBuffer at
-  // posDstOffset (the streamed CLAS-build positions) instead of the persistent blob.
+  // dstHandle. for ray tracing, the positionsSize bytes at posSrcOffset within the blob are
+  // also copied into posBuffer at posDstOffset (the streamed CLAS-build positions).
   void* appendTransfer(TaskInfo&                        operation,
                        const nvvk::BufferSubAllocation& dstHandle,
                        size_t                           positionsSize = 0,
                        VkBuffer                         posBuffer     = VK_NULL_HANDLE,
-                       size_t                           posDstOffset  = 0);
+                       size_t                           posDstOffset  = 0,
+                       size_t                           posSrcOffset  = 0);
   // at end of updates trigger cmd update
   // returns number of copy operations required
   uint32_t cmdUploadTask(VkCommandBuffer cmd);

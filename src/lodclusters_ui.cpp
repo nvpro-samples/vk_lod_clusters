@@ -510,7 +510,7 @@ void LodClusters::cameraPathUI()
 
   PE::begin("camerapath", ImGuiTableFlags_Resizable);
   PE::Checkbox("Smooth", &path.smooth, "Catmull-Rom interpolation, otherwise piecewise linear");
-  PE::Checkbox("Loop", &path.loop, "Real-time playback wraps around");
+  PE::Checkbox("Loop", &path.loop, "Playback wraps around");
   {
     float dur = float(path.duration);
     if(PE::InputFloat("Duration (s)", &dur, 0.1f, 1.0f, "%.2f", 0, "Seconds for a full real-time playback"))
@@ -834,7 +834,22 @@ void LodClusters::uiSettingsRendering()
       }
       PE::Checkbox("Instance BBoxes", &m_frameConfig.showInstanceBboxes);
       PE::Checkbox("Cluster BBoxes", &m_frameConfig.showClusterBboxes);
-      PE::Checkbox("Reflective box", (bool*)&m_frameConfig.frameConstants.useMirrorBox);
+      PE::entry(
+          "Optical Effect",
+          [&]() { return m_ui.enumCombobox(GUI_OPTICAL, "##mirror", &m_frameConfig.frameConstants.opticalMode); },
+          "None, a flat box mirror, a convex chrome sphere, or a camera-anchored magnifier lens");
+      if(m_frameConfig.frameConstants.opticalMode == OPTICAL_MODE_LENS)
+      {
+        float sceneScale = std::max(m_frameConfig.frameConstants.sceneSize, 1.0f);
+        PE::SliderFloat("Lens zoom", &m_frameConfig.frameConstants.lensZoom, 1.0f, 64.0f, "%.2f",
+                        ImGuiSliderFlags_Logarithmic, "Magnification of the view through the lens");
+        PE::SliderFloat("Lens distortion", &m_frameConfig.frameConstants.lensDistortion, -1.0f, 1.0f, "%.2f", 0,
+                        "Radial distortion at the lens rim, < 0 barrel, > 0 pincushion");
+        PE::SliderFloat("Lens Size", &m_frameConfig.frameConstants.lensSize, sceneScale * 0.00001f, sceneScale * 0.1f,
+                        "%.4f", ImGuiSliderFlags_Logarithmic, "Aperture radius of the lens");
+        PE::SliderFloat("Lens Distance", &m_frameConfig.frameConstants.lensDist, sceneScale * 0.00001f, sceneScale * 0.1f,
+                        "%.4f", ImGuiSliderFlags_Logarithmic, "Distance ahead of the camera the screen-centered lens is kept");
+      }
       PE::treePop();
     }
 
@@ -1458,6 +1473,59 @@ void LodClusters::uiSettingsStreaming()
       ImGui::PopStyleColor();
     }
 
+    if(m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD)
+    {
+      PE::Checkbox("Hit streaming", &m_rendererConfig.useHitStreaming,
+                   "If enabled we are using ray tracing hits to guide loading and unloading");
+      if(PE::treeNode("Hit settings"))
+      {
+        ImGui::BeginDisabled(!m_rendererConfig.useHitStreaming);
+        PE::entry(
+            "Propagation",
+            [&]() {
+              const char* items[] = {"Resident levels (1 hop)", "Resident subtree (BFS)", "All levels (sweep)", "All levels (rolling)"};
+              return ImGui::Combo("##streampropmode", &m_rendererConfig.streamPropagationMode, items, IM_ARRAYSIZE(items));
+            },
+            "How per-group demand floods coarse->fine to gate stream-in (recompiles shaders). "
+            "Resident levels: seed resident hits, one hop (~1 level per round-trip). "
+            "Resident subtree: work-proportional BFS over demanded subtrees. "
+            "All levels: full level-wise sweep over every group. "
+            "All levels (rolling): sweep the coarsest N levels every frame and roll one finer level per "
+            "frame (cheaper than the full sweep, coarse data still streams in immediately).");
+        ImGui::BeginDisabled(m_rendererConfig.streamPropagationMode != STREAM_PROPAGATION_ALL_LEVELS_ROLLING);
+        PE::InputIntClamped("Rolling coarse levels", (int*)&m_frameConfig.streamRollingCoarseLevels, 1, 32, 1, 1,
+                            ImGuiInputTextFlags_EnterReturnsTrue,
+                            "All levels (rolling): sweep this many coarsest lod levels in full every frame "
+                            "(cheap, immediate stream-in for coarse data); the finer levels advance one per "
+                            "frame. Higher approaches the full sweep.");
+        ImGui::EndDisabled();
+        // persistent drain descends the whole subtree in one dispatch, so it only applies to
+        // the resident-subtree BFS (resident-levels is a deliberate single hop per frame).
+        ImGui::BeginDisabled(m_rendererConfig.streamPropagationMode != STREAM_PROPAGATION_RESIDENT_SUBTREE);
+        PE::Checkbox("Persistent demand", &m_rendererConfig.usePersistentHitDemand,
+                     "Run the resident-subtree demand descent as one persistent producer/consumer "
+                     "dispatch that drains the queue, instead of a host-synchronised dispatch per "
+                     "lod level (recompiles shaders).");
+        ImGui::EndDisabled();
+        PE::InputIntClamped("Shadow hit depth", &m_rendererConfig.hitStreamingShadowDepth, 1, 8, 1, 1, 0,
+                            "Path depth up to which sun shadow rays register their hits: 1 from the primary hits, "
+                            "2 also from the first bounce. They run a closest-hit instead of skipping it, ambient "
+                            "occlusion and sky samples never register (recompiles shaders).");
+        PE::Checkbox("LoD adjustment", &m_rendererConfig.useHitStreamingLod,
+                     "Additionally adjust the lod level based on the ray cone widths of hits.");
+        ImGui::BeginDisabled(!m_rendererConfig.useHitStreamingLod);
+        PE::InputFloat("LoD width factor", &m_frameConfig.hitLodWidthFactor, 0.1f, 1.0f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue,
+                       "scale on the acceptable error derived from hit ray cone widths, > 1 allows finer detail, < 1 clamps to coarser");
+        PE::InputFloat("LoD camera floor", &m_frameConfig.hitLodCameraScale, 1.0f, 2.0f, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue,
+                       "also open what the camera metric at this multiple of the error wants, regardless of ray hits. "
+                       "Keeps regions no ray reached yet (fast camera turns) from the coarsest level. 0 disables");
+        m_frameConfig.hitLodCameraScale = std::max(0.0f, m_frameConfig.hitLodCameraScale);
+        ImGui::EndDisabled();
+        ImGui::EndDisabled();
+        PE::treePop();
+      }
+    }
+
     PE::SliderFloat("Unloading threshold pct.", &m_frameConfig.streamingUnloadThreshold, 0.0f, 0.75f, "%.3f", 0,
                     "If memory load factor is greater than this start unloading.");
 
@@ -1505,6 +1573,8 @@ void LodClusters::uiSettingsStreaming()
 
     if(PE::treeNode("Frame settings"))
     {
+      PE::Checkbox("Freeze", &m_frameConfig.freezeStreaming);
+
       PE::InputIntClamped("Unload frame delay", (int*)&m_frameConfig.streamingAgeThreshold, 2, 1024, 1, 1,
                           ImGuiInputTextFlags_EnterReturnsTrue);
 
@@ -1696,17 +1766,17 @@ void LodClusters::uiStreamingMemory()
   if(ImGui::Begin("Streaming memory", &m_showWindow.streamingMemory))
   {
     const uint32_t maxSlots = 512;
-    if(m_streamGeometryHistogram.empty() == m_tweak.useStreaming)
+    if(m_streamGeometryHistory.empty() == m_tweak.useStreaming)
     {
-      m_streamHistogramMax    = 0;
-      m_streamHistogramOffset = 0;
-      m_streamGeometryHistogram.resize(m_tweak.useStreaming ? maxSlots : 0, 0);
-      m_streamClasHistogram.resize(m_tweak.useStreaming ? maxSlots : 0, 0);
+      m_streamHistoryMax    = 0;
+      m_streamHistoryOffset = 0;
+      m_streamGeometryHistory.resize(m_tweak.useStreaming ? maxSlots : 0, 0);
+      m_streamClasHistory.resize(m_tweak.useStreaming ? maxSlots : 0, 0);
     }
 
     // the render scene only follows `m_tweak.useStreaming` in `handleChanges`, so for one frame
     // after streaming is switched on the scene is still the preloaded one, without streaming state
-    if(m_renderScene && m_renderScene->useStreaming && !m_streamGeometryHistogram.empty())
+    if(m_renderScene && m_renderScene->useStreaming && !m_streamGeometryHistory.empty())
     {
       m_renderScene->sceneStreaming.getStats(stats);
 
@@ -1727,16 +1797,15 @@ void LodClusters::uiStreamingMemory()
         mbCombined = mbGeometry + mbClas;
       }
 
-      m_streamHistogramMax = std::max(uint32_t(double(mbCombined) * 1.1), m_streamHistogramMax);
+      m_streamHistoryMax = std::max(uint32_t(double(mbCombined) * 1.1), m_streamHistoryMax);
 
-      m_streamHistogramOffset = (m_streamHistogramOffset + 1) % maxSlots;
-      m_streamGeometryHistogram[(m_streamHistogramOffset + maxSlots - 1) % maxSlots] = mbGeometry;
-      m_streamClasHistogram[(m_streamHistogramOffset + maxSlots - 1) % maxSlots]     = mbCombined;
+      m_streamHistoryOffset = (m_streamHistoryOffset + 1) % maxSlots;
+      m_streamGeometryHistory[(m_streamHistoryOffset + maxSlots - 1) % maxSlots] = mbGeometry;
+      m_streamClasHistory[(m_streamHistoryOffset + maxSlots - 1) % maxSlots]     = mbCombined;
 
       const std::vector<uint32_t>* clasHistogram =
-          (m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD) ? &m_streamClasHistogram : nullptr;
-      uiPlotStreamingMemory(std::string(MEMORY_MB), m_streamGeometryHistogram, clasHistogram, m_streamHistogramMax,
-                            m_streamHistogramOffset);
+          (m_tweak.renderer == RENDERER_RAYTRACE_CLUSTERS_LOD) ? &m_streamClasHistory : nullptr;
+      uiPlotStreamingMemory(std::string(MEMORY_MB), m_streamGeometryHistory, clasHistogram, m_streamHistoryMax, m_streamHistoryOffset);
     }
   }
   ImGui::End();
@@ -1867,6 +1936,16 @@ void LodClusters::uiStatistics()
                                    uint32_t(readback.numPtlasDirtyPartitions * 100 / m_scene->m_partitions.size()));
           ImGui::SetItemTooltip("partitions that contain at least one updated instance, out of %zu",
                                 m_scene->m_partitions.size());
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+          ImGui::Text("PTLAS Part. Instances");
+          ImGui::TableNextColumn();
+          ImGui::Text("%s", formatMetric(readback.numPtlasDirtyInstances).c_str());
+          ImGui::TableNextColumn();
+          ImGui::Text("%d %%", m_scene->m_instances.empty() ?
+                                   0 :
+                                   uint32_t(uint64_t(readback.numPtlasDirtyInstances) * 100 / m_scene->m_instances.size()));
+          ImGui::SetItemTooltip("all instances within the partitions that contain at least one updated instance");
           ImGui::TableNextRow();
           ImGui::TableNextColumn();
         }
@@ -2222,9 +2301,30 @@ void LodClusters::uiMiscSettings(bool pickingValid, const glm::dvec3& hitPos)
     {
       namespace PE = nvgui::PropertyEditor;
       PE::begin("misc", ImGuiTableFlags_Resizable);
-      PE::Checkbox("Use", (bool*)&m_frameConfig.frameConstants.useMirrorBox);
-      PE::InputFloat3("Position", &m_frameConfig.frameConstants.wMirrorBox.x);
-      PE::InputFloat("Size", &m_frameConfig.frameConstants.wMirrorBox.w);
+      PE::entry(
+          "Optical Effect",
+          [&]() { return m_ui.enumCombobox(GUI_OPTICAL, "##mirror", &m_frameConfig.frameConstants.opticalMode); },
+          "None, a flat box mirror, a convex chrome sphere, or a camera-anchored magnifier lens — with "
+          "hit-based lod each effect drives the ray cone widths differently, so the streamed detail "
+          "follows the image");
+      bool isLens = m_frameConfig.frameConstants.opticalMode == OPTICAL_MODE_LENS;
+      if(isLens)
+      {
+        float sceneScale = std::max(m_frameConfig.frameConstants.sceneSize, 1.0f);
+        PE::SliderFloat("Lens zoom", &m_frameConfig.frameConstants.lensZoom, 1.0f, 64.0f, "%.2f",
+                        ImGuiSliderFlags_Logarithmic, "Magnification of the view through the lens");
+        PE::SliderFloat("Lens distortion", &m_frameConfig.frameConstants.lensDistortion, -1.0f, 1.0f, "%.2f", 0,
+                        "Radial distortion at the lens rim, < 0 barrel, > 0 pincushion");
+        PE::SliderFloat("Lens Size", &m_frameConfig.frameConstants.lensSize, sceneScale * 0.00001f, sceneScale, "%.4f",
+                        ImGuiSliderFlags_Logarithmic, "Aperture radius of the lens");
+        PE::SliderFloat("Lens Distance", &m_frameConfig.frameConstants.lensDist, sceneScale * 0.00001f, sceneScale, "%.4f",
+                        ImGuiSliderFlags_Logarithmic, "Distance ahead of the camera the screen-centered lens is kept");
+      }
+      else
+      {
+        PE::InputFloat3("Position", &m_frameConfig.frameConstants.wMirrorBox.x);
+        PE::InputFloat("Size", &m_frameConfig.frameConstants.wMirrorBox.w);
+      }
       PE::InputFloat("Size distance factor", &m_tweak.mirrorBoxScale, 0, 0, "%.3f", 0,
                      "When event is used, determine mirror box size based on `distance * factor`");
       PE::end();
@@ -2267,6 +2367,10 @@ void LodClusters::uiMiscSettings(bool pickingValid, const glm::dvec3& hitPos)
                    "ID. -1 disables the filter.");
       ImGui::EndDisabled();
       PE::Checkbox("Auto reset timer", &m_tweak.autoResetTimers);
+      PE::InputIntClamped("Auto reset delay", (int*)&m_tweak.autoResetTimersDelay, 0, 4096, 1, 8, ImGuiInputTextFlags_EnterReturnsTrue,
+                          "Frames skipped after a config/sequence change before the profiler accumulates again (0 = profiler default of 8)");
+      PE::InputIntClamped("Memory report frames", (int*)&m_memoryReportInterval, 0, 1000000, 1, 100,
+                          ImGuiInputTextFlags_EnterReturnsTrue, "Log a memory report every N frames (0 = off)");
       if(m_resources.m_supportsMeshShaderNV)
       {
         PE::Checkbox("Use EXT Mesh shader", &m_rendererConfig.useEXTmeshShader);
@@ -2303,14 +2407,36 @@ void LodClusters::uiDebug()
       static bool debugFloat = false;
       static bool debugHex   = false;
       static bool debugAll   = false;
-      ImGui::Checkbox(" as float", &debugFloat);
+      ImGui::Checkbox("float", &debugFloat);
       ImGui::SameLine();
       ImGui::Checkbox("hex", &debugHex);
       ImGui::SameLine();
       ImGui::Checkbox("all", &debugAll);
-      //ImGui::SameLine();
-      //bool     doPrint = ImGui::Button("print");
-      uint32_t count = debugAll ? 64 : 32;
+      ImGui::SameLine();
+      bool     doDump = ImGui::Button("clipboard");
+      uint32_t count  = debugAll ? 64 : 32;
+
+      if(doDump)
+      {
+        std::string dumpText;
+        for(uint32_t i = 0; i < count; i++)
+        {
+          if(debugFloat)
+          {
+            dumpText += fmt::format("{};{};{}\n", *(float*)&readback.debugA[i], *(float*)&readback.debugB[i],
+                                    *(float*)&readback.debugC[i]);
+          }
+          else if(debugHex)
+          {
+            dumpText += fmt::format("{:X};{:X};{:X}\n", readback.debugA[i], readback.debugB[i], readback.debugC[i]);
+          }
+          else
+          {
+            dumpText += fmt::format("{};{};{}\n", readback.debugA[i], readback.debugB[i], readback.debugC[i]);
+          }
+        }
+        ImGui::SetClipboardText(dumpText.c_str());
+      }
 
       if(ImGui::BeginTable("##Debug", 4, ImGuiTableFlags_BordersOuter))
       {
@@ -2412,9 +2538,28 @@ void LodClusters::onUIRender()
       {
         requestCameraRecenter = true;
       }
-      if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Right) || ImGui::IsKeyPressed(ImGuiKey_M))
+      if(ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Right) || ImGui::IsKeyPressed(ImGuiKey_M, false))
       {
+        if(m_frameConfig.frameConstants.opticalMode != OPTICAL_MODE_BOX)
+        {
+          m_frameConfig.frameConstants.opticalMode = OPTICAL_MODE_BOX;
+        }
+        else
+        {
+          m_frameConfig.frameConstants.opticalMode = OPTICAL_MODE_NONE;
+        }
         requestMirrorBox = true;
+      }
+      if(ImGui::IsKeyPressed(ImGuiKey_L, false))
+      {
+        if(m_frameConfig.frameConstants.opticalMode != OPTICAL_MODE_LENS)
+        {
+          m_frameConfig.frameConstants.opticalMode = OPTICAL_MODE_LENS;
+        }
+        else
+        {
+          m_frameConfig.frameConstants.opticalMode = OPTICAL_MODE_NONE;
+        }
       }
 
       bool screenShotJpg = ImGui::IsKeyChordPressed(ImGuiKey_F12);
@@ -2493,21 +2638,21 @@ void LodClusters::onUIRender()
 
       if(requestMirrorBox)
       {
-        m_frameConfig.frameConstants.useMirrorBox = 1;
-        m_frameConfig.frameConstants.wMirrorBox = glm::vec4(hitPos, glm::distance(eye, hitPos) * m_tweak.mirrorBoxScale);
+        float size                              = float(glm::distance(eye, hitPos)) * m_tweak.mirrorBoxScale;
+        m_frameConfig.frameConstants.wMirrorBox = glm::vec4(hitPos, size);
       }
     }
     else
     {
       if(requestMirrorBox)
       {
-        m_frameConfig.frameConstants.useMirrorBox = 0;
+        m_frameConfig.frameConstants.opticalMode = OPTICAL_MODE_NONE;
       }
     }
   }
   else if(requestMirrorBox && !pickingValid)
   {
-    m_frameConfig.frameConstants.useMirrorBox = 0;
+    m_frameConfig.frameConstants.opticalMode = OPTICAL_MODE_NONE;
   }
 
   uiSettings();

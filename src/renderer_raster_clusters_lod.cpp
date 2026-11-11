@@ -135,6 +135,8 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene)
                              m_config.usePersistentTraversal && m_config.useVulkanMemoryModel ? "1" : "0");
   options.AddMacroDefinition("TRAVERSAL_ATOMIC_LOAD_STORE", m_config.useAtomicLoadStore ? "1" : "0");
   options.AddMacroDefinition("HAS_TEXTURED_MATERIALS", rscene.scene->m_hasTexturedMaterials ? "1" : "0");
+  options.AddMacroDefinition("USE_HIT_STREAMING", "0");
+  options.AddMacroDefinition("USE_HIT_STREAMING_LOD", "0");
 
   shaderc::CompileOptions optionsNoAlpha = options;
   optionsNoAlpha.AddMacroDefinition("HAS_ALPHA_TEST", "0");
@@ -543,8 +545,10 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
   if(rscene.useStreaming)
   {
     SceneStreaming::FrameSettings settings;
+    settings.freeze          = frame.freezeStreaming;
     settings.ageThreshold    = frame.streamingAgeThreshold;
     settings.unloadThreshold = frame.streamingUnloadThreshold;
+    settings.useHitStreaming = false;
     settings.useBlasCaching  = false;
     settings.useDiscreteLod  = m_config.useDiscreteLod;
 

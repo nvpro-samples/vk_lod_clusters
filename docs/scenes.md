@@ -104,4 +104,4 @@ These scenes are based on models from [https://threedscans.com/](https://threeds
   - 116 MB zip 2025/7/11 (original was 280 MB zip, slow to load)
 
 On a "AMD Ryzen 9 7950X 16-Core Processor" processing time for `threedscans_animals` took around 10 seconds (5 unique geometries). That scene has few geometries and many triangles per geometry. Processing is parallelized over the unique geometries, so such a scene keeps only a few threads busy. Scenes with many objects spread over far more threads and tend to be processed faster overall.
-By default the application now stores a cache file of the last processing (`--autosavecache 1`).
+The application stores a cache file of the last processing next to the scene.

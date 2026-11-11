@@ -246,8 +246,6 @@ struct SceneLoaderConfig
   // of installed memory (-50 == 50 %). Always clamped to what is currently available.
   int processingMemoryGiB = 0;
 
-  // save cache file after load automatically
-  bool autoSaveCache = true;
   // try load from cache file if file was found
   bool autoLoadCache = true;
   // when loading from cache file, memory map it,
@@ -286,7 +284,7 @@ struct SceneLoaderConfig
     // ignore progressInfo (runtime pointers, not configuration)
     return processingThreadsPct == other.processingThreadsPct && processingOnly == other.processingOnly
            && processingAllowPartial == other.processingAllowPartial && processingMemoryGiB == other.processingMemoryGiB
-           && autoSaveCache == other.autoSaveCache && autoLoadCache == other.autoLoadCache && memoryMappedCache == other.memoryMappedCache
+           && autoLoadCache == other.autoLoadCache && memoryMappedCache == other.memoryMappedCache
            && forcePreprocessMiB == other.forcePreprocessMiB && simplifyOverridesFile == other.simplifyOverridesFile
            && skipNodeNames == other.skipNodeNames && skipMaterialNames == other.skipMaterialNames
            && skipMeshNames == other.skipMeshNames && partitionNodeNames == other.partitionNodeNames
@@ -709,6 +707,9 @@ public:
 
     // info about state of a group
     std::span<const GroupInfo> groupInfos;
+    // packed overlap table: per-group header + flat coarse-then-fine entries
+    std::span<const shaderio::GroupOverlapInfo> groupOverlapInfos;
+    std::span<const uint32_t>                   groupOverlapEntries;
 
     std::span<const shaderio::LodLevel> lodLevels;
     std::span<const shaderio::Node>     lodNodes;
@@ -724,6 +725,8 @@ public:
       cachedSize += (sizeof(GeometryBase) + serialization::ALIGN_MASK) & ~serialization::ALIGN_MASK;
       cachedSize += serialization::getCachedSize(groupData);
       cachedSize += serialization::getCachedSize(groupInfos);
+      cachedSize += serialization::getCachedSize(groupOverlapInfos);
+      cachedSize += serialization::getCachedSize(groupOverlapEntries);
       cachedSize += serialization::getCachedSize(lodLevels);
       cachedSize += serialization::getCachedSize(lodNodes);
       cachedSize += serialization::getCachedSize(lodNodeBboxes);
@@ -909,6 +912,7 @@ public:
   uint32_t m_maxPerGeometryClusters  = 0;
   uint32_t m_maxPerGeometryTriangles = 0;
   uint32_t m_maxPerGeometryVertices  = 0;
+  uint32_t m_maxPerGeometryGroups    = 0;
 
   uint32_t m_maxClusterTriangles = 0;
   uint32_t m_maxClusterVertices  = 0;
@@ -970,8 +974,10 @@ private:
     uint32_t attributeMaterialOffset = ~0u;
 
     // persistent used in view
-    std::vector<uint8_t>   groupData;
-    std::vector<GroupInfo> groupInfos;
+    std::vector<uint8_t>                    groupData;
+    std::vector<GroupInfo>                  groupInfos;
+    std::vector<shaderio::GroupOverlapInfo> groupOverlapInfos;
+    std::vector<uint32_t>                   groupOverlapEntries;
 
     std::vector<shaderio::LodLevel> lodLevels;
     std::vector<shaderio::BBox>     lodNodeBboxes;
@@ -1027,7 +1033,7 @@ private:
     struct Header
     {
       uint64_t magic               = 0x006f65676e73766eULL;  // nvsngeo
-      uint32_t geoVersion          = 15;
+      uint32_t geoVersion          = 16;
       uint32_t geoStructSize       = uint32_t(sizeof(GeometryView));
       uint32_t configVersion       = SceneConfig::version;
       uint32_t configStructSize    = uint32_t(sizeof(SceneConfig));
@@ -1055,6 +1061,7 @@ private:
       //    triangle indices with meshoptimizer's meshlet codec
       // 14 compressed groups palette encode their per-triangle material bytes
       // 15 GeometryBase.kdop, oriented 26-DOP per geometry
+      // 16 group overlap tables for streaming (GroupOverlapInfo + flat entries, both directions)
     };
 
     Header header;
@@ -1269,6 +1276,7 @@ private:
 
   void buildGeometryLod(ProcessingInfo& processingInfo, GeometryStorage& geometry);
   void buildGeometryLodHierarchy(GeometryStorage& geometry);
+  void buildGeometryLodOverlap(ProcessingInfo& processingInfo, GeometryStorage& geometry);
 
   void computeLodBboxes_recursive(GeometryStorage& geometry, size_t nodeIdx);
   void buildGeometryDedupVertices(ProcessingInfo& processingInfo, GeometryStorage& geometry);

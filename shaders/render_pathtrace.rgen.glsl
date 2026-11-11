@@ -200,13 +200,58 @@ float hitBbox(vec3 rayPos, vec3 rayDir, vec3 bboxMin, vec3 bboxMax)
   return t1 > max(t0, 0.0) ? t0 : -1.0;
 }
 
+// near intersection with a sphere (the outside of its surface), as in render_raytrace.rgen.glsl
+float hitSphere(vec3 rayPos, vec3 rayDir, vec3 center, float radius)
+{
+  vec3  oc = rayPos - center;
+  float b  = dot(oc, rayDir);
+  float c  = dot(oc, oc) - radius * radius;
+  float h  = b * b - c;
+  if(h < 0.0)
+    return -1.0;
+  float t = -b - sqrt(h);
+  return t > 0.0 ? t : -1.0;
+}
+
+// flat circular lens aperture at 'center' facing 'normal', as in render_raytrace.rgen.glsl
+float hitDisc(vec3 rayPos, vec3 rayDir, vec3 center, vec3 normal, float radius)
+{
+  float denom = dot(rayDir, normal);
+  if(denom == 0.0)
+    return -1.0;
+  float t = dot(center - rayPos, normal) / denom;
+  if(t <= 0.0)
+    return -1.0;
+  vec3 p = rayPos + rayDir * t;
+  return dot(p - center, p - center) <= radius * radius ? t : -1.0;
+}
+
+// direction through the lens, as in render_raytrace.rgen.glsl
+vec3 lensZoomDirection(vec3 wDir)
+{
+  vec3  vDir   = mat3(view.viewMatrix) * wDir;
+  vec2  tanA   = vDir.xy / -vDir.z;
+  float rimTan = view.lensSize / view.lensDist;
+  tanA *= (1.0 + view.lensDistortion * dot(tanA, tanA) / (rimTan * rimTan)) / view.lensZoom;
+  return normalize(mat3(view.viewMatrixI) * vec3(tanA, -1.0));
+}
+
+// Sun rays run the closest-hit, which registers them for hit-based streaming, up to path
+// depth HIT_STREAMING_SHADOW_DEPTH (bounce 0 is the primary hit). Sky and AO samples skip it,
+// the bounce ray registers the same hemisphere.
+#if USE_STREAMING && USE_HIT_STREAMING
+#define PT_SUN_HITS(bounce) ((bounce) < HIT_STREAMING_SHADOW_DEPTH)
+#else
+#define PT_SUN_HITS(bounce) false
+#endif
+
 // Shadow / visibility ray for the path tracer. Unlike the shared traceShadowRay() (a separate float
 // payload at location 1), this reuses PathRayPayload so the alpha-mask any-hit reads the SAME ray cone as
-// the primary/indirect rays. We keep closest-hit skipped: hitT is the sentinel - set to occluded here, and
-// the miss shader (index 0) flips it to < 0 when the light is reached.
-float ptTraceShadowRay(vec3 wPos, vec3 wNormal, vec3 wDir, float coneWidth, float coneSpread)
+// the primary/indirect rays. hitT is the sentinel - set to occluded here, and the miss shader (index 0)
+// flips it to < 0 when the light is reached.
+float ptTraceShadowRay(vec3 wPos, vec3 wNormal, vec3 wDir, float coneWidth, float coneSpread, bool registerHit)
 {
-  uint flags = gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT;
+  uint flags = gl_RayFlagsTerminateOnFirstHitEXT | (registerHit ? 0u : gl_RayFlagsSkipClosestHitShaderEXT);
 #if !HAS_ALPHA_TEST
   flags |= gl_RayFlagsOpaqueEXT;
 #endif
@@ -264,13 +309,14 @@ float ptTraceAO(vec3 wPos, vec3 wGeoNormal, uint sampleCount, float radius, floa
 // (irradiance + prefiltered env) for the dome and everything a further bounce would have found,
 // the diffuse occluded by sky visibility rays, the specular by one reflection ray. Occluded directions
 // keep `pathtraceAmbientFill` of it as bounce light.
-vec3 ptAmbientTail(ShadingMaterial mat, PathHit hit, vec3 N, vec3 V, float NdotV, float coneWidth, float coneSpread, inout uint seed)
+vec3 ptAmbientTail(ShadingMaterial mat, PathHit hit, vec3 N, vec3 V, float NdotV, float coneWidth, float coneSpread, int bounce,
+                   inout uint seed)
 {
   vec3 color  = vec3(0);
   vec3 sunDir = normalize(view.skyPhysical.sunDirection);
   if(view.lightMixer > 0.0 && dot(N, sunDir) > 0.0 && dot(hit.wGeoNormal, sunDir) > 0.0)
   {
-    float visibility = ptTraceShadowRay(hit.wShadowPos, hit.wGeoNormal, sunDir, coneWidth, coneSpread);
+    float visibility = ptTraceShadowRay(hit.wShadowPos, hit.wGeoNormal, sunDir, coneWidth, coneSpread, PT_SUN_HITS(bounce));
     color += view.skyLighting.sunIrradiance * (view.lightMixer * visibility) * computeBrdfCos(mat, N, sunDir, V, NdotV);
   }
 
@@ -291,7 +337,7 @@ vec3 ptAmbientTail(ShadingMaterial mat, PathHit hit, vec3 N, vec3 V, float NdotV
   vec3 tx, ty;
   computeDefaultBasis(N, tx, ty);
   vec3  L           = sampleGgxDirection(N, tx, ty, -V, alphaRoughness, rand(seed), rand(seed));
-  float specularVis = dot(L, hit.wGeoNormal) > 0.0 ? ptTraceShadowRay(hit.wShadowPos, hit.wGeoNormal, L, coneWidth, coneSpread) : 0.0;
+  float specularVis = dot(L, hit.wGeoNormal) > 0.0 ? ptTraceShadowRay(hit.wShadowPos, hit.wGeoNormal, L, coneWidth, coneSpread, false) : 0.0;
   float specularAmbient = mix(view.pathtraceAmbientFill, 1.0, specularVis) * mat.occlusion * view.skyAmbientScale;
   color += (vec3(1.0f) - specularWeight) * diffuse * ambient + specularWeight * specular * specularAmbient;
 
@@ -346,6 +392,8 @@ void main()
   // virtual mirror image doesn't move rigidly in screen space and would otherwise poison DLSS-RR's
   // temporal history for the reflection (matches render_raytrace.rgen.glsl's box-depth behavior).
   bool mirrorRedirected     = false;
+  // the lens is see-through, its depth must not occlude what is behind it in the hiz
+  bool lensHit              = false;
   // haze applies to the first segment, eye to first hit, mirror box included
   vec3  fogDir      = rayDir;
   float fogDistance = 0.0;
@@ -374,18 +422,29 @@ void main()
   int maxDepth = 1 + (view.visualize == VISUALIZE_SHADED ? max(view.pathtraceNumBounces, 0)
                                                          : clamp(view.pathtraceNumBounces, 0, 1));
 
-  // Hacky reflective box (ported from the raster / ray tracer, see render_raytrace.rgen.glsl): only the
-  // primary camera ray reflects off an axis-aligned box; path-traced bounces ignore it. When the box's
-  // front face is reached with no geometry in front of it, the primary ray is redirected along the
-  // mirror reflection and normal path tracing continues from there, so the reflection gets full GI.
-  if(view.useMirrorBox != 0)
+  // Optical effects (ported from the ray tracer, see render_raytrace.rgen.glsl): only the primary camera
+  // ray hits the mirror box, the chrome sphere or the lens; path-traced bounces ignore them. When the
+  // surface is reached with no geometry in front of it, the primary ray is redirected (reflected, or
+  // zoomed by the lens) and normal path tracing continues from there, so the result gets full GI.
+  if(view.opticalMode != OPTICAL_MODE_NONE)
   {
     vec3  mirrorCenter = view.wMirrorBox.xyz;
     float mirrorSize   = view.wMirrorBox.w;
-    float mirrorT      = hitBbox(rayOrigin, rayDir, mirrorCenter - mirrorSize, mirrorCenter + mirrorSize);
+    bool  isLens       = view.opticalMode == OPTICAL_MODE_LENS;
+    // the lens is anchored to the camera, lensDist ahead of the eye and facing it
+    vec3  lensCenter   = rayOrigin + view.viewDir.xyz * view.lensDist;
+    vec3  lensAxis     = -view.viewDir.xyz;
+    float mirrorT;
+    if(isLens)
+      mirrorT = hitDisc(rayOrigin, rayDir, lensCenter, lensAxis, view.lensSize);
+    else if(view.opticalMode == OPTICAL_MODE_SPHERE)
+      mirrorT = hitSphere(rayOrigin, rayDir, mirrorCenter, mirrorSize);
+    else
+      mirrorT = hitBbox(rayOrigin, rayDir, mirrorCenter - mirrorSize, mirrorCenter + mirrorSize);
+
     if(mirrorT > 0.0)
     {
-      // Probe the camera->face segment; only reflect when nothing occludes the box (matches the RT's
+      // Probe the camera->surface segment; only redirect when nothing occludes it (matches the RT's
       // `hitT == 0` check). The probe hit is discarded - the loop below re-traces for the actual shading.
       rayHit.hitT       = -1.0;
       rayHit.coneWidth  = coneWidth;
@@ -394,19 +453,48 @@ void main()
                   mirrorT, 0);
       if(rayHit.hitT < 0.0)
       {
-        // Axis-aligned face normal of the box: the dominant axis of (hitPoint - center).
         vec3 mirrorHitPoint = rayOrigin + rayDir * mirrorT;
-        vec3 mirrorNormal   = mirrorHitPoint - mirrorCenter;
-        vec3 signs          = sign(mirrorNormal);
-        mirrorNormal        = abs(mirrorNormal);
-        mirrorNormal = vec3(equal(mirrorNormal, vec3(max(max(mirrorNormal.x, mirrorNormal.y), mirrorNormal.z)))) * signs;
+        vec3 mirrorNormal;
+        if(isLens)
+        {
+          mirrorNormal = lensAxis;
+        }
+        else if(view.opticalMode == OPTICAL_MODE_SPHERE)
+        {
+          mirrorNormal = normalize(mirrorHitPoint - mirrorCenter);
+        }
+        else
+        {
+          // Axis-aligned face normal of the box: the dominant axis of (hitPoint - center).
+          mirrorNormal = mirrorHitPoint - mirrorCenter;
+          vec3 signs   = sign(mirrorNormal);
+          mirrorNormal = abs(mirrorNormal);
+          mirrorNormal = vec3(equal(mirrorNormal, vec3(max(max(mirrorNormal.x, mirrorNormal.y), mirrorNormal.z)))) * signs;
+        }
 
         throughput *= max(0.0, dot(mirrorNormal, -rayDir)) * 0.5 + 0.5;  // edge darkening, same as the RT
+
+        // the cone arrives with the width of the eye->surface distance; the zoom and a curved
+        // surface change its spread, the same as the RT
+        coneWidth = view.pixelAngle * mirrorT;
+        if(isLens)
+        {
+          coneSpread = view.pixelAngle / view.lensZoom;
+          rayDir     = lensZoomDirection(rayDir);
+        }
+        else
+        {
+          if(view.opticalMode == OPTICAL_MODE_SPHERE)
+            coneSpread = view.pixelAngle + 2.0 * coneWidth / mirrorSize;
+          rayDir = reflect(rayDir, mirrorNormal);
+        }
+
         rayOrigin   = mirrorHitPoint;
-        rayDir      = reflect(rayDir, mirrorNormal);
         tMin        = 1e-4;
-        firstHitPos = mirrorHitPoint;  // stable box surface point, not the (non-rigidly reprojecting) reflected content
+        tMax        = view.farPlane + mirrorT;
+        firstHitPos = mirrorHitPoint;  // stable surface point, not the (non-rigidly reprojecting) redirected content
         mirrorRedirected = true;
+        lensHit          = view.opticalMode == OPTICAL_MODE_LENS;
         fogDistance      = mirrorT;
 
 #if USE_DLSS
@@ -602,7 +690,7 @@ void main()
 
     if(view.pathtraceAmbientTail != 0 && bounce == maxDepth - 1)
     {
-      radiance += throughput * ptAmbientTail(mat, hit, N, V, NdotV, coneWidth, coneSpread, seed);
+      radiance += throughput * ptAmbientTail(mat, hit, N, V, NdotV, coneWidth, coneSpread, bounce, seed);
       break;
     }
 
@@ -633,13 +721,14 @@ void main()
         float misW = bounce == maxDepth - 1 ? 1.0 : ptPowerHeuristic(sky.pdf, bp);
         if(misW > 0.0 && (f.x + f.y + f.z) > 0.0)
         {
-          float visibility = ptTraceShadowRay(hit.wShadowPos, hit.wGeoNormal, sky.direction, coneWidth, coneSpread);
           // Treat the direct sun disk as the "overhead" light (matching the sky sampler's sun cone,
           // half-angle 1.5*0.00465*sunDiskScale). The sky dome stays always-on as ambient, while the sun
           // is scaled by lightMixer so it cross-fades with the camera flashlight like the RT path
           // (lightMixer==1 -> sun only; ->0 fades the sun out as the flashlight fades in, no overbright).
           float sunCosThreshold = cos(1.5 * 0.00465 * view.skyPhysical.sunDiskScale);
           bool  isSun    = view.envHdri.enabled == 0 && dot(sky.direction, view.skyPhysical.sunDirection) >= sunCosThreshold;
+          float visibility = ptTraceShadowRay(hit.wShadowPos, hit.wGeoNormal, sky.direction, coneWidth, coneSpread,
+                                              isSun && PT_SUN_HITS(bounce));
           float sunScale = isSun ? view.lightMixer : view.skyAmbientScale;
           radiance += throughput * (sky.radiance / sky.pdf) * f * misW * visibility * sunScale;
         }
@@ -743,7 +832,7 @@ void main()
 
   // misses at the far plane, which is 0 with reversed-Z
   float hitDepth = 0.0;
-  if(hitValid)
+  if(hitValid && !lensHit)
   {
     vec4 screenPos = view.viewProjMatrix * vec4(firstHitPos, 1);
     hitDepth       = screenPos.z / screenPos.w;

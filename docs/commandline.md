@@ -17,7 +17,6 @@ change `--scene`.
 * `--vsync 0` disable vsync. If changing vsync via UI does not work, try to use the driver's *NVIDIA Control Panel* and set `Vulkan/OpenGL present method: native`.
 * `--autoloadcache 0` disables loading scenes from cache file.
 * `--mappedcache 1` keeps memory mapped cache file persistently, otherwise loads cache to system memory. Useful to save RAM on very large scenes.
-* `--autosavecache 0` disables saving the cache file.
 * `--meshoptarena 0` disables the per-thread stack arena that serves `meshoptimizer`'s temporary allocations during cluster building. The arena is on by default; it removes most of the global allocator contention that otherwise limits how well lod processing scales with thread count. `--meshoptarenabudget <MiB>` caps how much each thread keeps between calls (default **8**), below which the arena starts thrashing on chunk churn.
 * `--forcepreprocessmegabytes 1024` if a scene's raw geometry (vertex & indices) is greater than this cutoff, use a dedicated preprocess pass. Can be quicker and allows using memory mapped cache file. Default is 2048 for 2 GiB.
 * `--multimaterials 1 --attributes 7 --texturedmaterials 1` enables textured PBR materials (see [Materials](materials.md) below).

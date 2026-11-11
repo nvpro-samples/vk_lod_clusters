@@ -146,7 +146,7 @@ gl_HitTriangleVertexPositionsEXT[0..2]
 #### Summary
 
 Overall, both loading and unloading strategies are rather basic and there is room for improvement. 
-Loading is purely based on the traversal, we expect that sorting the instances by camera distance 
+Without [hit-based streaming](hitbased_streaming.md), loading is purely based on the traversal, we expect that sorting the instances by camera distance 
 and then seeding traversal nodes accordingly will help loading with priority around
 the camera.
 

@@ -96,7 +96,7 @@ Relevant files to traversal in their usage order:
 * [shaders/build_setup.comp.glsl](/shaders/build_setup.comp.glsl): Simple compute shader that is used to do basic operations in preparation of other kernels. Often clamping results to stay within limits.
 * [shaders/blas_setup_insertion.comp.glsl](/shaders/blas_setup_insertion.comp.glsl): Sets up the per-BLAS range for the cluster references based on how many clusters each BLAS needs (which traversal computed as well). This also determines how many BLAS are built at all.
 * [shaders/blas_clusters_insert.comp.glsl](/shaders/blas_clusters_insert.comp.glsl): Fills the per-BLAS cluster references (`SceneBuilding::blasBuildInfos`) from the render cluster list. The actual BLAS build is triggered in `RendererRayTraceClustersLod::render` (look for "BLAS Build").
-* [shaders/instances_assign_blas.comp.glsl](/shaders/instances_assign_blas.comp.glsl): After BLAS building assigns the built BLAS addresses to the TLAS instance descriptors prior building the TLAS.
+* [shaders/instance_assign_blas.comp.glsl](/shaders/instance_assign_blas.comp.glsl): After BLAS building assigns the built BLAS addresses to the TLAS instance descriptors prior building the TLAS.
 
 **Rasterization:**
 Does not need the BLAS and TLAS build steps and can render directly from `SceneBuilding::renderClusterInfos`.
@@ -185,6 +185,15 @@ Please have a look at the [Streaming Operations documentation](docs/streaming.md
 ![image illustrating the separated transfers for ray tracing](docs/lod_streaming_rt.png)
 
 There is one distinct difference between rasterization and ray tracing. Ray tracing will store the vertex positions into a temporary space used only during CLAS building, while rasterization will keep the positions persistently along with the group. As ray tracing allows fetching the positions at hit-time through intrinsics, there is no direct need to keep the data around.
+
+### Hit-based Streaming
+
+![camera distance driven detail next to hit-based streaming: shadow rays preserve detail, indirect rays request detail by material, objects without hits drop to minimal detail](docs/hit_streaming.png)
+
+Ray tracing can additionally drive streaming by the geometry rays actually hit (`--hitstreaming 1`). Rays reach
+geometry outside the primary view, and their footprint tells which detail a surface needs, so groups no ray reaches
+are unloaded and reflections or shadows request only the detail they resolve. See the
+[Hit-based Streaming documentation](docs/hitbased_streaming.md).
 
 ### GPU-Driven CLAS Allocation
 
@@ -288,7 +297,8 @@ It will also look for [`nvpro_core2`](https://github.com/nvpro-samples/nvpro_cor
 
 * `WASD` and `QE` to control the camera. `SHIFT` for faster speed, `CTRL` for slower. `ALT` to orbit around the last hit point.
 * `SPACE` or `double left click` to get a surface hit point that the camera will orient itself to. This also adjusts the walking speed based on a percentage of the distance to the point. Meaning close by hit points will cause slower walk than points further in the distance.
-* `M` or `double right click` to on a surface hit point to generate the reflective mirror box in ray tracing. Trigger this on the sky to make it disappear.
+* `M` or `double right click` on a surface hit point places the reflective mirror box (ray and path tracing), doing it again or on the sky removes it.
+* `L` toggles the magnifier lens (ray and path tracing).
 * `R` to reload the shaders (meant for debugging).
 * `P` to isolate an object and `SHIFT+P` to isolate the cluster (both raster only).
   

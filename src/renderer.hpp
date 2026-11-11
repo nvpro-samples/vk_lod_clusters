@@ -106,11 +106,25 @@ struct RendererConfig
   bool     usePersistentTraversal   = true;
   bool     useVulkanMemoryModel     = false;
   bool     useAtomicLoadStore       = true;
+  bool     usePersistentHitDemand   = true;
   int      textureLodMode           = 0;
+  // hit-streaming demand propagation strategy (see shaderio.h STREAM_PROPAGATION_*,
+  // docs/hitbased_streaming.md): 0 = resident levels (1 hop), 1 = resident subtree (BFS),
+  // 2 = all levels (level-wise sweep), 3 = all levels rolling (sweep, one level/frame).
+  // Recompiles shaders on change.
+  int streamPropagationMode = 1;
 
   // basic path tracing: shading done in the ray-generation shader, 1 spp,
   // relies on DLSS Ray Reconstruction for denoising (noisy when DLSS is off).
   bool usePathtrace = false;
+
+  bool useHitStreaming = false;
+  // additionally clamp the lod level based on the ray cone widths of hits,
+  // requires useHitStreaming, see docs/hitbased_streaming.md
+  bool useHitStreamingLod = true;
+  // path depth up to which sun shadow rays register their hits too: 1 from the primary
+  // hits, 2 also from the first bounce. They run a closest-hit instead of skipping it.
+  int hitStreamingShadowDepth = 1;
 
   bool useDlss = false;
 #if USE_DLSS
@@ -172,6 +186,7 @@ public:
     uint64_t ptlasUpdates         = 0;
     uint64_t ptlasUpdatesPeak     = 0;
     uint64_t ptlasDirtyPartitions = 0;
+    uint64_t ptlasDirtyInstances  = 0;
     uint64_t activePartitions     = 0;
     uint64_t activeInstances      = 0;
     // times the profiler threw its averages away mid step (section set changed)
@@ -189,6 +204,8 @@ public:
     uint64_t pinnedUnloads = 0;
     // subset held only by a cached blas already replaced but still within its deferral window
     uint64_t pinnedDeferredUnloads = 0;
+    // instances whose filtered hit lod scale changed
+    uint64_t instanceHitScaleChanges = 0;
 
     uint64_t mean(uint64_t sum) const { return frames ? (sum + frames / 2) / frames : 0; }
 
@@ -201,6 +218,7 @@ public:
       ptlasUpdates += other.ptlasUpdates;
       ptlasUpdatesPeak = std::max(ptlasUpdatesPeak, other.ptlasUpdatesPeak);
       ptlasDirtyPartitions += other.ptlasDirtyPartitions;
+      ptlasDirtyInstances += other.ptlasDirtyInstances;
       activePartitions += other.activePartitions;
       activeInstances += other.activeInstances;
       profilerResets += other.profilerResets;
@@ -213,6 +231,7 @@ public:
       patchRetired += other.patchRetired;
       pinnedUnloads += other.pinnedUnloads;
       pinnedDeferredUnloads += other.pinnedDeferredUnloads;
+      instanceHitScaleChanges += other.instanceHitScaleChanges;
       return *this;
     }
   };

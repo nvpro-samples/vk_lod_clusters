@@ -1,6 +1,6 @@
 # Render permutation tests
 
-**168 sequences in 9 files** for a full pass with the validation layers on. Most of the
+**171 sequences in 9 files** for a full pass with the validation layers on. Most of the
 time is pipeline compilation, not rendering.
 
 Parameter sequences that drive the sample through the permutations that are easy to break
@@ -63,7 +63,7 @@ frame.
 | `seq_raytrace_blas.txt` | 19 | `--blassharing` x `--blasmerging` x `--blascaching` over both geometry layouts, plus render stats |
 | `seq_limits.txt` + `.cfg` | 17 | every limit the sample warns about rather than enforces, exceeded one at a time and together |
 | `seq_traversal.txt` | 12 | `--persistenttraversal` off/on against both renderers, crossed with instance sorting, discrete lod and culling |
-| `seq_ptlas.txt` + `.cfg` | 12 | `--partitions` x `--partitionearlyout` x `--ptlas`, the early-out's retention knobs and the two partition visualizations |
+| `seq_ptlas.txt` + `.cfg` | 15 | `--partitions` x `--partitionearlyout` x `--ptlas`, the early-out's retention knobs, the two partition visualizations and hit streaming with a magnifying lens |
 | `seq_streaming.txt` | 10 | streaming against preloaded, the CLAS allocator, async and decoupled transfers |
 | `seq_16bit_dispatch.txt` + `.cfg` | 10 | the 16 bit compute launch grid, on its own denser scene |
 
