@@ -846,7 +846,7 @@ void Scene::buildGeometryLodHierarchy(GeometryStorage& geometry)
   // lod-level many lod-roots next
   // then rest
   {
-    uint32_t nodeOffset = 1 + lodLevelCount;
+    uint32_t nodeOffset = LOD_LEVEL_NODE_OFFSET + lodLevelCount;
 
     for(uint32_t lodLevel = 0; lodLevel < lodLevelCount; lodLevel++)
     {
@@ -891,7 +891,8 @@ void Scene::buildGeometryLodHierarchy(GeometryStorage& geometry)
       const GroupInfo& groupInfo = geometry.groupInfos[groupID];
       GroupView        groupView(geometry.groupData, groupInfo);
 
-      shaderio::Node& node = nodeCount == 1 ? geometry.lodNodes[1 + lodLevel] : geometry.lodNodes[nodeOffset++];
+      shaderio::Node& node =
+          nodeCount == 1 ? geometry.lodNodes[LOD_LEVEL_NODE_OFFSET + lodLevel] : geometry.lodNodes[nodeOffset++];
 
       node                                      = {};
       node.groupRange.isGroup                   = 1;
@@ -937,7 +938,8 @@ void Scene::buildGeometryLodHierarchy(GeometryStorage& geometry)
       iterationCount = (lastNodeCount + m_config.preferredNodeWidth - 1) / m_config.preferredNodeWidth;
 
       // root is stored at special place
-      shaderio::Node* newNodes = iterationCount == 1 ? &geometry.lodNodes[1 + lodLevel] : &geometry.lodNodes[nodeOffset];
+      shaderio::Node* newNodes =
+          iterationCount == 1 ? &geometry.lodNodes[LOD_LEVEL_NODE_OFFSET + lodLevel] : &geometry.lodNodes[nodeOffset];
 
       for(uint32_t n = 0; n < iterationCount; n++)
       {
@@ -984,12 +986,12 @@ void Scene::buildGeometryLodHierarchy(GeometryStorage& geometry)
                                     &geometry.lodNodes[1].traversalMetric.boundingSphereRadius, sizeof(shaderio::Node));
 
     shaderio::Node& node          = geometry.lodNodes[0];
-    shaderio::Node* childrenNodes = &geometry.lodNodes[1];
+    shaderio::Node* childrenNodes = &geometry.lodNodes[LOD_LEVEL_NODE_OFFSET];
 
     node                                      = {};
     node.nodeRange.isGroup                    = 0;
     node.nodeRange.childCountMinusOne         = lodLevelCount - 1;
-    node.nodeRange.childOffset                = 1;
+    node.nodeRange.childOffset                = LOD_LEVEL_NODE_OFFSET;
     node.traversalMetric.boundingSphereX      = merged.center[0];
     node.traversalMetric.boundingSphereY      = merged.center[1];
     node.traversalMetric.boundingSphereZ      = merged.center[2];

@@ -61,11 +61,11 @@ for unique in (0, 1):
     for share, merge, cache in itertools.product((0, 1), repeat=3):
         configs.append((f'hy_unique{unique}_share{share}_merge{merge}_cache{cache}',
                         [f'--gridunique {unique}', f'--blassharing {share}', f'--blasmerging {merge}',
-                         f'--blascaching {cache}', '--blasdedup 0', '--streaming 1']))
-    configs.append((f'hy_unique{unique}_dedup', ['--blassharing 1', '--blasmerging 1', '--blascaching 1', '--blasdedup 1']))
-    configs.append((f'hy_unique{unique}_preloaded', ['--blasdedup 0', '--streaming 0']))
+                         f'--blascaching {cache}', '--hybridblasdedup 0', '--streaming 1']))
+    configs.append((f'hy_unique{unique}_dedup', ['--blassharing 1', '--blasmerging 1', '--blascaching 1', '--hybridblasdedup 1']))
+    configs.append((f'hy_unique{unique}_preloaded', ['--hybridblasdedup 0', '--streaming 0']))
     write(f'seq_hybrid_blas{unique}.txt', f"""# Hybrid path: --blassharing x --blasmerging x --blascaching with --gridunique {unique},
-# plus --blasdedup and preloaded geometry. Visible instances must match the raster whatever
+# plus --hybridblasdedup and preloaded geometry. Visible instances must match the raster whatever
 # blas reuse picks for the hidden ones.""", configs)
 
 # culling

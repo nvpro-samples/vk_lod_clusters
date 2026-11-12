@@ -123,6 +123,17 @@ void main()
 #endif
   }
 
+#if USE_INSTANCE_PRECULL
+  // instance 0's loads stay cached, the reject list is already within the frustum
+  bool preCulled = isValid && !useRejects && instancePreCulled(instanceLoad);
+  if (preCulled)
+  {
+    instanceLoad = 0;
+  }
+#else
+  const bool preCulled = false;
+#endif
+
   RenderInstance instance = instances[instanceLoad];
   uint geometryID = instance.geometryID;
   Geometry geometry = geometries[geometryID];
@@ -160,6 +171,7 @@ void main()
   bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, view.cullMinPixelSize) && intersectHiz(clipMin, clipMax, 0)));
 #endif
 #endif
+  isVisible = isVisible && !preCulled;
 #if USE_HYBRIDPATH
   uint hybridState = getHybridVisibility(isVisible, inFrustum, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix));
   isVisible        = hybridState == INSTANCE_VISIBLE_BIT;
@@ -183,7 +195,7 @@ void main()
     // Record instances the first pass could not draw. Only those within the current
     // frustum can reappear once the hiz is updated, everything else would fail the
     // second pass anyway, so filter here and keep the list short.
-    bool reject = isValid && build.cullPass == 0 && !isVisible && !soloFiltered
+    bool reject = isValid && !preCulled && build.cullPass == 0 && !isVisible && !soloFiltered
                   && intersectFrustumOnly(build.cullViewProjMatrix, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix));
 
     uvec4 voteReject   = subgroupBallot(reject);
@@ -218,10 +230,8 @@ void main()
     // If that is true, then we can skip lod traversal completely and
     // straight enqueue the lowest detail cluster directly.    
     
-    uint rootNodePacked = geometry.nodes.d[0].packed;
-    
-    uint childOffset        = PACKED_GET(rootNodePacked, Node_packed_nodeChildOffset);
-    uint childCountMinusOne = PACKED_GET(rootNodePacked, Node_packed_nodeChildCountMinusOne);
+    uint childOffset        = LOD_LEVEL_NODE_OFFSET;
+    uint childCountMinusOne = geometry.lodLevelsCount - 1;
     
     // test if the second to last lod needs to be traversed
     uint childNodeIndex     = (childCountMinusOne > 1 ? (childCountMinusOne - 1) : 0);

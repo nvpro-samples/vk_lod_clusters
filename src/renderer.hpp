@@ -148,9 +148,10 @@ struct RendererConfig
 
   // cached blas lod levels per geometry, a chain from the coarsest tail level up
   uint32_t cachingLevels = 1;
-  // hybrid path: own defaults for discrete lod in the caching tail and the cached levels
+  // hybrid path: own defaults for discrete lod in the caching tail, the cached levels and blas dedup
   bool     useHybridDiscreteLod = true;
   uint32_t hybridCachingLevels  = 4;
+  bool     useHybridBlasDedup   = true;
 };
 
 class Renderer

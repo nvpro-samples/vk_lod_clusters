@@ -417,6 +417,10 @@ private:
   {
     return m_tweak.renderer == RENDERER_PATHTRACE_CLUSTERS_LOD || m_tweak.renderer == RENDERER_HYBRID_CLUSTERS_LOD;
   }
+  bool usesBlasDedup() const
+  {
+    return m_tweak.renderer == RENDERER_HYBRID_CLUSTERS_LOD ? m_rendererConfig.useHybridBlasDedup : m_rendererConfig.useBlasDedup;
+  }
   void resolvePathtraceRenderer();
   // set when --pathtrace was parsed, see resolvePathtraceRenderer
   bool m_pathtraceParsed = false;

@@ -399,8 +399,7 @@ InstanceLodClassification classifyInstanceLod(Geometry geometry,
                                               uint     startLevel,
                                               bool     findMax)
 {
-  uint rootNodePacked = geometry.nodes.d[0].packed;
-  uint childOffset    = PACKED_GET(rootNodePacked, Node_packed_nodeChildOffset);
+  uint childOffset = LOD_LEVEL_NODE_OFFSET;
 
   InstanceLodClassification classification;
   classification.lodLevelMin      = 0;

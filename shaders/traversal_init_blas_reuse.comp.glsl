@@ -309,8 +309,7 @@ void main()
   uint discreteNodePacked = 0;
   if (hybridDiscrete)
   {
-    uint rootNodePacked = geometry.nodes.d[0].packed;
-    discreteNodePacked  = geometry.nodes.d[PACKED_GET(rootNodePacked, Node_packed_nodeChildOffset) + hybridDiscreteLevel].packed;
+    discreteNodePacked = geometry.nodes.d[LOD_LEVEL_NODE_OFFSET + hybridDiscreteLevel].packed;
   }
   bool seedGroup = hybridDiscrete && PACKED_GET(discreteNodePacked, Node_packed_isGroup) != 0;
   bool seedNode  = hybridDiscrete && !seedGroup;

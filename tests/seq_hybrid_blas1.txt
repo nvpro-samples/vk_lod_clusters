@@ -1,5 +1,5 @@
 # Hybrid path: --blassharing x --blasmerging x --blascaching with --gridunique 1,
-# plus --blasdedup and preloaded geometry. Visible instances must match the raster whatever
+# plus --hybridblasdedup and preloaded geometry. Visible instances must match the raster whatever
 # blas reuse picks for the hidden ones.
 #
 # Every configuration runs twice: from a static close view into the grid, where most
@@ -28,7 +28,7 @@ SEQUENCE "hy_unique1_share0_merge0_cache0"
 --blassharing 0
 --blasmerging 0
 --blascaching 0
---blasdedup 0
+--hybridblasdedup 0
 --streaming 1
 --runcamerapath 1 1
 
@@ -40,7 +40,7 @@ SEQUENCE "hy_unique1_share0_merge0_cache1"
 --blassharing 0
 --blasmerging 0
 --blascaching 1
---blasdedup 0
+--hybridblasdedup 0
 --streaming 1
 --runcamerapath 1 1
 
@@ -52,7 +52,7 @@ SEQUENCE "hy_unique1_share0_merge1_cache0"
 --blassharing 0
 --blasmerging 1
 --blascaching 0
---blasdedup 0
+--hybridblasdedup 0
 --streaming 1
 --runcamerapath 1 1
 
@@ -64,7 +64,7 @@ SEQUENCE "hy_unique1_share0_merge1_cache1"
 --blassharing 0
 --blasmerging 1
 --blascaching 1
---blasdedup 0
+--hybridblasdedup 0
 --streaming 1
 --runcamerapath 1 1
 
@@ -76,7 +76,7 @@ SEQUENCE "hy_unique1_share1_merge0_cache0"
 --blassharing 1
 --blasmerging 0
 --blascaching 0
---blasdedup 0
+--hybridblasdedup 0
 --streaming 1
 --runcamerapath 1 1
 
@@ -88,7 +88,7 @@ SEQUENCE "hy_unique1_share1_merge0_cache1"
 --blassharing 1
 --blasmerging 0
 --blascaching 1
---blasdedup 0
+--hybridblasdedup 0
 --streaming 1
 --runcamerapath 1 1
 
@@ -100,7 +100,7 @@ SEQUENCE "hy_unique1_share1_merge1_cache0"
 --blassharing 1
 --blasmerging 1
 --blascaching 0
---blasdedup 0
+--hybridblasdedup 0
 --streaming 1
 --runcamerapath 1 1
 
@@ -112,7 +112,7 @@ SEQUENCE "hy_unique1_share1_merge1_cache1"
 --blassharing 1
 --blasmerging 1
 --blascaching 1
---blasdedup 0
+--hybridblasdedup 0
 --streaming 1
 --runcamerapath 1 1
 
@@ -123,14 +123,14 @@ SEQUENCE "hy_unique1_dedup"
 --blassharing 1
 --blasmerging 1
 --blascaching 1
---blasdedup 1
+--hybridblasdedup 1
 --runcamerapath 1 1
 
 SEQUENCE "hy_unique1_dedup_motion"
 --runcamerapath 0 32
 
 SEQUENCE "hy_unique1_preloaded"
---blasdedup 0
+--hybridblasdedup 0
 --streaming 0
 --runcamerapath 1 1
 

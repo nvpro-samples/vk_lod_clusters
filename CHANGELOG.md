@@ -1,4 +1,10 @@
 # Changelog for vk_lod_clusters
+* 2026-11-12:
+
+  * _"Hybrid blas dedup"_ (`--hybridblasdedup`, on by default) turns on BLAS deduplication for the hybrid renderer, whose visible instances cannot share or merge BLAS. `--blasdedup` no longer applies to it.
+  * The rasterizer draws the sky after the geometry, only uncovered pixels evaluate it. 0.2-0.5 ms faster on Caldera, junkworld and Zorah.
+  * The rasterizer culls instances outside the frustum by a bounding sphere before loading them. 0.08-0.25 ms faster traversal preparation on scenes with millions of instances.
+
 * 2026-11-11:
 
   **WARNING** Old cache files are not compatible anymore (`geoVersion` 16). Cluster group overlap information added for hit-based streaming propagation.

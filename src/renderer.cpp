@@ -513,8 +513,14 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene)
   graphicsGen.addShader(VK_SHADER_STAGE_FRAGMENT_BIT, "main",
                         nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullScreenBackgroundFragShader));
 
+  // drawn after the geometry at the far plane (z 0), the depth test leaves only uncovered pixels to shade
+  state.depthStencilState.depthTestEnable  = VK_TRUE;
+  state.depthStencilState.depthWriteEnable = VK_FALSE;
+  state.depthStencilState.depthCompareOp   = VK_COMPARE_OP_GREATER_OR_EQUAL;
   graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_basicPipelines.background);
   res.dumpPipelineInternals(m_basicPipelines.background, m_basicShaders.fullScreenBackgroundFragShader);
+  state.depthStencilState.depthWriteEnable = VK_TRUE;
+  state.depthStencilState.depthCompareOp   = VK_COMPARE_OP_ALWAYS;
 #if USE_DLSS
   if(useDlssSrMotionWrite)
   {

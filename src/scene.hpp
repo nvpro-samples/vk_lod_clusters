@@ -1235,6 +1235,9 @@ private:
     uint64_t   progressTrianglesCompleted  = 0;
     std::mutex progressMutex;
 
+    // geometries whose data breaks an invariant the shaders rely on, fails the load
+    std::atomic_uint32_t invalidGeometries = 0;
+
     nvutils::PerformanceTimer clock;
     double                    startTime = 0;
 

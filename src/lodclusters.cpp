@@ -249,6 +249,8 @@ LodClusters::LodClusters(const Info& info)
                                 &m_rendererConfig.useHybridDiscreteLod);
   m_info.parameterRegistry->add({"hybridcachinglevels", "hybrid path: --cachinglevels in place of the ray tracing one. default 4"},
                                 &m_rendererConfig.hybridCachingLevels);
+  m_info.parameterRegistry->add({"hybridblasdedup", "hybrid path: --blasdedup in place of the ray tracing one. default true"},
+                                &m_rendererConfig.useHybridBlasDedup);
   m_info.parameterRegistry->add({"pathtracebounces", "indirect bounces, 0 (direct lighting only) to 7. default 1"},
                                 &m_frameConfig.frameConstants.pathtraceNumBounces);
   m_info.parameterRegistry->add({"pathtraceambient", "light the last path vertex with the baked sky and AO rays. default true"},
@@ -1507,7 +1509,7 @@ void LodClusters::appendMemoryReport(std::string& message)
     }
   }
   message += fmt::format("BLAS builds; {}; {};\n", readback.numBlasBuilds, m_renderer->getMaxBlasBuilds());
-  if(m_rendererConfig.useBlasDedup)
+  if(usesBlasDedup())
   {
     message += fmt::format("BLAS candidates; {};\n", readback.numBlasCandidates);
     message += fmt::format("BLAS deduped; {};\n", readback.numBlasDeduped);
@@ -2016,7 +2018,7 @@ void LodClusters::handleChanges()
        || rendererCfgChanged(m_rendererConfig.usePersistentHitDemand) || rendererCfgChanged(m_rendererConfig.useHitStreaming)
        || rendererCfgChanged(m_rendererConfig.useHitStreamingLod) || rendererCfgChanged(m_rendererConfig.hitStreamingShadowDepth)
        || rendererCfgChanged(m_rendererConfig.cachingLevels) || rendererCfgChanged(m_rendererConfig.useHybridDiscreteLod)
-       || rendererCfgChanged(m_rendererConfig.hybridCachingLevels))
+       || rendererCfgChanged(m_rendererConfig.hybridCachingLevels) || rendererCfgChanged(m_rendererConfig.useHybridBlasDedup))
     {
       // groups loaded without hit tracking carry no hit frames, the first age filter would unload them
       bool hitStreamingOn = m_rendererConfig.useHitStreaming && m_tweak.renderer != RENDERER_RASTER_CLUSTERS_LOD

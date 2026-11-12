@@ -126,6 +126,17 @@ void main()
 #endif
   }
 
+#if USE_INSTANCE_PRECULL
+  // instance 0's loads stay cached, the reject list is already within the frustum
+  bool preCulled = isValid && !useRejects && instancePreCulled(instanceLoad);
+  if (preCulled)
+  {
+    instanceLoad = 0;
+  }
+#else
+  const bool preCulled = false;
+#endif
+
   RenderInstance instance = instances[instanceLoad];
   uint geometryID = instance.geometryID;
   Geometry geometry = geometries[geometryID];
@@ -156,6 +167,7 @@ void main()
   bool inFrustum = intersectFrustum(build.cullViewProjMatrixLast, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix), clipMin, clipMax, clipValid, clipExtent);
   bool isVisible = inFrustum && (!useOcclusion || !clipValid || (intersectSize(clipMin, clipMax, view.cullMinPixelSize) && intersectHiz(clipMin, clipMax, 0)));
 #endif
+  isVisible = isVisible && !preCulled;
 
   // Solo-instance filter: ~0u disables the filter.
   bool soloFiltered = view.visFilterInstanceID != ~0u && instanceID != view.visFilterInstanceID;
@@ -169,7 +181,7 @@ void main()
     // Record instances the first pass could not draw. Only those within the current
     // frustum can reappear once the hiz is updated, everything else would fail the
     // second pass anyway, so filter here and keep the list short.
-    bool reject = isValid && build.cullPass == 0 && !isVisible && !soloFiltered
+    bool reject = isValid && !preCulled && build.cullPass == 0 && !isVisible && !soloFiltered
                   && intersectFrustumOnly(build.cullViewProjMatrix, geometry.bbox.lo, geometry.bbox.hi, transpose(instance.worldMatrix));
 
     uvec4 voteReject   = subgroupBallot(reject);
@@ -274,9 +286,7 @@ void main()
       {
         visibilityState |= INSTANCE_USES_DISCRETE_BIT;
 
-        uint rootNodePacked = geometry.nodes.d[0].packed;
-        uint childOffset    = PACKED_GET(rootNodePacked, Node_packed_nodeChildOffset);
-        discreteNodePacked  = geometry.nodes.d[childOffset + discreteLodLevel].packed;
+        discreteNodePacked = geometry.nodes.d[LOD_LEVEL_NODE_OFFSET + discreteLodLevel].packed;
 
         // The instance only touches the groups of its own lod level, so the
         // coarser levels would age out and break the geometry's residency level.

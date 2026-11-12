@@ -68,6 +68,7 @@ private:
   nvvk::Buffer m_sceneBuildBuffer;
   nvvk::Buffer m_sceneTraversalBuffer;
   nvvk::Buffer m_sceneDataBuffer;
+  nvvk::Buffer m_instanceSphereBuffer;
 
   shaderio::SceneBuilding m_sceneBuildShaderio;
 
@@ -106,6 +107,7 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene)
   options.AddMacroDefinition("USE_PRIMITIVE_CULLING", m_config.useCulling && m_config.usePrimitiveCulling ? "1" : "0");
   options.AddMacroDefinition("USE_TWO_PASS_CULLING", m_config.useCulling && m_config.useTwoPassCulling ? "1" : "0");
   options.AddMacroDefinition("USE_TWO_PASS_REJECT_LISTS", m_useRejectLists ? "1" : "0");
+  options.AddMacroDefinition("USE_INSTANCE_PRECULL", m_config.useCulling ? "1" : "0");
   options.AddMacroDefinition("USE_RENDER_STATS", m_config.useRenderStats ? "1" : "0");
   options.AddMacroDefinition("USE_DLSS", m_config.useDlss ? "1" : "0");
   options.AddMacroDefinition("USE_DLSS_GUIDE_BUFFERS", "0");
@@ -295,6 +297,23 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
 
     res.createBuffer(m_sceneDataBuffer, mem.getSize(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     NVVK_DBG_NAME(m_sceneDataBuffer.buffer);
+
+    if(m_config.useCulling)
+    {
+      // world space bounding spheres, the frustum precull reads them instead of the full instance
+      std::vector<glm::vec4> spheres(m_renderInstances.size());
+      for(size_t i = 0; i < spheres.size(); i++)
+      {
+        const shaderio::BBox& bbox = rscene.scene->m_instances[i].bbox;
+        spheres[i]                 = glm::vec4((bbox.lo + bbox.hi) * 0.5f, glm::length(bbox.hi - bbox.lo) * 0.5f);
+      }
+      res.createBuffer(m_instanceSphereBuffer, sizeof(glm::vec4) * spheres.size(), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+      NVVK_DBG_NAME(m_instanceSphereBuffer.buffer);
+      res.simpleUploadBuffer(m_instanceSphereBuffer, spheres.data());
+      m_resourceReservedUsage.operationsMemBytes +=
+          logMemoryUsage(m_instanceSphereBuffer.bufferSize, "operations", "instance spheres");
+      m_sceneBuildShaderio.instanceSpheres = m_instanceSphereBuffer.address;
+    }
     m_resourceReservedUsage.operationsMemBytes += logMemoryUsage(m_sceneDataBuffer.bufferSize, "operations", "build data");
 
     m_sceneBuildShaderio.renderClusterInfos += m_sceneDataBuffer.address;
@@ -752,8 +771,11 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
         }
       }
 
-      VkAttachmentLoadOp op = pass == 1 ? VK_ATTACHMENT_LOAD_OP_LOAD :
-                                          (m_config.useShading ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : VK_ATTACHMENT_LOAD_OP_CLEAR);
+      // the sky fills the uncovered pixels after the last pass, the color needs no clear for it
+      VkAttachmentLoadOp colorOp = pass == 1 ?
+                                       VK_ATTACHMENT_LOAD_OP_LOAD :
+                                       (m_config.useShading ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : VK_ATTACHMENT_LOAD_OP_CLEAR);
+      VkAttachmentLoadOp depthOp = pass == 1 ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
 
 #if USE_DLSS
       if(m_config.useDlss)
@@ -761,26 +783,12 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
         const bool writeDlssMotion = m_config.useShading && !m_config.useComputeRaster;
         const VkAttachmentLoadOp motionLoadOp = writeDlssMotion && pass != 0 ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
 
-        if(pass == 0 && m_config.useShading)
-        {
-          // Single pass: sky then geometry share color/depth/motion attachments.
-          res.cmdBeginRenderingDlssSr(cmd, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_LOAD_OP_CLEAR);
-          writeBackgroundSky(cmd);
-        }
-        else
-        {
-          res.cmdBeginRenderingDlssSr(cmd, op, op, motionLoadOp);
-        }
+        res.cmdBeginRenderingDlssSr(cmd, colorOp, depthOp, motionLoadOp);
       }
       else
 #endif
       {
-        res.cmdBeginRendering(cmd, false, op, op);
-
-        if(pass == 0 && m_config.useShading)
-        {
-          writeBackgroundSky(cmd);
-        }
+        res.cmdBeginRendering(cmd, false, colorOp, depthOp);
       }
 
       {
@@ -815,6 +823,11 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
                              VK_DEPENDENCY_BY_REGION_BIT, 1, &memBarrier, 0, 0, 0, nullptr);
 
         writeAtomicRaster(cmd);
+      }
+
+      if(pass == lastPass && m_config.useShading)
+      {
+        writeBackgroundSky(cmd);
       }
 
       bool hasOverlays = frame.showClusterBboxes || (pass == lastPass && frame.showInstanceBboxes);
@@ -902,6 +915,7 @@ void RendererRasterClustersLod::deinit(Resources& res)
   m_dsetPack.deinit();
 
   res.m_allocator.destroyBuffer(m_sceneDataBuffer);
+  res.m_allocator.destroyBuffer(m_instanceSphereBuffer);
   res.m_allocator.destroyBuffer(m_sceneBuildBuffer);
   res.m_allocator.destroyBuffer(m_sceneTraversalBuffer);
 

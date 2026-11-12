@@ -295,6 +295,11 @@ using namespace glm;
 #define USE_TWO_PASS_REJECT_LISTS 1
 #endif
 
+// rasterization: a bounding sphere frustum test before the instance loads
+#ifndef USE_INSTANCE_PRECULL
+#define USE_INSTANCE_PRECULL 0
+#endif
+
 // only effective in NV_mesh_shader
 #ifndef USE_PRIMITIVE_CULLING
 #define USE_PRIMITIVE_CULLING 1

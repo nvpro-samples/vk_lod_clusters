@@ -56,7 +56,8 @@ or occludes itself. Raster defines primary visibility, so the BLAS follows the r
   they do not come from the sun shadow ray.
 * Visible instances are kept out of [BLAS sharing](blas_sharing.md) and [BLAS merging](blas_merging.md), whose BLAS
   come from another instance's or the finest resident cut.
-* [BLAS deduplication](blas_dedup.md) (`--blasdedup 1`) is the reuse that stays exact for visible instances.
+* [BLAS deduplication](blas_dedup.md), _"Hybrid blas dedup"_ (`--hybridblasdedup 1`, on by default), is the reuse that
+  stays exact for visible instances.
   Instances whose cuts resolve to the same clusters, for example copies that top or bottom out in the LoD DAG,
   build one BLAS. In the scenes below it removes 20 - 46% of the hybrid renderer's BLAS builds per frame (junkworld
   804 to 434, Zorah 930 to 740), up to 96 us of BLAS build time and 3.7 MiB of BLAS memory, for 5 - 8 us of its own.
@@ -169,7 +170,7 @@ Weaknesses:
   detail saves some CLAS memory.
 * The traversal also emits the raster's cluster lists (+160 - +190 us), the raster itself costs 0.16 - 0.7 ms.
 * Visible instances cannot use BLAS sharing or merging. Scenes with many visible instances of the same geometry
-  build more BLAS, `--blasdedup 1` only wins back those with identical cuts.
+  build more BLAS, `--hybridblasdedup` only wins back those with identical cuts.
 * The partition early-out processes every partition in the frustum, 1.7 - 2.7 times as many as PT.
 * Disoccluded regions and regions entering the view show coarser detail for one frame.
 

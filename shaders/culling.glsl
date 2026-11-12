@@ -132,6 +132,44 @@ bool intersectFrustum(mat4 viewProjMatrix, vec3 bboxMin, vec3 bboxMax, mat4x3 wo
   return intersectFrustum(viewProjMatrix, bboxMin, bboxMax, worldTM, oClipmin, oClipmax, oClipvalid, clipExtent);
 }
 
+// conservative sphere vs. the six clip planes (Gribb-Hartmann), world space
+bool intersectFrustumSphere(mat4 viewProjMatrix, vec4 sphere)
+{
+  vec4 row0 = vec4(viewProjMatrix[0][0], viewProjMatrix[1][0], viewProjMatrix[2][0], viewProjMatrix[3][0]);
+  vec4 row1 = vec4(viewProjMatrix[0][1], viewProjMatrix[1][1], viewProjMatrix[2][1], viewProjMatrix[3][1]);
+  vec4 row2 = vec4(viewProjMatrix[0][2], viewProjMatrix[1][2], viewProjMatrix[2][2], viewProjMatrix[3][2]);
+  vec4 row3 = vec4(viewProjMatrix[0][3], viewProjMatrix[1][3], viewProjMatrix[2][3], viewProjMatrix[3][3]);
+
+  vec4 planes[6] = vec4[6](row3 + row0, row3 - row0, row3 + row1, row3 - row1, row2, row3 - row2);
+  vec4 center    = vec4(sphere.xyz, 1);
+
+  bool inside = true;
+  [[unroll]]
+  for (int i = 0; i < 6; i++)
+  {
+    inside = inside && dot(planes[i], center) >= -sphere.w * length(planes[i].xyz);
+  }
+  return inside;
+}
+
+#if USE_INSTANCE_PRECULL
+// outside every frustum this pass tests, the instance needs no instance or geometry loads
+bool instancePreCulled(uint instanceID)
+{
+  vec4 sphere = build.instanceSpheres.d[instanceID];
+#if USE_TWO_PASS_CULLING
+  bool inside = intersectFrustumSphere(build.cullPass == 0 ? build.cullViewProjMatrixLast : build.cullViewProjMatrix, sphere);
+#if USE_TWO_PASS_REJECT_LISTS
+  // the first pass also records rejects within the current frustum
+  inside = inside || (build.cullPass == 0 && intersectFrustumSphere(build.cullViewProjMatrix, sphere));
+#endif
+  return !inside;
+#else
+  return !intersectFrustumSphere(build.cullViewProjMatrixLast, sphere);
+#endif
+}
+#endif
+
 // frustum test without the clipspace bounds, saves the per corner divide.
 // used to drop items that cannot reappear in the second cull pass.
 bool intersectFrustumOnly(mat4 viewProjMatrix, vec3 bboxMin, vec3 bboxMax, mat4x3 worldTM)

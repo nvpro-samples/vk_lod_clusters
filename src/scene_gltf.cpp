@@ -783,7 +783,7 @@ Scene::Result Scene::loadGLTF(ProcessingInfo& processingInfo, const std::filesys
 
   processingInfo.logEnd();
 
-  bool notCompleted = processingInfo.progressGeometriesCompleted != geometryToMesh.size();
+  bool notCompleted = processingInfo.progressGeometriesCompleted != geometryToMesh.size() || processingInfo.invalidGeometries != 0;
   if(notCompleted)
   {
     LOGW("Error in processing geometries, completed / required mismatch\nTry using `--processingonly 1`\n");

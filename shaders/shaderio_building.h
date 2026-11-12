@@ -393,6 +393,8 @@ struct SceneBuilding
 
   // culling/visibility related information
   BUFFER_REF(uint8s_inout) instanceVisibility;
+  // world space bounding sphere per instance (USE_INSTANCE_PRECULL)
+  BUFFER_REF(vec4s_in) instanceSpheres;
   // 1 if the instance used its geometry's cached blas last frame, persists across frames
   BUFFER_REF(uint8s_inout) instanceCachedSticky;
 

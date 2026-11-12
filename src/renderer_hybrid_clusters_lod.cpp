@@ -58,6 +58,8 @@ bool RendererHybridClustersLod::init(Resources& res, RenderScene& rscene, const 
   // shading is the path tracer's ray generation
   RendererConfig hybridConfig = config;
   hybridConfig.usePathtrace   = true;
+  // visible instances cannot share or merge, dedup wins back those with identical cuts
+  hybridConfig.useBlasDedup = config.useHybridBlasDedup;
   // the visibility buffer stores the cluster index in 24 bits, streaming clamps its resident ones
   const uint32_t maxClusterIndices = 1u << (32 - HYBRIDPATH_VISBUFFER_TRIANGLE_BITS);
   if(!rscene.useStreaming && rscene.scene->m_maxPerGeometryClusters > maxClusterIndices)

@@ -13,7 +13,7 @@ set, despite each having traversed the LoD on its own.
 ![instances whose LoD cuts resolve to the same clusters build one BLAS, the duplicates reference it](blas_dedup.svg)
 
 The technique is enabled with the "Blas Dedup" checkbox or `--blasdedup 1`, it is off by
-default.
+default. The hybrid renderer uses _"Hybrid blas dedup"_ (`--hybridblasdedup 1`, on by default) instead.
 
 ### Relation to the BLAS sharing family
 

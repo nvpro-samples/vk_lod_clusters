@@ -229,6 +229,7 @@ void Scene::ProcessingInfo::logBegin(uint64_t totalTriangleCount)
   triangleCount               = totalTriangleCount;
   progressTrianglesCompleted  = 0;
   progressGeometriesCompleted = 0;
+  invalidGeometries           = 0;
   progressLastPercentage      = 0;
 }
 
@@ -865,6 +866,18 @@ void Scene::processGeometry(ProcessingInfo& processingInfo, size_t geometryIndex
 
   // always reset
   geometryView.instanceReferenceCount = 0;
+
+  // the shaders index the lod level roots directly, see `LOD_LEVEL_NODE_OFFSET`
+  if(!geometryView.lodNodes.empty())
+  {
+    const shaderio::NodeRange& root = geometryView.lodNodes[0].nodeRange;
+    if(geometryView.lodNodes.size() < LOD_LEVEL_NODE_OFFSET + geometryView.lodLevelsCount || root.isGroup
+       || root.childOffset != LOD_LEVEL_NODE_OFFSET || root.childCountMinusOne + 1 != geometryView.lodLevelsCount)
+    {
+      LOGE("geometry %zu: the lod root node does not list the lod levels as its children\n", geometryIndex);
+      processingInfo.invalidGeometries++;
+    }
+  }
 
   // derived rather than cached, so changing the extraction costs no `geoVersion` bump
   kdopBuildHull(m_geometryHulls[geometryIndex], geometryView.kdop, geometryView.bbox.lo, geometryView.bbox.hi);

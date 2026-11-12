@@ -304,6 +304,10 @@ struct GroupRange
 };
 #endif
 
+// `Scene::buildGeometryLodHierarchy`: the root is node 0, the roots of the lod levels follow it
+// as its children, so lod level L is node 1 + L and the root has `Geometry::lodLevelsCount` children.
+#define LOD_LEVEL_NODE_OFFSET 1
+
 // must match `nvclusterlod::Node`
 struct Node
 {

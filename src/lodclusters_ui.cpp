@@ -762,6 +762,8 @@ void LodClusters::uiSettingsRendering()
         PE::InputIntClamped("Hybrid cached levels", (int*)&m_rendererConfig.hybridCachingLevels, 1,
                             GEOMETRY_CACHED_BLAS_STRIDE - 1, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue,
                             "cached blas lod levels per geometry with the hybrid renderer, see Cached levels");
+        PE::Checkbox("Hybrid blas dedup", &m_rendererConfig.useHybridBlasDedup,
+                     "Blas Dedup with the hybrid renderer, whose visible instances cannot use blas sharing or merging.");
       }
 
       if(usesPathTracing())
@@ -1037,8 +1039,11 @@ void LodClusters::uiSettingsTraversal()
                           "cached blas lod levels per geometry, a chain from the coarsest tail level up, refined one level "
                           "per frame. An instance uses its own level, else the closest finer one");
       ImGui::EndDisabled();
+      ImGui::BeginDisabled(m_tweak.renderer == RENDERER_HYBRID_CLUSTERS_LOD);
       PE::Checkbox("Blas Dedup", &m_rendererConfig.useBlasDedup,
-                   "skips building a blas when another blas in the same frame references the same clusters. Independent of blas sharing");
+                   "skips building a blas when another blas in the same frame references the same clusters. Independent "
+                   "of blas sharing. The hybrid renderer uses Hybrid blas dedup.");
+      ImGui::EndDisabled();
 
       const bool useBlasReuse = m_rendererConfig.useBlasSharing || m_rendererConfig.useBlasCaching;
 
@@ -1076,7 +1081,7 @@ void LodClusters::uiSettingsTraversal()
 
         const bool hasCachedStats = m_rendererConfig.useBlasCaching && m_renderScene && m_renderScene->useStreaming;
 
-        if(hasCachedStats || m_rendererConfig.useBlasDedup)
+        if(hasCachedStats || usesBlasDedup())
         {
           ImGui::Separator();
         }
@@ -1085,7 +1090,7 @@ void LodClusters::uiSettingsTraversal()
           PE::Text("Cached blas", fmt::format("{}", stats.cachedBlasCount));
           PE::Text("Cached blas memory", fmt::format("{}", formatMemorySize(stats.usedCachedBlasBytes)));
         }
-        if(m_rendererConfig.useBlasDedup)
+        if(usesBlasDedup())
         {
           uint32_t candidates = readback.numBlasCandidates;
           PE::Text("Deduplicated blas", fmt::format("{} of {}", readback.numBlasDeduped, candidates));

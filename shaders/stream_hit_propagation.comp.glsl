@@ -279,7 +279,7 @@ void main()
       bool  coarsest = geometries[geometryID].groupOverlapInfos.d[groupIndex].countCoarse == 0;
       if (coarsest || width < groupRef.d.traversalMetric.maxQuadricError)
       {
-        uint childOffset = PACKED_GET(geometries[geometryID].nodes.d[0].packed, Node_packed_nodeChildOffset);
+        uint childOffset = LOD_LEVEL_NODE_OFFSET;
         uint level       = lodLevel;
         while (level > 0 && width < geometries[geometryID].nodes.d[childOffset + level - 1].traversalMetric.maxQuadricError)
         {
