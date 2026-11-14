@@ -157,8 +157,8 @@ interleaved within one process. Hit streaming off / on:
 
 * Residency drops by 14-44%. Caldera's geometry is coarse overall, there is little to win. In junkworld it depends
   on how close the camera is to higher resolution geometry, and Zorah surrounds it with very high resolution
-  geometry. The savings come from the LoD adjustment: without it (`--hitstreaminglod 0`) residency is the same as
-  with hit streaming off, and the frame is slower than without hit streaming in all three scenes.
+  geometry. Most of the savings come from the LoD adjustment: without it (`--hitstreaminglod 0`) residency drops by
+  only 1-4%, and the frame is slower than without hit streaming in all three scenes.
 * The frame gets 0.10-0.68 ms slower. _"Hit Propagation"_ and _"Hit Demand"_ take 0.12-0.21 ms, and the path tracer
   never lets residency settle: its random bounces keep moving the demand between groups, so groups are loaded and
   unloaded on most frames.
