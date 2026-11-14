@@ -176,8 +176,6 @@ bool Renderer::initBasicShaders(Resources& res, RenderScene& rscene, bool isRast
   }
   res.compileShader(m_basicShaders.fullScreenBackgroundFragShader, VK_SHADER_STAGE_FRAGMENT_BIT,
                     "fullscreen_background.frag.glsl", &backgroundOptions);
-  res.compileShader(m_basicShaders.fullscreenAtomicRasterFragmentShader, VK_SHADER_STAGE_FRAGMENT_BIT,
-                    "fullscreen_raster_atomic.frag.glsl");
 
   res.compileShader(m_basicShaders.renderInstanceBboxesMeshShader, VK_SHADER_STAGE_MESH_BIT_NV,
                     "render_instance_bbox.mesh.glsl", &options);
@@ -397,10 +395,6 @@ void Renderer::updateBasicDescriptors(Resources& res, RenderScene& rscene, const
   {
     writeSets.append(m_basicDset.makeWrite(BINDINGS_RAYTRACING_DEPTH), res.m_frameBuffer.imgRaytracingDepth.descriptor);
   }
-  if(m_isRaster)
-  {
-    writeSets.append(m_basicDset.makeWrite(BINDINGS_RASTER_ATOMIC), res.m_frameBuffer.imgRasterAtomic.descriptor);
-  }
   writeSets.append(m_basicDset.makeWrite(BINDINGS_GEOMETRIES_SSBO), rscene.getShaderGeometriesBuffer());
   writeSets.append(m_basicDset.makeWrite(BINDINGS_RENDERINSTANCES_SSBO), m_renderInstanceBuffer);
   writeSets.append(m_basicDset.makeWrite(BINDINGS_RENDERMATERIALS_SSBO), m_renderMaterialBuffer);
@@ -426,10 +420,6 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene)
   if(res.m_supportsClusterRaytracing && !m_isRaster)
   {
     bindings.addBinding(BINDINGS_RAYTRACING_DEPTH, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_basicShaderFlags);
-  }
-  if(m_isRaster)
-  {
-    bindings.addBinding(BINDINGS_RASTER_ATOMIC, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, m_basicShaderFlags);
   }
   bindings.addBinding(BINDINGS_GEOMETRIES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
   bindings.addBinding(BINDINGS_RENDERINSTANCES_SSBO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, m_basicShaderFlags);
@@ -528,18 +518,6 @@ void Renderer::initBasicPipelines(Resources& res, RenderScene& rscene)
   }
 #endif
 
-  if(m_isRaster)
-  {
-    graphicsGen.clearShaders();
-    graphicsGen.addShader(VK_SHADER_STAGE_VERTEX_BIT, "main",
-                          nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullScreenVertexShader));
-    graphicsGen.addShader(VK_SHADER_STAGE_FRAGMENT_BIT, "main",
-                          nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullscreenAtomicRasterFragmentShader));
-
-    graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_basicPipelines.atomicRaster);
-    res.dumpPipelineInternals(m_basicPipelines.atomicRaster, m_basicShaders.fullscreenAtomicRasterFragmentShader);
-  }
-
   if(!m_isRaster)
   {
     graphicsGen.clearShaders();
@@ -594,17 +572,6 @@ void Renderer::renderClusterBboxes(VkCommandBuffer cmd, nvvk::Buffer sceneBuildB
                                          offsetof(shaderio::SceneBuilding, indirectDrawClusterBoxesNV),
                                  1, 0);
   }
-}
-
-void Renderer::writeAtomicRaster(VkCommandBuffer cmd)
-{
-  uint32_t dummy = 0;
-  vkCmdPushConstants(cmd, m_basicPipelineLayout, m_basicShaderFlags, 0, sizeof(uint32_t), &dummy);
-
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelineLayout, 0, 1, m_basicDset.getSetPtr(), 0, nullptr);
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_basicPipelines.atomicRaster);
-
-  vkCmdDraw(cmd, 3, 1, 0, 0);
 }
 
 void Renderer::writeRayTracingDepthBuffer(VkCommandBuffer cmd)

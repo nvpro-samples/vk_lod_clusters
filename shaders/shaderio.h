@@ -255,8 +255,9 @@ using namespace glm;
 #define USE_HYBRID_SW_RASTER 0
 #endif
 
-// compute raster: clusters per workgroup, 32 threads each. More in flight hide their loads.
-#define SW_RASTER_CLUSTERS_PER_WORKGROUP 4
+// compute raster: clusters per workgroup, 32 threads each. One is too few to hide their loads,
+// with four the warps wait longer for each other at the barrier than with two.
+#define SW_RASTER_CLUSTERS_PER_WORKGROUP 2
 
 #ifndef USE_RENDER_STATS
 #define USE_RENDER_STATS 1

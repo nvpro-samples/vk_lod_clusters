@@ -208,6 +208,8 @@ configs = [
     sw('hy_sw_t64_limit', hybridmatchcheck='0', renderclusterbits='12'),
     # without culling it falls back to the hardware path
     sw('hy_sw_t64_cull0', culling='0'),
+    # the other hybrid files run with the default on, this keeps the hardware only path
+    sw('hy_sw_off', swraster='0'),
 ]
 write('seq_hybrid_swraster.txt', """# Hybrid path: --swraster x --swrasterthreshold, small opaque clusters of both raster passes
 # go to the compute raster. A large threshold sends nearly all clusters there.""", configs)

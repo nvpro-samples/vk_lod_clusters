@@ -322,22 +322,25 @@ void main()
 #endif
 #endif
 
-      pixelMin += vec2(0.5);
-      vec2 pixel = pixelMin;
+      // barycentrics stepped per pixel and row, as in CuRast (https://github.com/m-schuetz/CuRast)
+      ivec2 pixelStart = ivec2(pixelMin);
+      ivec2 pixelEnd   = ivec2(pixelMax);
+      ivec2 pixel      = pixelStart;
+      float baryScale  = winding * invTriArea;
+      vec2  stepB      = vec2(a.xy.y - c.xy.y, c.xy.x - a.xy.x) * baryScale;
+      vec2  stepC      = vec2(b.xy.y - a.xy.y, a.xy.x - b.xy.x) * baryScale;
+      float rowB       = edgeFunction(c.xy, a.xy, pixelMin + 0.5, winding) * invTriArea;
+      float rowC       = edgeFunction(a.xy, b.xy, pixelMin + 0.5, winding) * invTriArea;
+      float baryB      = rowB;
+      float baryC      = rowC;
 
       while(true)
       {
-        float baryA = edgeFunction(b.xy, c.xy, pixel, winding);
-        float baryB = edgeFunction(c.xy, a.xy, pixel, winding);
-        float baryC = edgeFunction(a.xy, b.xy, pixel, winding);
+        float baryA = 1.0 - baryB - baryC;
 
         if(baryA >= 0 && baryB >= 0 && baryC >= 0)
         {
-          baryA *= invTriArea;
-          baryB *= invTriArea;
-          baryC *= invTriArea;
-
-          float depth = a.z * baryA + b.z * baryB + c.z * baryC;
+          float depth = a.z + baryB * (b.z - a.z) + baryC * (c.z - a.z);
 
 #if HAS_ALPHA_TEST
           vec2  oTexCoord = oTexCoordA * baryA + oTexCoordB * baryB + oTexCoordC * baryC;
@@ -346,16 +349,22 @@ void main()
 #endif
           {
             uint64_t u64 = packUint2x32(uvec2(packedColor, floatBitsToUint(depth)));
-            imageAtomicMax(imgRasterAtomic, ivec2(pixel.xy), u64);
+            imageAtomicMax(imgRasterAtomic, pixel, u64);
           }
         }
 
         pixel.x++;
-        if(pixel.x > pixelMax.x)
+        baryB += stepB.x;
+        baryC += stepC.x;
+        if(pixel.x >= pixelEnd.x)
         {
-          pixel.x = pixelMin.x;
+          pixel.x = pixelStart.x;
           pixel.y++;
-          if(pixel.y > pixelMax.y)
+          rowB += stepB.y;
+          rowC += stepC.y;
+          baryB = rowB;
+          baryC = rowC;
+          if(pixel.y >= pixelEnd.y)
             break;
         }
       }

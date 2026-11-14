@@ -68,7 +68,8 @@ int main(int argc, char** argv)
   nvvk::ContextInitInfo vkSetup{
       .instanceExtensions = {VK_EXT_DEBUG_UTILS_EXTENSION_NAME},
       .deviceExtensions   = {{VK_KHR_SWAPCHAIN_EXTENSION_NAME}},
-      .queues             = {VK_QUEUE_GRAPHICS_BIT, VK_QUEUE_TRANSFER_BIT},
+      // the third falls back to another transfer queue without a video encode queue
+      .queues = {VK_QUEUE_GRAPHICS_BIT, VK_QUEUE_TRANSFER_BIT, VK_QUEUE_VIDEO_ENCODE_BIT_KHR | VK_QUEUE_TRANSFER_BIT},
   };
 
   vkSetup.deviceExtensions.push_back({VK_EXT_MESH_SHADER_EXTENSION_NAME, &meshEXT});
@@ -102,6 +103,11 @@ int main(int argc, char** argv)
 
   // optional, only used by the "dumpinternal" option
   vkSetup.deviceExtensions.push_back({VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME, &pipeExecutableKHR, false});
+
+  // optional, frame capture encodes H.264 with them
+  vkSetup.deviceExtensions.push_back({VK_KHR_VIDEO_QUEUE_EXTENSION_NAME, nullptr, false});
+  vkSetup.deviceExtensions.push_back({VK_KHR_VIDEO_ENCODE_QUEUE_EXTENSION_NAME, nullptr, false});
+  vkSetup.deviceExtensions.push_back({VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME, nullptr, false});
 #endif
 
 
@@ -272,11 +278,32 @@ int main(int argc, char** argv)
   sampleElement->setSupportsClusterRaytracing(vkContext.hasExtensionEnabled(VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME)
                                               && vkContext.hasExtensionEnabled(VK_KHR_RAY_TRACING_POSITION_FETCH_EXTENSION_NAME));
   sampleElement->setSupportsPartitionedTlas(vkContext.hasExtensionEnabled(VK_NV_PARTITIONED_ACCELERATION_STRUCTURE_EXTENSION_NAME));
+  {
+    // frame capture encodes H.264 on the third queue
+    uint32_t count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties2(vkContext.getPhysicalDevice(), &count, nullptr);
+    std::vector<VkQueueFamilyVideoPropertiesKHR> videoProperties(count, {VK_STRUCTURE_TYPE_QUEUE_FAMILY_VIDEO_PROPERTIES_KHR});
+    std::vector<VkQueueFamilyProperties2> families(count, {VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2});
+    for(uint32_t i = 0; i < count; i++)
+    {
+      families[i].pNext = &videoProperties[i];
+    }
+    vkGetPhysicalDeviceQueueFamilyProperties2(vkContext.getPhysicalDevice(), &count, families.data());
+
+    uint32_t family = vkContext.getQueueInfo(2).familyIndex;
+    sampleElement->setSupportsVideoEncode(
+        vkContext.hasExtensionEnabled(VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME)
+        && vkContext.hasExtensionEnabled(VK_KHR_VIDEO_ENCODE_QUEUE_EXTENSION_NAME)
+        && (families[family].queueFamilyProperties.queueFlags & VK_QUEUE_VIDEO_ENCODE_BIT_KHR)
+        && (videoProperties[family].videoCodecOperations & VK_VIDEO_CODEC_OPERATION_ENCODE_H264_BIT_KHR));
+  }
   sampleElement->setSupportsBarycentrics(vkContext.hasExtensionEnabled(VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME));
   sampleElement->setSupportsMeshShaderNV(vkContext.hasExtensionEnabled(VK_NV_MESH_SHADER_EXTENSION_NAME));
   sampleElement->setSupportsSmBuiltinsNV(vkContext.hasExtensionEnabled(VK_NV_SHADER_SM_BUILTINS_EXTENSION_NAME));
   sampleElement->setSupportsPipelineExecutableInfo(vkContext.hasExtensionEnabled(VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME)
                                                    && pipeExecutableKHR.pipelineExecutableInfo);
+  // sequences count frames from a loaded scene on
+  sampleElement->setSceneLoadBlocking(sequencerInfo.hasScript());
 #if USE_DLSS
   // benchmarks need DLSS from the first frame on
   sampleElement->setDlssWaitForInit(appInfo.headless || sequencerInfo.hasScript());
@@ -286,6 +313,10 @@ int main(int argc, char** argv)
   appInfo.device         = vkContext.getDevice();
   appInfo.physicalDevice = vkContext.getPhysicalDevice();
   appInfo.queues         = vkContext.getQueueInfos();
+#if FRAME_CAPTURE_READ_IMAGE
+  // frame capture reads the whole window in a shader
+  appInfo.swapchainImageUsage = VK_IMAGE_USAGE_SAMPLED_BIT;
+#endif
 
   bool hasDebugUI = sampleElement->getShowDebugUI();
 

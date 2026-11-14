@@ -299,6 +299,13 @@ void Resources::deinit()
   m_allocator.deinit();
 }
 
+static void logFramebufferSizes(const Resources::FrameBuffer& frameBuffer)
+{
+  LOGI("framebuffer: %4d x %4d (window)\n", frameBuffer.windowSize.width, frameBuffer.windowSize.height);
+  LOGI("             %4d x %4d (target)\n", frameBuffer.targetSize.width, frameBuffer.targetSize.height);
+  LOGI("             %4d x %4d (render)\n", frameBuffer.renderSize.width, frameBuffer.renderSize.height);
+}
+
 bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample, bool hbaoQuarterRes)
 {
   // only the HBAO resolution changed, its images are the only thing that follows it
@@ -519,9 +526,7 @@ bool Resources::initFramebuffer(const VkExtent2D& windowSize, int supersample, b
 
   updateFramebufferScales();
 
-  LOGI("framebuffer: %4d x %4d (window)\n", m_frameBuffer.windowSize.width, m_frameBuffer.windowSize.height);
-  LOGI("             %4d x %4d (target)\n", m_frameBuffer.targetSize.width, m_frameBuffer.targetSize.height);
-  LOGI("             %4d x %4d (render)\n", m_frameBuffer.renderSize.width, m_frameBuffer.renderSize.height);
+  logFramebufferSizes(m_frameBuffer);
 
   {
     VkPipelineRenderingCreateInfo pipelineRenderingInfo = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
@@ -996,6 +1001,8 @@ void Resources::setFramebufferDlss(DlssMode mode, NVSDK_NGX_PerfQuality_Value dl
     tempSyncSubmit(cmd);
 
     updateFramebufferMemBytes();
+    // the render size follows the DLSS mode
+    logFramebufferSizes(m_frameBuffer);
   }
 }
 

@@ -9,8 +9,6 @@
   ==================
 
   This fragment shader colorizes the cluster.
-  Note when USE_SW_RASTER is active, it will not do a regular
-  framebuffer attachment output, but write using 64-bit atomics.
 
 */
 
@@ -28,9 +26,6 @@
 #extension GL_EXT_shader_atomic_int64 : enable
 #if (!USE_DEPTH_ONLY && ALLOW_SHADING && (ALLOW_VERTEX_NORMALS || ALLOW_VERTEX_TEXCOORDS)) || (HAS_ALPHA_TEST && ALLOW_VERTEX_TEXCOORDS)
 #extension GL_EXT_fragment_shader_barycentric : enable
-#endif
-#if USE_SW_RASTER
-#extension GL_EXT_shader_image_int64 : enable
 #endif
 #if USE_EXT_MESH_SHADER
 #extension GL_EXT_mesh_shader : require
@@ -85,10 +80,6 @@ layout(scalar, binding = BINDINGS_STREAMING_SSBO, set = 0) buffer streamingBuffe
 {
   SceneStreaming streamingRW;
 };
-#endif
-
-#if USE_SW_RASTER
-layout(set = 0, binding = BINDINGS_RASTER_ATOMIC, r64ui) uniform u64image2D imgRasterAtomic;
 #endif
 
 #if HAS_ALPHA_TEST || HAS_TEXTURED_MATERIALS
@@ -164,13 +155,9 @@ INBARY[];
 
 ///////////////////////////////////////////////////
 
-#if !USE_SW_RASTER
 layout(location = 0, index = 0) out vec4 out_Color;
-#if USE_DLSS && ALLOW_SHADING
+#if USE_DLSS && ALLOW_SHADING && !USE_SW_RASTER
 layout(location = 1, index = 0) out vec2 out_DlssMotion;
-#endif
-#else
-vec4 out_Color;
 #endif
 #if !HAS_ALPHA_TEST
 layout(early_fragment_tests) in;
@@ -356,13 +343,6 @@ void main()
     atomicMax(readback.clusterTriangleId, packPickingValue(packedClusterTriangleId, gl_FragCoord.z));
     atomicMax(readback.instanceId, packPickingValue(instanceID, gl_FragCoord.z));
     atomicMax(readback.materialId, packPickingValue(materialID, gl_FragCoord.z));
-  }
-#endif
-  
-#if USE_SW_RASTER
-  {
-    uint64_t u64 = packUint2x32(uvec2(packUnorm4x8(out_Color), floatBitsToUint(gl_FragCoord.z)));
-    imageAtomicMax(imgRasterAtomic, ivec2(gl_FragCoord.xy), u64);
   }
 #endif
 }

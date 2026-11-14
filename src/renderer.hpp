@@ -103,7 +103,7 @@ struct RendererConfig
   bool     useShading               = true;
   bool     useDebugVisualization    = true;
   bool     useEXTmeshShader         = false;
-  bool     useComputeRaster         = false;
+  bool     useComputeRaster         = true;
   bool     usePrimitiveCulling      = false;
   bool     useDepthOnly             = false;
   bool     usePersistentTraversal   = true;
@@ -280,7 +280,6 @@ protected:
   void initBasicPipelines(Resources& res, RenderScene& rscene);
   void updateBasicDescriptors(Resources& res, RenderScene& scene, const nvvk::Buffer* sceneBuildBuffer = nullptr);
 
-  void writeAtomicRaster(VkCommandBuffer cmd);
   void writeRayTracingDepthBuffer(VkCommandBuffer cmd);
   void writeBackgroundSky(VkCommandBuffer cmd);
   void renderInstanceBboxes(VkCommandBuffer cmd);
@@ -293,7 +292,6 @@ protected:
     Shader fullScreenVertexShader;
     Shader fullScreenWriteDepthFragShader;
     Shader fullScreenBackgroundFragShader;
-    Shader fullscreenAtomicRasterFragmentShader;
 
     Shader renderInstanceBboxesFragmentShader;
     Shader renderInstanceBboxesMeshShader;
@@ -306,7 +304,6 @@ protected:
   {
     VkPipeline writeDepth{};
     VkPipeline background{};
-    VkPipeline atomicRaster{};
     VkPipeline renderInstanceBboxes{};
     VkPipeline renderClusterBboxes{};
   };

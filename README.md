@@ -119,7 +119,7 @@ traversal at that level's node and renders the level as a whole. It is the raste
 tracing converge on the same resident geometry. Please have a look at the
 [Discrete LoD documentation](docs/raster_discrete_lod.md).
 
-With culling on, in the visibility buffer or depth only visualization, or in the hybrid renderer, one can enable the usage of a basic compute-shader based rasterizer. It is rarely faster than the mesh-shader because clusters tend to have larger than single pixel triangles. You can look for `USE_SW_RASTER` in the code where it does affect traversal.
+With culling on, in the visibility buffer or depth only visualization, or in the hybrid renderer, small clusters go to a basic compute-shader based rasterizer (`--swraster`, on by default). It pays off where triangles approach pixel size, for example Zorah at 3840x2160. You can look for `USE_SW_RASTER` in the code where it does affect traversal.
 
 **Ray Tracing:**
 After the BLAS are built, also runs the TLAS build or update and then traces rays.
@@ -248,6 +248,7 @@ A camera path is a keyframed fly-through that can be authored in the UI, is copy
 Its main purpose is **deterministic benchmarking**: `--runcamerapath <index> <framecount>` spreads a path across exactly that many rendered frames, independent of frame rate or GPU speed.
 
 Please have a look at the [Camera Path documentation](docs/camera_paths.md) for the UI, the string format and a benchmarking setup.
+`--framecapture 1` writes every rendered frame to an image file or, through ffmpeg, a video, to [record a video](docs/camera_paths.md#recording-a-video) of a path.
 
 ## Materials
 

@@ -41,6 +41,7 @@ private:
 
     Shader computeRaster;
     Shader computeRasterAlpha;
+    Shader graphicsAtomicMerge;
   };
 
   struct Pipelines
@@ -56,6 +57,7 @@ private:
     VkPipeline computeBuildSetup              = nullptr;
     VkPipeline computeRaster                  = nullptr;
     VkPipeline computeRasterAlpha             = nullptr;
+    VkPipeline graphicsAtomicMerge            = nullptr;
   };
 
   Shaders            m_shaders;
@@ -74,6 +76,8 @@ private:
 
   // two pass culling continues the second pass from what the first pass rejected
   bool m_useRejectLists = false;
+  // the merge resets what it reads, a new image needs one clear
+  bool m_rasterAtomicCleared = false;
 };
 
 bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene)
@@ -169,6 +173,7 @@ bool RendererRasterClustersLod::initShaders(Resources& res, RenderScene& rscene)
                       &optionsNoAlpha, "noalpha");
     res.compileShader(m_shaders.computeRasterAlpha, VK_SHADER_STAGE_COMPUTE_BIT, "render_raster_clusters_sw.comp.glsl",
                       &options, "alpha");
+    res.compileShader(m_shaders.graphicsAtomicMerge, VK_SHADER_STAGE_FRAGMENT_BIT, "fullscreen_raster_atomic.frag.glsl", &options);
   }
 
   return res.verifyShaders(m_shaders);
@@ -178,6 +183,7 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
 {
   m_resourceReservedUsage = {};
   m_config                = config;
+  m_rasterAtomicCleared   = false;
   // partitions are a ray tracing feature
   m_config.usePartitions        = false;
   m_config.usePtlas             = false;
@@ -472,6 +478,18 @@ bool RendererRasterClustersLod::init(Resources& res, RenderScene& rscene, const 
     graphicsGen.addShader(VK_SHADER_STAGE_FRAGMENT_BIT, "main", nvvkglsl::GlslCompiler::getSpirvData(m_shaders.graphicsFragmentAlpha));
     graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_pipelines.graphicsMeshAlpha);
     res.dumpPipelineInternals(m_pipelines.graphicsMeshAlpha, m_shaders.graphicsMeshAlpha);
+
+    if(m_config.useComputeRaster)
+    {
+      // the hardware raster's layout, switching layouts in the pass serializes the merge with it
+      state.rasterizationState.cullMode = VK_CULL_MODE_NONE;
+      graphicsGen.clearShaders();
+      graphicsGen.addShader(VK_SHADER_STAGE_VERTEX_BIT, "main",
+                            nvvkglsl::GlslCompiler::getSpirvData(m_basicShaders.fullScreenVertexShader));
+      graphicsGen.addShader(VK_SHADER_STAGE_FRAGMENT_BIT, "main", nvvkglsl::GlslCompiler::getSpirvData(m_shaders.graphicsAtomicMerge));
+      graphicsGen.createGraphicsPipeline(res.m_device, nullptr, state, &m_pipelines.graphicsAtomicMerge);
+      res.dumpPipelineInternals(m_pipelines.graphicsAtomicMerge, m_shaders.graphicsAtomicMerge);
+    }
   }
 
   {
@@ -545,7 +563,7 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
                     sizeof(uint32_t) * m_sceneBuildShaderio.numGeometries, ~0);
   }
 
-  if(m_config.useComputeRaster)
+  if(m_config.useComputeRaster && !m_rasterAtomicCleared)
   {
     VkClearColorValue clearValue;
     clearValue.uint32[0] = 0u;
@@ -559,6 +577,7 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
     subResource.layerCount              = 1;
 
     vkCmdClearColorImage(cmd, res.m_frameBuffer.imgRasterAtomic.image, VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &subResource);
+    m_rasterAtomicCleared = true;
   }
 
   if(rscene.useStreaming)
@@ -769,6 +788,13 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
           vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelines.computeRasterAlpha);
           vkCmdDispatchIndirect(cmd, m_sceneBuildBuffer.buffer, offsetof(shaderio::SceneBuilding, indirectDispatchClustersAlphaSW));
         }
+
+        // the merge reads and resets the atomics
+        VkMemoryBarrier memBarrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        memBarrier.srcAccessMask   = VK_ACCESS_SHADER_WRITE_BIT;
+        memBarrier.dstAccessMask   = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1,
+                             &memBarrier, 0, nullptr, 0, nullptr);
       }
 
       // the sky fills the uncovered pixels after the last pass, the color needs no clear for it
@@ -798,6 +824,13 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 1, 1,
                                 rscene.sceneTextures.getDsetPack().getSetPtr(), 0, nullptr);
 
+        if(m_config.useComputeRaster)
+        {
+          // first, so the hardware raster's early depth test sees it
+          vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelines.graphicsAtomicMerge);
+          vkCmdDraw(cmd, 3, 1, 0, 0);
+        }
+
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelines.graphicsMesh);
 
         cmdDrawMeshTasksIndirect(cmd, m_config.useEXTmeshShader, m_sceneBuildBuffer.buffer,
@@ -812,17 +845,6 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
                                    offsetof(shaderio::SceneBuilding, indirectDrawClustersAlphaEXT),
                                    offsetof(shaderio::SceneBuilding, indirectDrawClustersAlphaNV));
         }
-      }
-
-      if(m_config.useComputeRaster)
-      {
-        VkMemoryBarrier memBarrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-        memBarrier.dstAccessMask   = VK_ACCESS_SHADER_READ_BIT;
-        memBarrier.srcAccessMask   = VK_ACCESS_SHADER_WRITE_BIT;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                             VK_DEPENDENCY_BY_REGION_BIT, 1, &memBarrier, 0, 0, 0, nullptr);
-
-        writeAtomicRaster(cmd);
       }
 
       if(pass == lastPass && m_config.useShading)
@@ -850,6 +872,15 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
       }
 
       vkCmdEndRendering(cmd);
+    }
+
+    if(m_config.useComputeRaster)
+    {
+      // the merge's resets before the next compute raster, of this frame or the next
+      memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+      memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                           &memBarrier, 0, nullptr, 0, nullptr);
     }
 
     cmdBuildPassHiz(cmd, res, frame, profiler, m_config.useTwoPassCulling, pass);
@@ -888,6 +919,7 @@ void RendererRasterClustersLod::render(VkCommandBuffer cmd, Resources& res, Rend
 void RendererRasterClustersLod::updatedFrameBuffer(Resources& res, RenderScene& rscene)
 {
   vkDeviceWaitIdle(res.m_device);
+  m_rasterAtomicCleared = false;
 
   VkWriteDescriptorSet writes[3];
 

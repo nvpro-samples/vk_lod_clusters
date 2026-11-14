@@ -171,3 +171,18 @@ SEQUENCE "hy_sw_t64_cull0"
 
 SEQUENCE "hy_sw_t64_cull0_motion"
 --runcamerapath 0 32
+
+SEQUENCE "hy_sw_off"
+--swraster 0
+--swrasterthreshold 64
+--culling 1
+--rayquery 0
+--dlss 0
+--visualize 0
+--loderror 1
+--hybridmatchcheck 1
+--renderclusterbits 20
+--runcamerapath 1 1
+
+SEQUENCE "hy_sw_off_motion"
+--runcamerapath 0 32

@@ -4,6 +4,11 @@
   * _"Hybrid blas dedup"_ (`--hybridblasdedup`, on by default) turns on BLAS deduplication for the hybrid renderer, whose visible instances cannot share or merge BLAS. `--blasdedup` no longer applies to it.
   * The rasterizer draws the sky after the geometry, only uncovered pixels evaluate it. 0.2-0.5 ms faster on Caldera, junkworld and Zorah.
   * The rasterizer culls instances outside the frustum by a bounding sphere before loading them. 0.08-0.25 ms faster traversal preparation on scenes with millions of instances.
+  * New frame capture (`--framecapture 1`, UI: _Misc Settings → Frame Capture_) writes every rendered frame, of the viewport or the whole window, to numbered png or jpg files, or pipes them into ffmpeg for a video, or encodes H.264 with Vulkan Video, e.g. of a camera path. See [docs/camera_paths.md](docs/camera_paths.md#recording-a-video).
+  * The rasterizer's `--swraster` merges the compute rasterized pixels before the hardware raster, as the hybrid renderer does, instead of resolving all pixels after it. 0.13-0.15 ms faster draw on Caldera, junkworld and Zorah.
+  * The compute rasterizer steps its barycentrics from pixel to pixel instead of evaluating three edge functions, as in [CuRast](https://github.com/m-schuetz/CuRast). Its pass is 3-10% faster on Zorah and junkworld.
+  * The compute rasterizer runs two clusters per workgroup instead of four, its pass is 4-8% faster on Zorah and junkworld at 3840x2160.
+  * _"Allow SW-Raster"_ (`--swraster`) is on by default. The hybrid renderer's draw is 12-31% faster (0.06-0.35 ms) on junkworld and Zorah at 3840x2160 output.
 
 * 2026-11-11:
 

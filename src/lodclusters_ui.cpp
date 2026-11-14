@@ -2271,6 +2271,10 @@ void LodClusters::uiMiscSettings(bool pickingValid, const glm::dvec3& hitPos)
     {
       cameraPathUI();
     }
+    if(ImGui::CollapsingHeader("Frame Capture", nullptr))
+    {
+      m_frameCapture.uiSettings();
+    }
 
     if(ImGui::CollapsingHeader("Lighting", nullptr, ImGuiTreeNodeFlags_DefaultOpen))
     {

@@ -10,8 +10,9 @@
   
   Only used for TARGETS_RASTERIZATION
   
-  A fragment shader that writes the color and depth that was encoded within
-  a u64 image used in compute-shader based rasterization.
+  Writes the color and depth `render_raster_clusters_sw.comp.glsl` packed into the 64 bit
+  atomics of this pass, before the hardware raster. The depth test resolves it against
+  earlier passes. Resets the pixel for the next pass.
 
 */
 
@@ -36,6 +37,13 @@ void main()
 {
   ivec2 coord  = ivec2(gl_FragCoord.xy);
   uvec2 loaded = unpackUint2x32(imageLoad(imgRasterAtomic, coord).x);
-  gl_FragDepth = loaded.y == uint(0) ? 0.0 : uintBitsToFloat(loaded.y);
-  out_Color    = loaded.y == uint(0) ? vec4(0,0,0,1) : unpackUnorm4x8(loaded.x);
+  if(loaded.y == 0)
+  {
+    discard;
+    return;
+  }
+  imageStore(imgRasterAtomic, coord, u64vec4(0));
+
+  gl_FragDepth = uintBitsToFloat(loaded.y);
+  out_Color    = unpackUnorm4x8(loaded.x);
 }

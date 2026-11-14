@@ -85,6 +85,7 @@ LodClusters::LodClusters(const Info& info)
   m_info.parameterRegistry->add({"cameraclipfar", "default camera far clip plane as fraction of the scene diagonal, negative is absolute, 0 derives it from the scene size"},
                                 &m_cameraClipFar);
   registerCameraPathParameters();
+  m_frameCapture.registerParameters(*m_info.parameterRegistry);
   m_info.parameterRegistry->addVector({"sundirection", "sun direction"}, &m_frameConfig.frameConstants.skyPhysical.sunDirection);
 
   m_info.parameterRegistry->add({"streamingreset", "reset the streaming state once, e.g. at the start of a parameter sequence"},
@@ -366,7 +367,7 @@ LodClusters::LodClusters(const Info& info)
                                 &m_frameConfig.showInstanceBboxes);
   m_info.parameterRegistry->add({"clusterbboxes", "draw the rendered clusters' bounding boxes as an overlay. default false"},
                                 &m_frameConfig.showClusterBboxes);
-  m_info.parameterRegistry->add({"swraster", "allow compute-shader rasterization, needs visualize 2 or 10 or the hybrid renderer. default false"},
+  m_info.parameterRegistry->add({"swraster", "allow compute-shader rasterization, needs visualize 2 or 10 or the hybrid renderer. default true"},
                                 &m_rendererConfig.useComputeRaster);
   m_info.parameterRegistry->add({"swrasterthreshold", "use SW raster when a cluster's longest edge covers fewer projected pixels. default 8"},
                                 &m_frameConfig.swRasterThreshold);
@@ -589,7 +590,8 @@ void LodClusters::initScene(std::filesystem::path filePath, std::string cacheSuf
       m_sceneLoading = false;
     });
 
-    if(m_app->isHeadless())
+    // a capture should not record the loading screen
+    if(m_app->isHeadless() || m_sceneLoadBlocking || m_frameCapture.config.enabled)
     {
       m_sceneLoadingThread.join();
     }
@@ -743,8 +745,15 @@ void LodClusters::onPreRender()
   }
 }
 
+void LodClusters::onPostRender()
+{
+  m_frameCapture.postSubmit();
+}
+
 void LodClusters::onLastHeadlessFrame()
 {
+  m_frameCapture.finish();
+
   // the interval never covers the final frame, which is typically the one of interest
   if(m_screenshotFrameInterval > 0 && m_frames > 0)
   {
@@ -973,6 +982,19 @@ void LodClusters::onAttach(nvapp::Application* app)
 
   m_profilerGpuTimer.init(m_profilerTimeline, app->getDevice(), app->getPhysicalDevice(), app->getQueue(0).familyIndex, true);
   m_resources.init(app->getDevice(), app->getPhysicalDevice(), app->getInstance(), app->getQueue(0), app->getQueue(1));
+  m_frameCapture.init(m_resources, app->getFrameCycleSize(), m_supportsVideoEncode ? &app->getQueue(2) : nullptr, app->isHeadless());
+  if(!app->isHeadless())
+  {
+    // nvapp's hook for DLSS frame generation sees the swapchain image once the UI is drawn
+    app->setFrameGenerationCallback(
+        [this](VkCommandBuffer cmd, VkImage image, VkImageView view, VkFormat format, VkExtent2D size, uint64_t) {
+          if(m_frameCapture.capturesWindow() && (m_frameCapture.config.enabled || m_frameCapture.isActive()))
+          {
+            m_frameCapture.cmdFrame(cmd, m_app->getFrameCycleIndex(), image, view, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                                    format, size, m_app->getFrameSignalSemaphore());
+          }
+        });
+  }
 
   m_texturesConfig.immutableSampler = m_resources.m_samplerTriLinear;
 
@@ -1088,6 +1110,9 @@ void LodClusters::onDetach()
 
   NVVK_CHECK(vkDeviceWaitIdle(m_app->getDevice()));
 
+  if(!m_app->isHeadless())
+    m_app->setFrameGenerationCallback({});
+  m_frameCapture.deinit();
   deinitRenderer();
   deinitScene();
 
@@ -2222,7 +2247,9 @@ void LodClusters::updateCameraPath(double time)
       // jump there, which is why this is opt-in rather than driven off the file's loop flag.
       int n = std::max(m_cameraPathFrames, 1);
       u     = double(m_cameraPathFrame % n) / double(n);
-      m_cameraPathFrame++;
+      // a capture that waits for the viewport starts with this frame
+      if(!m_frameCapture.isWaiting())
+        m_cameraPathFrame++;
     }
     else
     {
@@ -2232,7 +2259,7 @@ void LodClusters::updateCameraPath(double time)
 
       // advance for the next frame, hold at the end (the sequence/headless run
       // stops on its own frame count)
-      if(m_cameraPathFrame < m_cameraPathFrames - 1)
+      if(m_cameraPathFrame < m_cameraPathFrames - 1 && !m_frameCapture.isWaiting())
         m_cameraPathFrame++;
     }
     applyCameraPathSample(u);
@@ -2242,7 +2269,9 @@ void LodClusters::updateCameraPath(double time)
   {
     applyCameraPathSample(m_cameraPathU);
 
-    double dt           = m_cameraPathStarted ? std::max(time - m_lastTime, 0.0) : 0.0;
+    // a capture plays at the path's speed however long its frames take
+    double dt           = m_frameCapture.getTimeStep(std::max(time - m_lastTime, 0.0));
+    dt                  = m_cameraPathStarted ? dt : 0.0;
     m_cameraPathStarted = true;
     if(path.duration > 0.0)
       m_cameraPathU += dt / path.duration;
@@ -2263,6 +2292,13 @@ void LodClusters::updateCameraPath(double time)
 void LodClusters::onRender(VkCommandBuffer cmd)
 {
   double time = m_clock.getSeconds();
+
+  {
+    const Resources::FrameBuffer& fb = m_resources.m_frameBuffer;
+    m_frameCapture.beginFrame(m_frameCapture.capturesWindow() ? m_app->getWindowSize() :
+                              fb.useResolved                  ? fb.windowSize :
+                                                                fb.targetSize);
+  }
 
   // drive the camera along the active path (overrides the manipulator for the
   // rendered frame); runs after nvapp::ElementCamera's per-frame input update
@@ -2498,6 +2534,17 @@ void LodClusters::onRender(VkCommandBuffer cmd)
     m_resources.postProcessFrame(cmd, m_frameConfig, m_profilerGpuTimer);
   }
 
+  // the whole window is captured once the UI is drawn
+  if((m_frameCapture.config.enabled || m_frameCapture.isActive()) && !m_frameCapture.capturesWindow())
+  {
+    nvvk::ProfilerGpuTimer::FrameSection sec = m_profilerGpuTimer.cmdFrameSection(cmd, "Frame Capture");
+    const Resources::FrameBuffer&        fb  = m_resources.m_frameBuffer;
+    const nvvk::Image&                   img = fb.useResolved ? fb.imgColorResolved : fb.imgColorLdr;
+    m_frameCapture.cmdFrame(cmd, m_app->getFrameCycleIndex(), img.image, img.descriptor.imageView,
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, img.format,
+                            fb.useResolved ? fb.windowSize : fb.targetSize, m_app->getFrameSignalSemaphore());
+  }
+
   m_resources.endFrame();
 
   // signal new semaphore state with this command buffer's submit
@@ -2620,9 +2667,11 @@ void LodClusters::updateExposure(const shaderio::Readback& readback)
     float ev100      = std::clamp(shaderio::luminanceEv100(std::exp2(avgLogLuma)), tm.evMinValue, tm.evMaxValue);
     float avgLuma    = shaderio::ev100Luminance(ev100);
 
-    const float key       = 0.18f;
-    float       target    = std::clamp(key / std::max(avgLuma, 1e-4f), 0.01f, 100.0f);
-    float       adaptRate = std::clamp(tm.autoExposureSpeed * float(m_exposureTimer.getSeconds()), 0.0f, 1.0f);
+    const float key    = 0.18f;
+    float       target = std::clamp(key / std::max(avgLuma, 1e-4f), 0.01f, 100.0f);
+    // a capture adapts at its frame rate, so it looks the same however long its frames take
+    double dt        = m_frameCapture.getTimeStep(m_exposureTimer.getSeconds());
+    float  adaptRate = std::clamp(tm.autoExposureSpeed * float(dt), 0.0f, 1.0f);
     m_exposure += (target - m_exposure) * adaptRate;
   }
   m_exposureTimer.reset();

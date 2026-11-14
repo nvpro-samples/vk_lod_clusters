@@ -1,6 +1,6 @@
 # Render permutation tests
 
-**483 sequences in 22 files** for a full pass with the validation layers on. Most of the
+**490 sequences in 23 files** for a full pass with the validation layers on. Most of the
 time is pipeline compilation, not rendering.
 
 Parameter sequences that drive the sample through the permutations that are easy to break
@@ -67,7 +67,8 @@ frame.
 | `seq_streaming.txt` | 10 | streaming against preloaded, the CLAS allocator, async and decoupled transfers |
 | `seq_16bit_dispatch.txt` + `.cfg` | 11 | the 16 bit compute launch grid, on its own denser scene |
 | `seq_rayquery.txt` | 31 | `--rayquery` for ray and path tracing: visualizations, DLSS, optical modes, AO and shadows, hit streaming |
-| `seq_hybrid_*.txt` | 272 | the hybrid path against BLAS reuse, culling, traversal, streaming, ptlas, materials, visualization, limits, `--rayquery` and compute rasterization, see `docs/raster_hybrid.md` |
+| `seq_framecapture.txt` | 5 | `--framecapture` png, jpg and Vulkan Video, stopping with frames in flight, the resolved image, a capture still running at exit |
+| `seq_hybrid_*.txt` | 274 | the hybrid path against BLAS reuse, culling, traversal, streaming, ptlas, materials, visualization, limits, `--rayquery` and compute rasterization (on by default, `seq_hybrid_swraster.txt` keeps one without), see `docs/raster_hybrid.md` |
 
 The hybrid files run `--hybridmatchcheck`, which traces the primary ray as well and logs an error when more
 pixels disagree with the raster than edge rounding explains. Alpha masked surfaces are counted apart, their

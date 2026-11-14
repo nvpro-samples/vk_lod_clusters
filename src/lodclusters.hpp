@@ -18,6 +18,7 @@
 
 #include "renderer.hpp"
 #include "camera_path.hpp"
+#include "frame_capture.hpp"
 #include "scene_streaming_vis.hpp"
 
 namespace lodclusters {
@@ -157,6 +158,7 @@ public:
   void onResize(VkCommandBuffer cmd, const VkExtent2D& size) override;
   void onFileDrop(const std::filesystem::path& filename) override;
   void onLastHeadlessFrame() override;
+  void onPostRender() override;
 
   // must be called after the ImGui context exists, adds the recent files to the .ini settings
   void registerRecentFilesHandler();
@@ -167,7 +169,11 @@ public:
   void setSupportsMeshShaderNV(bool supported) { m_resources.m_supportsMeshShaderNV = supported; }
   void setSupportsSmBuiltinsNV(bool supported) { m_resources.m_supportsSmBuiltinsNV = supported; }
   void setSupportsPipelineExecutableInfo(bool supported) { m_resources.m_supportsPipelineExecutableInfo = supported; }
+  // the application's third queue encodes H.264
+  void setSupportsVideoEncode(bool supported) { m_supportsVideoEncode = supported; }
   bool getShowDebugUI() const { return m_showDebugUI; }
+  // otherwise a window keeps rendering, and a sequence counting frames, while the scene loads
+  void setSceneLoadBlocking(bool blocking) { m_sceneLoadBlocking = blocking; }
 #if USE_DLSS
   // otherwise renders without DLSS until its NGX init finished
   void setDlssWaitForInit(bool wait) { m_resources.m_dlssWaitForInit = wait; }
@@ -294,7 +300,8 @@ private:
   glm::vec3         m_sceneUpVector = glm::vec3(0, 1, 0);
   SceneGridConfig   m_sceneGridConfig;
   SceneGridConfig   m_sceneGridConfigLast;
-  std::atomic_bool  m_sceneLoading = false;
+  std::atomic_bool  m_sceneLoading      = false;
+  bool              m_sceneLoadBlocking = false;
   // progress signals shared with the background loader via m_sceneLoaderConfig.progressInfo
   std::atomic_uint64_t m_sceneCompletedCount = 0;  // items done in the current phase
   std::atomic_uint64_t m_sceneTotalCount     = 0;  // items total in the current phase
@@ -339,6 +346,9 @@ private:
   int                   m_cameraPathFrame    = 0;      // fixed: current frame
   bool                  m_cameraPathLoop     = false;  // fixed: wrap instead of holding at the end
   int                   m_cameraPathEditKey  = -1;     // UI: selected keyframe
+
+  FrameCapture m_frameCapture;
+  bool         m_supportsVideoEncode = false;
 
   std::unique_ptr<RenderScene> m_renderScene;
   // Built on the loader thread (textures only) and promoted to m_renderScene on the main thread once

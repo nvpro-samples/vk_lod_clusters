@@ -1,0 +1,39 @@
+# Frame capture: starting, stopping with frames still in flight, a frame size change
+# between captures, and the capture that is still running when the last frame ends.
+# The frames land in the case directory, `frames_*/frame_<index>.<png|jpg>`, the
+# Vulkan Video one in `video_h264/video.h264`. A device without an H.264 encode
+# queue skips that one with a warning.
+
+SEQUENCE "capture_png"
+--sequenceframes 32
+--addcamerapath "smooth 1 loop 1 dur 4 ; {0.185, 1.860, 1.199}, {-0.691, 1.203, 0.323}, {0, 1, 0}, {60} ; {0.893, 1.860, 0.491}, {0.017, 1.203, -0.385}, {0, 1, 0}, {60} ; {0.185, 1.860, 1.199}, {-0.691, 1.203, 0.323}, {0, 1, 0}, {60}"
+--runcamerapath 0 32
+--renderer 1
+--supersample 1
+--framecapture 1
+--framecapturedir frames_png
+--framecaptureformat 0
+--framecapturewriters 4
+
+SEQUENCE "capture_off"
+--framecapture 0
+
+# the resolved image, at window size
+SEQUENCE "capture_jpg_supersample"
+--runcamerapath 0 32
+--renderer 0
+--supersample 2
+--framecapture 1
+--framecapturedir frames_jpg
+--framecaptureformat 1
+--framecapturewriters 1
+
+SEQUENCE "capture_off_2"
+--framecapture 0
+
+SEQUENCE "capture_vulkan_video"
+--runcamerapath 0 32
+--supersample 1
+--framecapture 1
+--framecapturedir video_h264
+--framecaptureformat 3

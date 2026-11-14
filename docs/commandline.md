@@ -27,3 +27,4 @@ change `--scene`.
 * `--addcamerapath "..."` defines a camera fly-through path (repeatable, see [Camera Path](camera_paths.md)).
 * `--loadcamerapaths "file.txt"` replaces all paths with the definitions from a text file (see [Camera Path](camera_paths.md)).
 * `--runcamerapath <index> <framecount>` deterministically plays back a defined path for benchmarking (see [Camera Path](camera_paths.md)).
+* `--framecapture 1` writes every rendered frame to `--framecapturedir` as png or jpg, or with `--framecaptureformat 2` as a video encoded by ffmpeg, `3` as H.264 encoded by Vulkan Video (see [Recording a video](camera_paths.md#recording-a-video)).

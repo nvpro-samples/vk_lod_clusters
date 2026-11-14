@@ -82,11 +82,11 @@ With culling enabled the hybrid renderer always runs both raster passes. `--twop
 * The BLAS are built before the raster passes, so the second pass cannot change them. A disoccluded region, or one entering
   the view, therefore shows the culled detail for one frame, in the raster and the BLAS alike.
 * `--primitiveculling 1` applies to both raster passes with `VK_NV_mesh_shader`, it was not faster in our tests.
-* _"Allow SW-Raster"_ (`--swraster 1`, off by default) sends small opaque clusters of both passes to the compute
+* _"Allow SW-Raster"_ (`--swraster`, on by default) sends small opaque clusters of both passes to the compute
   rasterizer, below the same _"SW-Raster threshold"_ (`--swrasterthreshold 8`) as the raster renderer. It writes
   list index and depth with 64 bit atomics, a fullscreen pass merges them into the visibility buffer and depth
-  before the hardware draw of the same pass. Alpha masked clusters stay on the hardware path. With the settings of
-  the results below, _"Draw"_ took 60 us less on Zorah and 40 us more on junkworld.
+  before the hardware draw of the same pass. Alpha masked clusters stay on the hardware path. At the resolutions of
+  the results below, _"Draw"_ takes 60 us less on junkworld and 350 us less on Zorah than with `--swraster 0`.
 
 ### Other differences to the path tracer
 
@@ -105,7 +105,7 @@ With culling enabled the hybrid renderer always runs both raster passes. `--twop
 
 ## Results and limitations
 
-Measured on an NVIDIA RTX PRO 5000 Blackwell with clocks locked, `--culling 1 --twopassculling 1`, 1 indirect bounce,
+Measured on an NVIDIA RTX PRO 5000 Blackwell with clocks locked, `--culling 1 --twopassculling 1 --swraster 0`, 1 indirect bounce,
 DLSS Ray Reconstruction rendering 2560x1440 for 3840x2160 output, ray queries (`--rayquery 1`) for all three renderers. The partitioned TLAS is on for Caldera
 and junkworld, where it was faster, off for Zorah. The configurations are interleaved within one process, 96
 frames each after 128 to settle, four repetitions. Frame times in microseconds:
