@@ -1,0 +1,197 @@
+name: Build
+
+on:
+  push:
+    tags:
+      # CalVer release tags: v2026.5, v2026.6, v2026.6.1, ...
+      - 'v[0-9][0-9][0-9][0-9].[0-9]*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # The SDK the tests ran with: the package ships its shaderc, which compiles the shaders at runtime.
+  # Building needs 1.4.341.0 (README).
+  VULKAN_SDK_VERSION: 1.4.357.0
+  # nvpro_core2 is checked out as a sibling so FindNvproCore2.cmake picks it up.
+  # Head is fine; bump this if you ever need to pin to a specific tag/SHA.
+  NVPRO_CORE2_REF: main
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows-x64
+          - os: ubuntu-24.04
+            platform: linux-x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      # The project and executable are named after this folder.
+      - name: Checkout vk_lod_clusters
+        uses: actions/checkout@v4
+        with:
+          path: vk_lod_clusters
+
+      # Place nvpro_core2 as a SIBLING of vk_lod_clusters.
+      # FindNvproCore2.cmake searches ${CMAKE_SOURCE_DIR}/.. and will pick this up.
+      # No submodule needed; this also keeps the repo dual-remote (GitHub + GitLab) clean.
+      - name: Checkout nvpro_core2
+        uses: actions/checkout@v4
+        with:
+          repository: nvpro-samples/nvpro_core2
+          ref: ${{ env.NVPRO_CORE2_REF }}
+          path: nvpro_core2
+
+      - name: Determine version
+        id: version
+        shell: bash
+        working-directory: vk_lod_clusters
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF#refs/tags/v}"
+            echo "artifact_version=${tag}" >> "${GITHUB_OUTPUT}"
+            echo "Building tagged release: ${tag}"
+          else
+            short_sha="$(git rev-parse --short HEAD)"
+            echo "artifact_version=dispatch-${short_sha}" >> "${GITHUB_OUTPUT}"
+            echo "Building untagged dispatch: dispatch-${short_sha}"
+          fi
+
+      - name: Install Vulkan SDK (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $url = "https://sdk.lunarg.com/sdk/download/${{ env.VULKAN_SDK_VERSION }}/windows/vulkan_sdk.exe"
+          Write-Host "Downloading Vulkan SDK from $url"
+          Invoke-WebRequest -Uri $url -OutFile vulkan_sdk.exe
+          Write-Host "Installing Vulkan SDK..."
+          Start-Process -FilePath .\vulkan_sdk.exe -ArgumentList "--accept-licenses --default-answer --confirm-command install" -Wait
+          $sdkPath = "C:\VulkanSDK\${{ env.VULKAN_SDK_VERSION }}"
+          echo "VULKAN_SDK=$sdkPath" >> $env:GITHUB_ENV
+          echo "$sdkPath\Bin" >> $env:GITHUB_PATH
+
+      - name: Install Vulkan SDK (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          SDK_URL="https://sdk.lunarg.com/sdk/download/${{ env.VULKAN_SDK_VERSION }}/linux/vulkan_sdk.tar.xz"
+          echo "Downloading Vulkan SDK from $SDK_URL"
+          mkdir -p "$HOME/vulkan_sdk"
+          cd "$HOME/vulkan_sdk"
+          wget -q -O vulkan_sdk.tar.xz "$SDK_URL"
+          tar -xf vulkan_sdk.tar.xz
+          rm vulkan_sdk.tar.xz
+          SDK_ROOT="$HOME/vulkan_sdk/${{ env.VULKAN_SDK_VERSION }}/x86_64"
+          if [ ! -d "$SDK_ROOT" ]; then
+            echo "ERROR: expected SDK root not found at $SDK_ROOT" >&2
+            ls "$HOME/vulkan_sdk/${{ env.VULKAN_SDK_VERSION }}" >&2 || true
+            exit 1
+          fi
+          echo "VULKAN_SDK=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$SDK_ROOT/bin" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=$SDK_ROOT/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          echo "VK_LAYER_PATH=$SDK_ROOT/share/vulkan/explicit_layer.d" >> "$GITHUB_ENV"
+          echo "Installed Vulkan SDK at: $SDK_ROOT"
+
+      # libvulkan-dev provides the system libvulkan.so -> libvulkan.so.1 symlink
+      # that CMake's find_library(Vulkan) needs. The Vulkan SDK 1.4.350+ moved
+      # its loader from <sdk>/x86_64/lib to <sdk>/x86_64/lib/VulkanLoader/lib,
+      # which CMake does not search, so on a clean CI runner (no system loader)
+      # the Vulkan check fails without this. Harmless on older SDKs.
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y \
+            libx11-dev libxcb1-dev libxcursor-dev libxi-dev libxinerama-dev \
+            libxrandr-dev libtbb-dev libgl-dev libvulkan-dev
+
+      # Windows configuration
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        working-directory: vk_lod_clusters
+        run: cmake -S . -B build -A x64 -DUSE_DLSS=ON
+
+      # Note: we use Unix Makefiles instead of Ninja because nvpro_core2's
+      # FindWebP.cmake sets CMAKE_BUILD_TYPE to a junk string containing
+      # angle brackets ("<any string works here ...>") to work around libwebp's
+      # CMake. Ninja's lexer rejects '<' / '>' in rule names; Make and the
+      # Visual Studio generator are not affected. Switch back to Ninja once
+      # the upstream FindWebP.cmake guards that hack on multi-config only.
+      - name: Configure (Linux)
+        if: runner.os == 'Linux'
+        working-directory: vk_lod_clusters
+        run: >
+          cmake -S . -B build -G "Unix Makefiles"
+          -DCMAKE_BUILD_TYPE=Release
+          -DUSE_DLSS=ON
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        working-directory: vk_lod_clusters
+        run: cmake --build build --config Release --parallel
+
+      # Capped: with 4 jobs on the 4-vCPU runner, vk_gltf_renderer's largest translation units got the build killed.
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        working-directory: vk_lod_clusters
+        run: cmake --build build --config Release --parallel 2
+
+      - name: Install
+        working-directory: vk_lod_clusters
+        run: cmake --install build --config Release --prefix _install
+
+      - name: Prepare package
+        shell: bash
+        working-directory: vk_lod_clusters
+        run: |
+          folder="vk_lod_clusters-${{ steps.version.outputs.artifact_version }}-${{ matrix.platform }}"
+          mkdir staging
+          mv _install "staging/${folder}"
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            chmod +x "staging/${folder}/vk_lod_clusters"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vk_lod_clusters-${{ steps.version.outputs.artifact_version }}-${{ matrix.platform }}
+          path: vk_lod_clusters/staging
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Determine version
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "${GITHUB_OUTPUT}"
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create release archives
+        shell: bash
+        run: |
+          v="${{ steps.version.outputs.version }}"
+          cd artifacts
+          zip -r "../vk_lod_clusters-${v}-windows-x64.zip" "vk_lod_clusters-${v}-windows-x64"
+          tar -czf "../vk_lod_clusters-${v}-linux-x64.tar.gz" "vk_lod_clusters-${v}-linux-x64"
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            vk_lod_clusters-*.zip
+            vk_lod_clusters-*.tar.gz
